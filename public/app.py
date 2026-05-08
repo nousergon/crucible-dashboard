@@ -186,6 +186,10 @@ col4.metric("Alpha Days", f"{up_days} ▲  {down_days} ▼")
 # NAV vs SPY chart
 _perf_date = eod["date"].iloc[-1].strftime("%Y-%m-%d")
 st.markdown("### Portfolio vs S&P 500")
+st.caption(
+    "Phase 2 baseline trajectory. Phase 3 tuning targets sustained "
+    "outperformance vs SPY."
+)
 st.caption(f"As of {_perf_date}")
 fig_nav = make_nav_chart(eod, uptime_records=uptime_history)
 st.plotly_chart(fig_nav, width="stretch")
