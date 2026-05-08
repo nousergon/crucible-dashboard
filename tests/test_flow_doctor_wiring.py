@@ -267,9 +267,10 @@ class TestLibVersionPin:
             "to be importable"
         )
         assert "@main" not in text, "alpha-engine-lib must be pinned to a tag, not @main"
-        assert "@v0.5.4" in text, (
-            "alpha-engine-lib should pin to v0.5.4 (bumped from v0.5.3 to "
-            "pick up the data_quality inventory schema fix — parquet has "
-            "ticker as INDEX not column + price column is Close not "
-            "close); update this test if the pin moves further forward"
+        assert "@v0.5.6" in text, (
+            "alpha-engine-lib should pin to v0.5.6 (bumped from v0.5.4 to "
+            "pick up the pipeline_execution inventory ARN fix — AWS/States "
+            "dimension Value is the full state machine ARN, not the short "
+            "SF name; short names returned zero datapoints from "
+            "GetMetricStatistics); update this test if the pin moves further forward"
         )
