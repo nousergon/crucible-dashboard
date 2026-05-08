@@ -197,6 +197,10 @@ st.caption(
 
 # Alpha stats
 st.markdown("### Alpha Performance")
+st.caption(
+    "Phase 2 baseline distribution. Phase 3 tuning targets win rate "
+    "and up/down-day asymmetry."
+)
 st.caption(f"As of {_perf_date}")
 
 col_a, col_b, col_c, col_d = st.columns(4)
