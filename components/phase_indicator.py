@@ -87,7 +87,11 @@ def render_phase_indicator(current_phase: str = "Reliability + Evaluation") -> N
 
 
 def render_phase_caption(current_phase: str = "Reliability + Measurability") -> None:
-    """One-line explainer under the phase indicator."""
+    """One-line explainer aligned under the active phase pill.
+
+    Mirrors the pill row's flex layout so the caption sits in the same
+    column as the pill describing it — and the description card below.
+    """
     captions = {
         "Completeness": "All six modules wired end-to-end — research, prediction, execution, evaluation, data, and dashboard.",
         "Reliability + Measurability": (
@@ -98,12 +102,31 @@ def render_phase_caption(current_phase: str = "Reliability + Measurability") -> 
         "Performance (live)": "Graduating from paper to live capital with progressive sizing.",
     }
     text = captions.get(current_phase, "")
-    if text:
-        st.markdown(
-            f'<div style="color:#aaa; font-size:13px; margin:4px 0 12px 0; '
-            f'text-align:center; font-style:italic;">{text}</div>',
-            unsafe_allow_html=True,
-        )
+    if not text:
+        return
+
+    active_index = next(
+        (i for i, p in enumerate(PHASES) if p["name"] == current_phase), 0
+    )
+
+    slots = []
+    for i in range(len(PHASES)):
+        if i == active_index:
+            slots.append(
+                f'<div style="flex:1; min-width:140px; color:#aaa; '
+                f'font-size:13px; font-style:italic; text-align:center; '
+                f'padding:4px 6px;">{text}</div>'
+            )
+        else:
+            slots.append(
+                '<div style="flex:1; min-width:140px;"></div>'
+            )
+
+    st.markdown(
+        f'<div style="display:flex; gap:8px; margin:4px 0 12px 0; '
+        f'flex-wrap:wrap;">{"".join(slots)}</div>',
+        unsafe_allow_html=True,
+    )
 
 
 def render_phase_descriptions(current_phase: str = "Reliability + Measurability") -> None:
