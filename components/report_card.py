@@ -124,7 +124,12 @@ def _render_tile(column, display_name: str, module: dict | None) -> None:
 
 def render_report_card(grading: dict | None) -> None:
     """Render the full Report Card section."""
-    st.markdown("### System Report Card")
+    st.markdown("### System Report Card — Phase 2 Baseline")
+    st.caption(
+        "Structural-quality grading from the weekly evaluator. "
+        "Most sub-components show N/A while Phase 2 data accumulates — "
+        "typically 4–8 weeks of signals before letter grades firm up."
+    )
 
     if not grading:
         st.info("No evaluator grading has been published yet.")
@@ -138,9 +143,7 @@ def render_report_card(grading: dict | None) -> None:
     st.markdown(
         f'<div style="color:#ccc; margin-bottom:8px;">'
         f'Overall: <span style="color:{overall_color}; font-weight:700;">'
-        f'{overall_letter}</span> ({overall_numeric}). '
-        f'Auto-graded by the weekly evaluator. Most sub-components show N/A '
-        f'while data accumulates — typically requires 4–8 weeks of signals.'
+        f'{overall_letter}</span> ({overall_numeric})'
         f'</div>',
         unsafe_allow_html=True,
     )

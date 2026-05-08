@@ -166,11 +166,10 @@ total_days = len(eod_active)
 # Section 1: Performance — Secondary KPIs (Phase 3 primary metric)
 # ===========================================================================
 
-st.markdown("### Performance — Phase 2 baseline")
+st.markdown("### Performance — Phase 2 Baseline")
 st.caption(
-    "Phase 2 is reliability and measurability buildout. Alpha tuning is "
-    "Phase 3 — gated on the substrate Phase 2 is making trustworthy. "
-    "These numbers are baseline, not optimized."
+    "Tracked, not optimized. Phase 3 turns on alpha tuning once Phase 2's "
+    "substrate is trustworthy."
 )
 
 col1, col2, col3, col4 = st.columns(4)

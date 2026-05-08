@@ -92,8 +92,7 @@ def render_phase_caption(current_phase: str = "Reliability + Measurability") -> 
         "Completeness": "All six modules wired end-to-end — research, prediction, execution, evaluation, data, and dashboard.",
         "Reliability + Measurability": (
             "Every aspect of the system reliable and measurable, so Phase 3 "
-            "can evaluate decisions on data, not vibes. Alpha is tracked but "
-            "not optimized until the substrate is trustworthy."
+            "can evaluate decisions on data, not vibes."
         ),
         "Performance (paper)": "Tuning signals, risk, and execution for sustained alpha vs SPY on paper.",
         "Performance (live)": "Graduating from paper to live capital with progressive sizing.",

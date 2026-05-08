@@ -47,6 +47,7 @@ def _progress_bar_html(pct: float) -> str:
 def render_uptime_kpi(records: list[dict]) -> None:
     """Render the reliability hero block. Pass in the rolling-window records."""
     st.markdown("### Reliability — Phase 2 Primary KPI")
+    st.caption("Phase 2's primary measurement target. The 99% goal gates Phase 3.")
 
     if not records:
         st.info("No uptime sessions recorded yet. Data will appear after the first post-tick-log EOD run.")
