@@ -28,6 +28,12 @@ import streamlit.components.v1 as components
 
 from components.header import render_footer, render_header
 from components.styles import inject_base_css, inject_docs_css
+from loaders.s3_loader import predictor_horizon_days
+
+# Predictor's training horizon — read from manifest so display strings
+# track config without code edits when the horizon shifts. Fallback is
+# the active production state post Track A cutover (2026-05-09).
+_PRED_H = predictor_horizon_days()
 
 st.set_page_config(
     page_title="Architecture — Alpha Engine",
@@ -124,7 +130,7 @@ st.caption(
     "communication flows through versioned S3 contracts."
 )
 
-render_mermaid("""
+render_mermaid(f"""
 flowchart LR
     subgraph Weekly["Weekly Saturday SF"]
         DATA1[Data Phase 1<br/>prices · macro · RAG ingest]
@@ -136,7 +142,7 @@ flowchart LR
 
     subgraph Daily["Weekday SF"]
         ENRICH[Morning Enrich<br/>OHLCV + intraday]
-        INF[Predictor Inference<br/>5d alpha + veto]
+        INF[Predictor Inference<br/>{_PRED_H}d alpha + veto]
         PLAN[Morning Planner<br/>order book]
         DAEMON[Intraday Daemon<br/>sole order executor]
     end
@@ -220,7 +226,7 @@ sequenceDiagram
 
 st.markdown("### Weekday SF — daily trading loop")
 st.caption("Fires Mon-Fri 13:00 UTC (6:00 AM PT). Halt on NYSE holidays.")
-render_mermaid("""
+render_mermaid(f"""
 sequenceDiagram
     participant EB as EventBridge
     participant DDC as Deploy Drift Check
@@ -236,10 +242,10 @@ sequenceDiagram
     DDC->>EC2: start trading instance
     EC2->>CTD: instance ready
     CTD->>ME: NYSE trading day
-    ME->>ME: OHLCV + intraday → daily_closes/{date}.parquet
+    ME->>ME: OHLCV + intraday → daily_closes/{{date}}.parquet
     ME->>INF: data ready
-    INF->>INF: 5d alpha + veto signals + email
-    INF->>MP: predictions/{date}.json
+    INF->>INF: {_PRED_H}d alpha + veto signals + email
+    INF->>MP: predictions/{{date}}.json
     MP->>MP: risk guard + position sizing
     MP->>D: order book written
     D->>D: intraday triggers + sole executor
@@ -301,8 +307,8 @@ _module_card(
 )
 _module_card(
     "📊", "Predictor", "alpha-engine-predictor",
-    "Stacked meta-ensemble for 5-day market-relative alpha.",
-    "Three Layer-1 specialized models (LightGBM momentum, LightGBM volatility, research-score calibrator) feed a Layer-2 Ridge meta-learner. Trained on sector-neutral labels with cross-sectional rank normalization and walk-forward validation. Adds a quantitative ML overlay on top of research signals; high-confidence DOWN predictions trigger a veto gate that overrides BUY signals to avoid declining positions."
+    f"Stacked meta-ensemble for {_PRED_H}d log-domain canonical alpha.",
+    "Three Layer-1 specialized models (LightGBM volatility, deterministic momentum baseline, research-score GBM) feed a Layer-2 Ridge meta-learner trained on log-domain risk-matched canonical alpha labels at the configured horizon. Cross-sectional rank normalization on L1 inputs; walk-forward validation. Adds a quantitative ML overlay on top of research signals; high-confidence DOWN predictions trigger a veto gate that overrides BUY signals to avoid declining positions."
 )
 _module_card(
     "💱", "Executor", "alpha-engine",

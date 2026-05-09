@@ -34,6 +34,16 @@ from loaders.s3_loader import (
     load_predictor_metrics,
     load_trades_full,
     load_uptime_history,
+    predictor_horizon_days,
+    predictor_label_domain,
+)
+
+# Predictor's training horizon + domain — sourced from manifest so any
+# horizon shift flows through display strings without code edits.
+_PRED_H = predictor_horizon_days()
+_PRED_DOMAIN_LABEL = (
+    "log-domain canonical" if predictor_label_domain() == "canonical_log"
+    else "arithmetic sector-relative"
 )
 
 st.set_page_config(
@@ -310,11 +320,11 @@ _render_entry(MetricEntry(
     name="Predictor ensemble IC (L2 meta-learner + per-L1 components)",
     current=_ic_current,
     measures=(
-        "Information Coefficient — Spearman rank correlation between "
-        "predicted 5-day market-relative alpha and realized alpha. "
-        "Reported at the Layer-2 Ridge meta-learner and at each Layer-1 "
-        "specialized component (LightGBM momentum, LightGBM volatility, "
-        "research-score calibrator). Quality, not return."
+        f"Information Coefficient — Spearman rank correlation between "
+        f"predicted {_PRED_H}-day {_PRED_DOMAIN_LABEL} alpha and realized "
+        f"alpha. Reported at the Layer-2 Ridge meta-learner and at each "
+        f"Layer-1 specialized component (LightGBM volatility, deterministic "
+        f"momentum baseline, research-score GBM). Quality, not return."
     ),
     source=(
         "`s3://alpha-engine-research/predictor/metrics/latest.json` "
@@ -322,10 +332,12 @@ _render_entry(MetricEntry(
         "read via `loaders/s3_loader.py:load_predictor_metrics()`."
     ),
     calculation=(
-        "Walk-forward validation IC across cross-section: predicted_alpha "
-        "vs realized 5d sector-neutral alpha (`stock_5d_return − "
-        "sector_etf_5d_return`). Each L1 component must clear a named "
-        "baseline + isolated promotion gate before contributing to L2."
+        f"Walk-forward validation IC across cross-section: predicted_alpha "
+        f"vs realized {_PRED_H}d {_PRED_DOMAIN_LABEL} alpha. The per-row "
+        f"horizon-of-record + label-domain are tracked in the predictor's "
+        f"manifest top-level (`forward_days`, `label_domain`); display "
+        f"strings here read from that source. Each L1 component must clear "
+        f"a named baseline + isolated promotion gate before contributing to L2."
     ),
     refresh="Weekly, on Saturday SF predictor training (`PredictorTraining` state).",
     last_refresh=str(predictor_ic.get("_run_ts") or "—"),

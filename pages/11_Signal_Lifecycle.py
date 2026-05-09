@@ -42,6 +42,8 @@ from loaders.s3_loader import (
     load_predictions_json,
     load_signals_json,
     load_trades_full,
+    predictor_horizon_days,
+    predictor_label_domain,
 )
 from loaders.signal_loader import get_available_signal_dates, load_signals, signals_to_df
 
@@ -278,7 +280,24 @@ if ticker_pred:
         unsafe_allow_html=True,
     )
     pcol2.metric("Confidence", f"{float(confidence)*100:.1f}%" if confidence is not None else "—")
-    pcol3.metric("Expected 5d alpha", f"{float(expected_move)*100:+.2f}%" if expected_move is not None else "—")
+    # Horizon-agnostic display: read horizon + domain from manifest so
+    # any future horizon shift (e.g. 21d → 60d) flows through without
+    # touching this string. Defaults are the active production state
+    # post Track A cutover.
+    _h = predictor_horizon_days()
+    _domain_label = (
+        "log-domain" if predictor_label_domain() == "canonical_log"
+        else "arithmetic"
+    )
+    pcol3.metric(
+        f"Expected {_h}d alpha",
+        f"{float(expected_move)*100:+.2f}%" if expected_move is not None else "—",
+        help=(
+            f"Predictor's training horizon is {_h} trading days; alpha is "
+            f"{_domain_label} per the manifest. Source: "
+            f"`predictor/weights/meta/manifest.json`."
+        ),
+    )
     pcol4.metric("Veto active", "🚫 yes" if veto_flag else "✓ no")
 
     # L1 component votes if available
