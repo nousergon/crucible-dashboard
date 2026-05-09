@@ -648,6 +648,45 @@ def load_predictor_metrics() -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def load_predictor_manifest() -> dict:
+    """Load predictor weights manifest from S3 (`predictor/weights/meta/manifest.json`).
+
+    Source of truth for the predictor's training-time horizon + label
+    domain. Per the predictor-21d-migration plan: dashboard display
+    strings should read `forward_days` + `label_domain` from this
+    manifest rather than hardcoding "5d" / "21d" / "arithmetic" /
+    "log-domain" throughout the page code. Falls back to {} on any
+    failure; callers should provide a sensible default.
+    """
+    data = _fetch_s3_json(_research_bucket(), "predictor/weights/meta/manifest.json")
+    return data if isinstance(data, dict) else {}
+
+
+def predictor_horizon_days(default: int = 21) -> int:
+    """Convenience: read the predictor's current training horizon from
+    the manifest. Default reflects the active production state post
+    Track A cutover (2026-05-09); kept as a fallback for early-cutover
+    cycles where the manifest hasn't yet emitted `forward_days` (PRs
+    ≤ #114, written before alpha-engine-predictor #115 added the field).
+    """
+    manifest = load_predictor_manifest()
+    h = manifest.get("forward_days")
+    try:
+        return int(h) if h is not None else default
+    except (TypeError, ValueError):
+        return default
+
+
+def predictor_label_domain(default: str = "canonical_log") -> str:
+    """Convenience: read the predictor's current label domain
+    (canonical_log vs arithmetic_legacy) from the manifest. Same
+    default-fallback rationale as predictor_horizon_days.
+    """
+    manifest = load_predictor_manifest()
+    d = manifest.get("label_domain")
+    return str(d) if isinstance(d, str) else default
+
+
 def load_mode_history() -> list[dict]:
     """Load predictor mode selection history from S3. Returns [] on failure."""
     data = _fetch_s3_json(_research_bucket(), f"{_PREDICTOR_METRICS_PREFIX}/mode_history.json")

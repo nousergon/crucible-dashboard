@@ -143,7 +143,7 @@ def make_feature_importance_chart(fi_data: dict) -> go.Figure:
     fig.update_layout(
         title=f"Feature Importance ({label}) & Predictive IC",
         xaxis=dict(title=label, side="bottom", showgrid=True, gridcolor="rgba(0,0,0,0.07)"),
-        xaxis2=dict(title="Feature IC (correlation with 5d returns)", side="top",
+        xaxis2=dict(title="Feature IC (correlation with realized forward return)", side="top",
                     overlaying="x", showgrid=False),
         plot_bgcolor="white", paper_bgcolor="white",
         height=max(350, len(names) * 28 + 80),
