@@ -267,10 +267,10 @@ class TestLibVersionPin:
             "to be importable"
         )
         assert "@main" not in text, "alpha-engine-lib must be pinned to a tag, not @main"
-        assert "@v0.5.6" in text, (
-            "alpha-engine-lib should pin to v0.5.6 (bumped from v0.5.4 to "
-            "pick up the pipeline_execution inventory ARN fix — AWS/States "
-            "dimension Value is the full state machine ARN, not the short "
-            "SF name; short names returned zero datapoints from "
-            "GetMetricStatistics); update this test if the pin moves further forward"
+        assert "@v0.12.0" in text, (
+            "alpha-engine-lib should pin to v0.12.0 (alpha_engine_lib.secrets "
+            "module — SSM-backed get_secret() helper with env fallback; bumped "
+            "as part of the 2026-05-12 .env-to-SSM arc for alignment with the "
+            "other 5 repos, even though dashboard has zero secret reads today); "
+            "update this test if the pin moves further forward"
         )
