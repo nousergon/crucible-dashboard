@@ -1,3 +1,21 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# DESCRIPTIVE / DOCUMENTATION ONLY
+#
+# Production reads the live config from public/config.yaml on the dashboard
+# EC2 instance (gitignored, lives in ~/alpha-engine-dashboard/public/
+# config.yaml on the host that runs nous-ergon-public.service — the public
+# site at nousergon.ai). The live config is NOT in alpha-engine-config
+# (unlike most other modules) — it's per-instance state on the EC2 host.
+#
+# Edits to this .example file affect ONLY:
+#   1. New-environment bootstrap (copies this template to config.yaml), and
+#   2. Public-repo schema documentation for the public-site config surface.
+#
+# Edits here have ZERO effect on the live public site. To change a runtime
+# value, SSH to the dashboard host and edit ~/alpha-engine-dashboard/public/
+# config.yaml directly, then restart nous-ergon-public.service.
+# ─────────────────────────────────────────────────────────────────────────────
+
 s3:
   trades_bucket: alpha-engine-executor
   research_bucket: alpha-engine-research
