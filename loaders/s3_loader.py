@@ -638,6 +638,90 @@ def load_regime_substrate_history(n_weeks: int = 26) -> list[dict]:
 
 
 @st.cache_data(ttl=_ttl("research"))
+def load_regime_retrospective_eval_latest() -> dict | None:
+    """Load the most recent T1 retrospective HMM smoothing eval artifact.
+
+    Producer: ``alpha-engine-predictor-regime-retrospective-eval``
+    Lambda, runs weekly in the Saturday SF ``RegimeRetrospectiveEval``
+    state. Pairs each historical macro-agent regime call with the
+    HMM smoother's retrospective label (8-week lag) and scores with
+    an asymmetric loss (bear-miss weighted 2× per regime-v3-260514.md
+    §5.3.3).
+
+    Returns the assembled payload dict or ``None`` if the artifact is
+    unavailable (cold-start window — the Lambda is created but hasn't
+    written yet, OR fewer than lag_weeks of agent calls in the
+    signals/ archive). The dashboard's Regime page renders a graceful
+    "no T1 eval yet" warning under that path.
+    """
+    from alpha_engine_lib.eval_artifacts import load_latest_eval_artifact
+
+    return load_latest_eval_artifact(
+        get_s3_client(),
+        bucket=_research_bucket(),
+        prefix="regime/retrospective",
+    )
+
+
+@st.cache_data(ttl=_ttl("research"))
+def load_regime_stratified_sortino_latest() -> dict | None:
+    """Load the most recent T2 downstream-stratified Sortino eval artifact.
+
+    Producer: ``alpha-engine-backtester`` spot EC2, runs weekly during
+    the Saturday SF ``Backtester`` state via the new
+    ``regime_stratified_sortino_runner`` (wired into ``evaluate.py``).
+    Groups ``score_performance`` picks by ``market_regime`` and
+    computes Sortino + Sharpe + log-alpha + hit-rate per (regime,
+    horizon) stratum; surfaces the bull-bear Sortino spread as the
+    headline T2 metric.
+
+    Returns the assembled payload or ``None`` if the artifact is
+    unavailable. The Regime page handles None gracefully.
+    """
+    from alpha_engine_lib.eval_artifacts import load_latest_eval_artifact
+
+    return load_latest_eval_artifact(
+        get_s3_client(),
+        bucket=_research_bucket(),
+        prefix="regime/stratified_sortino",
+    )
+
+
+@st.cache_data(ttl=_ttl("research"))
+def load_regime_retrospective_eval_history(n_weeks: int = 26) -> list[dict]:
+    """List recent T1 retrospective eval artifacts, oldest → newest.
+
+    Used by the dashboard to render the rolling
+    ``asymmetric_weighted_agreement_rate`` timeseries.
+    """
+    from alpha_engine_lib.eval_artifacts import list_eval_artifacts
+
+    return list_eval_artifacts(
+        get_s3_client(),
+        bucket=_research_bucket(),
+        prefix="regime/retrospective",
+        n_recent=n_weeks,
+    )
+
+
+@st.cache_data(ttl=_ttl("research"))
+def load_regime_stratified_sortino_history(n_weeks: int = 26) -> list[dict]:
+    """List recent T2 stratified-Sortino eval artifacts, oldest → newest.
+
+    Used by the dashboard to render the rolling bull-bear Sortino spread
+    timeseries — the headline T2 metric per regime-v3-260514.md §5.3.3.
+    """
+    from alpha_engine_lib.eval_artifacts import list_eval_artifacts
+
+    return list_eval_artifacts(
+        get_s3_client(),
+        bucket=_research_bucket(),
+        prefix="regime/stratified_sortino",
+        n_recent=n_weeks,
+    )
+
+
+@st.cache_data(ttl=_ttl("research"))
 def load_research_params() -> dict | None:
     """Load `config/research_params.json` (CIO mode flag + reason).
 

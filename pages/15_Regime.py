@@ -39,6 +39,10 @@ import streamlit as st
 from components.header import render_footer, render_header
 from components.styles import inject_base_css, inject_docs_css
 from loaders.s3_loader import (
+    load_regime_retrospective_eval_history,
+    load_regime_retrospective_eval_latest,
+    load_regime_stratified_sortino_history,
+    load_regime_stratified_sortino_latest,
     load_regime_substrate_history,
     load_regime_substrate_latest,
 )
@@ -345,5 +349,256 @@ md_cols[0].caption(f"**HMM features:** `{', '.join(md.get('hmm_feature_columns')
 md_cols[1].caption(f"**Fit window:** {md.get('fit_window_start', '—')} → {md.get('fit_window_end', '—')}")
 md_cols[2].caption(f"**Written at:** {md.get('written_at', '—')}")
 st.caption(f"Schema version: `{latest.get('schema_version', '—')}` · Composite weights: `{md.get('composite_weights_version', '—')}`")
+
+st.divider()
+
+# ---------------------------------------------------------------------------
+# T1 — Retrospective HMM smoothing eval (regime-v3-260514 §5.3.3)
+# ---------------------------------------------------------------------------
+#
+# Pairs each weekly macro-agent regime call against the HMM smoother's
+# retrospective label (8-week lag — the smoother uses observations
+# through t+8 to refine the posterior at t). Scores with asymmetric
+# loss (bear-miss weighted 2× per the doc — calling bull/neutral when
+# truth was bear is structurally worse than the reverse). Headline:
+# 26-week rolling ``asymmetric_weighted_agreement_rate``.
+
+st.markdown("### T1 — Retrospective HMM smoothing eval")
+st.caption(
+    "Tier 1 of the regime-v3 three-tier eval framework. Compares the "
+    "macro economist's weekly regime call against the HMM smoother's "
+    "retrospective label (8-week lag for posterior refinement). "
+    "Asymmetric loss penalizes bear-misses 2× — calling bull/neutral "
+    "when truth was bear is worse than the reverse."
+)
+
+t1_latest = load_regime_retrospective_eval_latest()
+
+if t1_latest is None:
+    st.info(
+        "No T1 artifact at ``s3://alpha-engine-research/regime/retrospective/"
+        "latest.json`` yet. Expected during the ~8-week cold-start window "
+        "after the ``RegimeRetrospectiveEval`` Lambda first runs."
+    )
+else:
+    t1_score = t1_latest.get("score", {})
+
+    t1c1, t1c2, t1c3, t1c4 = st.columns(4)
+    asym_rate = t1_score.get("asymmetric_weighted_agreement_rate")
+    sym_rate = t1_score.get("symmetric_agreement_rate")
+    rolling = t1_score.get("rolling_window_score")
+    n_pairs = t1_score.get("n_pairings", 0)
+
+    t1c1.metric(
+        "Asymmetric agreement",
+        f"{asym_rate:.1%}" if asym_rate is not None else "—",
+        delta=f"symm: {sym_rate:.1%}" if sym_rate is not None else "—",
+        delta_color="off",
+    )
+    t1c2.metric(
+        f"Rolling {t1_score.get('rolling_window_weeks', 26)}w score",
+        f"{rolling:.1%}" if rolling is not None else "—",
+        delta=f"{t1_score.get('rolling_window_size', 0)} pairings in window",
+        delta_color="off",
+    )
+    t1c3.metric(
+        "Bear misses",
+        f"{t1_score.get('bear_miss_count', 0)}",
+        delta=f"weight = {t1_score.get('bear_miss_weight', 2.0)}×",
+        delta_color="off",
+    )
+    t1c4.metric(
+        "N pairings",
+        f"{n_pairs}",
+        delta=f"lag = {t1_latest.get('lag_weeks', 8)}w",
+        delta_color="off",
+    )
+
+    # Rolling-score timeseries from history
+    t1_history = load_regime_retrospective_eval_history(n_weeks=26)
+    if t1_history:
+        t1_rows = []
+        for entry in t1_history:
+            ts = pd.to_datetime(entry.get("trading_day"), errors="coerce")
+            sc = entry.get("score", {}) or {}
+            t1_rows.append({
+                "trading_day": ts,
+                "rolling_score": sc.get("rolling_window_score"),
+                "asymmetric_rate": sc.get("asymmetric_weighted_agreement_rate"),
+                "n_pairings": sc.get("n_pairings", 0),
+            })
+        t1_df = pd.DataFrame(t1_rows).dropna(subset=["trading_day"]).sort_values("trading_day")
+        if not t1_df.empty:
+            fig_t1 = go.Figure()
+            fig_t1.add_trace(go.Scatter(
+                x=t1_df["trading_day"],
+                y=t1_df["rolling_score"],
+                mode="lines+markers",
+                name="rolling 26w (asym-weighted)",
+                line=dict(color="#1f77b4", width=2),
+            ))
+            fig_t1.add_trace(go.Scatter(
+                x=t1_df["trading_day"],
+                y=t1_df["asymmetric_rate"],
+                mode="lines",
+                name="per-run (full window)",
+                line=dict(color="#aaaaaa", width=1, dash="dot"),
+            ))
+            fig_t1.add_hline(y=0.5, line_dash="solid", line_color="#cccccc",
+                             annotation_text="coin-flip baseline", annotation_position="right")
+            fig_t1.update_layout(
+                height=300, margin=dict(l=0, r=0, t=10, b=0),
+                yaxis=dict(range=[0, 1], tickformat=".0%", title="Agreement rate"),
+                xaxis_title="Trading day",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            )
+            st.plotly_chart(fig_t1, use_container_width=True)
+
+    # Confusion matrix (last run)
+    t1_confusion = t1_score.get("confusion_matrix") or {}
+    if t1_confusion:
+        st.caption("**Confusion matrix (most recent run)** — rows: agent call, columns: HMM retrospective label")
+        cm_rows = []
+        for agent_label, by_retro in t1_confusion.items():
+            row = {"agent_call": agent_label}
+            row.update({f"retro:{k}": v for k, v in (by_retro or {}).items()})
+            cm_rows.append(row)
+        if cm_rows:
+            st.dataframe(pd.DataFrame(cm_rows), hide_index=True, use_container_width=True)
+
+st.divider()
+
+# ---------------------------------------------------------------------------
+# T2 — Downstream-stratified Sortino (regime-v3-260514 §5.3.3)
+# ---------------------------------------------------------------------------
+#
+# Validates whether the regime call leads to better downstream picks.
+# Groups ``score_performance`` by ``market_regime`` (the agent's
+# contemporaneous call at scoring time), computes Sortino + Sharpe +
+# log-alpha + hit-rate per (regime, horizon) stratum. Headline:
+# bull-Sortino minus bear-Sortino at 10d horizon. Positive spread =
+# the regime call enabled better downside-risk-adjusted picks when
+# bull-regime was declared vs when bear-regime was declared.
+
+st.markdown("### T2 — Downstream-stratified Sortino")
+st.caption(
+    "Tier 2 of the regime-v3 three-tier eval framework. Groups picks "
+    "by ``market_regime`` and measures whether the regime call "
+    "translated to better downstream outcomes. Headline = "
+    "bull-Sortino minus bear-Sortino at 10d horizon; positive = "
+    "the regime label is signal-bearing for downstream pick quality."
+)
+
+t2_latest = load_regime_stratified_sortino_latest()
+
+if t2_latest is None:
+    st.info(
+        "No T2 artifact at ``s3://alpha-engine-research/regime/"
+        "stratified_sortino/latest.json`` yet. Expected after the first "
+        "Saturday Backtester run that exercises the new "
+        "``regime_stratified_sortino`` evaluate.py module."
+    )
+else:
+    spread10 = t2_latest.get("spread_10d", {}) or {}
+    spread30 = t2_latest.get("spread_30d", {}) or {}
+
+    t2c1, t2c2, t2c3, t2c4 = st.columns(4)
+    s10 = spread10.get("spread_bull_minus_bear_sortino")
+    s30 = spread30.get("spread_bull_minus_bear_sortino")
+    interp10 = spread10.get("interpretation", "—")
+    interp30 = spread30.get("interpretation", "—")
+
+    t2c1.metric(
+        "Spread 10d (bull − bear)",
+        f"{s10:+.2f}" if s10 is not None else "—",
+        delta=interp10,
+        delta_color="off",
+    )
+    t2c2.metric(
+        "Spread 30d (bull − bear)",
+        f"{s30:+.2f}" if s30 is not None else "—",
+        delta=interp30,
+        delta_color="off",
+    )
+    t2c3.metric(
+        "Bull Sortino (10d)",
+        f"{spread10.get('bull_sortino'):.2f}" if spread10.get("bull_sortino") is not None else "—",
+        delta=f"n = {spread10.get('bull_n_picks', 0)}",
+        delta_color="off",
+    )
+    t2c4.metric(
+        "Bear Sortino (10d)",
+        f"{spread10.get('bear_sortino'):.2f}" if spread10.get("bear_sortino") is not None else "—",
+        delta=f"n = {spread10.get('bear_n_picks', 0)}",
+        delta_color="off",
+    )
+
+    # Interpretation banner
+    if interp10 == "regime_signal_useful":
+        st.success(
+            f"**Regime signal is useful at 10d horizon.** Sortino spread "
+            f"{s10:+.2f} above the actionable threshold."
+        )
+    elif interp10 == "regime_signal_inverted":
+        st.warning(
+            f"**Regime signal inverted at 10d horizon.** Sortino spread "
+            f"{s10:+.2f} suggests bear-declared picks outperformed "
+            f"bull-declared — investigate before trusting the call."
+        )
+    elif interp10 == "regime_signal_neutral":
+        st.caption(
+            f"Regime signal neutral at 10d horizon (spread {s10:+.2f if s10 else 0.0} in the no-signal band)."
+        )
+    else:
+        st.caption(f"10d interpretation: {interp10}")
+
+    # Per-stratum table
+    strata = t2_latest.get("strata") or []
+    if strata:
+        strata_df = pd.DataFrame(strata)
+        # Show only Sortino + Sharpe + n + hit-rate columns (terse)
+        cols = [
+            "market_regime", "horizon_days", "n_picks",
+            "annualized_sortino", "annualized_sharpe_diagnostic",
+            "mean_log_alpha", "hit_rate",
+        ]
+        cols = [c for c in cols if c in strata_df.columns]
+        st.caption("**Per-stratum metrics**")
+        st.dataframe(strata_df[cols], hide_index=True, use_container_width=True)
+
+    # Rolling spread timeseries
+    t2_history = load_regime_stratified_sortino_history(n_weeks=26)
+    if t2_history:
+        t2_rows = []
+        for entry in t2_history:
+            ts = pd.to_datetime(entry.get("trading_day"), errors="coerce")
+            sp10 = (entry.get("spread_10d") or {}).get("spread_bull_minus_bear_sortino")
+            sp30 = (entry.get("spread_30d") or {}).get("spread_bull_minus_bear_sortino")
+            t2_rows.append({
+                "trading_day": ts,
+                "spread_10d": sp10,
+                "spread_30d": sp30,
+            })
+        t2_df = pd.DataFrame(t2_rows).dropna(subset=["trading_day"]).sort_values("trading_day")
+        if not t2_df.empty:
+            fig_t2 = go.Figure()
+            fig_t2.add_trace(go.Scatter(
+                x=t2_df["trading_day"], y=t2_df["spread_10d"],
+                mode="lines+markers", name="spread 10d",
+                line=dict(color="#1f77b4", width=2),
+            ))
+            fig_t2.add_trace(go.Scatter(
+                x=t2_df["trading_day"], y=t2_df["spread_30d"],
+                mode="lines+markers", name="spread 30d",
+                line=dict(color="#ff7f0e", width=2),
+            ))
+            fig_t2.add_hline(y=0.0, line_dash="solid", line_color="#cccccc")
+            fig_t2.update_layout(
+                height=300, margin=dict(l=0, r=0, t=10, b=0),
+                yaxis_title="Sortino spread (bull − bear)",
+                xaxis_title="Trading day",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            )
+            st.plotly_chart(fig_t2, use_container_width=True)
 
 render_footer()
