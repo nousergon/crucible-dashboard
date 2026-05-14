@@ -174,3 +174,142 @@ def get_predictor_outcomes(symbol: str | None = None) -> pd.DataFrame:
     return query_research_db(
         f"SELECT * FROM predictor_outcomes ORDER BY prediction_date DESC LIMIT {_MAX_QUERY_ROWS}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Focus list audit (scanner-placement arc, PR 7)
+# ---------------------------------------------------------------------------
+#
+# scanner_evaluations gained focus_* + agent_override columns in v17 schema
+# migration (alpha-engine-research #183). First audit data appears on the
+# Saturday SF run after that migration ran. All loaders below gracefully
+# return empty DataFrames when the columns are absent or no rows match.
+
+
+def get_focus_list_audit(
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> pd.DataFrame:
+    """Per-ticker focus_list audit rows from scanner_evaluations.
+
+    Returns the canonical audit columns: ticker, eval_date, sector,
+    focus_score, focus_stance, focus_team_id, focus_rank_in_team,
+    focus_rank_in_sector, focus_list_passed, agent_override,
+    quant_filter_pass. Optional date range filter on eval_date.
+
+    Empty DataFrame on any of: missing columns (pre-v17 DB), no rows,
+    SQL failure.
+    """
+    where = []
+    params: list = []
+    if start_date:
+        where.append("eval_date >= ?")
+        params.append(start_date)
+    if end_date:
+        where.append("eval_date <= ?")
+        params.append(end_date)
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+    sql = f"""
+        SELECT
+            ticker, eval_date, sector,
+            focus_score, focus_stance, focus_team_id,
+            focus_rank_in_team, focus_rank_in_sector,
+            focus_list_passed, agent_override,
+            quant_filter_pass
+        FROM scanner_evaluations
+        {where_sql}
+        ORDER BY eval_date DESC, focus_team_id, focus_rank_in_team
+        LIMIT {_MAX_QUERY_ROWS}
+    """
+    return query_research_db(sql, params=tuple(params) if params else None)
+
+
+def get_focus_list_weekly_summary() -> pd.DataFrame:
+    """Per-week per-team funnel cardinality + override-rate summary.
+
+    Aggregates scanner_evaluations to one row per (eval_date, focus_team_id):
+      - n_focus_list       — count of focus_list_passed=1
+      - n_picks            — count of quant_filter_pass=1 (agent picked)
+      - n_overrides        — count of agent_override=1
+      - precision          — focus_list_passed=1 AND quant_filter_pass=1
+                             / focus_list_passed=1  (was the focus list
+                             a good predictor of agent picks?)
+      - recall             — focus_list_passed=1 AND quant_filter_pass=1
+                             / quant_filter_pass=1  (did the focus list
+                             cover the agent's picks?)
+      - override_hit_rate  — agent_override=1 AND quant_filter_pass=1
+                             / agent_override=1  (when the agent reached
+                             outside the focus list, was it right?)
+
+    Empty DataFrame when the focus_list columns are absent or no rows have
+    focus_list_passed flags set yet (pre-Sat-5/17 SF).
+    """
+    sql = f"""
+        SELECT
+            eval_date,
+            focus_team_id,
+            SUM(CASE WHEN focus_list_passed = 1 THEN 1 ELSE 0 END) AS n_focus_list,
+            SUM(CASE WHEN quant_filter_pass = 1 THEN 1 ELSE 0 END) AS n_picks,
+            SUM(CASE WHEN agent_override = 1 THEN 1 ELSE 0 END) AS n_overrides,
+            SUM(CASE WHEN focus_list_passed = 1 AND quant_filter_pass = 1 THEN 1 ELSE 0 END) AS n_focus_and_picked,
+            SUM(CASE WHEN agent_override = 1 AND quant_filter_pass = 1 THEN 1 ELSE 0 END) AS n_override_and_picked
+        FROM scanner_evaluations
+        WHERE focus_team_id IS NOT NULL OR agent_override = 1
+        GROUP BY eval_date, focus_team_id
+        ORDER BY eval_date DESC, focus_team_id
+        LIMIT {_MAX_QUERY_ROWS}
+    """
+    df = query_research_db(sql)
+    if df.empty:
+        return df
+    # Derived rates — guard against zero denominators
+    df["precision"] = df.apply(
+        lambda r: (r["n_focus_and_picked"] / r["n_focus_list"])
+        if r["n_focus_list"] else None,
+        axis=1,
+    )
+    df["recall"] = df.apply(
+        lambda r: (r["n_focus_and_picked"] / r["n_picks"])
+        if r["n_picks"] else None,
+        axis=1,
+    )
+    df["override_hit_rate"] = df.apply(
+        lambda r: (r["n_override_and_picked"] / r["n_overrides"])
+        if r["n_overrides"] else None,
+        axis=1,
+    )
+    return df
+
+
+def get_focus_list_stance_mix(eval_date: str | None = None) -> pd.DataFrame:
+    """Per-team stance distribution for the focus list.
+
+    Returns rows of (focus_team_id, focus_stance, n) for the most recent
+    eval_date (or specified date). Surfaces regime/stance mismatches —
+    e.g. a BULL-regime run that surfaces mostly low_vol stances flags
+    blend-weight miscalibration.
+    """
+    if eval_date is None:
+        date_sql = (
+            "(SELECT MAX(eval_date) FROM scanner_evaluations "
+            "WHERE focus_list_passed = 1)"
+        )
+        sql = f"""
+            SELECT focus_team_id, focus_stance, COUNT(*) AS n
+            FROM scanner_evaluations
+            WHERE focus_list_passed = 1
+              AND eval_date = {date_sql}
+            GROUP BY focus_team_id, focus_stance
+            ORDER BY focus_team_id, n DESC
+        """
+        return query_research_db(sql)
+    return query_research_db(
+        """
+        SELECT focus_team_id, focus_stance, COUNT(*) AS n
+        FROM scanner_evaluations
+        WHERE focus_list_passed = 1 AND eval_date = ?
+        GROUP BY focus_team_id, focus_stance
+        ORDER BY focus_team_id, n DESC
+        """,
+        params=(eval_date,),
+    )
