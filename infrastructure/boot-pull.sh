@@ -141,11 +141,15 @@ if [ "$PULL_FAILURES" -gt 0 ]; then
     FD_VENV="/home/ec2-user/alpha-engine-dashboard/.venv/bin/python"
     if [ -x "$FD_VENV" ]; then
         "$FD_VENV" - <<PYEOF 2>> "$LOG" || true
+import os
 import sys
 sys.path.insert(0, "/home/ec2-user/alpha-engine-dashboard")
 try:
-    from ssm_secrets import load_secrets
-    load_secrets()
+    from alpha_engine_lib.secrets import get_secret
+    for _name in ("EMAIL_SENDER", "EMAIL_RECIPIENTS", "GMAIL_APP_PASSWORD", "FLOW_DOCTOR_GITHUB_TOKEN"):
+        _val = get_secret(_name, required=False)
+        if _val is not None and _name not in os.environ:
+            os.environ[_name] = _val
     import flow_doctor
     fd = flow_doctor.init(
         config_path="/home/ec2-user/alpha-engine-dashboard/flow-doctor.yaml",
