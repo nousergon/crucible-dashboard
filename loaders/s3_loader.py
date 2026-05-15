@@ -870,3 +870,100 @@ def load_order_book_summary(date_str: str) -> dict | None:
     Returns None if the file does not exist (backward compatible).
     """
     return download_s3_json(_research_bucket(), _order_book_key(date_str))
+
+
+@st.cache_data(ttl=_ttl("signals"))
+def load_intraday_heartbeat() -> dict | None:
+    """Daemon liveness/surveillance heartbeat (intraday/heartbeat.json).
+
+    Daemon-published snapshot the intraday alerts Lambda consumes. The
+    alerts process itself persists NO per-run artifact (Telegram-only
+    surveillance) — this is the closest persisted surveillance state.
+    """
+    return _fetch_s3_json(_research_bucket(), "intraday/heartbeat.json")
+
+
+@st.cache_data(ttl=_ttl("signals"))
+def load_intraday_latest_prices() -> dict | None:
+    """Daemon-published latest IB snapshot prices (intraday/latest_prices.json)."""
+    return _fetch_s3_json(_research_bucket(), "intraday/latest_prices.json")
+
+
+@st.cache_data(ttl=_ttl("signals"))
+def list_dated_artifact_keys(
+    prefix: str,
+    *,
+    basename: str | None = None,
+    suffix: str | None = None,
+    n_recent: int = 14,
+) -> list[tuple[str, str]]:
+    """List dated S3 keys under *prefix*, newest → oldest.
+
+    Generic lister behind the per-process artifact-archive pages
+    (ROADMAP Observability Item 5). Handles both layout families:
+
+    - ``{prefix}/{YYYY-MM-DD}/{basename}`` (research ``consolidated/``,
+      backtester ``backtest/``)
+    - ``{prefix}/...{YYYY-MM-DD}.json`` (predictor ``predictions/``,
+      ``metrics/training_summary_*``)
+
+    A key qualifies only if it contains a ``YYYY-MM-DD`` token AND
+    (when given) ends with ``basename`` / ``suffix``. The date-token
+    requirement naturally excludes the non-dated ``latest.json`` /
+    ``training_summary_latest.json`` sidecars.
+
+    Returns ``[(date_str, key), ...]`` capped to the ``n_recent`` most
+    recent (one artifact/day cadence assumed; weekly producers yield
+    fewer). Empty list on any failure / pre-deploy — pages render the
+    graceful empty notice. Single research bucket.
+    """
+    bucket = _research_bucket()
+    try:
+        client = get_s3_client()
+        paginator = client.get_paginator("list_objects_v2")
+        found: dict[str, str] = {}  # date_str → key (last wins)
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+            for obj in page.get("Contents", []):
+                key = obj.get("Key", "")
+                if basename is not None and not key.endswith(basename):
+                    continue
+                if suffix is not None and not key.endswith(suffix):
+                    continue
+                m = ISO_DATE_PATTERN.search(key)
+                if not m:
+                    continue
+                found[m.group(0)] = key
+        ordered = sorted(found.items(), key=lambda kv: kv[0], reverse=True)
+        return ordered[:n_recent]
+    except Exception as e:
+        logger.error(
+            "Failed to list dated artifacts %s/%s: %s", bucket, prefix, e
+        )
+        _record_s3_error(bucket, prefix, type(e).__name__, str(e))
+        return []
+
+
+@st.cache_data(ttl=_ttl("signals"))
+def load_order_book_rationale_history(n_recent: int = 14) -> list[dict]:
+    """List recent per-ticker order-book rationale artifacts, oldest → newest.
+
+    Producer: alpha-engine executor ``order_book_rationale`` write at
+    morning-planner finalize (alpha-engine #189). Each artifact answers
+    "why is ticker X in state S today" for the whole considered
+    universe (approved entry / urgent exit / reduce / held /
+    risk-blocked / predictor-vetoed) in canonical
+    ``alpha_engine_lib.eval_artifacts`` shape.
+
+    Delegates to ``list_eval_artifacts`` for canonical YYMMDDHHMM
+    chronological sort + n_recent capping + partial-progress on body
+    fetch failures. Empty list pre-deploy (until the executor next runs
+    post-merge) — the page renders a graceful "no artifacts yet" notice.
+    """
+    from alpha_engine_lib.eval_artifacts import list_eval_artifacts
+
+    return list_eval_artifacts(
+        get_s3_client(),
+        bucket=_research_bucket(),
+        prefix="trades/order_book_rationale",
+        n_recent=n_recent,
+    )
