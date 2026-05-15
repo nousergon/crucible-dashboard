@@ -870,3 +870,29 @@ def load_order_book_summary(date_str: str) -> dict | None:
     Returns None if the file does not exist (backward compatible).
     """
     return download_s3_json(_research_bucket(), _order_book_key(date_str))
+
+
+@st.cache_data(ttl=_ttl("signals"))
+def load_order_book_rationale_history(n_recent: int = 14) -> list[dict]:
+    """List recent per-ticker order-book rationale artifacts, oldest → newest.
+
+    Producer: alpha-engine executor ``order_book_rationale`` write at
+    morning-planner finalize (alpha-engine #189). Each artifact answers
+    "why is ticker X in state S today" for the whole considered
+    universe (approved entry / urgent exit / reduce / held /
+    risk-blocked / predictor-vetoed) in canonical
+    ``alpha_engine_lib.eval_artifacts`` shape.
+
+    Delegates to ``list_eval_artifacts`` for canonical YYMMDDHHMM
+    chronological sort + n_recent capping + partial-progress on body
+    fetch failures. Empty list pre-deploy (until the executor next runs
+    post-merge) — the page renders a graceful "no artifacts yet" notice.
+    """
+    from alpha_engine_lib.eval_artifacts import list_eval_artifacts
+
+    return list_eval_artifacts(
+        get_s3_client(),
+        bucket=_research_bucket(),
+        prefix="trades/order_book_rationale",
+        n_recent=n_recent,
+    )
