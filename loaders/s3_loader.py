@@ -616,6 +616,25 @@ def load_regime_substrate_latest() -> dict | None:
 
 
 @st.cache_data(ttl=_ttl("research"))
+def load_fast_signal_latest() -> dict | None:
+    """Load the most recent daily fast-signal artifact (Stage F2).
+
+    Producer: alpha-engine-predictor's ``regime_fast_signal`` inference
+    stage (daily, regime-fast-signal-260515.md) — the online BOCPD
+    circuit-breaker. Carries ``forced_bear`` + ``change_confidence`` +
+    ``intensity_z`` + ``warmup`` + ``consecutive_change_days``.
+    Resolves ``regime/fast_signal/latest.json`` via the canonical
+    sidecar helper (None on any failure → page renders "no fast signal
+    yet"). Distinct cadence from the weekly substrate above.
+    """
+    from alpha_engine_lib.eval_artifacts import load_latest_eval_artifact
+
+    return load_latest_eval_artifact(
+        get_s3_client(), bucket=_research_bucket(), prefix="regime/fast_signal",
+    )
+
+
+@st.cache_data(ttl=_ttl("research"))
 def load_regime_substrate_history(n_weeks: int = 26) -> list[dict]:
     """List recent regime substrate artifacts, oldest → newest.
 

@@ -134,3 +134,34 @@ class TestLoadRegimeSubstrateHistory:
                 with patch.object(ea, "list_eval_artifacts", return_value=[]):
                     result = loader.load_regime_substrate_history(n_weeks=26)
         assert result == []
+
+
+class TestLoadFastSignalLatest:
+    """Stage F2 daily fast-signal loader — same lib-delegation wiring,
+    distinct ``regime/fast_signal`` prefix + cadence."""
+
+    _FAST = {
+        "trading_day": "2026-05-15", "run_id": "2605150615",
+        "forced_bear": True, "warmup": False, "change_confidence": 0.71,
+        "intensity_z": -1.8,
+    }
+
+    def test_delegates_with_fast_signal_prefix(self, loader):
+        import alpha_engine_lib.eval_artifacts as ea
+        fake_client = MagicMock()
+        with patch.object(loader, "get_s3_client", return_value=fake_client):
+            with patch.object(loader, "_research_bucket", return_value="alpha-engine-research"):
+                with patch.object(ea, "load_latest_eval_artifact", return_value=self._FAST) as mock_lib:
+                    result = loader.load_fast_signal_latest()
+        assert result == self._FAST
+        mock_lib.assert_called_once_with(
+            fake_client, bucket="alpha-engine-research", prefix="regime/fast_signal",
+        )
+
+    def test_propagates_none_from_lib(self, loader):
+        import alpha_engine_lib.eval_artifacts as ea
+        with patch.object(loader, "get_s3_client", return_value=MagicMock()):
+            with patch.object(loader, "_research_bucket", return_value="b"):
+                with patch.object(ea, "load_latest_eval_artifact", return_value=None):
+                    result = loader.load_fast_signal_latest()
+        assert result is None

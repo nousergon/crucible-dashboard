@@ -39,6 +39,7 @@ import streamlit as st
 from components.header import render_footer, render_header
 from components.styles import inject_base_css, inject_docs_css
 from loaders.s3_loader import (
+    load_fast_signal_latest,
     load_regime_retrospective_eval_history,
     load_regime_retrospective_eval_latest,
     load_regime_stratified_sortino_history,
@@ -136,6 +137,88 @@ st.caption(
     f"argmax = **{hmm.get('argmax', '—')}**  ·  "
     f"run_id = `{latest.get('run_id', '—')}`"
 )
+
+st.divider()
+
+# ---------------------------------------------------------------------------
+# Fast signal (daily) — Stage F2 fast-vs-slow override observability
+# ---------------------------------------------------------------------------
+
+st.markdown("### Fast signal (daily) — forced-bear circuit-breaker")
+st.caption(
+    "Daily online BOCPD circuit-breaker (regime-fast-signal-260515.md), "
+    "produced by the predictor's ``regime_fast_signal`` inference stage. "
+    "Distinct cadence from the weekly substrate above. Observe-only "
+    "until ``regime_forced_bear_enabled`` is flipped; this panel is the "
+    "F2 parallel-observe surface — watch the fast-vs-slow disagreement "
+    "before enabling the executor/veto override."
+)
+
+fast = load_fast_signal_latest()
+if fast is None:
+    st.info(
+        "No fast-signal artifact at ``s3://alpha-engine-research/regime/"
+        "fast_signal/latest.json`` yet — expected until the first daily "
+        "``regime_fast_signal`` stage runs post-deploy (the detector also "
+        "warms up over its first ~2 trading weeks)."
+    )
+else:
+    forced = bool(fast.get("forced_bear", False))
+    warmup = bool(fast.get("warmup", False))
+    hmm_argmax = str(hmm.get("argmax", "")).lower()
+    # Fast-vs-slow disagreement: the fast leg asserts bear while the
+    # weekly HMM (slow leg) still reads non-bear. EXPECTED + desirable
+    # when it happens (the fast leg's job is to fire ahead of the slow
+    # leg) — but a persistent/frequent disagreement is the signal to
+    # scrutinize before enabling the override.
+    disagree = forced and hmm_argmax not in ("bear", "")
+
+    f1, f2, f3, f4 = st.columns(4)
+    f1.metric(
+        "Forced bear",
+        ("⚠ LATCHED" if forced else "clear") + (" (warmup)" if warmup else ""),
+        delta=f"since {fast.get('forced_bear_since') or '—'}",
+        delta_color="off",
+    )
+    f2.metric(
+        "Change confidence",
+        f"{fast.get('change_confidence', 0.0):.2f}",
+        delta=f"consec break {fast.get('consecutive_change_days', 0)}d",
+        delta_color="off",
+    )
+    f3.metric(
+        "Fast intensity_z",
+        f"{fast.get('intensity_z', 0.0):+.2f}",
+        delta=f"hazard {fast.get('hazard', 0.0):.4f}",
+        delta_color="off",
+    )
+    f4.metric(
+        "Fast vs slow (HMM)",
+        "⚠ DISAGREE" if disagree else "aligned",
+        delta=f"fast={'bear' if forced else 'clear'} · slow={hmm_argmax or '—'}",
+        delta_color="off",
+    )
+
+    if disagree:
+        st.warning(
+            f"**Fast-vs-slow disagreement active:** the daily fast signal "
+            f"has latched `forced_bear` while the weekly HMM still reads "
+            f"`{hmm_argmax or '—'}`. By design the fast leg fires *ahead* "
+            f"of the slow leg — but verify this is a genuine break (not "
+            f"whipsaw) before `regime_forced_bear_enabled` is flipped."
+        )
+    elif forced and warmup:
+        st.info(
+            "Fast signal indicates a break but the detector is still in "
+            "its warmup window — `forced_bear` is suppressed by the "
+            "producer and would not act even with the flag on."
+        )
+    st.caption(
+        f"run_id = `{fast.get('run_id', '—')}`  ·  "
+        f"trading_day = **{fast.get('trading_day', '—')}**  ·  "
+        f"observed = {fast.get('observed', '—')}  ·  "
+        f"cold_start = {fast.get('cold_start', '—')}"
+    )
 
 st.divider()
 
