@@ -205,7 +205,9 @@ with st.spinner("Loading data counts..."):
     n_predictions_dates = len(list_s3_prefixes(_research_bucket(), "predictor/predictions/"))
     # staging/ prefix per 2026-04-29 migration (alpha-engine-data PR #112)
     n_daily_closes = _count_s3_objects(_research_bucket(), "staging/daily_closes/")
-    n_price_cache = _count_s3_objects(_research_bucket(), "predictor/price_cache_slim/")
+    # Wave-4: predictor/price_cache_slim/ retired — ArcticDB universe lib is
+    # canonical (its freshness is monitored upstream in alpha-engine-data's
+    # preflight, which runs before consumers in every Step Function).
 
 n_trades = len(trades_df) if trades_df is not None else 0
 n_eod = len(eod_df) if eod_df is not None else 0
@@ -224,7 +226,6 @@ volume_data = {
         "Signal Dates (S3)",
         "Prediction Dates (S3)",
         "Daily Closes (S3)",
-        "Price Cache Slim (tickers)",
         "Universe Returns (eval)",
         "Scanner Evaluations (eval)",
         "Team Candidates (eval)",
@@ -244,7 +245,6 @@ volume_data = {
         n_signals_dates,
         n_predictions_dates,
         n_daily_closes,
-        n_price_cache,
         table_counts.get("universe_returns", "—"),
         table_counts.get("scanner_evaluations", "—"),
         table_counts.get("team_candidates", "—"),

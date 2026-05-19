@@ -104,7 +104,10 @@ class TestCheckAll:
         assert "features" in check_names
         assert "fundamentals" in check_names
         assert "population" in check_names
-        assert "price_cache_slim" in check_names
+        # price_cache_slim check RETIRED (Wave-4): the slim tier is being
+        # deleted; ArcticDB-universe freshness is gated upstream in
+        # alpha-engine-data's preflight. Guard against accidental reinstate.
+        assert "price_cache_slim" not in check_names
         assert "daily_closes" in check_names
 
         # Module health markers

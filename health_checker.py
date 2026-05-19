@@ -51,7 +51,8 @@ THRESHOLDS = {
     "predictions": 2,       # Predictor runs daily Mon-Fri
     "features": 2,          # Feature store runs daily Mon-Fri
     "fundamentals": 100,    # FMP quarterly, updated weekly in DataPhase1
-    "price_cache_slim": 8,  # Slim cache rebuilt weekly Saturday
+    # price_cache_slim retired (Wave-4): ArcticDB universe lib is canonical;
+    # its freshness is monitored upstream in alpha-engine-data's preflight.
     "daily_closes": 2,      # Daily Mon-Fri
     "population": 8,        # Updated weekly by Research
 }
@@ -162,16 +163,12 @@ def check_all(bucket: str = DEFAULT_BUCKET) -> list[dict]:
         "status": "ok" if age is not None and age <= threshold else "stale" if age is not None else "missing",
     })
 
-    # 6. Price cache slim
-    latest_date, age = _find_latest_prefix(s3, bucket, "predictor/price_cache_slim/")
-    threshold = THRESHOLDS["price_cache_slim"]
-    results.append({
-        "check": "price_cache_slim",
-        "last_updated": latest_date,
-        "age_days": age,
-        "threshold_days": threshold,
-        "status": "ok" if age is not None and age <= threshold else "stale" if age is not None else "missing",
-    })
+    # 6. price_cache_slim check RETIRED (Wave-4 predictor/price_cache_slim
+    # deletion). The slim tier is being deleted; the ArcticDB universe lib
+    # that replaces it has its freshness gated upstream in
+    # alpha-engine-data's preflight (runs before consumers in every Step
+    # Function), so a dashboard-side slim/universe freshness check would
+    # only duplicate that gate. No repoint — deliberate removal.
 
     # 7. Daily closes — staging/ prefix per 2026-04-29 migration
     # (alpha-engine-data PR #112). The parquet is intermediate state with
