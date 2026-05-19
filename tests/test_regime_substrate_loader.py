@@ -165,3 +165,59 @@ class TestLoadFastSignalLatest:
                 with patch.object(ea, "load_latest_eval_artifact", return_value=None):
                     result = loader.load_fast_signal_latest()
         assert result is None
+
+
+class TestLoadDrawdownLeg:
+    """3rd ensemble leg daily loaders — same lib-delegation wiring,
+    distinct ``regime/drawdown`` prefix."""
+
+    _DD = {
+        "trading_day": "2026-05-19", "run_id": "2605190615",
+        "spy": {"tier": "caution", "drawdown": -0.072, "peak": 600.0},
+        "excess": {"available": False, "tier": "risk_on"},
+        "effective_regime": {"effective_regime": "caution",
+                             "drivers": {"drawdown_spy": "caution"}},
+        "observed": True, "cold_start": False,
+    }
+
+    def test_latest_delegates_with_drawdown_prefix(self, loader):
+        import alpha_engine_lib.eval_artifacts as ea
+        fake_client = MagicMock()
+        with patch.object(loader, "get_s3_client", return_value=fake_client):
+            with patch.object(loader, "_research_bucket", return_value="alpha-engine-research"):
+                with patch.object(ea, "load_latest_eval_artifact", return_value=self._DD) as mock_lib:
+                    result = loader.load_drawdown_leg_latest()
+        assert result == self._DD
+        mock_lib.assert_called_once_with(
+            fake_client, bucket="alpha-engine-research", prefix="regime/drawdown",
+        )
+
+    def test_latest_propagates_none_from_lib(self, loader):
+        import alpha_engine_lib.eval_artifacts as ea
+        with patch.object(loader, "get_s3_client", return_value=MagicMock()):
+            with patch.object(loader, "_research_bucket", return_value="b"):
+                with patch.object(ea, "load_latest_eval_artifact", return_value=None):
+                    result = loader.load_drawdown_leg_latest()
+        assert result is None
+
+    def test_history_delegates_with_n_recent_capped(self, loader):
+        import alpha_engine_lib.eval_artifacts as ea
+        fake_client = MagicMock()
+        sentinel = [self._DD, self._DD]
+        with patch.object(loader, "get_s3_client", return_value=fake_client):
+            with patch.object(loader, "_research_bucket", return_value="alpha-engine-research"):
+                with patch.object(ea, "list_eval_artifacts", return_value=sentinel) as mock_lib:
+                    result = loader.load_drawdown_leg_history(n_days=7)
+        assert result == sentinel
+        mock_lib.assert_called_once_with(
+            fake_client, bucket="alpha-engine-research",
+            prefix="regime/drawdown", n_recent=7,
+        )
+
+    def test_history_default_n_days_is_14(self, loader):
+        import alpha_engine_lib.eval_artifacts as ea
+        with patch.object(loader, "get_s3_client", return_value=MagicMock()):
+            with patch.object(loader, "_research_bucket", return_value="b"):
+                with patch.object(ea, "list_eval_artifacts", return_value=[]) as mock_lib:
+                    loader.load_drawdown_leg_history()
+        assert mock_lib.call_args.kwargs["n_recent"] == 14

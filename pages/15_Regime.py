@@ -39,6 +39,8 @@ import streamlit as st
 from components.header import render_footer, render_header
 from components.styles import inject_base_css, inject_docs_css
 from loaders.s3_loader import (
+    load_drawdown_leg_history,
+    load_drawdown_leg_latest,
     load_fast_signal_latest,
     load_regime_retrospective_eval_history,
     load_regime_retrospective_eval_latest,
@@ -219,6 +221,154 @@ else:
         f"observed = {fast.get('observed', '—')}  ·  "
         f"cold_start = {fast.get('cold_start', '—')}"
     )
+
+st.divider()
+
+# ---------------------------------------------------------------------------
+# Drawdown de-risk leg (daily) — 3rd ensemble leg, parallel-observe
+# ---------------------------------------------------------------------------
+
+st.markdown("### Drawdown de-risk leg (daily) — observe mode")
+st.caption(
+    "Deterministic pure-level hysteresis de-risk leg "
+    "(regime-drawdown-hysteresis-260518.md) — the 3rd ensemble leg, "
+    "produced daily by the predictor's ``regime_fast_signal`` stage "
+    "``_advance_drawdown``. SPY market drawdown + book-vs-market excess "
+    "compose with the HMM + Stage-F into a most-protective "
+    "``effective_regime``. Observe-only until ``drawdown_regime_enabled`` "
+    "is flipped — this panel is the parallel-observe counterfactual "
+    "(would-be effective regime vs the drawdown-OFF baseline)."
+)
+
+dd = load_drawdown_leg_latest()
+if dd is None:
+    st.info(
+        "No drawdown-leg artifact at ``s3://alpha-engine-research/regime/"
+        "drawdown/latest.json`` yet — expected until the first daily "
+        "``_advance_drawdown`` runs post-deploy."
+    )
+else:
+    spy_leg = dd.get("spy", {}) or {}
+    excess_leg = dd.get("excess", {}) or {}
+    eff = dd.get("effective_regime", {}) or {}
+    composed = str(eff.get("effective_regime", "—"))
+    drivers = eff.get("drivers", {}) or {}
+
+    # Drawdown-OFF baseline = most-protective over the NON-drawdown
+    # drivers only (HMM + Stage-F forced_bear). The counterfactual delta
+    # is composed-vs-baseline: what the discrete gates WOULD see if the
+    # flag were on, vs what acts today (flag default-off).
+    _ORDER = {"bull": 0, "neutral": 1, "caution": 2, "bear": 3}
+    baseline_drivers = [
+        drivers.get("hmm"), drivers.get("forced_bear"),
+    ]
+    present = [d for d in baseline_drivers if d]
+    baseline = (
+        max(present, key=lambda d: _ORDER.get(d, 1)) if present else "neutral"
+    )
+    would_change = composed != baseline
+
+    spy_dd = spy_leg.get("drawdown")
+    spy_dd_str = f"{-spy_dd * 100:.1f}%" if isinstance(spy_dd, (int, float)) else "—"
+    excess_avail = bool(excess_leg.get("available"))
+    excess_depth = excess_leg.get("excess_depth")
+    excess_str = (
+        f"{excess_depth * 100:.1f}pp"
+        if excess_avail and isinstance(excess_depth, (int, float))
+        else ("n/a" if not excess_avail else "—")
+    )
+
+    d1, d2, d3, d4 = st.columns(4)
+    d1.metric(
+        "SPY drawdown",
+        spy_dd_str,
+        delta=f"tier {spy_leg.get('tier', '—')}",
+        delta_color="off",
+    )
+    d2.metric(
+        "Book-vs-market excess",
+        excess_str,
+        delta=(
+            f"tier {excess_leg.get('tier', '—')}" if excess_avail
+            else "NAV unavailable — SPY leg only"
+        ),
+        delta_color="off",
+    )
+    d3.metric(
+        "Composed effective",
+        composed.upper(),
+        delta=f"baseline (dd OFF) = {baseline}",
+        delta_color="off",
+    )
+    d4.metric(
+        "Counterfactual",
+        "⚠ WOULD CHANGE" if would_change else "no delta",
+        delta=f"{baseline} → {composed}" if would_change else "aligned",
+        delta_color="off",
+    )
+
+    if would_change:
+        st.warning(
+            f"**Parallel-observe delta active:** with `drawdown_regime_enabled` "
+            f"the discrete gates would see **{composed}** vs the current "
+            f"drawdown-OFF baseline **{baseline}** — driven by "
+            f"{', '.join(f'`{k}`={v}' for k, v in drivers.items() if v) or 'no escalating leg'}. "
+            f"This is observed only; nothing acts on it until the flag is "
+            f"flipped (gated on the skilled-risk counterfactual clearing)."
+        )
+    if excess_leg and not excess_avail:
+        st.info(
+            "Book-vs-market excess leg is **unavailable** (paper NAV "
+            "short/gappy or not wired) — the SPY leg still acts; the "
+            "excess leg contributes nothing to the composition."
+        )
+    st.caption(
+        f"run_id = `{dd.get('run_id', '—')}`  ·  "
+        f"trading_day = **{dd.get('trading_day', '—')}**  ·  "
+        f"observed = {dd.get('observed', '—')}  ·  "
+        f"cold_start = {dd.get('cold_start', '—')}"
+    )
+
+    # 2-week parallel-observe history.
+    hist = load_drawdown_leg_history(n_days=14)
+    if hist and len(hist) > 1:
+        rows = []
+        for a in hist:
+            a_spy = a.get("spy", {}) or {}
+            a_ex = a.get("excess", {}) or {}
+            a_eff = (a.get("effective_regime", {}) or {})
+            a_dd = a_spy.get("drawdown")
+            a_drv = a_eff.get("drivers", {}) or {}
+            a_present = [
+                a_drv.get("hmm"), a_drv.get("forced_bear"),
+            ]
+            a_present = [d for d in a_present if d]
+            a_base = (
+                max(a_present, key=lambda d: _ORDER.get(d, 1))
+                if a_present else "neutral"
+            )
+            a_composed = str(a_eff.get("effective_regime", "—"))
+            rows.append({
+                "Date": a.get("trading_day") or a.get("run_id", "—"),
+                "SPY DD": (
+                    f"{-a_dd * 100:.1f}%"
+                    if isinstance(a_dd, (int, float)) else "—"
+                ),
+                "SPY tier": a_spy.get("tier", "—"),
+                "Excess": (
+                    f"{(a_ex.get('excess_depth') or 0) * 100:.1f}pp"
+                    if a_ex.get("available") else "n/a"
+                ),
+                "Effective": a_composed,
+                "Baseline (dd OFF)": a_base,
+                "Δ": "yes" if a_composed != a_base else "—",
+            })
+        st.markdown("**2-week parallel-observe history (oldest → newest):**")
+        st.dataframe(rows, use_container_width=True, hide_index=True)
+    elif hist:
+        st.caption(
+            "_Single drawdown-leg artifact only — no 2-week history yet._"
+        )
 
 st.divider()
 

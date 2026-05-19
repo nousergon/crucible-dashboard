@@ -635,6 +635,47 @@ def load_fast_signal_latest() -> dict | None:
 
 
 @st.cache_data(ttl=_ttl("research"))
+def load_drawdown_leg_latest() -> dict | None:
+    """Load the most recent daily drawdown-leg artifact (3rd ensemble leg).
+
+    Producer: alpha-engine-predictor's ``regime_fast_signal`` inference
+    stage ``_advance_drawdown`` (daily, regime-drawdown-hysteresis-
+    260518.md) — the deterministic pure-level hysteresis de-risk leg.
+    Carries ``spy`` + ``excess`` sub-legs + the composed
+    ``effective_regime`` (most-protective over the ensemble) +
+    ``observed``/``cold_start``. Resolves ``regime/drawdown/latest.json``
+    via the canonical sidecar helper (None on any failure → page
+    renders "no drawdown leg yet"). Observe-mode only — no consumer
+    acts on it until ``drawdown_regime_enabled`` is flipped.
+    """
+    from alpha_engine_lib.eval_artifacts import load_latest_eval_artifact
+
+    return load_latest_eval_artifact(
+        get_s3_client(), bucket=_research_bucket(), prefix="regime/drawdown",
+    )
+
+
+@st.cache_data(ttl=_ttl("research"))
+def load_drawdown_leg_history(n_days: int = 14) -> list[dict]:
+    """List recent daily drawdown-leg artifacts, oldest → newest.
+
+    Used by the regime page's drawdown observe panel to render the
+    2-week parallel-observe counterfactual history. Delegates to
+    ``alpha_engine_lib.eval_artifacts.list_eval_artifacts`` (canonical
+    YYMMDDHHMM sort + n_recent cap + skip-non-conforming + partial
+    progress on body-fetch failure).
+    """
+    from alpha_engine_lib.eval_artifacts import list_eval_artifacts
+
+    return list_eval_artifacts(
+        get_s3_client(),
+        bucket=_research_bucket(),
+        prefix="regime/drawdown",
+        n_recent=n_days,
+    )
+
+
+@st.cache_data(ttl=_ttl("research"))
 def load_regime_substrate_history(n_weeks: int = 26) -> list[dict]:
     """List recent regime substrate artifacts, oldest → newest.
 
