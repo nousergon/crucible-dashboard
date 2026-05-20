@@ -36,14 +36,17 @@ st.set_page_config(
 st.divider()
 
 # State → display color (mirrors the executor terminal-state vocab).
+# Held uses a saturated teal — operators must be able to spot
+# currently-held positions at a glance, distinct from the muted
+# no_action default.
 _STATE_COLOR = {
     "approved_entry": "#1b5e20",      # green — entering
     "urgent_exit": "#b71c1c",         # red — exiting
     "reduce": "#e65100",              # orange — trimming
     "predictor_vetoed": "#4a148c",    # purple — ML veto
     "risk_blocked": "#880e4f",        # magenta — hard risk gate
-    "held": "#37474f",                # slate — no change
-    "no_action": "#263238",           # dark — considered, untouched
+    "held": "#004d40",                # teal — currently held in portfolio
+    "no_action": "#1e1e1e",           # neutral — eligible, not selected
 }
 
 _STATE_LABEL = {
@@ -87,17 +90,25 @@ def _render_rationale(payload: dict) -> None:
         return
 
     summary = payload.get("summary", {})
-    meta_cols = st.columns(4)
+    # Currently-held count is the truth column the user asks for first.
+    # Sourced from the per-record `held` boolean (portfolio truth via
+    # current_positions, alpha-engine #201). Falls back to the
+    # n_held summary key for pre-#201 artifacts.
+    n_held_now = sum(1 for r in payload["tickers"] if r.get("held"))
+    if n_held_now == 0:
+        n_held_now = summary.get("n_held", 0)
+    meta_cols = st.columns(5)
     meta_cols[0].metric("Considered", summary.get("n_considered", 0))
-    meta_cols[1].metric(
+    meta_cols[1].metric("Currently held", n_held_now)
+    meta_cols[2].metric(
         "Entries",
         summary.get("n_approved_entry", 0),
     )
-    meta_cols[2].metric(
+    meta_cols[3].metric(
         "Exits / reduces",
         summary.get("n_urgent_exit", 0) + summary.get("n_reduce", 0),
     )
-    meta_cols[3].metric(
+    meta_cols[4].metric(
         "Blocked / vetoed",
         summary.get("n_risk_blocked", 0) + summary.get("n_predictor_vetoed", 0),
     )
@@ -112,10 +123,16 @@ def _render_rationale(payload: dict) -> None:
     for r in payload["tickers"]:
         research = r.get("research") or {}
         pred = r.get("predictor") or {}
+        opt = r.get("optimizer") or {}
+        cur_w = opt.get("current_weight")
+        tgt_w = opt.get("target_weight")
         rows.append({
             "Ticker": r.get("ticker"),
+            "Held": "✓" if r.get("held") else "",
             "State": _STATE_LABEL.get(r.get("terminal_state"), r.get("terminal_state")),
             "_state_raw": r.get("terminal_state"),
+            "Cur wt": cur_w * 100 if cur_w is not None else None,
+            "Tgt wt": tgt_w * 100 if tgt_w is not None else None,
             "Research": research.get("signal"),
             "Score": research.get("score"),
             "Conviction": research.get("conviction"),
@@ -130,11 +147,13 @@ def _render_rationale(payload: dict) -> None:
 
     def _row_color(display_row):
         state = df.at[display_row.name, "_state_raw"]
-        color = _STATE_COLOR.get(state, "#263238")
+        color = _STATE_COLOR.get(state, "#1e1e1e")
         return [f"background-color: {color}; color: #fff"] * len(display_row)
 
     styled = display_df.style.apply(_row_color, axis=1).format(
-        {"Score": "{:.1f}", "Conf": "{:.2f}"}, na_rep="—"
+        {"Score": "{:.1f}", "Conf": "{:.2f}",
+         "Cur wt": "{:.2f}%", "Tgt wt": "{:.2f}%"},
+        na_rep="—",
     )
     st.dataframe(styled, use_container_width=True, hide_index=True)
 
@@ -159,8 +178,12 @@ def _label(payload: dict) -> str:
 
 def _summary_caption(payload: dict) -> str:
     s = payload.get("summary", {})
+    n_held = sum(1 for r in payload.get("tickers", []) if r.get("held"))
+    if n_held == 0:
+        n_held = s.get("n_held", 0)
     return (
         f"{s.get('n_considered', 0)} considered · "
+        f"{n_held} held · "
         f"{s.get('n_approved_entry', 0)} entries · "
         f"{s.get('n_urgent_exit', 0) + s.get('n_reduce', 0)} exits/reduces · "
         f"{s.get('n_risk_blocked', 0) + s.get('n_predictor_vetoed', 0)} blocked/vetoed"
