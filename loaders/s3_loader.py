@@ -1008,3 +1008,32 @@ def load_order_book_rationale_history(n_recent: int = 14) -> list[dict]:
         prefix="trades/order_book_rationale",
         n_recent=n_recent,
     )
+
+
+@st.cache_data(ttl=_ttl("research"))
+def load_llm_cost_parquets(n_recent: int = 12) -> pd.DataFrame:
+    """Return a concatenated DataFrame of per-call LLM cost rows from the
+    `decision_artifacts/_cost/{date}/cost.parquet` archive. Loads up to the
+    *n_recent* most recent date partitions; empty DataFrame if the archive
+    is empty or every parquet fails to parse.
+    """
+    bucket = _research_bucket()
+    dates = list_s3_prefixes(bucket, "decision_artifacts/_cost/")
+    if not dates:
+        return pd.DataFrame()
+
+    frames: list[pd.DataFrame] = []
+    for d in dates[-n_recent:]:
+        raw = _s3_get_object(bucket, f"decision_artifacts/_cost/{d}/cost.parquet")
+        if raw is None:
+            continue
+        try:
+            df = pd.read_parquet(io.BytesIO(raw))
+            df["capture_date"] = d
+            frames.append(df)
+        except Exception as e:
+            logger.warning("cost parquet parse failed for %s: %s", d, e)
+            _record_s3_error(bucket, f"decision_artifacts/_cost/{d}/cost.parquet", "ParquetParseError", str(e))
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
