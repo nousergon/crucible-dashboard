@@ -39,8 +39,6 @@ import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as components
 
-from components.header import render_footer, render_header
-from components.styles import inject_base_css, inject_docs_css
 from loaders.s3_loader import (
     load_executor_params_history,
     load_research_params,
@@ -52,12 +50,8 @@ st.set_page_config(
     page_title="Feedback Loop — Alpha Engine",
     page_icon="🔁",
     layout="wide",
-    initial_sidebar_state="collapsed",
 )
 
-inject_base_css()
-inject_docs_css()
-render_header(current_page="Feedback Loop")
 
 st.divider()
 
@@ -330,4 +324,3 @@ st.markdown(
     """
 )
 
-render_footer()

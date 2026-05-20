@@ -22,8 +22,6 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import streamlit as st
 
-from components.header import render_footer, render_header
-from components.styles import inject_base_css, inject_docs_css
 from loaders.s3_loader import load_intraday_heartbeat, load_intraday_latest_prices
 
 
@@ -31,12 +29,8 @@ st.set_page_config(
     page_title="Intraday Surveillance — Alpha Engine",
     page_icon="📡",
     layout="wide",
-    initial_sidebar_state="collapsed",
 )
 
-inject_base_css()
-inject_docs_css()
-render_header(current_page="Intraday Surveillance")
 st.divider()
 
 st.markdown("### Intraday Surveillance")
@@ -74,4 +68,3 @@ else:
         "market hours."
     )
 
-render_footer()

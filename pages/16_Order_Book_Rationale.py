@@ -23,8 +23,6 @@ import pandas as pd
 import streamlit as st
 
 from components.artifact_archive import ArchiveEntry, render_artifact_archive
-from components.header import render_footer, render_header
-from components.styles import inject_base_css, inject_docs_css
 from loaders.s3_loader import load_order_book_rationale_history
 
 
@@ -32,12 +30,8 @@ st.set_page_config(
     page_title="Order Book Rationale — Alpha Engine",
     page_icon="📋",
     layout="wide",
-    initial_sidebar_state="collapsed",
 )
 
-inject_base_css()
-inject_docs_css()
-render_header(current_page="Order Book Rationale")
 
 st.divider()
 
@@ -203,4 +197,3 @@ render_artifact_archive(
     ),
 )
 
-render_footer()

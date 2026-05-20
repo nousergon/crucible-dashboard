@@ -18,21 +18,15 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import streamlit as st
 
-from components.header import render_footer, render_header
 from components.process_archive import ProcessArchiveSpec, render_process_archive
-from components.styles import inject_base_css, inject_docs_css
 
 
 st.set_page_config(
     page_title="Predictor Training Archive — Alpha Engine",
     page_icon="🏋️",
     layout="wide",
-    initial_sidebar_state="collapsed",
 )
 
-inject_base_css()
-inject_docs_css()
-render_header(current_page="Predictor Training Archive")
 st.divider()
 
 render_process_archive(
@@ -56,4 +50,3 @@ render_process_archive(
     )
 )
 
-render_footer()

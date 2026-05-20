@@ -23,20 +23,14 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from components.header import render_footer, render_header
-from components.styles import inject_base_css, inject_docs_css
 from loaders.s3_loader import load_llm_cost_parquets
 
 st.set_page_config(
     page_title="LLM Cost — Alpha Engine",
     page_icon="💸",
     layout="wide",
-    initial_sidebar_state="collapsed",
 )
 
-inject_base_css()
-inject_docs_css()
-render_header(current_page="LLM Cost")
 st.divider()
 
 st.title("LLM Cost")
@@ -53,7 +47,6 @@ if df.empty:
         "No cost captures available yet. The first parquet lands at the end of "
         "the next Saturday research pipeline run via `cost_aggregator.write_run_artifacts`."
     )
-    render_footer()
     st.stop()
 
 # Normalize timestamp to a tz-naive datetime + derive iso date
@@ -162,4 +155,3 @@ st.caption(
     "Saturday pipeline's hard ceiling check; this surface is observation-only."
 )
 
-render_footer()

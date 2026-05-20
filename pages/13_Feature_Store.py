@@ -35,8 +35,6 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from components.header import render_footer, render_header
-from components.styles import inject_base_css, inject_docs_css
 from loaders.s3_loader import (
     _fetch_s3_json,
     _research_bucket,
@@ -50,12 +48,8 @@ st.set_page_config(
     page_title="Feature Store — Alpha Engine",
     page_icon="🗂️",
     layout="wide",
-    initial_sidebar_state="collapsed",
 )
 
-inject_base_css()
-inject_docs_css()
-render_header(current_page="Feature Store")
 
 st.divider()
 
@@ -165,7 +159,6 @@ with st.spinner("Finding latest feature snapshot..."):
 
 if latest_date is None:
     st.error("No feature store snapshots found in the last 10 days.")
-    render_footer()
     st.stop()
 
 schema = _fetch_s3_json(bucket, f"features/{latest_date}/schema_version.json")
@@ -595,4 +588,3 @@ if snapshot_dates:
 else:
     st.warning("No snapshots found in the last 14 days")
 
-render_footer()

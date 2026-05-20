@@ -30,20 +30,14 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from components.header import render_footer, render_header
-from components.styles import inject_base_css, inject_docs_css
 from loaders.s3_loader import load_rag_manifest
 
 st.set_page_config(
     page_title="RAG Inventory — Alpha Engine",
     page_icon="📚",
     layout="wide",
-    initial_sidebar_state="collapsed",
 )
 
-inject_base_css()
-inject_docs_css()
-render_header(current_page="RAG Inventory")
 
 st.divider()
 
@@ -95,7 +89,6 @@ if not manifest or not isinstance(manifest, dict):
         "host with the alpha-engine-lib RAG client installed and "
         "pgvector credentials in env."
     )
-    render_footer()
     st.stop()
 
 # ---------------------------------------------------------------------------
@@ -325,4 +318,3 @@ st.caption(
     "research runs."
 )
 
-render_footer()

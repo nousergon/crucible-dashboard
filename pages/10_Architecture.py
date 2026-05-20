@@ -26,8 +26,6 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import streamlit as st
 import streamlit.components.v1 as components
 
-from components.header import render_footer, render_header
-from components.styles import inject_base_css, inject_docs_css
 from loaders.s3_loader import predictor_horizon_days
 
 # Predictor's training horizon — read from manifest so display strings
@@ -39,12 +37,8 @@ st.set_page_config(
     page_title="Architecture — Alpha Engine",
     page_icon="📈",
     layout="wide",
-    initial_sidebar_state="collapsed",
 )
 
-inject_base_css()
-inject_docs_css()
-render_header(current_page="Architecture")
 
 st.divider()
 
@@ -379,4 +373,3 @@ st.markdown(
     """
 )
 
-render_footer()

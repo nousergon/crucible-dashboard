@@ -26,8 +26,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pandas as pd
 import streamlit as st
 
-from components.header import render_footer, render_header
-from components.styles import inject_base_css, inject_docs_css
 from loaders.s3_loader import (
     load_eod_pnl,
     load_latest_grading,
@@ -50,12 +48,8 @@ st.set_page_config(
     page_title="Metrics — Alpha Engine",
     page_icon="📈",
     layout="wide",
-    initial_sidebar_state="collapsed",
 )
 
-inject_base_css()
-inject_docs_css()
-render_header(current_page="Metrics")
 
 st.divider()
 
@@ -552,4 +546,3 @@ st.caption(
     "here."
 )
 
-render_footer()

@@ -36,8 +36,6 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from components.header import render_footer, render_header
-from components.styles import inject_base_css, inject_docs_css
 from loaders.s3_loader import (
     load_drawdown_leg_history,
     load_drawdown_leg_latest,
@@ -56,12 +54,8 @@ st.set_page_config(
     page_title="Regime — Alpha Engine",
     page_icon="📊",
     layout="wide",
-    initial_sidebar_state="collapsed",
 )
 
-inject_base_css()
-inject_docs_css()
-render_header(current_page="Regime")
 
 st.divider()
 
@@ -90,7 +84,6 @@ if latest is None:
         "Lambda exists (``alpha-engine-predictor-regime-substrate``) and "
         "the SF state insertion has been deployed."
     )
-    render_footer()
     st.stop()
 
 # ---------------------------------------------------------------------------
@@ -834,4 +827,3 @@ else:
             )
             st.plotly_chart(fig_t2, use_container_width=True)
 
-render_footer()

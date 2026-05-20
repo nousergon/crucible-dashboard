@@ -28,8 +28,6 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from components.header import render_footer, render_header
-from components.styles import inject_base_css, inject_docs_css
 from loaders.db_loader import (
     get_investment_thesis,
     get_predictor_outcomes,
@@ -51,12 +49,8 @@ st.set_page_config(
     page_title="Signal Lifecycle — Alpha Engine",
     page_icon="📈",
     layout="wide",
-    initial_sidebar_state="collapsed",
 )
 
-inject_base_css()
-inject_docs_css()
-render_header(current_page="Signal Lifecycle")
 
 st.divider()
 
@@ -470,4 +464,3 @@ st.caption(
     "the order book)."
 )
 
-render_footer()
