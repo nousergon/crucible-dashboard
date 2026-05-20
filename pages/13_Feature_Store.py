@@ -44,6 +44,7 @@ from loaders.s3_loader import (
     get_s3_client,
     load_daily_data_health,
 )
+from loaders.utils import production_feature_set, research_feature_set
 
 st.set_page_config(
     page_title="Feature Store — Alpha Engine",
@@ -117,6 +118,11 @@ def _get_s3_last_modified(bucket: str, key: str) -> str | None:
 @st.cache_data(ttl=900)
 def _load_predictions_meta(bucket: str) -> dict | None:
     return _fetch_s3_json(bucket, "predictor/predictions/latest.json")
+
+
+@st.cache_data(ttl=900)
+def _load_feature_list_meta(bucket: str) -> dict | None:
+    return _fetch_s3_json(bucket, "predictor/weights/meta/feature_list.json")
 
 
 # ---------------------------------------------------------------------------
@@ -491,16 +497,61 @@ st.caption(
     "production inference — the *substrate-for-Phase-3* view per "
     "the presentation revamp plan §3.4."
 )
-st.info(
-    "**Awaiting upstream output.** A clean delta requires the predictor "
-    "to emit `predictor/weights/meta/feature_list.json` listing the "
-    "active inference universe (META_FEATURES + each L1 GBM's feature "
-    "list). Until then, the production feature universe is documented "
-    "in code at `alpha-engine-predictor/model/meta_model.py:META_FEATURES` "
-    "(12 L2 features) plus the L1 GBM models' embedded feature lists. "
-    "Tracked as a P2 in ROADMAP — small upstream PR in "
-    "alpha-engine-predictor to emit the JSON during weekly training."
-)
+
+_feature_list = _load_feature_list_meta(bucket)
+if not _feature_list:
+    st.info(
+        "`predictor/weights/meta/feature_list.json` not yet present — "
+        "the next predictor weekly-training run will emit it. The L2 production "
+        "set is documented in code at `alpha-engine-predictor/model/meta_model.py::META_FEATURES`."
+    )
+else:
+    _prod = production_feature_set(_feature_list)
+    _research = research_feature_set(tech_df, interaction_df, macro_df, alt_df, fundamental_df)
+    _delta = sorted(_research - _prod)
+    _missing_in_store = sorted(_prod - _research)
+
+    dc1, dc2, dc3, dc4 = st.columns(4)
+    dc1.metric("Production features", len(_prod))
+    dc2.metric("Store features", len(_research))
+    dc3.metric("Substrate delta", len(_delta), help="Features in the store but not consumed by production inference")
+    dc4.metric("Trained on", str(_feature_list.get("trained_at", "?")))
+
+    if _missing_in_store:
+        st.warning(
+            f"{len(_missing_in_store)} production feature(s) absent from the latest store snapshot — "
+            f"inference likely falls back to inline compute. Missing: `{', '.join(_missing_in_store)}`."
+        )
+
+    tab_delta, tab_breakdown = st.tabs(["Substrate delta", "Production breakdown"])
+    with tab_delta:
+        if _delta:
+            st.dataframe(
+                pd.DataFrame({"feature": _delta, "status": ["in-store, not-in-production"] * len(_delta)}),
+                use_container_width=True,
+                hide_index=True,
+            )
+            st.caption(
+                f"{len(_delta)} feature(s) available as substrate for Phase-3 alpha tuning. "
+                "Promotion is gated on per-L1-component IC discipline."
+            )
+        else:
+            st.success("No substrate delta — every feature in the store is consumed by production inference.")
+    with tab_breakdown:
+        rows: list[dict] = []
+        for f in sorted(_feature_list.get("l2_features") or []):
+            rows.append({"feature": f, "layer": "L2 meta", "in_store": f in _research})
+        for component, feats in (_feature_list.get("l1_features") or {}).items():
+            for f in sorted(feats or []):
+                rows.append({"feature": f, "layer": f"L1 {component}", "in_store": f in _research})
+        if rows:
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        else:
+            st.info("`feature_list.json` present but empty.")
+    st.caption(
+        f"Source: `s3://{bucket}/predictor/weights/meta/feature_list.json` (trained_at={_feature_list.get('trained_at', '?')}, "
+        f"version={_feature_list.get('version', '?')})."
+    )
 
 # ─── Store vs Inline Usage ──────────────────────────────────────────────────
 st.subheader("Store vs Inline Usage")
