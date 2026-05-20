@@ -132,15 +132,16 @@ def _render_rationale(payload: dict) -> None:
             "Decision chain": _chain_str(r.get("decision_chain")),
         })
     df = pd.DataFrame(rows)
-
-    def _row_color(row):
-        color = _STATE_COLOR.get(row["_state_raw"], "#263238")
-        return [f"background-color: {color}; color: #fff"] * len(row)
-
     display_df = df.drop(columns=["_state_raw"])
-    styled = display_df.style.apply(
-        lambda row: _row_color(df.loc[row.name]), axis=1
-    ).format({"Score": "{:.1f}", "Conf": "{:.2f}"}, na_rep="—")
+
+    def _row_color(display_row):
+        state = df.at[display_row.name, "_state_raw"]
+        color = _STATE_COLOR.get(state, "#263238")
+        return [f"background-color: {color}; color: #fff"] * len(display_row)
+
+    styled = display_df.style.apply(_row_color, axis=1).format(
+        {"Score": "{:.1f}", "Conf": "{:.2f}"}, na_rep="—"
+    )
     st.dataframe(styled, use_container_width=True, hide_index=True)
 
     # Per-ticker full decision chain (selectbox — NOT an expander, so
