@@ -120,3 +120,79 @@ class TestLoadLlmCostParquets:
             with patch.object(mod, "_s3_get_object", return_value=bogus):
                 df = mod.load_llm_cost_parquets()
         assert df.empty
+
+
+class TestImplausibleCostRowDefense:
+    """Defensive consumer-side filter — mirror of producer-side guard in
+    alpha-engine-research's scripts/aggregate_costs._is_plausible_cost_row.
+    Catches historical pollution (2026-05-13 $1014 spike) until the
+    producer-side cleanup of that day's parquet lands.
+    """
+
+    def test_drops_test_fixture_run_ids(self):
+        mod = _import_s3_loader()
+        # Mix of real + the exact 2026-05-13 pollution shape.
+        rows = [
+            {"run_id": "2026-05-13", "agent_id": "sector_team:tech",
+             "cost_usd": 0.012, "input_tokens": 4000, "output_tokens": 1200},
+            {"run_id": "run-x", "agent_id": "big_spender",
+             "cost_usd": 1000.0, "input_tokens": 1_000_000_000, "output_tokens": 0},
+            {"run_id": "run-budget-test", "agent_id": "runaway_agent",
+             "cost_usd": 10.0, "input_tokens": 10_000_000, "output_tokens": 0},
+            {"run_id": "run-1", "agent_id": "a",
+             "cost_usd": 1.0, "input_tokens": 1_000_000, "output_tokens": 0},
+        ]
+        parquet = _make_cost_parquet_bytes(rows)
+        with patch.object(mod, "list_s3_prefixes", return_value=["2026-05-13"]):
+            with patch.object(mod, "_s3_get_object", return_value=parquet):
+                df = mod.load_llm_cost_parquets()
+        # Only the real production row survives.
+        assert len(df) == 1
+        assert df.iloc[0]["agent_id"] == "sector_team:tech"
+        assert df["cost_usd"].sum() == pytest.approx(0.012)
+
+    def test_drops_implausibly_high_token_count(self):
+        mod = _import_s3_loader()
+        # Real-looking run_id but absurd token count — catches a
+        # fixture that uses an ISO-date run_id but fabricated counts.
+        rows = [
+            {"run_id": "2026-05-13", "agent_id": "real_agent",
+             "cost_usd": 0.01, "input_tokens": 4000, "output_tokens": 1200},
+            {"run_id": "2026-05-13", "agent_id": "fake_agent",
+             "cost_usd": 500.0, "input_tokens": 50_000_000, "output_tokens": 0},
+        ]
+        parquet = _make_cost_parquet_bytes(rows)
+        with patch.object(mod, "list_s3_prefixes", return_value=["2026-05-13"]):
+            with patch.object(mod, "_s3_get_object", return_value=parquet):
+                df = mod.load_llm_cost_parquets()
+        assert len(df) == 1
+        assert df.iloc[0]["agent_id"] == "real_agent"
+
+    def test_passthrough_when_run_id_column_missing(self):
+        mod = _import_s3_loader()
+        # Pre-instrumentation parquets don't have run_id — must not be
+        # blanket-dropped (would break the existing test fixtures and
+        # any historical archive without the column).
+        rows = [{"agent_id": "ic_cio", "cost_usd": 0.05}]
+        parquet = _make_cost_parquet_bytes(rows)
+        with patch.object(mod, "list_s3_prefixes", return_value=["2026-05-02"]):
+            with patch.object(mod, "_s3_get_object", return_value=parquet):
+                df = mod.load_llm_cost_parquets()
+        assert len(df) == 1
+        assert df.iloc[0]["cost_usd"] == 0.05
+
+    def test_real_iso_date_run_id_passes(self):
+        mod = _import_s3_loader()
+        # Pin that the regex allows the production run_id formats actually
+        # seen in 2026-05-15 and 2026-05-17 captures.
+        rows = [
+            {"run_id": "2026-05-13", "agent_id": "sector_team:tech",
+             "cost_usd": 0.01, "input_tokens": 4000, "output_tokens": 1200},
+            {"run_id": "2026-05-15", "agent_id": "sector_team:financials",
+             "cost_usd": 0.02, "input_tokens": 5000, "output_tokens": 1500},
+        ]
+        parquet = _make_cost_parquet_bytes(rows)
+        with patch.object(mod, "list_s3_prefixes", return_value=["2026-05-15"]):
+            with patch.object(mod, "_s3_get_object", return_value=parquet):
+                df = mod.load_llm_cost_parquets()
+        assert len(df) == 2

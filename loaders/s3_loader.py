@@ -1010,12 +1010,59 @@ def load_order_book_rationale_history(n_recent: int = 14) -> list[dict]:
     )
 
 
+# Production run_id format in the cost-tracker is ISO date
+# (``YYYY-MM-DD``, sometimes with a suffix). Test fixtures use
+# strings like ``run-x`` / ``run-budget-test`` / ``run-1``. The
+# anchor regex is the strong structural discriminator.
+_COST_RUN_ID_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(\b|[-_])")
+
+# Claude Opus 4.7 max context is 1M tokens. 5M is 5x that ceiling so
+# no real API call can produce a per-row count above it. The 2026-05-13
+# pollution had input_tokens=1e9 — 200x the ceiling.
+_COST_MAX_PLAUSIBLE_TOKENS = 5_000_000
+
+
+def _drop_implausible_cost_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """Defensive consumer-side filter for test-pollution in cost parquets.
+
+    Mirrors the producer-side guard in alpha-engine-research's
+    ``scripts/aggregate_costs._is_plausible_cost_row``. Belt-and-suspenders
+    so historical pollution (the 2026-05-13 ~$1014 spike from a unit-test
+    run with real AWS creds) doesn't render on the LLM Cost page until
+    the producer-side rewrite of that day's parquet lands.
+
+    Drops rows where ``run_id`` doesn't start with an ISO date, or any
+    token-count column exceeds the Claude API ceiling.
+    """
+    if df.empty or "run_id" not in df.columns:
+        return df
+    run_id_str = df["run_id"].astype(str).fillna("")
+    ok_run_id = run_id_str.str.match(_COST_RUN_ID_RE)
+    ok = ok_run_id.fillna(False)
+    for col in ("input_tokens", "output_tokens",
+                "cache_read_tokens", "cache_create_tokens"):
+        if col in df.columns:
+            ok = ok & (df[col].fillna(0) <= _COST_MAX_PLAUSIBLE_TOKENS)
+    dropped = int((~ok).sum())
+    if dropped:
+        logger.warning(
+            "load_llm_cost_parquets: dropped %d implausible row(s) "
+            "(test-fixture pollution defense)", dropped,
+        )
+    return df[ok].copy()
+
+
 @st.cache_data(ttl=_ttl("research"))
 def load_llm_cost_parquets(n_recent: int = 12) -> pd.DataFrame:
     """Return a concatenated DataFrame of per-call LLM cost rows from the
     `decision_artifacts/_cost/{date}/cost.parquet` archive. Loads up to the
     *n_recent* most recent date partitions; empty DataFrame if the archive
     is empty or every parquet fails to parse.
+
+    Applies a defensive implausibility filter (run_id ISO-date prefix +
+    per-row token ceiling) so test-pollution rows like the 2026-05-13
+    incident (~$1014 fake spend from a unit-test run with real AWS creds)
+    don't reach the page renderer.
     """
     bucket = _research_bucket()
     dates = list_s3_prefixes(bucket, "decision_artifacts/_cost/")
@@ -1036,4 +1083,4 @@ def load_llm_cost_parquets(n_recent: int = 12) -> pd.DataFrame:
             _record_s3_error(bucket, f"decision_artifacts/_cost/{d}/cost.parquet", "ParquetParseError", str(e))
     if not frames:
         return pd.DataFrame()
-    return pd.concat(frames, ignore_index=True)
+    return _drop_implausible_cost_rows(pd.concat(frames, ignore_index=True))
