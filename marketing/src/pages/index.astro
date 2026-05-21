@@ -92,8 +92,9 @@ const pillars = [
               <li>
                 <strong class="text-zinc-300">Decision artifacts</strong> &mdash; research-agent
                 LLM calls capture prompt, response, tool calls, and structured metadata to
-                <code>s3://alpha-engine-research/decision_artifacts/</code>. Graded agent
-                outputs (e.g. thesis-updates) additionally carry LLM-as-judge rubric scores.
+                <code>s3://alpha-engine-research/decision_artifacts/</code>, with LLM-as-judge
+                rubric scores attached on every load-bearing agent type (sector quant, qual,
+                peer-review, thesis-update, macro economist, CIO).
               </li>
               <li>
                 <strong class="text-zinc-300">Cost telemetry</strong> &mdash; per-call cost
