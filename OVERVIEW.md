@@ -4,14 +4,14 @@
 
 ## Module purpose
 
-Read-only Streamlit monitoring — portfolio, signals, predictor, execution, eval quality. Powers public `nousergon.ai` + private `dashboard.nousergon.ai`.
+Read-only Streamlit monitoring — portfolio, signals, predictor, execution, eval quality. Powers public `nousergon.ai` live console (transitional — moves to `live.nousergon.ai` once the Astro marketing site lands at apex) + private `console.nousergon.ai`.
 
 ## Entry points
 
 | File | What it does |
 |---|---|
 | [`app.py`](app.py) | Private dashboard root — multipage Streamlit app |
-| [`public/app.py`](public/app.py) | Public-site root — powers nousergon.ai home page |
+| [`live/app.py`](live/app.py) | Live-console root — powers nousergon.ai today, moving to `live.nousergon.ai` once Astro lands at apex |
 | [`health_checker.py`](health_checker.py) | Cron'd health checker that surfaces module freshness |
 
 ## Where things live
@@ -41,8 +41,8 @@ Read-only Streamlit monitoring — portfolio, signals, predictor, execution, eva
 | Accuracy metric helpers | [`shared/accuracy_metrics.py`](shared/accuracy_metrics.py) |
 | Shared normalization helpers | [`shared/normalizers.py`](shared/normalizers.py) |
 | Shared constants | [`shared/constants.py`](shared/constants.py) |
-| Public-site Streamlit theme + CSS | [`public/.streamlit/config.toml`](public/.streamlit/config.toml), [`public/components/styles.py`](public/components/styles.py) |
-| Public-site docs (rendered on /Docs page) | [`public/docs/`](public/docs/) |
+| Live-console Streamlit theme + CSS | [`live/.streamlit/config.toml`](live/.streamlit/config.toml), [`live/components/styles.py`](live/components/styles.py) |
+| Live-console docs (rendered on /Docs page) | [`live/docs/`](live/docs/) |
 | Trading-calendar helpers | [`trading_calendar.py`](trading_calendar.py) |
 | SSM secret loader | [`ssm_secrets.py`](ssm_secrets.py) |
 
@@ -66,9 +66,9 @@ Read-only Streamlit monitoring — portfolio, signals, predictor, execution, eva
 
 | Mode | Where | Command |
 |---|---|---|
-| Public site (nousergon.ai) | EC2 `ae-dashboard` (always-on, port 8501) | systemd-managed Streamlit; `public/app.py` |
-| Private dashboard (dashboard.nousergon.ai) | Same EC2, separate Streamlit instance | Cloudflare Access in front of `app.py` |
-| Local dev | venv | `streamlit run app.py` (or `streamlit run public/app.py`) |
+| Live console (nousergon.ai today, `live.nousergon.ai` post-Astro) | EC2 `ae-dashboard` (always-on, port 8502) | `nous-ergon-live.service` (systemd) runs `live/app.py` |
+| Private dashboard (`console.nousergon.ai`) | Same EC2, separate Streamlit instance (port 8501) | `dashboard.service` runs `app.py`; Cloudflare Access in front |
+| Local dev | venv | `streamlit run app.py` (or `streamlit run live/app.py`) |
 | Health check | EC2 cron | `python health_checker.py` (6-hourly with SNS on stale data) |
 
 Deploy: `git push origin main && ae-dashboard "cd ~/alpha-engine-dashboard && git pull && sudo systemctl restart streamlit-*"`. TTL caching: 15 min for signals + trades, 1 hr for research + backtest.

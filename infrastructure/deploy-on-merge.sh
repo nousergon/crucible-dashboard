@@ -21,10 +21,10 @@ REPO_DIR="/home/ec2-user/alpha-engine-dashboard"
 LOG="/var/log/dashboard-deploy.log"
 TARGET_SHA="${1:-HEAD}"
 
-# Streamlit /_stcore/health endpoints. Console = 8501, public = 8502.
+# Streamlit /_stcore/health endpoints. Console = 8501, live = 8502.
 # Ports sourced from the systemd unit files in this repo.
 CONSOLE_URL="http://localhost:8501/_stcore/health"
-PUBLIC_URL="http://localhost:8502/_stcore/health"
+LIVE_URL="http://localhost:8502/_stcore/health"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$LOG"; }
 fail() { log "FAIL $*"; exit 1; }
@@ -54,12 +54,12 @@ fi
 
 # ── 2. Restart both streamlit services (we are root) ───────────────────────
 # Both services run from this same repo. Two-second stagger avoids a
-# simultaneous blip on console + public site.
+# simultaneous blip on console + live site.
 systemctl restart dashboard 2>>"$LOG" || fail "restart dashboard"
 log "restarted dashboard.service"
 sleep 2
-systemctl restart nous-ergon-public 2>>"$LOG" || fail "restart nous-ergon-public"
-log "restarted nous-ergon-public.service"
+systemctl restart nous-ergon-live 2>>"$LOG" || fail "restart nous-ergon-live"
+log "restarted nous-ergon-live.service"
 
 # ── 3. Health check ─────────────────────────────────────────────────────────
 # Streamlit's /_stcore/health returns 200 OK with body "ok" once the
@@ -81,7 +81,7 @@ wait_for_health() {
 }
 
 wait_for_health "$CONSOLE_URL" "dashboard (console)" || fail "console health"
-wait_for_health "$PUBLIC_URL" "nous-ergon-public" || fail "public health"
+wait_for_health "$LIVE_URL" "nous-ergon-live" || fail "live health"
 
 log "=== deploy-on-merge completed successfully — sha=$CURRENT_SHA ==="
 exit 0
