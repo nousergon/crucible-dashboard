@@ -1,8 +1,8 @@
 """
 tests/test_s3_loader.py — Unit tests for loaders/s3_loader.py (private dashboard)
-and public/loaders/s3_loader.py (public dashboard).
+and live/loaders/s3_loader.py (public live console).
 
-Tests S3 error tracking, utility functions, and the public get_s3_client()
+Tests S3 error tracking, utility functions, and the live get_s3_client()
 fallback logic. No actual S3 calls — all boto3 interactions are mocked.
 """
 
@@ -104,18 +104,18 @@ class TestS3ErrorTracking:
 
 
 # ---------------------------------------------------------------------------
-# Tests: public dashboard get_s3_client() fallback
+# Tests: live console get_s3_client() fallback
 # ---------------------------------------------------------------------------
 
-class TestPublicGetS3Client:
-    """Tests for public/loaders/s3_loader.py get_s3_client() fallback."""
+class TestLiveGetS3Client:
+    """Tests for live/loaders/s3_loader.py get_s3_client() fallback."""
 
-    def _load_public_loader(self):
-        """Load public/loaders/s3_loader.py via importlib with config mocked."""
+    def _load_live_loader(self):
+        """Load live/loaders/s3_loader.py via importlib with config mocked."""
         import importlib.util
         spec = importlib.util.spec_from_file_location(
-            f"public_s3_loader_{id(self)}",
-            str(Path(__file__).parent.parent / "public" / "loaders" / "s3_loader.py"),
+            f"live_s3_loader_{id(self)}",
+            str(Path(__file__).parent.parent / "live" / "loaders" / "s3_loader.py"),
         )
         module = importlib.util.module_from_spec(spec)
         with patch("builtins.open", MagicMock()):
@@ -140,8 +140,8 @@ class TestPublicGetS3Client:
 
         with patch("boto3.client") as mock_boto:
             mock_boto.return_value = MagicMock()
-            public_loader = self._load_public_loader()
-            public_loader.get_s3_client()
+            live_loader = self._load_live_loader()
+            live_loader.get_s3_client()
             mock_boto.assert_called_with("s3")
 
     def test_uses_secrets_when_available(self):
@@ -153,19 +153,19 @@ class TestPublicGetS3Client:
         st_mock.secrets = {
             "aws": {
                 "AWS_ACCESS_KEY_ID": "AKIA_TEST",
-                "AWS_SECRET_ACCESS_KEY": "secret_test",
+                "AWS_SECRET_ACCESS_KEY": "fake",  # gitleaks: short fixture, not a real secret
                 "AWS_DEFAULT_REGION": "us-west-2",
             }
         }
 
-        public_loader = self._load_public_loader()
+        live_loader = self._load_live_loader()
 
         with patch("boto3.client") as mock_boto:
             mock_boto.return_value = MagicMock()
-            public_loader.get_s3_client()
+            live_loader.get_s3_client()
             mock_boto.assert_called_with(
                 "s3",
                 aws_access_key_id="AKIA_TEST",
-                aws_secret_access_key="secret_test",
+                aws_secret_access_key="fake",
                 region_name="us-west-2",
             )

@@ -1,11 +1,11 @@
 [Unit]
-Description=Nous Ergon Public Site (Streamlit)
+Description=Nous Ergon Live Console (Streamlit) — serves nousergon.ai today, live.nousergon.ai post-Astro
 After=network.target
 
 [Service]
 Type=simple
 User=ec2-user
-WorkingDirectory=/home/ec2-user/alpha-engine-dashboard/public
+WorkingDirectory=/home/ec2-user/alpha-engine-dashboard/live
 ExecStart=/home/ec2-user/alpha-engine-dashboard/.venv/bin/streamlit run app.py \
           --server.port=8502 --server.address=127.0.0.1 \
           --server.headless=true --browser.gatherUsageStats=false

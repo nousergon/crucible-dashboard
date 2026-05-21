@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# deploy-ec2.sh — Deploy Nous Ergon public site + Nginx to EC2
+# deploy-ec2.sh — Deploy Nous Ergon live console + Nginx to EC2
 #
 # Run this ON the EC2 instance after:
 #   1. setup-aws.sh (local) — Elastic IP + security group
@@ -12,7 +12,7 @@
 #   2. Installs dependencies
 #   3. Installs Origin CA certificate
 #   4. Configures Nginx
-#   5. Sets up systemd service for the public site
+#   5. Sets up systemd service for the live console
 #   6. Starts all services
 #   7. Runs smoke tests
 #
@@ -35,7 +35,7 @@ warn()  { echo -e "${YELLOW}!${NC} $1"; }
 fail()  { echo -e "${RED}✗${NC} $1"; }
 
 DASHBOARD_DIR="/home/ec2-user/alpha-engine-dashboard"
-PUBLIC_DIR="${DASHBOARD_DIR}/public"
+LIVE_DIR="${DASHBOARD_DIR}/live"
 CERT_STAGING="/tmp"
 
 echo ""
@@ -94,7 +94,7 @@ else
 fi
 
 # Deploy config
-sudo cp "${PUBLIC_DIR}/infrastructure/nginx.conf" /etc/nginx/conf.d/nousergon.conf
+sudo cp "${LIVE_DIR}/infrastructure/nginx.conf" /etc/nginx/conf.d/nousergon.conf
 
 # Remove conflicting default configs
 sudo rm -f /etc/nginx/conf.d/default.conf
@@ -117,12 +117,12 @@ sudo systemctl restart nginx
 ok "Nginx restarted"
 
 # ── Step 5: Public site systemd service ───────────────────────────────────
-info "Step 5: Setting up public site service..."
+info "Step 5: Setting up live console service..."
 
-sudo cp "${PUBLIC_DIR}/infrastructure/public.service" /etc/systemd/system/nous-ergon-public.service
+sudo cp "${LIVE_DIR}/infrastructure/nous-ergon-live.service" /etc/systemd/system/nous-ergon-live.service
 sudo systemctl daemon-reload
-sudo systemctl enable nous-ergon-public >/dev/null 2>&1
-sudo systemctl restart nous-ergon-public
+sudo systemctl enable nous-ergon-live >/dev/null 2>&1
+sudo systemctl restart nous-ergon-live
 ok "Public site service started"
 
 # ── Step 6: Ensure private dashboard is running ──────────────────────────
@@ -148,11 +148,11 @@ sleep 3  # Give Streamlit a moment to start
 
 PASS=true
 
-# Test public app
+# Test live console app
 if curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8502 | grep -q "200"; then
-  ok "Public app responding on :8502"
+  ok "Live console responding on :8502"
 else
-  fail "Public app NOT responding on :8502"
+  fail "Live console NOT responding on :8502"
   PASS=false
 fi
 
@@ -183,12 +183,12 @@ if [[ "$PASS" == true ]]; then
   echo "  Dashboard:       https://dashboard.nousergon.ai"
   echo ""
   echo "  Services:"
-  echo "    nous-ergon-public  → port 8502 (public)"
+  echo "    nous-ergon-live  → port 8502 (live console)"
   echo "    dashboard          → port 8501 (private)"
   echo "    nginx              → port 443  (reverse proxy)"
   echo ""
   echo "  Logs:"
-  echo "    sudo journalctl -u nous-ergon-public -f"
+  echo "    sudo journalctl -u nous-ergon-live -f"
   echo "    sudo journalctl -u dashboard -f"
   echo "    sudo tail -f /var/log/nginx/error.log"
 else
@@ -197,7 +197,7 @@ else
   echo -e "${YELLOW}═══════════════════════════════════════════════════${NC}"
   echo ""
   echo "  Some smoke tests failed. Check the logs:"
-  echo "    sudo journalctl -u nous-ergon-public --no-pager -n 30"
+  echo "    sudo journalctl -u nous-ergon-live --no-pager -n 30"
   echo "    sudo journalctl -u dashboard --no-pager -n 30"
   echo "    sudo tail -20 /var/log/nginx/error.log"
 fi

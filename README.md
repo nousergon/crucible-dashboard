@@ -9,7 +9,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)](LICENSE)
 [![Phase 2 · Reliability](https://img.shields.io/badge/Phase_2-Reliability-e9c46a?style=flat-square)](https://github.com/cipher813/alpha-engine-docs#phase-trajectory)
 
-Read-only Streamlit dashboard for monitoring the full Alpha Engine system. Powers both the public [`nousergon.ai`](https://nousergon.ai) home page and the private `dashboard.nousergon.ai` (Cloudflare Access). Reads from S3 only — never writes.
+Read-only Streamlit dashboard for monitoring the full Alpha Engine system. Powers the public [`nousergon.ai`](https://nousergon.ai) home page (transitional — moving to `live.nousergon.ai` once the Astro marketing site lands at apex) and the private `console.nousergon.ai` (Cloudflare Access). Reads from S3 only — never writes.
 
 > System overview, Step Function orchestration, and module relationships live in [`alpha-engine-docs`](https://github.com/cipher813/alpha-engine-docs). Code index lives in [`OVERVIEW.md`](OVERVIEW.md).
 
@@ -21,7 +21,7 @@ Read-only Streamlit dashboard for monitoring the full Alpha Engine system. Power
 - **System health** — last-run timestamps for the three Step Functions (weekly, weekday, EOD), deploy cadence, test surface trend
 - **Execution evaluation** — fill quality, entry-trigger distribution, sizing decisions, intraday slippage
 - **LLM-as-judge eval quality** — rubric scores over time per agent
-- **Public + private split** — `public/` directory powers the marketing-facing nousergon.ai; the rest of the repo serves the private interview-demo dashboard at dashboard.nousergon.ai
+- **Live + private split** — `live/` directory powers the public live console (currently at nousergon.ai, moving to `live.nousergon.ai`); the rest of the repo serves the private interview-demo dashboard at console.nousergon.ai
 
 ## Phase 2 measurement contribution
 
@@ -34,11 +34,11 @@ flowchart LR
     S3[(S3 bucket<br/>alpha-engine-research)] --> Loaders[Loaders<br/>signal · trade · predictor · eval · health]
     Loaders --> Charts[Plotly chart builders<br/>NAV · alpha · accuracy · IC · attribution]
     Charts --> Pages[Streamlit pages<br/>Portfolio · Signals · Analysis · Health · Predictor · Execution · Eval]
-    Pages --> Public[public/<br/>nousergon.ai home page]
-    Pages --> Private[dashboard.nousergon.ai<br/>Cloudflare Access]
+    Pages --> Live[live/<br/>live console]
+    Pages --> Private[console.nousergon.ai<br/>Cloudflare Access]
 ```
 
-TTL caching: 15 min for signals + trades, 1 hr for research + backtest. Deployed on EC2 (port 8501); the `public/` Streamlit app fronts nousergon.ai and the multipage app fronts the private dashboard.
+TTL caching: 15 min for signals + trades, 1 hr for research + backtest. Deployed on EC2 (port 8501 console / port 8502 live); the `live/` Streamlit app fronts the public live console and the multipage app fronts the private dashboard.
 
 ## Configuration
 
