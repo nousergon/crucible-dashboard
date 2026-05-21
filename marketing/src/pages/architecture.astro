@@ -1,40 +1,259 @@
 ---
 import Base from '../layouts/Base.astro';
+
+/**
+ * Mermaid integration: client-side via CDN ESM module, lazy-loaded.
+ *
+ * SOTA deviation per ~/Development/CLAUDE.md item 4:
+ * - SOTA pattern skipped: rehype-mermaid + Playwright build-time SVG generation
+ * - Why preferred here: avoids 150MB Playwright/Chromium download in CI for
+ *   a single page with 6 diagrams. Client-side has identical visual fidelity;
+ *   the JS bundle (~600KB from jsdelivr) is on /architecture only and modern
+ *   browsers cache it after first visit.
+ * - Cost SOTA imposes: CI install weight + lockstep Playwright version pin
+ *   for a one-page benefit. Reconsider if the marketing surface gains more
+ *   diagram pages, in which case the per-page-bundle wins shift toward
+ *   build-time rendering.
+ */
+
+const systemDiagram = `flowchart LR
+    Data[Data<br/>prices · macro · features<br/>RAG corpus]
+    Research[Research<br/>6 sector teams + CIO + macro<br/>incl. LLM-as-judge]
+    Predictor[Predictor<br/>L1 momentum/vol GBMs + research calibrator<br/>+ L2 Ridge meta-learner]
+    Executor[Executor<br/>risk-gated sizing + intraday daemon]
+    Backtester[Backtester<br/>eval + parity + 4 config optimizers]
+    Dashboard[Dashboard<br/>nousergon.ai + console.nousergon.ai]
+
+    Data --> Research
+    Data --> Predictor
+    Research --> Predictor
+    Research --> Executor
+    Predictor --> Executor
+    Executor --> Backtester
+
+    Backtester -.config auto-apply.-> Research
+    Backtester -.config auto-apply.-> Predictor
+    Backtester -.config auto-apply.-> Executor
+
+    Data -.read-only.-> Dashboard
+    Research -.read-only.-> Dashboard
+    Predictor -.read-only.-> Dashboard
+    Executor -.read-only.-> Dashboard
+    Backtester -.read-only.-> Dashboard`;
+
+const saturdayDiagram = `flowchart LR
+    Trigger((Sat<br/>09:00 UTC)) --> P1
+    P1[DataPhase1<br/>EC2 SSM<br/>30 min] --> RAG
+    RAG[RAGIngestion<br/>EC2 SSM<br/>30 min] --> R
+    R[Research<br/>Lambda · 15 min<br/><i>incl. LLM-as-judge</i>] --> P2
+    P2[DataPhase2<br/>Lambda<br/>10 min] --> Train
+    Train[PredictorTraining<br/>EC2 spot<br/>90 min] --> BT
+    BT[Backtester<br/>EC2 spot · 120 min<br/><i>eval + parity + 4 optimizers</i>] --> Notify((SNS))`;
+
+const weekdayDiagram = `flowchart LR
+    Trigger((6:05 AM PT)) --> Inf
+    Inf[PredictorInference<br/>Lambda] --> Start
+    Start[StartExecutorEC2] --> Boot
+    Boot[Trading EC2 boots<br/>systemd] --> Plan
+    Plan[Executor Planner<br/>~6:15 AM PT] --> Daemon((Executor Daemon<br/>~6:20 AM PT))`;
+
+const eodDiagram = `flowchart LR
+    Trigger((Daemon shutdown<br/>~1:15 PM PT)) --> Post
+    Post[PostMarketData<br/>SSM on ae-trading<br/><i>EOD OHLCV → ArcticDB</i>] --> EOD
+    EOD[EODReconcile<br/>NAV · α · positions<br/>trades.db + EOD email] --> Stop((StopTradingInstance))`;
+
+const s3Diagram = `flowchart TB
+    subgraph Producers
+        D[Data]
+        R[Research]
+        P[Predictor]
+        E[Executor]
+        B[Backtester]
+    end
+
+    subgraph S3 ["s3://alpha-engine-research/"]
+        Sig["signals/{date}/signals.json"]
+        Pred["predictor/predictions/{date}.json"]
+        Trades["trades/eod_pnl.csv<br/>trades/trades_full.csv"]
+        Cfg["config/scoring_weights.json<br/>config/executor_params.json<br/>config/predictor_params.json<br/>config/research_params.json"]
+        Arc["ArcticDB universe library<br/>predictor/price_cache_slim/<br/>predictor/daily_closes/"]
+    end
+
+    D --> Arc
+    R --> Sig
+    P --> Pred
+    E --> Trades
+    B --> Cfg
+
+    Sig --> P
+    Sig --> E
+    Pred --> E
+    Cfg --> R
+    Cfg --> P
+    Cfg --> E
+    Arc --> P
+    Arc --> B
+    Arc --> E`;
+
+const feedbackDiagram = `flowchart LR
+    System[Live system outputs<br/>signals · predictions<br/>fills · P&L]
+    Eval[Backtester evaluator<br/>weekly]
+    Sweep[Parameter sweeps<br/>random search × Sharpe<br/>holdout validation]
+    Cfg[4 optimized configs → S3<br/>scoring weights<br/>executor params<br/>predictor veto<br/>research params]
+    Read[Research / Predictor / Executor<br/>read on cold-start]
+
+    System --> Eval
+    Eval --> Sweep
+    Sweep -- holdout pass --> Cfg
+    Cfg --> Read
+    Read -.next week's behavior delta.-> System`;
 ---
 
-<Base title="Architecture — Nous Ergon" description="System architecture: six modules, three Step Function pipelines, autonomous parameter feedback.">
-  <section class="max-w-3xl mx-auto px-6 pt-16 pb-12">
-    <h1 class="text-2xl md:text-3xl font-semibold text-zinc-100 mb-2">Architecture</h1>
-    <p class="text-sm md:text-base text-zinc-400 leading-relaxed mb-8">
-      Six modules, three Step Function pipelines, autonomous parameter
-      feedback. For the same map rendered statically with diagrams, see the
-      <a class="text-sky-400 hover:text-sky-300 transition" href="https://github.com/cipher813/alpha-engine-docs">GitHub system README</a>.
-      For per-module deep dives, see the per-repo READMEs.
+<Base
+  title="Architecture — Nous Ergon"
+  description="System architecture: six modules, three Step Function pipelines on a fixed cadence, autonomous parameter feedback."
+>
+  <section class="max-w-4xl mx-auto px-6 pt-12 pb-16">
+    <h1 class="text-2xl md:text-3xl font-semibold text-zinc-100 mb-3">Architecture</h1>
+    <p class="text-sm md:text-base text-zinc-400 leading-relaxed mb-10">
+      The system flow at a glance &mdash; six modules, three Step Functions,
+      autonomous parameter feedback. For per-module deep dives, see the
+      per-repo READMEs at
+      <a class="text-sky-400 hover:text-sky-300 transition" href="https://github.com/cipher813">
+        github.com/cipher813
+      </a>.
     </p>
 
-    <h2 class="text-xs font-semibold uppercase tracking-wider text-sky-400 mb-3">The six modules</h2>
-    <ul class="text-sm md:text-base text-zinc-300 leading-relaxed space-y-2 mb-8 list-disc list-inside">
-      <li><strong class="text-zinc-100">Data</strong> &mdash; prices, macro, RAG corpus, universe features</li>
-      <li><strong class="text-zinc-100">Research</strong> &mdash; 6 sector teams + CIO + macro economist, LLM-as-judge</li>
-      <li><strong class="text-zinc-100">Predictor</strong> &mdash; L1 momentum/volatility GBMs + research calibrator &rarr; L2 Ridge meta-learner</li>
-      <li><strong class="text-zinc-100">Executor</strong> &mdash; risk-gated sizing + intraday daemon</li>
-      <li><strong class="text-zinc-100">Backtester</strong> &mdash; eval + parity + 4 config optimizers</li>
-      <li><strong class="text-zinc-100">Dashboard</strong> &mdash; this site + the live console at live.nousergon.ai</li>
-    </ul>
-
-    <h2 class="text-xs font-semibold uppercase tracking-wider text-sky-400 mb-3">The three pipelines</h2>
-    <ul class="text-sm md:text-base text-zinc-300 leading-relaxed space-y-2 mb-8 list-disc list-inside">
-      <li><strong class="text-zinc-100">Saturday</strong> &mdash; weekly research, predictor retrain, backtester evaluation + parameter optimization</li>
-      <li><strong class="text-zinc-100">Weekday morning</strong> &mdash; predictor inference, executor planner, intraday daemon start</li>
-      <li><strong class="text-zinc-100">EOD</strong> &mdash; post-market reconciliation, triggered by daemon shutdown after the trading day closes</li>
-    </ul>
-
-    <h2 class="text-xs font-semibold uppercase tracking-wider text-sky-400 mb-3">Autonomous feedback loop</h2>
-    <p class="text-sm md:text-base text-zinc-300 leading-relaxed">
-      The backtester evaluates the system's own outputs each week, runs parameter
-      sweeps, validates on holdout, and writes four optimized configs back to S3
-      &mdash; Research / Predictor / Executor read on cold-start. The mechanism that
-      makes Phase 3 alpha tuning a configuration flip rather than a code change.
+    <h2 class="text-xs font-semibold uppercase tracking-wider text-sky-400 mb-3">
+      System
+    </h2>
+    <p class="text-sm text-zinc-400 mb-3">
+      Six modules communicating exclusively through S3 &mdash; research, predictor,
+      executor, backtester, dashboard, and the data layer that feeds them.
     </p>
+    <div class="mermaid-frame mb-12">
+      <pre class="mermaid">{systemDiagram}</pre>
+    </div>
+
+    <h2 class="text-xs font-semibold uppercase tracking-wider text-sky-400 mb-3">
+      Step Function pipelines
+    </h2>
+    <p class="text-sm text-zinc-400 mb-5">
+      Three orchestrated pipelines run on a fixed cadence. EventBridge fires the
+      weekly + weekday triggers; daemon shutdown after the trading day fires the
+      EOD pipeline (single authoritative path).
+    </p>
+
+    <div class="text-sm font-medium text-zinc-200 mb-1">
+      Weekly &mdash; <code class="text-sky-300">alpha-engine-saturday-pipeline</code>
+    </div>
+    <p class="text-xs text-zinc-500 mb-3">
+      EventBridge <code>cron(0 9 ? * SAT *)</code> &mdash; Sat 09:00 UTC (Sat 02:00 AM PT)
+    </p>
+    <div class="mermaid-frame mb-8">
+      <pre class="mermaid">{saturdayDiagram}</pre>
+    </div>
+
+    <div class="text-sm font-medium text-zinc-200 mb-1">
+      Weekday morning &mdash; <code class="text-sky-300">alpha-engine-weekday-pipeline</code>
+    </div>
+    <p class="text-xs text-zinc-500 mb-3">
+      EventBridge <code>cron(5 13 ? * MON-FRI *)</code> &mdash; 6:05 AM PT
+    </p>
+    <div class="mermaid-frame mb-3">
+      <pre class="mermaid">{weekdayDiagram}</pre>
+    </div>
+    <p class="text-sm text-zinc-400 mb-8 leading-relaxed">
+      The daemon runs through the trading day, executing urgent exits at open
+      and timing entries via intraday triggers (pullback, VWAP, support,
+      time-expiry). Daemon shutdown after close (~1:15 PM PT) triggers the EOD
+      pipeline.
+    </p>
+
+    <div class="text-sm font-medium text-zinc-200 mb-1">
+      EOD &mdash; <code class="text-sky-300">alpha-engine-eod-pipeline</code>
+    </div>
+    <p class="text-xs text-zinc-500 mb-3">
+      Triggered by daemon shutdown &mdash; single authoritative path, no redundant cron
+    </p>
+    <div class="mermaid-frame mb-12">
+      <pre class="mermaid">{eodDiagram}</pre>
+    </div>
+
+    <h2 class="text-xs font-semibold uppercase tracking-wider text-sky-400 mb-3">
+      S3 data contracts
+    </h2>
+    <p class="text-sm text-zinc-400 mb-3">
+      The wires between modules &mdash; every output is a named S3 path; every
+      consumer reads on cold-start. Schema changes are additive only; path
+      changes dual-write for at least a week to preserve consumers.
+    </p>
+    <div class="mermaid-frame mb-12">
+      <pre class="mermaid">{s3Diagram}</pre>
+    </div>
+
+    <h2 class="text-xs font-semibold uppercase tracking-wider text-sky-400 mb-3">
+      Autonomous feedback loop
+    </h2>
+    <p class="text-sm text-zinc-400 mb-3 leading-relaxed">
+      What turns a static system into a learning one. The backtester evaluates
+      the system's own outputs each week, runs parameter sweeps, validates on
+      holdout, and writes four optimized configs back to S3 &mdash; Research /
+      Predictor / Executor read on cold-start. The mechanism that makes Phase 3
+      alpha tuning a configuration flip rather than a code change.
+    </p>
+    <div class="mermaid-frame mb-4">
+      <pre class="mermaid">{feedbackDiagram}</pre>
+    </div>
   </section>
+
+  <script is:inline type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: 'dark',
+      themeVariables: {
+        background: '#000000',
+        primaryColor: '#0c1a2c',
+        primaryTextColor: '#e4e4e7',
+        primaryBorderColor: '#3b82f6',
+        lineColor: '#71717a',
+        fontFamily: 'system-ui, -apple-system, sans-serif',
+        fontSize: '13px',
+      },
+      flowchart: { useMaxWidth: true, htmlLabels: true },
+    });
+  </script>
 </Base>
+
+<style>
+  .mermaid-frame {
+    background: #000;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 8px;
+    padding: 16px;
+    overflow-x: auto;
+  }
+  .mermaid-frame :global(pre.mermaid) {
+    background: transparent;
+    margin: 0;
+    text-align: center;
+    color: #e4e4e7;
+    font-size: 13px;
+  }
+  /* Until mermaid replaces the <pre> with SVG, show the raw source as
+     monospaced. After init, mermaid replaces .mermaid content with the
+     rendered SVG so this rule no longer applies. */
+  .mermaid-frame :global(pre.mermaid:not([data-processed='true'])) {
+    font-family: ui-monospace, monospace;
+    white-space: pre;
+    opacity: 0.6;
+  }
+  code {
+    color: rgb(125 211 252);
+    background: rgba(255, 255, 255, 0.04);
+    padding: 0.1em 0.35em;
+    border-radius: 3px;
+    font-size: 0.875em;
+  }
+</style>
