@@ -10,9 +10,10 @@ import streamlit as st
 
 
 _HERO_ONELINER = (
-    "An agentic orchestration system that researches, decides, and acts "
-    "on US equities — every signal, prediction, and fill traced from "
-    "research to P&amp;L."
+    "An experimentation harness for systematic equity strategies — "
+    "multi-agent research, machine-learning prediction, and risk-gated "
+    "execution, instrumented end-to-end from signal to P&amp;L. The first "
+    "experiment is alpha capture against the S&amp;P 500."
 )
 
 _MISSION = (

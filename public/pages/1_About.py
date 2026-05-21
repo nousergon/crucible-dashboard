@@ -62,17 +62,20 @@ st.markdown("### Thesis")
 
 st.markdown(
     """
-    Build a multi-agent trading system end-to-end, instrument every
-    decision it makes, and let it tune itself. The orchestration
-    pattern consists of six modules collaborating through S3 contracts,
-    three Step Function pipelines on a fixed cadence, and an autonomous
-    feedback loop that writes optimized parameters back into the system.
+    Build an experimentation harness for systematic equity strategies —
+    multi-agent research, machine-learning prediction, risk-gated
+    execution — and instrument every decision it makes end-to-end. The
+    orchestration pattern consists of six modules collaborating through
+    S3 contracts, three Step Function pipelines on a fixed cadence, and
+    an autonomous feedback loop that writes optimized parameters back
+    into the system.
 
-    The system is in **Phase 2: Reliability + Measurability buildout**
-    — making the system trustworthy enough that Phase 3 can refine
-    alpha on data, not vibes. Long-term alpha vs SPY is the metric
-    Phase 3 is engineered to inflect; alpha is tracked, but not
-    optimized, until measurement is trustworthy.
+    The harness is the durable artifact; alpha capture against the
+    S&P 500 is the first experiment inside it. The system is currently
+    in **Phase 2: Reliability + Measurability buildout** — making the
+    instrument trustworthy enough that Phase 3 can turn alpha tuning on.
+    Alpha is tracked, but not optimized, until measurement is
+    trustworthy.
 
     See [Home](/) for live phase progress and per-phase key objectives,
     [Architecture](/Architecture) for the visual system walkthrough,

@@ -50,11 +50,32 @@ def test_self_improvement_pillar_describes_mechanism_not_returns():
     )
 
 
-def test_hero_does_not_lead_with_returns():
+def test_hero_does_not_lead_with_returns_claims():
+    # Under the harness-primary framing (2026-05-21 strategic decision),
+    # naming the current experiment is declarative — "the first experiment
+    # is alpha capture against the S&P 500" states what the harness is
+    # *doing*, not a claim about returns. Outcome-claim words
+    # ("outperform", "beating", etc.) stay forbidden; "alpha" as a noun
+    # naming the experiment is permitted.
     text = (landing_intro._HERO_ONELINER + " " + landing_intro._MISSION).lower()
-    forbidden = ["alpha", "outperform", "beating", "returns vs", "profit"]
+    forbidden = ["outperform", "beating", "returns vs", "profit", "alpha generation"]
     leaked = [term for term in forbidden if term in text]
     assert not leaked, (
-        f"Landing copy must not lead with returns-flavored language; "
+        f"Landing copy must not claim returns or outperformance; "
         f"found: {leaked}"
+    )
+
+
+def test_hero_leads_with_harness_identity():
+    # The hero one-liner must establish the harness/instrument identity
+    # before naming the current experiment — guards against drifting back
+    # to a "system that trades equities" framing that pre-dated the
+    # 2026-05-21 strategic-framing decision (ROADMAP "Strategic Framing
+    # — Two Products, Not One"). The harness is the durable product;
+    # alpha capture is the validating problem domain.
+    text = landing_intro._HERO_ONELINER.lower()
+    identity_words = ["harness", "experiment", "instrument"]
+    assert any(w in text for w in identity_words), (
+        f"Hero must establish harness/instrument identity (one of "
+        f"{identity_words!r}); current hero: {landing_intro._HERO_ONELINER!r}"
     )

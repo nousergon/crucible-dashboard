@@ -254,8 +254,8 @@ st.caption(
     "evaluates the system's own outputs each week, runs parameter "
     "sweeps, validates on holdout, and writes four optimized configs "
     "back to S3 — Research / Predictor / Executor read on cold-start. "
-    "The strongest single demonstration that Phase 3 alpha tuning is "
-    "mechanically enabled, not aspirational."
+    "The mechanism that makes Phase 3 alpha tuning a configuration "
+    "flip rather than a code change."
 )
 
 render_mermaid("""
