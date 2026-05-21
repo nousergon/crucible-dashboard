@@ -1,0 +1,111 @@
+---
+import { getCollection, render } from 'astro:content';
+import Base from '../../layouts/Base.astro';
+
+export async function getStaticPaths() {
+  const retros = await getCollection('retros');
+  return retros.map((retro) => ({
+    params: { slug: retro.id },
+    props: { retro },
+  }));
+}
+
+const { retro } = Astro.props;
+const { Content } = await render(retro);
+
+const articleJsonLd = {
+  '@context': 'https://schema.org',
+  '@type': 'TechArticle',
+  headline: retro.data.title,
+  description: retro.data.summary,
+  datePublished: retro.data.date,
+  author: {
+    '@type': 'Person',
+    name: 'Brian McMahon',
+    url: 'https://www.linkedin.com/in/brian-c-mcmahon/',
+  },
+  publisher: {
+    '@type': 'Organization',
+    name: 'Nous Ergon',
+    url: 'https://nousergon.ai',
+  },
+};
+---
+
+<Base
+  title={`${retro.data.title} — Nous Ergon`}
+  description={retro.data.summary}
+  jsonLd={articleJsonLd}
+>
+  <article class="max-w-3xl mx-auto px-6 pt-12 pb-20">
+    <a
+      href="/retros/"
+      class="inline-block text-sm text-sky-400 hover:text-sky-300 transition mb-8"
+    >
+      &larr; Back to retros
+    </a>
+
+    <header class="mb-8">
+      <p class="text-xs uppercase tracking-wider text-zinc-500 mb-3">
+        {retro.data.date} &middot; {retro.data.severity} &middot;{' '}
+        {retro.data.domain}
+      </p>
+      <h1 class="text-2xl md:text-3xl font-semibold text-zinc-100 leading-tight">
+        {retro.data.title}
+      </h1>
+    </header>
+
+    <div class="prose-retro">
+      <Content />
+    </div>
+  </article>
+</Base>
+
+<style>
+  /* Scoped typography for rendered markdown body. Doesn't apply to the
+     header above because that's outside .prose-retro. */
+  .prose-retro {
+    color: rgb(212 212 216); /* zinc-300 */
+    font-size: 0.95rem;
+    line-height: 1.7;
+  }
+  .prose-retro :global(p) {
+    margin: 0 0 1.25em 0;
+  }
+  .prose-retro :global(h3) {
+    color: rgb(244 244 245); /* zinc-100 */
+    font-size: 1.05rem;
+    font-weight: 600;
+    margin: 2em 0 0.5em 0;
+  }
+  .prose-retro :global(strong) {
+    color: rgb(244 244 245);
+    font-weight: 600;
+  }
+  .prose-retro :global(em) {
+    color: rgb(212 212 216);
+    font-style: italic;
+  }
+  .prose-retro :global(code) {
+    color: rgb(125 211 252); /* sky-300 */
+    background: rgba(255, 255, 255, 0.04);
+    padding: 0.1em 0.35em;
+    border-radius: 3px;
+    font-size: 0.875em;
+  }
+  .prose-retro :global(ul),
+  .prose-retro :global(ol) {
+    margin: 0 0 1.25em 1.5em;
+  }
+  .prose-retro :global(li) {
+    margin-bottom: 0.5em;
+  }
+  .prose-retro :global(a) {
+    color: rgb(56 189 248); /* sky-400 */
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  .prose-retro :global(a:hover) {
+    color: rgb(125 211 252);
+  }
+</style>
