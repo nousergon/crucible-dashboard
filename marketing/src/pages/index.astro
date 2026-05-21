@@ -90,35 +90,38 @@ const pillars = [
             layer of the pipeline is observable and auditable:
             <ul class="mt-2 space-y-1.5 list-disc list-outside pl-5 marker:text-zinc-600">
               <li>
-                <strong class="text-zinc-300">Decision artifacts</strong> &mdash; every
-                LLM call writes prompt + response + tool calls + LLM-as-judge
-                rubric scores to S3 with structured metadata.
+                <strong class="text-zinc-300">Decision artifacts</strong> &mdash; research-agent
+                LLM calls capture prompt, response, tool calls, and structured metadata to
+                <code>s3://alpha-engine-research/decision_artifacts/</code>. Graded agent
+                outputs (e.g. thesis-updates) additionally carry LLM-as-judge rubric scores.
               </li>
               <li>
-                <strong class="text-zinc-300">Cost telemetry</strong> &mdash; per-call
-                cost tracked and aggregated to a weekly cost parquet.
+                <strong class="text-zinc-300">Cost telemetry</strong> &mdash; per-call cost
+                tracked at LLM call time and aggregated to a daily cost parquet.
               </li>
               <li>
-                <strong class="text-zinc-300">Trade audit log</strong> &mdash; every
-                order, fill, retry, and exit decision recorded with reasoning;
-                the audit trail that surfaced the
+                <strong class="text-zinc-300">Trade audit log</strong> &mdash; every order,
+                fill, and exit decision recorded with per-trade <code>realized_pnl</code>
+                and rationale where applicable; the audit trail that surfaced the
                 <a class="text-sky-400 hover:text-sky-300 transition" href="/retros/01-pfe-short-sell/"
                   >PFE short-sell retro</a
                 >.
               </li>
               <li>
-                <strong class="text-zinc-300">Performance metrics</strong> &mdash;
-                signal accuracy at 10d/30d, predictor L2 IC + per-L1 component IC,
-                NAV vs SPY, per-position P&amp;L attribution.
+                <strong class="text-zinc-300">Performance metrics</strong> &mdash; signal
+                accuracy at 10d / 30d, predictor rolling 30d IC, NAV vs SPY daily returns,
+                per-trade realized P&amp;L, daily portfolio-level attribution
+                (position P&amp;L + interest + unattributed residual).
               </li>
               <li>
-                <strong class="text-zinc-300">LangSmith tracing</strong> &mdash; trace
-                ID + token counts on every production LLM call.
+                <strong class="text-zinc-300">LangSmith tracing</strong> &mdash; trace ID +
+                token counts on every production LLM call (live since 2026-05-20).
               </li>
               <li>
-                <strong class="text-zinc-300">Decision capture + parity replay</strong>
-                &mdash; the backtester can replay any historical run against
-                current code, verifying behavior before promote.
+                <strong class="text-zinc-300">Parity replay</strong> &mdash; the backtester
+                replays the morning-planner stage of historical runs as an observational diff
+                against current code (daemon-stage intraday execution lives outside this
+                scope; the diff is observability, not a promote-gate).
               </li>
             </ul>
             <a
