@@ -94,6 +94,60 @@ for repo in "${REPOS[@]}"; do
     fi
 done
 
+# ── Hydrate gitignored config files from SSM Parameter Store ───────────────
+# The canonical source of truth for the dashboard's two config.yaml files
+# is AWS SSM (since 2026-05-21). Boot-pull fetches them on every run so
+# a fresh EC2 + cloned repo + boot-pull = fully self-bootstrapping; the
+# repo is git-only, no orphaned local files needed for the Streamlit apps
+# to start.
+#
+# Fail-loud (per ~/Development/CLAUDE.md item 3): missing or empty
+# parameters MUST hard-fail; never let Streamlit start with a stale or
+# placeholder config. The .example files in the repo are NOT runtime
+# fallbacks (per [[example-files-never-in-prod-config-search-paths]]).
+fetch_config_from_ssm() {
+    local ssm_name="$1"
+    local target="$2"
+    local content
+    if ! content=$(aws ssm get-parameter --name "$ssm_name" \
+            --query "Parameter.Value" --output text 2>>"$LOG"); then
+        log "FAIL SSM get-parameter $ssm_name — aws CLI errored"
+        return 1
+    fi
+    if [ -z "$content" ] || [ "$content" = "None" ]; then
+        log "FAIL SSM $ssm_name returned empty (refusing to write empty config)"
+        return 1
+    fi
+    # Diff-against-on-disk so we only rewrite (and trigger restart) on
+    # actual change. Avoids spurious restart-during-boot-pull churn.
+    if [ -f "$target" ] && [ "$content" = "$(cat "$target")" ]; then
+        log "OK   $target unchanged from SSM"
+        return 0
+    fi
+    # Atomic write via tmp + mv so a partial-write can't leave a half-baked
+    # config on disk if the process is killed between truncate and full write.
+    local tmp="${target}.ssm-tmp.$$"
+    printf '%s' "$content" > "$tmp"
+    sudo -u ec2-user mv "$tmp" "$target"
+    sudo chown ec2-user:ec2-user "$target"
+    log "OK   $target updated from SSM ($ssm_name)"
+    CONFIGS_CHANGED=1
+}
+
+CONFIGS_CHANGED=0
+if ! fetch_config_from_ssm /alpha-engine/dashboard/config.yaml \
+        /home/ec2-user/alpha-engine-dashboard/config.yaml; then
+    log "FAIL boot-pull aborting — could not fetch /alpha-engine/dashboard/config.yaml"
+    PULL_FAILURES=$((PULL_FAILURES + 1))
+    FAILED_REPOS+=("ssm:config.yaml")
+fi
+if ! fetch_config_from_ssm /alpha-engine/dashboard/live-config.yaml \
+        /home/ec2-user/alpha-engine-dashboard/live/config.yaml; then
+    log "FAIL boot-pull aborting — could not fetch /alpha-engine/dashboard/live-config.yaml"
+    PULL_FAILURES=$((PULL_FAILURES + 1))
+    FAILED_REPOS+=("ssm:live-config.yaml")
+fi
+
 # ── Sync systemd unit files from dashboard repo ─────────────────────────────
 # The source of truth for unit files is the repo. This reloads systemd and
 # restarts any service whose unit file actually changed, so drift between
@@ -128,6 +182,19 @@ if [ -d "$SYSTEMD_SRC" ]; then
             fi
         done
     fi
+fi
+
+# ── Restart streamlit services if SSM-hydrated configs changed ─────────────
+# Streamlit reads config.yaml at module import (decorator evaluation in
+# loaders/s3_loader.py via @st.cache_data(ttl=_ttl("trades"))). A config
+# change therefore requires a full process restart; reloading streamlit
+# secrets via the .streamlit/ path is not sufficient.
+if [ "$CONFIGS_CHANGED" -eq 1 ]; then
+    log "CONFIGS_CHANGED=1 — restarting streamlit services"
+    sudo systemctl restart dashboard 2>> "$LOG" || log "WARN restart dashboard failed"
+    sleep 2
+    sudo systemctl restart nous-ergon-live 2>> "$LOG" || log "WARN restart nous-ergon-live failed"
+    log "RESTART dashboard + nous-ergon-live (config-driven)"
 fi
 
 # ── Report failures to flow-doctor if any occurred ──────────────────────────

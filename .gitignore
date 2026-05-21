@@ -1,10 +1,19 @@
 *design*.md
-live/infrastructure/certs/
-live/infrastructure/secrets.env
 
-# Config (contains S3 paths, portfolio params — use *.example for onboarding)
+# Config — canonical source is SSM Parameter Store at
+# /alpha-engine/dashboard/{config.yaml,live-config.yaml}. boot-pull.sh
+# hydrates these from SSM on every run. The local files exist only
+# as a working copy on the EC2 instance; never commit them. Use the
+# .example files for onboarding.
 config.yaml
 live/config.yaml
+
+# Bootstrap-time secrets — canonical source is SSM SecureString at
+# /alpha-engine/dashboard/secrets/*. The local files below should
+# not exist post-migration (2026-05-21); kept gitignored only in
+# case a local dev temporarily reconstructs them for setup testing.
+live/infrastructure/certs/
+live/infrastructure/secrets.env
 
 # macOS
 .DS_Store
