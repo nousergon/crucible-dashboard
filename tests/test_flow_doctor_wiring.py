@@ -267,9 +267,23 @@ class TestLibVersionPin:
             "to be importable"
         )
         assert "@main" not in text, "alpha-engine-lib must be pinned to a tag, not @main"
-        assert "@v0.16.0" in text, (
-            "alpha-engine-lib should pin to v0.16.0 (canonical eval-artifact "
-            "readers — load_latest_eval_artifact + list_eval_artifacts; bumped "
-            "2026-05-14 to back the regime substrate loaders in s3_loader.py). "
-            "Update this test if the pin moves further forward."
+        assert "@v0.25.0" in text, (
+            "alpha-engine-lib should pin to v0.25.0 (adds "
+            "``alpha_engine_lib.ssm_log_capture`` — Python CLI chokepoint "
+            "for SSM-step log capture; forced by the 2026-05-22 "
+            "Saturday-SF Friday-PM dry-pass break. **ae-dashboard is the "
+            "SSM target instance for all 8 Saturday-SF spot states** "
+            "(``${MicroInstanceId}`` in CFN), so the SF JSON invokes "
+            "``/home/ec2-user/alpha-engine-dashboard/.venv/bin/python "
+            "-m alpha_engine_lib.ssm_log_capture run ...`` from THIS venv. "
+            "Bumped from v0.16.0 2026-05-22 evening — 9 minor versions "
+            "stale (dashboard only consumed setup_logging + "
+            "transparency.substrate_health, both stable across the bumped "
+            "range, so the pin didn't move until forced by the SF-side "
+            "need). All intermediate versions (v0.17-v0.24: flow-doctor "
+            "secret seeding, eval_artifacts canonical layout, "
+            "DecisionArtifact schema_version=2, StanceLoadings, "
+            "Telegram fan-out, alerts CLI + dedup substrate, pillar "
+            "scoring shapes) inherit transitively. Update this test if "
+            "the pin moves further forward."
         )
