@@ -524,6 +524,29 @@ def load_scoring_weights_history() -> list[dict]:
 
 
 @st.cache_data(ttl=_ttl("research"))
+def load_executor_params() -> dict | None:
+    """Load the LIVE `config/executor_params.json` from the research
+    bucket — the auto-tuned params the executor's
+    `_load_executor_params_from_s3` reads at cold-start.
+
+    Closes ROADMAP L234 — operator can now see effective
+    `min_score_to_enter` / `max_position_pct` / `atr_multiplier` on
+    the dashboard rather than having to `tail /var/log/executor.log
+    | grep "Loaded executor params from S3"`. Companion to the
+    existing `load_executor_params_history()` (audit trail of past
+    promotions) and `load_scoring_weights()` (research's analogous
+    artifact).
+
+    Schema (matches `optimizer/executor_optimizer.py::apply()` output):
+      min_score / max_position_pct / atr_multiplier /
+      time_decay_reduce_days / time_decay_exit_days / profit_take_pct
+      + metadata: updated_at, best_sharpe, best_alpha,
+      improvement_pct, n_combos_tested, manual_override.
+    """
+    return download_s3_json(_research_bucket(), "config/executor_params.json")
+
+
+@st.cache_data(ttl=_ttl("research"))
 def load_executor_params_history() -> list[dict]:
     """Return executor_params_history records sorted oldest → newest.
 

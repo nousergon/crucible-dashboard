@@ -194,6 +194,114 @@ st.dataframe(
 
 st.divider()
 
+# ─── Section 1b: Live Optimizer Params (ROADMAP L234) ───────────────────
+#
+# Surfaces the auto-tuned params the executor reads from S3 at
+# cold-start, so the operator no longer has to
+# `tail /var/log/executor.log | grep "Loaded executor params from S3"`
+# to see effective `min_score_to_enter` / `max_position_pct` /
+# `atr_multiplier`. Closes ROADMAP L234 dashboard side; the morning-
+# email side is a separate follow-up.
+
+st.subheader("Live Optimizer Params")
+st.caption(
+    "The backtester's `executor_optimizer` writes auto-tuned values "
+    "to `config/executor_params.json` on each Saturday SF promotion. "
+    "These OVERRIDE the corresponding keys in the executor's local "
+    "`risk.yaml` at cold-start. Keys NOT present here fall through to "
+    "the risk.yaml default — see "
+    "`alpha-engine/executor/main.py::_load_executor_params_from_s3`."
+)
+
+exec_params = load_executor_params()
+
+if not exec_params:
+    st.info(
+        "No `config/executor_params.json` found — executor running on "
+        "hardcoded defaults + local `risk.yaml`. The Saturday SF "
+        "backtester optimizer writes this artifact on each promotion."
+    )
+else:
+    meta_cols = st.columns(4)
+    updated = exec_params.get("updated_at", "—")
+    meta_cols[0].metric("Last promoted", str(updated))
+    best_sharpe = exec_params.get("best_sharpe")
+    meta_cols[1].metric(
+        "Best Sharpe (sweep)",
+        f"{best_sharpe:.2f}" if isinstance(best_sharpe, (int, float)) else "—",
+    )
+    best_alpha = exec_params.get("best_alpha")
+    meta_cols[2].metric(
+        "Best alpha (sweep)",
+        f"{best_alpha:+.1%}" if isinstance(best_alpha, (int, float)) else "—",
+    )
+    n_combos = exec_params.get("n_combos_tested")
+    meta_cols[3].metric(
+        "Combos tested",
+        f"{int(n_combos):,}" if isinstance(n_combos, (int, float)) else "—",
+    )
+
+    _PARAM_LABELS = {
+        "min_score": "min_score_to_enter (research score)",
+        "max_position_pct": "max_position_pct (NAV)",
+        "atr_multiplier": "atr_multiplier (trailing stop)",
+        "time_decay_reduce_days": "time_decay_reduce_days",
+        "time_decay_exit_days": "time_decay_exit_days",
+        "profit_take_pct": "profit_take_pct (intraday)",
+        "reduce_fraction": "reduce_fraction",
+        "atr_sizing_target_risk": "atr_sizing_target_risk",
+        "confidence_sizing_min": "confidence_sizing_min",
+        "confidence_sizing_range": "confidence_sizing_range",
+        "staleness_decay_per_day": "staleness_decay_per_day",
+        "earnings_sizing_reduction": "earnings_sizing_reduction",
+        "earnings_proximity_days": "earnings_proximity_days",
+        "momentum_gate_threshold": "momentum_gate_threshold",
+        "correlation_block_threshold": "correlation_block_threshold",
+        "momentum_exit_threshold": "momentum_exit_threshold",
+        "use_p_up_sizing": "use_p_up_sizing (Phase 4 flag)",
+        "p_up_sizing_blend": "p_up_sizing_blend",
+        "disabled_triggers": "disabled_triggers (intraday)",
+    }
+    _METADATA_KEYS = {
+        "updated_at", "best_sharpe", "best_alpha", "improvement_pct",
+        "improvement_delta", "n_combos_tested", "manual_override",
+    }
+    rows = []
+    for key, val in exec_params.items():
+        if key in _METADATA_KEYS:
+            continue
+        label = _PARAM_LABELS.get(key, key)
+        if isinstance(val, float):
+            display = f"{val:.4f}" if abs(val) < 1 else f"{val:.2f}"
+        elif isinstance(val, list):
+            display = ", ".join(str(x) for x in val) if val else "(none)"
+        else:
+            display = str(val)
+        rows.append({"Param": label, "Live value": display, "Source": "S3 (auto-tuned)"})
+
+    if rows:
+        params_df = pd.DataFrame(rows).sort_values("Param").reset_index(drop=True)
+        st.dataframe(params_df, hide_index=True, use_container_width=True)
+    else:
+        st.caption("Artifact present but no auto-tuned param keys recognized.")
+
+    if exec_params.get("manual_override"):
+        st.warning(
+            "**Manual override flag set** in `config/executor_params.json` — "
+            "the backtester optimizer is currently held off the auto-apply "
+            "path. Investigate before next Saturday SF."
+        )
+
+    improvement_pct = exec_params.get("improvement_pct")
+    if isinstance(improvement_pct, (int, float)):
+        st.caption(
+            f"Promotion gate margin: **{improvement_pct:+.1%}** Sharpe "
+            f"improvement vs prior live config (backtester "
+            f"`executor_optimizer.recommend` decision)."
+        )
+
+st.divider()
+
 # ─── Section 2: Data Volume Growth ──────────────────────────────────────
 st.subheader("Data Volume Growth")
 
