@@ -837,6 +837,16 @@ def load_predictor_metrics() -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def load_production_health() -> dict:
+    """Load the backtester-written predictor production-health metrics
+    (`predictor/metrics/production_health.json`) — rolling 30d IC, hit
+    rate, per-L1 + L2 IC decomposition (ROADMAP L135), regime IC, mode
+    collapse flags. Returns {} on any failure.
+    """
+    data = _fetch_s3_json(_research_bucket(), f"{_PREDICTOR_METRICS_PREFIX}/production_health.json")
+    return data if isinstance(data, dict) else {}
+
+
 def load_predictor_manifest() -> dict:
     """Load predictor weights manifest from S3 (`predictor/weights/meta/manifest.json`).
 

@@ -14,7 +14,7 @@ import streamlit as st
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from loaders.s3_loader import load_predictions_json, load_predictor_metrics, load_signals_json, load_mode_history, load_feature_importance
+from loaders.s3_loader import load_predictions_json, load_predictor_metrics, load_production_health, load_signals_json, load_mode_history, load_feature_importance
 from loaders.db_loader import get_predictor_outcomes
 from loaders.signal_loader import get_available_signal_dates
 from charts.predictor_chart import make_model_drift_chart, make_feature_importance_chart
@@ -62,6 +62,121 @@ m5.metric("Hit Rate (30d Rolling)", f"{hit_rate:.1%}")
 m6.metric("IC (30d)", f"{metrics.get('ic_30d', 0):.3f}")
 m7.metric("IC IR (30d)", f"{metrics.get('ic_ir_30d', 0):.3f}")
 m8.metric("Predictions Today", metrics.get("n_predictions_today", 0))
+
+st.divider()
+
+# ---------------------------------------------------------------------------
+# IC decomposition (per-L1 + L2 + L2-lift) — ROADMAP L135
+# ---------------------------------------------------------------------------
+#
+# Reads from `predictor/metrics/production_health.json` (written weekly
+# by alpha-engine-backtester `analysis/production_health.py`). Answers
+# two operational questions the aggregate `IC (30d)` above can't:
+#   1. Which L1 component is contributing or drifting?
+#   2. Is the L2 Ridge stacker doing real work, or could ensemble
+#      averaging match it?
+# `l2_lift_vs_l1_mean` ≤ 0 across multiple cycles = the meta-learner
+# is not adding value.
+
+st.subheader("IC Decomposition (per-L1 + L2)")
+
+prod_health = load_production_health()
+
+l1_components = prod_health.get("l1_components") or {}
+l2_alpha_ic = prod_health.get("l2_alpha_ic")
+l2_lift = prod_health.get("l2_lift_vs_l1_mean")
+n_joined = prod_health.get("l1_l2_n_joined", 0)
+
+if not prod_health:
+    st.info(
+        "No `production_health.json` available yet. Surface populates "
+        "after the first weekly Saturday SF Backtester run that joins "
+        "predictor_outcomes with the per-date predictions artifacts."
+    )
+elif not l1_components and l2_alpha_ic is None:
+    st.info(
+        "IC decomposition not yet computed for this cycle "
+        f"(`l1_l2_n_joined`={n_joined}). Likely cause: predictions/{{date}}.json "
+        "artifacts missing for the lookback window, or early-cycle "
+        "sample counts below the threshold."
+    )
+else:
+    # Three L1 components side-by-side with L2 + the lift delta.
+    icols = st.columns(5)
+    momentum_ic = l1_components.get("momentum")
+    volatility_ic = l1_components.get("volatility")
+    research_ic = l1_components.get("research_calibrator")
+    icols[0].metric(
+        "Momentum L1 IC",
+        f"{momentum_ic:.3f}" if momentum_ic is not None else "—",
+    )
+    icols[1].metric(
+        "Volatility L1 IC",
+        f"{volatility_ic:.3f}" if volatility_ic is not None else "—",
+    )
+    icols[2].metric(
+        "Research Cal L1 IC",
+        f"{research_ic:.3f}" if research_ic is not None else "—",
+    )
+    icols[3].metric(
+        "L2 Stacker IC",
+        f"{l2_alpha_ic:.3f}" if l2_alpha_ic is not None else "—",
+    )
+    if l2_lift is not None:
+        delta_arrow = "↑" if l2_lift > 0 else ("↓" if l2_lift < 0 else "→")
+        icols[4].metric(
+            "L2 lift vs L1 mean",
+            f"{l2_lift:+.3f}",
+            help=(
+                "L2_ic - mean(L1_ic). Positive = Ridge stacker is "
+                "contributing alpha above ensemble averaging. Negative "
+                "or near-zero across multiple cycles = meta-learner not "
+                "adding value."
+            ),
+            delta=delta_arrow,
+        )
+    else:
+        icols[4].metric("L2 lift vs L1 mean", "—")
+
+    # Mini chart — single-bar visual of per-L1 + L2 ICs for quick scan.
+    bar_data = []
+    for label, val in (
+        ("Momentum L1", momentum_ic),
+        ("Volatility L1", volatility_ic),
+        ("Research Cal L1", research_ic),
+        ("L2 (Ridge)", l2_alpha_ic),
+    ):
+        if val is not None:
+            bar_data.append({"Component": label, "Spearman IC": float(val)})
+    if bar_data:
+        bar_df = pd.DataFrame(bar_data)
+        fig_bars = go.Figure(
+            data=[
+                go.Bar(
+                    x=bar_df["Component"],
+                    y=bar_df["Spearman IC"],
+                    marker_color=[
+                        "#60a5fa", "#60a5fa", "#60a5fa", "#22c55e",
+                    ][: len(bar_df)],
+                )
+            ]
+        )
+        fig_bars.update_layout(
+            template="plotly_dark",
+            height=260,
+            margin=dict(l=20, r=20, t=20, b=20),
+            yaxis_title="Spearman IC vs canonical_actual",
+            showlegend=False,
+        )
+        st.plotly_chart(fig_bars, use_container_width=True)
+
+    st.caption(
+        f"Source: `s3://alpha-engine-research/predictor/metrics/production_health.json`. "
+        f"Joined {n_joined} predictor-outcomes rows with per-date predictions "
+        "artifacts; lookback "
+        f"{prod_health.get('lookback_days', '?')}d. "
+        f"Last computed for {prod_health.get('date', '?')}. ROADMAP L135."
+    )
 
 st.divider()
 
