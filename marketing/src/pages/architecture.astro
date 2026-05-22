@@ -124,7 +124,7 @@ const feedbackDiagram = `flowchart LR
       </a>.
     </p>
 
-    <div class="overflow-x-auto mb-10">
+    <div class="overflow-x-auto mb-6">
       <table class="text-sm md:text-base text-zinc-300 border border-white/10 rounded">
         <tbody>
           <tr class="border-b border-white/5">
@@ -170,6 +170,11 @@ const feedbackDiagram = `flowchart LR
         </tbody>
       </table>
     </div>
+
+    <p class="text-xs text-zinc-500 mb-10">
+      Diagrams are interactive &mdash; drag to pan, use the &plus;/&minus;/reset
+      controls in the corner to zoom.
+    </p>
 
     <h2 class="text-xs font-semibold uppercase tracking-wider text-sky-400 mb-3">
       System
@@ -256,8 +261,10 @@ const feedbackDiagram = `flowchart LR
 
   <script is:inline type="module">
     import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+    import svgPanZoom from 'https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.2/+esm';
+
     mermaid.initialize({
-      startOnLoad: true,
+      startOnLoad: false,
       theme: 'dark',
       themeVariables: {
         background: '#000000',
@@ -269,6 +276,29 @@ const feedbackDiagram = `flowchart LR
         fontSize: '15px',
       },
       flowchart: { useMaxWidth: true, htmlLabels: true },
+    });
+
+    await mermaid.run({ querySelector: '.mermaid' });
+
+    // After mermaid replaces each <pre> with an <svg>, attach svg-pan-zoom so
+    // the diagrams become draggable + zoomable with built-in control icons.
+    // Mouse-wheel zoom is left off so the diagrams don't hijack page scroll.
+    document.querySelectorAll('.mermaid-frame svg').forEach((svg) => {
+      svg.removeAttribute('width');
+      svg.removeAttribute('height');
+      svg.style.width = '100%';
+      svg.style.height = '420px';
+      svg.style.cursor = 'grab';
+      svgPanZoom(svg, {
+        zoomEnabled: true,
+        controlIconsEnabled: true,
+        panEnabled: true,
+        fit: true,
+        center: true,
+        mouseWheelZoomEnabled: false,
+        minZoom: 0.5,
+        maxZoom: 8,
+      });
     });
   </script>
 </Base>
