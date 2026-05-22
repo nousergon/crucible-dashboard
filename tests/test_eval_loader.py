@@ -273,3 +273,171 @@ class TestLoadEvalArtifacts:
         )
         assert len(df) == 1
         assert df.iloc[0]["run_id"] == "2026-05-09"
+
+
+# ── Judge calibration review (ROADMAP L480 SOTA reframe) ──────────────────
+
+
+from loaders.eval_loader import (  # noqa: E402
+    _score_uncertainty,
+    _review_id,
+    load_recent_eval_artifacts_for_review,
+    save_calibration_review,
+)
+
+
+@pytest.fixture(autouse=True)
+def _clear_st_cache():
+    """Streamlit's @st.cache_data memoizes by args; clear between tests
+    so a stubbed paginator from one test doesn't leak into another.
+    """
+    try:
+        import streamlit as _st
+        _st.cache_data.clear()
+    except Exception:
+        pass
+    yield
+    try:
+        import streamlit as _st
+        _st.cache_data.clear()
+    except Exception:
+        pass
+
+
+class TestScoreUncertainty:
+    def test_lower_distance_higher_priority(self):
+        near = _score_uncertainty([{"score": 3}, {"score": 3}, {"score": 3}])
+        edge = _score_uncertainty([{"score": 1}, {"score": 5}, {"score": 1}])
+        assert near < edge
+
+    def test_empty_dimensions_back_of_queue(self):
+        assert _score_uncertainty([]) == float("inf")
+        assert _score_uncertainty(None) == float("inf")  # type: ignore[arg-type]
+
+    def test_missing_score_skipped_not_crashed(self):
+        result = _score_uncertainty([
+            {"score": 3}, {"score": None}, {"score": 4},
+        ])
+        # Mean of |3-3| + |4-3| = (0 + 1)/2 = 0.5; the None row drops.
+        assert result == pytest.approx(0.5)
+
+
+class TestLoadRecentEvalArtifactsForReview:
+    def test_ranks_by_uncertainty_lowest_first(self, mock_s3):
+        certain_art = _eval_artifact_payload(scores=[("d1", 1), ("d2", 5)])
+        uncertain_art = _eval_artifact_payload(scores=[("d1", 3), ("d2", 3)])
+        certain_art["judged_agent_id"] = "ic_cio"
+        uncertain_art["judged_agent_id"] = "sector_quant:tech"
+        certain_art["run_id"] = "C"
+        uncertain_art["run_id"] = "U"
+
+        _setup_paginator_responses(
+            mock_s3["paginator"],
+            dates=["2026-05-22"],
+            keys_by_date={"2026-05-22": ["a.json", "b.json"]},
+        )
+
+        def fetch(_b, key):
+            return certain_art if key == "a.json" else uncertain_art
+
+        mock_s3["fetch_json"].side_effect = fetch
+
+        batch = load_recent_eval_artifacts_for_review(
+            n=2, lookback_days=365, bucket="test-bucket",
+        )
+        assert batch[0]["run_id"] == "U"
+        assert batch[1]["run_id"] == "C"
+
+    def test_excludes_judge_skipped_artifacts(self, mock_s3):
+        skipped = _eval_artifact_payload()
+        skipped["judge_skip_reason"] = "precluded_by_empty_upstream"
+        real = _eval_artifact_payload(scores=[("d1", 3)])
+
+        _setup_paginator_responses(
+            mock_s3["paginator"],
+            dates=["2026-05-22"],
+            keys_by_date={"2026-05-22": ["a.json", "b.json"]},
+        )
+        mock_s3["fetch_json"].side_effect = lambda _b, k: (
+            skipped if k == "a.json" else real
+        )
+
+        batch = load_recent_eval_artifacts_for_review(
+            n=5, lookback_days=365, bucket="test-bucket",
+        )
+        assert len(batch) == 1
+        assert "judge_skip_reason" not in batch[0]
+
+    def test_reviewed_ids_drop_out_of_queue(self, mock_s3):
+        art = _eval_artifact_payload()
+        _setup_paginator_responses(
+            mock_s3["paginator"],
+            dates=["2026-05-22"],
+            keys_by_date={"2026-05-22": ["a.json"]},
+        )
+        mock_s3["fetch_json"].side_effect = lambda _b, _k: art
+
+        rid = _review_id(
+            "2026-05-22",
+            art["judged_agent_id"],
+            art["run_id"],
+            art["judge_model"],
+        )
+        batch = load_recent_eval_artifacts_for_review(
+            n=5, lookback_days=365, bucket="test-bucket",
+            reviewed_ids=(rid,),
+        )
+        assert batch == []
+
+
+class TestSaveCalibrationReview:
+    def test_missing_review_id_rejected(self, mock_s3):
+        ok = save_calibration_review({"foo": "bar"}, bucket="test-bucket")
+        assert ok is False
+        mock_s3["client"].put_object.assert_not_called()
+
+    def test_first_write_uploads_jsonl_line(self, mock_s3):
+        mock_s3["client"].get_object.side_effect = Exception("NoSuchKey")
+        ok = save_calibration_review(
+            {
+                "review_id": "2026-05-22__ic_cio__r1__haiku",
+                "per_dimension": [
+                    {"dimension": "d1", "blind_score": 3, "llm_score": 4, "final_score": 3},
+                ],
+            },
+            bucket="test-bucket",
+        )
+        assert ok is True
+        mock_s3["client"].put_object.assert_called_once()
+        body = mock_s3["client"].put_object.call_args.kwargs["Body"]
+        if isinstance(body, bytes):
+            body = body.decode("utf-8")
+        import json as _json
+        parsed = _json.loads(body.strip())
+        assert parsed["review_id"] == "2026-05-22__ic_cio__r1__haiku"
+        assert "reviewed_at_utc" in parsed
+
+    def test_append_preserves_prior_lines(self, mock_s3):
+        prior = b'{"review_id": "old-id"}\n'
+        mock_s3["client"].get_object.side_effect = None
+        mock_s3["client"].get_object.return_value = {
+            "Body": MagicMock(read=lambda: prior)
+        }
+        ok = save_calibration_review(
+            {"review_id": "new-id"}, bucket="test-bucket",
+        )
+        assert ok is True
+        body = mock_s3["client"].put_object.call_args.kwargs["Body"]
+        if isinstance(body, bytes):
+            body = body.decode("utf-8")
+        import json as _json
+        lines = [_json.loads(ln) for ln in body.strip().split("\n") if ln]
+        assert len(lines) == 2
+        assert lines[0]["review_id"] == "old-id"
+        assert lines[1]["review_id"] == "new-id"
+
+    def test_failure_returns_false_no_raise(self, mock_s3):
+        mock_s3["client"].get_object.side_effect = Exception("NoSuchKey")
+        mock_s3["client"].put_object.side_effect = RuntimeError("S3 down")
+        ok = save_calibration_review({"review_id": "x"}, bucket="test-bucket")
+        assert ok is False
