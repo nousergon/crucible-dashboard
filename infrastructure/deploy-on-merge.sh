@@ -1,12 +1,14 @@
 #!/bin/bash
-# deploy-on-merge.sh — Refresh lib, restart streamlit services, health
-# check. Invoked via SSM (as root) from the dashboard deploy workflow
-# AFTER the caller has already pulled the repo to the target SHA.
+# deploy-on-merge.sh — Refresh lib, reload nginx on conf change,
+# restart streamlit services, health check. Invoked via SSM (as root)
+# from the dashboard deploy workflow AFTER the caller has already
+# pulled the repo to the target SHA.
 #
 # The SSM command body owns the git pull (it must run before this
 # script exists at the new path); this script owns everything after:
-# pip / lib refresh, systemctl restart of both services, and the
-# health check on both /_stcore/health endpoints.
+# pip / lib refresh, nginx config staging + reload on infrastructure/
+# nginx.conf change, systemctl restart of both streamlit services, and
+# the health check on both /_stcore/health endpoints.
 #
 # Boot-pull.sh remains the daily safety-net for ALL repos. This is the
 # dashboard-specific fast-path so a PR merge becomes live in ~30s
@@ -52,7 +54,46 @@ if [ -f ".venv/bin/pip" ] && [ -f "requirements.txt" ]; then
     fi
 fi
 
-# ── 2. Restart both streamlit services (we are root) ───────────────────────
+# ── 2. Reload nginx if infrastructure/nginx.conf changed ──────────────────
+# Same conditional-on-diff pattern as the requirements.txt block above.
+# nginx.conf is the source of truth for the routing layer (server_name +
+# proxy_pass + sub_filter rules); previously a config edit required
+# manually SSH'ing in to copy + reload. Now the fast-path auto-applies it.
+#
+# Order matters: nginx step runs BEFORE the streamlit restarts so a
+# broken nginx config fails the deploy without bouncing streamlit.
+NGINX_CONF_REPO="$REPO_DIR/infrastructure/nginx.conf"
+NGINX_CONF_LIVE="/etc/nginx/conf.d/nousergon.conf"
+if [ -f "$NGINX_CONF_REPO" ]; then
+    if sudo -u ec2-user git diff "${CURRENT_SHA}~1" "$CURRENT_SHA" -- infrastructure/nginx.conf 2>/dev/null | grep -q '^[+-]'; then
+        log "infrastructure/nginx.conf changed — staging + validating"
+        # Stage to a tmp file, validate via nginx -t, then atomic-rename
+        # into place. nginx -t against the staged file catches syntax
+        # errors before the live file is touched.
+        cp "$NGINX_CONF_REPO" "${NGINX_CONF_LIVE}.new" \
+            || fail "cp nginx.conf staged"
+        # nginx -t reads the entire conf.d/ tree; copy to a temp path under
+        # conf.d/ would break the check. Instead, swap atomically then
+        # validate; revert on failure.
+        cp -p "$NGINX_CONF_LIVE" "${NGINX_CONF_LIVE}.bak" 2>/dev/null || true
+        mv "${NGINX_CONF_LIVE}.new" "$NGINX_CONF_LIVE" \
+            || fail "mv nginx.conf into place"
+        if ! nginx -t 2>>"$LOG"; then
+            log "FAIL nginx -t after staging new conf — reverting"
+            if [ -f "${NGINX_CONF_LIVE}.bak" ]; then
+                mv "${NGINX_CONF_LIVE}.bak" "$NGINX_CONF_LIVE" \
+                    || log "WARN nginx.conf revert mv failed"
+                nginx -t >>"$LOG" 2>&1 || log "WARN nginx -t still failing after revert"
+            fi
+            fail "nginx -t (new conf rejected)"
+        fi
+        rm -f "${NGINX_CONF_LIVE}.bak"
+        systemctl reload nginx 2>>"$LOG" || fail "systemctl reload nginx"
+        log "reloaded nginx with updated nousergon.conf"
+    fi
+fi
+
+# ── 3. Restart both streamlit services (we are root) ───────────────────────
 # Both services run from this same repo. Two-second stagger avoids a
 # simultaneous blip on console + live site.
 systemctl restart dashboard 2>>"$LOG" || fail "restart dashboard"
@@ -61,7 +102,7 @@ sleep 2
 systemctl restart nous-ergon-live 2>>"$LOG" || fail "restart nous-ergon-live"
 log "restarted nous-ergon-live.service"
 
-# ── 3. Health check ─────────────────────────────────────────────────────────
+# ── 4. Health check ─────────────────────────────────────────────────────────
 # Streamlit's /_stcore/health returns 200 OK with body "ok" once the
 # server is ready. Give it up to 30s per service to bind the port.
 wait_for_health() {
