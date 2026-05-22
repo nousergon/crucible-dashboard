@@ -25,6 +25,7 @@ from loaders.s3_loader import (
     get_s3_client,
     list_s3_prefixes,
     load_eod_pnl,
+    load_executor_params,
     load_trades_full,
 )
 
