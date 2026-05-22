@@ -10,11 +10,13 @@ on:
   pull_request:
     paths:
       - marketing/**
+      - blog/**
       - .github/workflows/marketing-ci.yml
   push:
     branches: [main]
     paths:
       - marketing/**
+      - blog/**
       - .github/workflows/marketing-ci.yml
   workflow_dispatch:
 

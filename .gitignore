@@ -32,6 +32,11 @@ flow_doctor.db
 # Hugo blog build output (source is tracked, built files are not)
 blog/public/
 blog/resources/
+
+# Hugo blog output copied into the marketing Astro static dir at build time
+# (npm run build:blog inside marketing/ runs hugo --destination here).
+# CF Pages reruns this on every deploy via the prebuild step.
+marketing/public/blog/
 # Gitleaks config (symlink to shared config)
 .gitleaks.toml
 
