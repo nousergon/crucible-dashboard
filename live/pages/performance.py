@@ -1,6 +1,7 @@
-"""Nous Ergon — Performance.
+"""Performance — portfolio KPIs, NAV vs SPY trajectory, alpha stats.
 
-NAV vs SPY trajectory, alpha-day stats, alpha-distribution histogram.
+Top-line summary tiles + the NAV chart (with uptime-incident markers)
++ alpha-day breakdown + alpha-distribution histogram.
 """
 
 import os
@@ -16,13 +17,6 @@ from shared import load_and_prepare_eod
 
 _UPTIME_WINDOW_SESSIONS = 20
 
-st.set_page_config(
-    page_title="Performance — Nous Ergon",
-    page_icon="📈",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
 st.title("Performance")
 st.caption(
     "Phase 2 baseline. Tracked, not optimized — Phase 3 turns on tuning "
@@ -34,6 +28,30 @@ if prep is None:
     st.warning("Portfolio data temporarily unavailable. Please check back later.")
     st.stop()
 
+# ---------------------------------------------------------------------------
+# KPI tiles
+# ---------------------------------------------------------------------------
+
+st.markdown("### Portfolio Snapshot")
+st.caption(f"As of {prep.perf_date}")
+
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("Inception", prep.inception_date.strftime("%b %d, %Y"))
+col2.metric("Portfolio NAV", f"${prep.nav:,.0f}")
+col3.metric(
+    "Cumulative Alpha",
+    f"{prep.cumulative_alpha_bps:+.0f} bps",
+    delta="vs S&P 500",
+    delta_color="off",
+)
+col4.metric("Alpha Days", f"{prep.up_days} ▲  {prep.down_days} ▼")
+
+st.divider()
+
+# ---------------------------------------------------------------------------
+# NAV vs SPY
+# ---------------------------------------------------------------------------
+
 uptime_history = load_uptime_history(max_sessions=_UPTIME_WINDOW_SESSIONS)
 
 st.markdown("### Portfolio vs S&P 500")
@@ -42,11 +60,15 @@ fig_nav = make_nav_chart(prep.eod, uptime_records=uptime_history)
 st.plotly_chart(fig_nav, width="stretch")
 st.caption(
     "Vertical amber lines mark days with major executor incidents "
-    "(≥10% downtime or ≥5 service restarts). Reliability is tracked via "
-    "the System Report Card on the Overview page."
+    "(≥10% downtime or ≥5 service restarts). Reliability is tracked on "
+    "the Uptime page."
 )
 
 st.divider()
+
+# ---------------------------------------------------------------------------
+# Alpha stats
+# ---------------------------------------------------------------------------
 
 st.markdown("### Alpha Performance")
 st.caption(f"As of {prep.perf_date}")
