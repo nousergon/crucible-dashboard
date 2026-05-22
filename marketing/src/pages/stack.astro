@@ -13,34 +13,49 @@ interface StackSection {
 
 const sections: StackSection[] = [
   {
-    heading: 'Foundation',
+    heading: 'Python',
     entries: [
       {
         name: 'Python 3.12 / 3.13',
         body: 'Primary language across all eight repos. Lambda runs 3.12; local development on 3.13.',
       },
+    ],
+  },
+  {
+    heading: 'AWS',
+    entries: [
       {
-        name: 'AWS Step Functions (over Airflow / Dagster / Prefect)',
+        name: 'Step Functions (over Airflow / Dagster / Prefect)',
         body: 'Three pipelines (Saturday weekly research, weekday morning, EOD post-close) orchestrated as state machines. Native to the AWS account that already runs Lambda + EC2 + S3, so no new infrastructure to operate. Execution history is itself the audit trail.',
       },
       {
-        name: 'AWS Lambda',
+        name: 'Lambda',
         body: 'Stateless agent calls, predictor inference, LLM-as-judge, rationale clustering, replay-concordance, replay-counterfactual. Container-image deploys via ECR for the Python 3.12 research Lambda.',
       },
       {
-        name: 'AWS EC2',
+        name: 'EC2',
         body: '`t3.small` for the executor daemon (stateful, holds the IB Gateway connection), `t3.micro` for the dashboard, `c5.large` spot for batch (predictor training + backtester). Right-sized per workload — when `predictor_data_prep` OOMed on c5.large, the response was a pandas refactor (~1.1 GB → ~91 MB resident), not a bump to xlarge.',
       },
       {
         name: 'CloudFormation',
         body: 'Infrastructure-as-Code for Step Functions, Lambda functions, IAM roles, EventBridge rules. Drift detector compares CloudFormation stamps against live AWS state weekly.',
       },
+    ],
+  },
+  {
+    heading: 'Anthropic Claude',
+    entries: [
       {
-        name: 'Anthropic Claude — tiered',
+        name: 'Tiered Haiku + Sonnet',
         body: 'Haiku for per-ticker quant, qual, and peer-review (~12 calls per Saturday run); Sonnet only for synthesis (macro economist, CIO batch evaluation, nuanced judge cases). Sonnet is ~5× Haiku — reserving it for synthesis keeps per-run cost stable.',
       },
+    ],
+  },
+  {
+    heading: 'Streamlit',
+    entries: [
       {
-        name: 'Streamlit',
+        name: 'Read-only consoles',
         body: 'Live data console at `live.nousergon.ai` and the private interview-demo console at `console.nousergon.ai`. Pragmatic pick for read-only monitoring: a custom React dashboard would be weeks of work for the same outcome.',
       },
     ],
