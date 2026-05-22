@@ -324,6 +324,54 @@ else:
     if signals_data:
         universe = {t["ticker"]: t for t in signals_data.get("universe", [])}
 
+    # ROADMAP attractiveness-pillars-arc P2 (Phase 5 follow-up) — stance
+    # source attribution. alpha-engine-predictor #183 added
+    # `stance_source: "pillar" | "heuristic"` to predictions/{date}.json
+    # so the operator can attribute every stance assignment to the code
+    # path that produced it. Pillar path fires when research's signal
+    # carries non-empty `composite_breakdown.pillar_contributions`;
+    # falls back to the feature-driven heuristic stance classifier
+    # otherwise. KPI strip surfaces today's split at-a-glance.
+    stance_source_counts = {"pillar": 0, "heuristic": 0, "unknown": 0}
+    for pred in predictions.values():
+        src = pred.get("stance_source") or "unknown"
+        stance_source_counts[src] = stance_source_counts.get(src, 0) + 1
+
+    n_total_preds = sum(stance_source_counts.values())
+    if n_total_preds:
+        scols = st.columns(4)
+        n_pillar = stance_source_counts.get("pillar", 0)
+        n_heur = stance_source_counts.get("heuristic", 0)
+        n_unknown = stance_source_counts.get("unknown", 0)
+        pillar_pct = (n_pillar / n_total_preds) * 100.0
+        scols[0].metric("Total predictions", f"{n_total_preds}")
+        scols[1].metric(
+            "Stance: pillar path",
+            f"{n_pillar}",
+            delta=f"{pillar_pct:.0f}%",
+            help=(
+                "Predictions whose stance was derived from research's "
+                "pillar contributions (Phase 5 pillar-aware classify_stance). "
+                "Higher = the new pillar code path is firing."
+            ),
+        )
+        scols[2].metric(
+            "Stance: heuristic path",
+            f"{n_heur}",
+            help=(
+                "Predictions falling back to the feature-driven heuristic "
+                "stance classifier (no pillar_contributions on the signal)."
+            ),
+        )
+        scols[3].metric(
+            "Stance: unknown",
+            f"{n_unknown}",
+            help=(
+                "Predictions whose `stance_source` field is missing — "
+                "pre-predictor-#183 archive entries or test fixtures."
+            ),
+        )
+
     rows = []
     for ticker, pred in predictions.items():
         conf = pred.get("prediction_confidence") or 0.0
@@ -342,6 +390,8 @@ else:
             "P(UP)": p_up,
             "P(FLAT)": pred.get("p_flat") or 0.0,
             "P(DOWN)": p_down,
+            "Stance": pred.get("stance") or "—",
+            "Source": pred.get("stance_source") or "—",
             "Score Modifier": f"+{modifier:.1f}" if modifier > 0 else (f"{modifier:.1f}" if modifier != 0 else "—"),
             "Signal": sig.get("signal", "—"),
             "Score": sig.get("score", "—"),
@@ -358,7 +408,17 @@ else:
                 return ["background-color: #f8d7da"] * len(row)
             return [""] * len(row)
 
+        def _source_color(val):
+            # Pillar path = Phase 5 live; heuristic = legacy fallback;
+            # blank = predictions/{date}.json predates predictor #183.
+            if val == "pillar":
+                return "background-color: #d4edda; color: #155724"
+            if val == "heuristic":
+                return "background-color: #fff3cd; color: #856404"
+            return ""
+
         styled = df.style.apply(_row_color, axis=1)
+        styled = styled.map(_source_color, subset=["Source"])
         for col in ["Confidence", "P(UP)", "P(FLAT)", "P(DOWN)"]:
             styled = styled.format({col: "{:.0%}"}, na_rep="—")
         st.dataframe(styled, use_container_width=True, hide_index=True)
