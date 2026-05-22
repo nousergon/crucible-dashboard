@@ -81,18 +81,10 @@ if rows:
     })
     pos_df = pd.DataFrame(rows)
     pos_df["Shares"] = pos_df["Shares"].astype(str)
-    st.dataframe(
-        pos_df,
-        width="stretch",
-        hide_index=True,
-        column_config={
-            "Rationale": st.column_config.TextColumn(
-                "Rationale",
-                help="Most recent research thesis summary from signals.json",
-                width="large",
-            ),
-        },
-    )
+    # st.table renders cells with default `white-space: normal` so the long
+    # Rationale text wraps inside the column. st.dataframe truncates by
+    # design — no column_config knob unwraps it.
+    st.table(pos_df.set_index("Ticker"))
 else:
     st.info("No open positions.")
 

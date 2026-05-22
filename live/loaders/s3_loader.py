@@ -170,25 +170,59 @@ def load_latest_signals() -> dict | None:
     return None
 
 
-def load_thesis_summaries() -> dict[str, str]:
-    """Return {ticker: thesis_summary} from the latest signals.json.
+@st.cache_data(ttl=_ttl("research"))
+def load_thesis_summaries(n_recent: int = 5) -> dict[str, str]:
+    """Return {ticker: thesis_summary} aggregated across recent signals.json.
 
-    Reads `universe[]` from the most recent signals.json — that's where
-    per-ticker `thesis_summary` strings live. Empty dict if the file is
-    missing or has no parseable entries.
+    Walks the last `n_recent` `signals/{date}/signals.json` files in reverse
+    date order, taking the first non-empty `thesis_summary` per ticker. The
+    walkback handles HOLD positions that weren't re-analyzed in the most
+    recent cycle — their thesis still lives in an earlier signals.json.
+    Empty dict if no signals.json is available.
     """
-    data = load_latest_signals()
-    if not isinstance(data, dict):
+    import json
+    import re
+
+    client = get_s3_client()
+    bucket = _research_bucket()
+    date_re = re.compile(r"^signals/(\d{4}-\d{2}-\d{2})/")
+
+    date_keys: set[str] = set()
+    continuation: str | None = None
+    try:
+        while True:
+            kwargs = {"Bucket": bucket, "Prefix": "signals/", "Delimiter": "/"}
+            if continuation:
+                kwargs["ContinuationToken"] = continuation
+            resp = client.list_objects_v2(**kwargs)
+            for cp in resp.get("CommonPrefixes", []) or []:
+                m = date_re.match(cp["Prefix"])
+                if m:
+                    date_keys.add(m.group(1))
+            if not resp.get("IsTruncated"):
+                break
+            continuation = resp.get("NextContinuationToken")
+    except Exception as e:
+        logger.warning("list signals/ failed: %s", e)
         return {}
-    universe = data.get("universe") or []
+
     out: dict[str, str] = {}
-    for entry in universe:
-        if not isinstance(entry, dict):
+    for d in sorted(date_keys, reverse=True)[:n_recent]:
+        key = f"signals/{d}/signals.json"
+        try:
+            body = client.get_object(Bucket=bucket, Key=key)["Body"].read()
+            data = json.loads(body)
+        except Exception as e:
+            logger.warning("load %s failed: %s", key, e)
             continue
-        ticker = entry.get("ticker")
-        summary = entry.get("thesis_summary")
-        if ticker and summary:
-            out[ticker] = summary
+        universe = data.get("universe") or []
+        for entry in universe:
+            if not isinstance(entry, dict):
+                continue
+            ticker = entry.get("ticker")
+            summary = entry.get("thesis_summary")
+            if ticker and summary and ticker not in out:
+                out[ticker] = summary
     return out
 
 
