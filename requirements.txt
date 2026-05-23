@@ -9,4 +9,4 @@ pyyaml>=6.0
 # WeeklySubstrateHealthCheck state (added in alpha-engine-data 2026-05).
 # The [flow_doctor] extra pulls flow-doctor; no other extras are needed
 # (dashboard reads S3, not ArcticDB). Public since 2026-05-03.
-alpha-engine-lib[flow_doctor] @ git+https://github.com/cipher813/alpha-engine-lib@v0.25.0
+alpha-engine-lib[flow_doctor] @ git+https://github.com/cipher813/alpha-engine-lib@v0.26.0
