@@ -70,19 +70,34 @@ def _last_modified_age(s3, bucket: str, key: str) -> tuple[str | None, int | Non
 
 
 def _find_latest_prefix(s3, bucket: str, prefix: str) -> tuple[str | None, int | None]:
-    """Find the most recent date-keyed object under a prefix."""
+    """Find the most recent date-keyed object under a prefix.
+
+    Recognizes two key shapes:
+      - Directory-keyed: ``signals/2026-04-03/signals.json`` (the YYYY-MM-DD
+        appears as its own path segment).
+      - Filename-keyed: ``archive/fundamentals/2026-05-24.json`` (the
+        YYYY-MM-DD is the filename basename WITHOUT extension).
+
+    Without the filename-keyed branch, ``archive/fundamentals/`` is read as
+    "no matching date" → marked missing even when today's run wrote
+    ``2026-05-24.json``. Surfaced 2026-05-24 in the health-checker false-
+    positives audit.
+    """
     try:
         paginator = s3.get_paginator("list_objects_v2")
         latest_date = None
         for page in paginator.paginate(Bucket=bucket, Prefix=prefix, MaxKeys=100):
             for obj in page.get("Contents", []):
                 key = obj["Key"]
-                # Extract date from key like signals/2026-04-03/signals.json
                 parts = key.replace(prefix, "").split("/")
                 for part in parts:
-                    if len(part) == 10 and part[4] == "-" and part[7] == "-":
+                    # Strip a single trailing extension so filename-keyed
+                    # entries (e.g., 2026-05-24.json) parse the same as
+                    # directory-keyed entries (e.g., 2026-04-03/).
+                    base = part.rsplit(".", 1)[0] if "." in part else part
+                    if len(base) == 10 and base[4] == "-" and base[7] == "-":
                         try:
-                            d = date.fromisoformat(part)
+                            d = date.fromisoformat(base)
                             if latest_date is None or d > latest_date:
                                 latest_date = d
                         except ValueError:
@@ -173,11 +188,16 @@ def check_all(bucket: str = DEFAULT_BUCKET) -> list[dict]:
     # 7. Daily closes — staging/ prefix per 2026-04-29 migration
     # (alpha-engine-data PR #112). The parquet is intermediate state with
     # 7-day S3 lifecycle; canonical home is ArcticDB universe library.
-    today_str_dc = date.today().isoformat()
-    modified, age = _last_modified_age(s3, bucket, f"staging/daily_closes/{today_str_dc}.parquet")
-    if modified is None:
-        yesterday_dc = (date.today() - timedelta(days=1)).isoformat()
-        modified, age = _last_modified_age(s3, bucket, f"staging/daily_closes/{yesterday_dc}.parquet")
+    # Walk back up to threshold+2 calendar days to find the latest written
+    # parquet. The earlier today+yesterday-only lookup false-flagged
+    # Sat/Sun runs as "missing" because Friday's parquet was always >1
+    # calendar day back. Surfaced 2026-05-24 in the false-positives audit.
+    modified, age = None, None
+    for back in range(THRESHOLDS["daily_closes"] + 3):
+        candidate = (date.today() - timedelta(days=back)).isoformat()
+        modified, age = _last_modified_age(s3, bucket, f"staging/daily_closes/{candidate}.parquet")
+        if modified is not None:
+            break
     threshold = THRESHOLDS["daily_closes"]
     results.append({
         "check": "daily_closes",
@@ -188,14 +208,44 @@ def check_all(bucket: str = DEFAULT_BUCKET) -> list[dict]:
     })
 
     # 8. Module health markers
-    for module in ["data_phase1", "data_phase2", "executor", "predictor"]:
-        modified, age = _last_modified_age(s3, bucket, f"health/{module}.json")
+    #
+    # Most modules write a single ``health/{module}.json`` file. The
+    # predictor is the exception: it writes one health file per surface
+    # (``predictor_inference.json``, ``predictor_training.json``,
+    # ``predictor_health_check.json``) and never a unified
+    # ``predictor.json``. Using a per-module candidate list lets the
+    # checker accept whichever surface emitted most recently. Surfaced
+    # 2026-05-24 in the health-checker false-positives audit (looking for
+    # ``predictor.json`` always missed because no producer writes it).
+    MODULE_HEALTH_CANDIDATES = {
+        "data_phase1": ["data_phase1.json"],
+        "data_phase2": ["data_phase2.json"],
+        "executor": ["executor.json"],
+        "predictor": [
+            "predictor_inference.json",
+            "predictor_training.json",
+            "predictor_health_check.json",
+        ],
+    }
+    for module, candidates in MODULE_HEALTH_CANDIDATES.items():
+        modified, age = None, None
+        chosen_key = None
+        for candidate in candidates:
+            m_, a_ = _last_modified_age(s3, bucket, f"health/{candidate}")
+            if m_ is None:
+                continue
+            if age is None or (a_ is not None and a_ < age):
+                modified, age, chosen_key = m_, a_, candidate
         results.append({
             "check": f"health/{module}",
             "last_updated": modified,
             "age_days": age,
             "threshold_days": 2,
             "status": "ok" if age is not None and age <= 2 else "stale" if age is not None else "missing",
+            # When multiple candidate filenames exist for a module, name
+            # which one was chosen (most-recently-modified). Empty for
+            # single-file modules.
+            "source_key": chosen_key if chosen_key and chosen_key != f"{module}.json" else None,
         })
 
     return results

@@ -22,17 +22,25 @@ def _read(path: str) -> str:
 
 
 def test_health_checker_uses_staging_prefix():
+    """The daily_closes lookup must use the ``staging/`` prefix.
+
+    2026-05-24 update: the today+yesterday-only probe pair was replaced
+    with a multi-day walk-back loop using a single f-string (Saturday/
+    Sunday redrives need to find Friday's parquet 2-3 days back). The
+    invariant that matters for the hard-cutover contract is the
+    ``staging/`` prefix, NOT the variable name inside the f-string. The
+    no-legacy-prefix test below enforces the inverse (legacy
+    ``predictor/daily_closes`` must NOT appear).
+    """
     src = _read("health_checker.py")
-    # Both today + yesterday probes must point at staging/
-    assert 'f"staging/daily_closes/{today_str_dc}.parquet"' in src, (
-        "health_checker.py daily_closes today probe is not on staging/. "
-        "Hard-cutover requires this exact f-string per the no-fallback "
+    assert 'f"staging/daily_closes/' in src, (
+        "health_checker.py daily_closes probe is not on staging/. "
+        "Hard-cutover requires the staging/ prefix per the no-fallback "
         "contract."
     )
-    assert 'f"staging/daily_closes/{yesterday_dc}.parquet"' in src, (
-        "health_checker.py daily_closes yesterday probe is not on staging/. "
-        "Hard-cutover requires this exact f-string per the no-fallback "
-        "contract."
+    assert '.parquet"' in src, (
+        "health_checker.py daily_closes probe must look at a .parquet "
+        "object key."
     )
 
 
