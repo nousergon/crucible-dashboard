@@ -102,13 +102,13 @@ fig_trend.update_layout(height=320, margin=dict(l=0, r=0, t=10, b=0))
 st.plotly_chart(fig_trend, use_container_width=True)
 
 # ─── Breakdowns ─────────────────────────────────────────────────────────────
-tab_agent, tab_model, tab_prompt, tab_calls = st.tabs(
-    ["By agent", "By model", "By prompt version", "Recent calls"]
+tab_agent, tab_team, tab_model, tab_prompt, tab_calls = st.tabs(
+    ["By agent", "By sector team", "By model", "By prompt version", "Recent calls"]
 )
 
 
-def _agg_with_tool_requests(group_col: str) -> pd.DataFrame:
-    """Group + sum cost, calls, tokens, AND server-tool requests.
+def _agg_with_tool_requests_on(frame: pd.DataFrame, group_col: str) -> pd.DataFrame:
+    """Group + sum cost, calls, tokens, AND server-tool requests on *frame*.
 
     Server-tool columns (``web_search_requests`` + ``web_fetch_requests``)
     are schema v2 additive — present on partitions written after
@@ -117,7 +117,7 @@ def _agg_with_tool_requests(group_col: str) -> pd.DataFrame:
     on the agg pre-stage keeps the sum well-defined across mixed-vintage
     windows.
     """
-    df_with_tool_zeros = df.copy()
+    df_with_tool_zeros = frame.copy()
     for col in ("web_search_requests", "web_fetch_requests"):
         if col not in df_with_tool_zeros.columns:
             df_with_tool_zeros[col] = 0
@@ -136,6 +136,11 @@ def _agg_with_tool_requests(group_col: str) -> pd.DataFrame:
     )
 
 
+def _agg_with_tool_requests(group_col: str) -> pd.DataFrame:
+    """Window-wide convenience wrapper — groups the module-level ``df``."""
+    return _agg_with_tool_requests_on(df, group_col)
+
+
 with tab_agent:
     agent_df = _agg_with_tool_requests("agent_id")
     agent_df["cost_usd"] = agent_df["cost_usd"].round(4)
@@ -148,6 +153,65 @@ with tab_agent:
     fig_agent.update_layout(height=320, margin=dict(l=0, r=0, t=10, b=0))
     st.plotly_chart(fig_agent, use_container_width=True)
     st.dataframe(agent_df, use_container_width=True, hide_index=True)
+
+with tab_team:
+    # ROADMAP L1141 deliverable (c) — cost-by-sector-team-by-week heatmap +
+    # drilldown table. Cross-sector agents (macro_economist, ic_cio) have
+    # sector_team_id=None by design; we surface them under "(none)" to keep
+    # them visible rather than dropped. Aggregator uses the same convention
+    # (scripts/aggregate_costs._group_sum at the research side).
+    if "sector_team_id" not in df.columns:
+        st.info(
+            "No `sector_team_id` data in the window — pre-schema cost archives "
+            "didn't stamp the team dimension. The field went live with the "
+            "Saturday research pipeline cost-telemetry rollout; new captures "
+            "carry it automatically."
+        )
+    else:
+        team_df_raw = df.copy()
+        team_df_raw["sector_team_id"] = team_df_raw["sector_team_id"].fillna("(none)").astype(str)
+
+        # Drilldown table — aggregate over the full window.
+        team_df = _agg_with_tool_requests_on(team_df_raw, "sector_team_id")
+        team_df["cost_usd"] = team_df["cost_usd"].round(4)
+
+        # Heatmap — sector_team rows × capture_date columns × cost_usd cells.
+        # Pivot then sort rows by total cost desc so the heaviest spenders
+        # land at the top; capture_date columns are time-ordered so the
+        # cross-section reads left-to-right as a trend.
+        pivot = (
+            team_df_raw.groupby(["sector_team_id", "capture_date"], as_index=False)["cost_usd"]
+            .sum()
+            .pivot(index="sector_team_id", columns="capture_date", values="cost_usd")
+            .fillna(0.0)
+        )
+        # Order rows by total spend descending — heaviest at top.
+        row_totals = pivot.sum(axis=1).sort_values(ascending=False)
+        pivot = pivot.loc[row_totals.index]
+        # Order columns by capture_date ascending — left-to-right trend.
+        pivot = pivot[sorted(pivot.columns)]
+
+        fig_team_heat = px.imshow(
+            pivot.values,
+            x=list(pivot.columns),
+            y=list(pivot.index),
+            color_continuous_scale="Blues",
+            labels=dict(x="Capture date", y="Sector team", color="USD"),
+            aspect="auto",
+            text_auto=".2f",
+        )
+        fig_team_heat.update_layout(
+            height=max(280, 40 * len(pivot.index) + 80),
+            margin=dict(l=0, r=0, t=10, b=0),
+        )
+        st.plotly_chart(fig_team_heat, use_container_width=True)
+        st.caption(
+            "Heatmap cell = total Anthropic spend (USD) for that sector team on "
+            "that capture date. Cross-sector agents (`macro_economist`, "
+            "`ic_cio`) carry `sector_team_id=None` upstream and surface here "
+            "under `(none)`."
+        )
+        st.dataframe(team_df, use_container_width=True, hide_index=True)
 
 with tab_model:
     model_df = _agg_with_tool_requests("model_name")
