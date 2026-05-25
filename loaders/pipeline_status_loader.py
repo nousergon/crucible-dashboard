@@ -33,10 +33,12 @@ from typing import Optional
 import streamlit as st
 
 from alpha_engine_lib.pipeline_status import (
+    PipelineExecutionSummary,
     PipelineRun,
     SFNAccessDenied,
     SFNNoExecutions,
     SFNThrottled,
+    list_recent_pipeline_runs,
     read_pipeline_state,
 )
 from alpha_engine_lib.pipeline_status.read import PipelineStatusError
@@ -60,6 +62,7 @@ class LoadOutcome(str, Enum):
     """Provenance of the PipelineRun returned to the page."""
 
     LIVE = "live"  # fresh SFN poll succeeded
+    LIVE_ROLE_FALLBACK = "live_role_fallback"  # role_filter found nothing; fell back to most-recent overall
     CACHE = "cache"  # SFN failed; rendering last-good from S3 cache
     NO_EXECUTIONS = "no_executions"  # SF exists but has no history
     ERROR = "error"  # SFN failed AND no cache available
@@ -156,23 +159,69 @@ def _read_last_good_cache_for_arn(arn: str) -> tuple[Optional[PipelineRun], Opti
 
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner=False)
-def _cached_live_read(arn: str) -> dict:
+def _cached_live_read(
+    arn: str,
+    role_filter_tuple: Optional[tuple[str, ...]] = None,
+    execution_arn: Optional[str] = None,
+) -> dict:
     """Streamlit-cached wrapper around live ``read_pipeline_state``.
 
     Returns a JSON-able dict so st.cache_data can hash it (PipelineRun
     instances are Pydantic but cache_data is happier with primitives).
     Caller re-validates back to PipelineRun.
 
+    ``role_filter_tuple`` (not a set) because st.cache_data hashes the
+    args; sets are unhashable so the public API takes a set and tuple-izes
+    here.
+
     Raises:
       The typed lib exceptions (SFNAccessDenied / SFNThrottled /
       SFNNoExecutions / PipelineStatusError) propagate; the outer
       ``read_pipeline_state_with_fallback`` catches and routes.
     """
-    run = read_pipeline_state(arn)
+    role_filter = set(role_filter_tuple) if role_filter_tuple else None
+    run = read_pipeline_state(
+        arn, role_filter=role_filter, execution_arn=execution_arn
+    )
     return run.model_dump(mode="json")
 
 
-def read_pipeline_state_with_fallback(arn: str) -> LoadResult:
+@st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner=False)
+def _cached_list_recent(
+    arn: str, limit: int = 10, role_filter_tuple: Optional[tuple[str, ...]] = None
+) -> list[dict]:
+    """Streamlit-cached wrapper around ``list_recent_pipeline_runs``.
+
+    Returns dicts (model_dump'd) for the same cache_data-friendliness
+    reason as ``_cached_live_read``. Page-25 re-validates back to
+    ``PipelineExecutionSummary`` on read.
+    """
+    role_filter = set(role_filter_tuple) if role_filter_tuple else None
+    summaries = list_recent_pipeline_runs(
+        arn, limit=limit, role_filter=role_filter
+    )
+    return [s.model_dump(mode="json") for s in summaries]
+
+
+def list_recent_pipeline_runs_for_arn(
+    arn: str, *, limit: int = 10, role_filter: Optional[set[str]] = None
+) -> list[PipelineExecutionSummary]:
+    """Page-25-facing wrapper that re-validates the cached dicts back
+    into :class:`PipelineExecutionSummary` instances. Errors propagate
+    to the caller (the disclosure expander renders the error inline)."""
+    role_filter_tuple = (
+        tuple(sorted(role_filter)) if role_filter is not None else None
+    )
+    raw = _cached_list_recent(arn, limit, role_filter_tuple)
+    return [PipelineExecutionSummary.model_validate(d) for d in raw]
+
+
+def read_pipeline_state_with_fallback(
+    arn: str,
+    *,
+    role_filter: Optional[set[str]] = None,
+    execution_arn: Optional[str] = None,
+) -> LoadResult:
     """Public loader for page 25.
 
     Try live ``read_pipeline_state`` (cached 60s); on any error EXCEPT
@@ -181,16 +230,50 @@ def read_pipeline_state_with_fallback(arn: str) -> LoadResult:
     message. SFNNoExecutions is its own terminal state — the page
     renders "no executions yet" cleanly without a red banner.
 
+    Option-D execution-picker (2026-05-25):
+    - ``role_filter`` filters to executions whose ``input.pipeline_role``
+      ∈ ``role_filter`` (e.g. ``{"weekly"}`` for Saturday cadence). If
+      no execution within the lib's search window matches, the loader
+      AUTOMATICALLY FALLS BACK to most-recent overall with
+      ``outcome=LIVE_ROLE_FALLBACK`` and an explanation message —
+      the cutover window (pre-data-PR-deploy) and any future smoke-only
+      windows BOTH render gracefully rather than going empty.
+    - ``execution_arn`` requests a specific execution (dropdown click
+      path). ``role_filter`` is ignored when ``execution_arn`` is set.
+
     Per ``feedback_no_silent_fails`` — every error path returns a typed
     outcome + specific error_message; the page renders both the banner
     AND the cache fallback (when present) so the operator sees both
     "we couldn't reach SFN, but here's the last-good state."
     """
+    role_filter_tuple = (
+        tuple(sorted(role_filter)) if role_filter is not None else None
+    )
     try:
-        live_dict = _cached_live_read(arn)
+        live_dict = _cached_live_read(arn, role_filter_tuple, execution_arn)
         run = PipelineRun.model_validate(live_dict)
         return LoadResult(arn=arn, outcome=LoadOutcome.LIVE, run=run, error_message=None)
     except SFNNoExecutions as exc:
+        # If a role_filter caused the empty result, fall back to
+        # most-recent overall so the operator sees something. The page's
+        # role-fallback banner names the filter that didn't match.
+        if role_filter and execution_arn is None:
+            try:
+                fallback_dict = _cached_live_read(arn, None, None)
+                fallback_run = PipelineRun.model_validate(fallback_dict)
+                return LoadResult(
+                    arn=arn,
+                    outcome=LoadOutcome.LIVE_ROLE_FALLBACK,
+                    run=fallback_run,
+                    error_message=(
+                        f"No execution with role in {sorted(role_filter)!r} "
+                        "in the recent window — showing most recent overall."
+                    ),
+                )
+            except Exception as inner_exc:  # noqa: BLE001 — fall through to NO_EXECUTIONS
+                logger.warning(
+                    "role-fallback failed for %s: %s", arn, inner_exc
+                )
         return LoadResult(
             arn=arn,
             outcome=LoadOutcome.NO_EXECUTIONS,
@@ -238,18 +321,33 @@ def read_pipeline_state_with_fallback(arn: str) -> LoadResult:
         )
 
 
-def refresh_and_write_cache(arns: list[str]) -> None:
+def refresh_and_write_cache(
+    arns_with_filters: list[tuple[str, Optional[set[str]]]]
+) -> None:
     """Force a fresh poll of all ARNs (bypassing st.cache_data) and write
     the last-good cache. Called from the page's "Refresh" button.
+
+    Each entry is ``(arn, role_filter)`` so the refresh uses the same
+    filter the page will use on render — otherwise the cache would warm
+    "most-recent overall" while the page asks for "most-recent weekly"
+    and the live call would still pay the API cost.
 
     Skips writes for ARNs that fail to read live (we never overwrite a
     good cache with a bad poll).
     """
-    _cached_live_read.clear()  # type: ignore[attr-defined]
+    # ``.clear`` is provided by st.cache_data only when Streamlit's
+    # runtime context is active; in unit tests without that context the
+    # decorator returns a plain function. Guard with getattr so the
+    # refresh path stays callable from both production and test scopes.
+    getattr(_cached_live_read, "clear", lambda: None)()
+    getattr(_cached_list_recent, "clear", lambda: None)()
     good: dict[str, PipelineRun] = {}
-    for arn in arns:
+    for arn, role_filter in arns_with_filters:
+        role_tuple = (
+            tuple(sorted(role_filter)) if role_filter is not None else None
+        )
         try:
-            live_dict = _cached_live_read(arn)
+            live_dict = _cached_live_read(arn, role_tuple, None)
             good[arn] = PipelineRun.model_validate(live_dict)
         except Exception as exc:  # noqa: BLE001 — skip writes for failed ARNs
             logger.warning("refresh skipped for %s: %s", arn, exc)
