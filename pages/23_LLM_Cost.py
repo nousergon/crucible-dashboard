@@ -63,11 +63,24 @@ latest_usd = float(latest_df["cost_usd"].fillna(0).sum())
 mean_per_capture = total_usd / n_dates if n_dates else 0.0
 delta_vs_mean = latest_usd - mean_per_capture
 
-k1, k2, k3, k4 = st.columns(4)
+# Tool-fee KPI — schema v2 (additive). v1 partitions return NaN → 0.
+total_web_search = int(df.get("web_search_requests", pd.Series(dtype="int64")).fillna(0).sum())
+total_web_fetch = int(df.get("web_fetch_requests", pd.Series(dtype="int64")).fillna(0).sum())
+
+k1, k2, k3, k4, k5 = st.columns(5)
 k1.metric("Total spend (window)", f"${total_usd:,.2f}", help=f"Across {n_dates} capture date(s)")
 k2.metric("Latest capture", str(latest_capture))
 k3.metric("Latest spend", f"${latest_usd:,.2f}", delta=f"{delta_vs_mean:+.2f} vs window mean")
 k4.metric("Calls (window)", f"{total_calls:,}")
+k5.metric(
+    "Server-tool requests",
+    f"{total_web_search + total_web_fetch:,}",
+    help=(
+        f"web_search={total_web_search:,} (≈${total_web_search * 0.01:,.4f}) + "
+        f"web_fetch={total_web_fetch:,} (free). Schema v2 column — pre-v2 "
+        f"partitions report 0 since the field didn't exist yet."
+    ),
+)
 
 st.markdown("---")
 
@@ -89,14 +102,42 @@ fig_trend.update_layout(height=320, margin=dict(l=0, r=0, t=10, b=0))
 st.plotly_chart(fig_trend, use_container_width=True)
 
 # ─── Breakdowns ─────────────────────────────────────────────────────────────
-tab_agent, tab_model, tab_calls = st.tabs(["By agent", "By model", "Recent calls"])
+tab_agent, tab_model, tab_prompt, tab_calls = st.tabs(
+    ["By agent", "By model", "By prompt version", "Recent calls"]
+)
 
-with tab_agent:
-    agent_df = (
-        df.groupby("agent_id", as_index=False)
-        .agg(cost_usd=("cost_usd", "sum"), calls=("cost_usd", "size"))
+
+def _agg_with_tool_requests(group_col: str) -> pd.DataFrame:
+    """Group + sum cost, calls, tokens, AND server-tool requests.
+
+    Server-tool columns (``web_search_requests`` + ``web_fetch_requests``)
+    are schema v2 additive — present on partitions written after
+    alpha-engine-research #232 / alpha-engine #210 / alpha-engine-data
+    #308 (all 2026-05-25). Pre-v2 partitions have NaN; the .fillna(0)
+    on the agg pre-stage keeps the sum well-defined across mixed-vintage
+    windows.
+    """
+    df_with_tool_zeros = df.copy()
+    for col in ("web_search_requests", "web_fetch_requests"):
+        if col not in df_with_tool_zeros.columns:
+            df_with_tool_zeros[col] = 0
+        df_with_tool_zeros[col] = df_with_tool_zeros[col].fillna(0)
+    return (
+        df_with_tool_zeros.groupby(group_col, as_index=False)
+        .agg(
+            cost_usd=("cost_usd", "sum"),
+            calls=("cost_usd", "size"),
+            input_tokens=("input_tokens", "sum"),
+            output_tokens=("output_tokens", "sum"),
+            web_search_requests=("web_search_requests", "sum"),
+            web_fetch_requests=("web_fetch_requests", "sum"),
+        )
         .sort_values("cost_usd", ascending=False)
     )
+
+
+with tab_agent:
+    agent_df = _agg_with_tool_requests("agent_id")
     agent_df["cost_usd"] = agent_df["cost_usd"].round(4)
     fig_agent = px.bar(
         agent_df,
@@ -109,16 +150,7 @@ with tab_agent:
     st.dataframe(agent_df, use_container_width=True, hide_index=True)
 
 with tab_model:
-    model_df = (
-        df.groupby("model_name", as_index=False)
-        .agg(
-            cost_usd=("cost_usd", "sum"),
-            calls=("cost_usd", "size"),
-            input_tokens=("input_tokens", "sum"),
-            output_tokens=("output_tokens", "sum"),
-        )
-        .sort_values("cost_usd", ascending=False)
-    )
+    model_df = _agg_with_tool_requests("model_name")
     model_df["cost_usd"] = model_df["cost_usd"].round(4)
     fig_model = px.bar(
         model_df,
@@ -129,6 +161,56 @@ with tab_model:
     fig_model.update_layout(height=320, margin=dict(l=0, r=0, t=10, b=0))
     st.plotly_chart(fig_model, use_container_width=True)
     st.dataframe(model_df, use_container_width=True, hide_index=True)
+
+with tab_prompt:
+    if "prompt_version" not in df.columns or df["prompt_version"].dropna().empty:
+        st.info(
+            "No `prompt_version` data in the window. Per-prompt-version "
+            "attribution requires the cost-telemetry stream to stamp "
+            "`prompt_id` + `prompt_version` on each call (already wired in "
+            "research's `track_llm_cost`; data + executor raw-SDK paths "
+            "use `record_anthropic_call` which doesn't currently plumb "
+            "prompt-version metadata)."
+        )
+    else:
+        # Show prompt_id alongside version so identically-named prompts
+        # under different ids stay distinguishable.
+        version_df = df.copy()
+        version_df["prompt_label"] = (
+            version_df.get("prompt_id", pd.Series(dtype=object)).fillna("(unknown)")
+            .astype(str) + " @ "
+            + version_df["prompt_version"].fillna("(none)").astype(str)
+        )
+        prompt_df = (
+            version_df.groupby("prompt_label", as_index=False)
+            .agg(
+                cost_usd=("cost_usd", "sum"),
+                calls=("cost_usd", "size"),
+                input_tokens=("input_tokens", "sum"),
+                output_tokens=("output_tokens", "sum"),
+            )
+            .sort_values("cost_usd", ascending=False)
+        )
+        prompt_df["cost_usd"] = prompt_df["cost_usd"].round(4)
+        # Top 20 prevents the chart from getting unreadable on
+        # high-cardinality prompt sets; the table below shows the full list.
+        fig_prompt = px.bar(
+            prompt_df.head(20),
+            x="prompt_label",
+            y="cost_usd",
+            labels={"prompt_label": "Prompt id @ version", "cost_usd": "USD"},
+        )
+        fig_prompt.update_layout(
+            height=360, margin=dict(l=0, r=0, t=10, b=0),
+            xaxis_tickangle=-30,
+        )
+        st.plotly_chart(fig_prompt, use_container_width=True)
+        st.caption(
+            "Catches prompt edits that inflate cost: a new `prompt_version` "
+            "row appearing with materially higher per-call cost signals a "
+            "regression worth investigating."
+        )
+        st.dataframe(prompt_df, use_container_width=True, hide_index=True)
 
 with tab_calls:
     recent = (
