@@ -56,6 +56,7 @@ import streamlit as st
 
 from alpha_engine_lib.pipeline_status import (
     PIPELINE_LABELS,
+    PipelineExecutionSummary,
     PipelineRun,
     RunStatus,
     TaskStatus,
@@ -64,6 +65,7 @@ from alpha_engine_lib.pipeline_status.registry import ArchivePageRef, ArtifactRe
 from loaders.pipeline_status_loader import (
     LoadOutcome,
     LoadResult,
+    list_recent_pipeline_runs_for_arn,
     read_pipeline_state_with_fallback,
     refresh_and_write_cache,
 )
@@ -85,6 +87,30 @@ _SF_ORDER: list[str] = [
     "alpha-engine-eod-pipeline",
 ]
 _ALL_ARNS: list[str] = [_arn_for(n) for n in _SF_ORDER]
+
+
+# Canonical pipeline_role per SF (Option-D 2026-05-25). The default page
+# render filters to these so smoke / recovery / operator-replay
+# executions don't displace the cadence run as "most recent." Mirrors
+# the alpha-engine-data EventBridge cron rules + alpha-engine daemon
+# _trigger_eod_pipeline tag values.
+_CANONICAL_ROLE_BY_SF: dict[str, str] = {
+    "alpha-engine-saturday-pipeline": "weekly",
+    "alpha-engine-weekday-pipeline": "daily",
+    "alpha-engine-eod-pipeline": "eod",
+}
+
+
+def _canonical_role_for(arn: str) -> Optional[str]:
+    sm_name = arn.rsplit(":", 1)[-1]
+    return _CANONICAL_ROLE_BY_SF.get(sm_name)
+
+
+def _role_badge(role: Optional[str]) -> str:
+    """Render the role tag as a small markdown badge for the section header."""
+    if not role:
+        return "`role: unknown`"
+    return f"`role: {role}`"
 
 
 _RUN_STATUS_EMOJI = {
@@ -148,14 +174,21 @@ def _format_archive_cell(archive: object, page_status_arn: str) -> str:
 def _render_banner(result: LoadResult) -> None:
     """Render the per-section status banner.
 
-    Green = live; yellow = cache fallback (named age); red = no cache
-    available (named error). NO_EXECUTIONS is treated as info, not error
-    — the SF is healthy, it just hasn't run yet.
+    Green = live; blue = live-but-role-fallback (named filter); yellow =
+    cache fallback (named age); red = no cache available (named error).
+    NO_EXECUTIONS is treated as info, not error — the SF is healthy, it
+    just hasn't run yet.
     """
     if result.outcome == LoadOutcome.LIVE:
         st.success(
             f"Live ✓ — fresh poll from states:DescribeExecution "
             f"({datetime.now(timezone.utc).strftime('%H:%M:%S UTC')})"
+        )
+        return
+
+    if result.outcome == LoadOutcome.LIVE_ROLE_FALLBACK:
+        st.info(
+            f"ℹ️ {result.error_message or 'Role filter matched no executions; showing most recent.'}"
         )
         return
 
@@ -192,7 +225,14 @@ def _render_run_header(run: Optional[PipelineRun], arn: str) -> None:
         return
 
     emoji = _RUN_STATUS_EMOJI.get(run.status, "❓")
-    st.subheader(f"{emoji} {run.pretty_label} — {run.status.value}")
+    # Role badge surfaces whether this execution is the canonical
+    # cadence run (weekly / daily / eod) or a smoke / recovery /
+    # operator-replay overlay. Pre-Option-D executions render as
+    # "role: unknown" until the new cron rule's first cadence firing.
+    st.subheader(
+        f"{emoji} {run.pretty_label} — {run.status.value}  "
+        f"{_role_badge(run.pipeline_role)}"
+    )
 
     col1, col2, col3 = st.columns(3)
     col1.metric("Start (UTC)", _format_utc(run.start_utc))
@@ -248,16 +288,88 @@ def _render_task_table(run: PipelineRun, status_arn: str) -> None:
                 st.code(task.failure_cause, language="text")
 
 
+def _render_recent_executions_disclosure(arn: str, canonical_role: Optional[str]) -> None:
+    """Expander listing last 10 executions across ALL roles so the
+    operator can see what's been running (smoke / recovery / etc) and
+    click into any specific execution. Backed by
+    ``list_recent_pipeline_runs_for_arn`` (one DescribeExecution per row
+    to extract pipeline_role — bounded at 10 calls per render)."""
+    sm_name = arn.rsplit(":", 1)[-1]
+    session_key = f"pinned_execution_{sm_name}"
+
+    with st.expander(f"📜 View other recent executions of {sm_name}", expanded=False):
+        try:
+            summaries = list_recent_pipeline_runs_for_arn(arn, limit=10)
+        except Exception as exc:  # noqa: BLE001 — surface inline
+            st.warning(
+                f"Could not list recent executions: {type(exc).__name__}: {exc}"
+            )
+            return
+
+        if not summaries:
+            st.info("No executions to list.")
+            return
+
+        # Render a clickable row per execution. Click pins that execution
+        # for the section above (st.rerun rebuilds with the pinned arn).
+        for s in summaries:
+            cols = st.columns([3, 1, 1, 2, 1])
+            with cols[0]:
+                st.code(s.name, language="text")
+            with cols[1]:
+                st.markdown(f"{_RUN_STATUS_EMOJI.get(s.status, '❓')} {s.status.value}")
+            with cols[2]:
+                st.markdown(_role_badge(s.pipeline_role))
+            with cols[3]:
+                st.caption(
+                    f"{_format_utc(s.start_utc)} · {_format_duration_sec(s.duration_sec)}"
+                )
+            with cols[4]:
+                # The button key must be unique per SF + per execution
+                # to survive Streamlit's widget-key-uniqueness check.
+                button_key = f"pin_{sm_name}_{s.execution_arn}"
+                if st.button("Inspect ▸", key=button_key):
+                    st.session_state[session_key] = s.execution_arn
+                    st.rerun()
+
+        # Offer a "clear pin" affordance when an execution is pinned —
+        # otherwise the operator's stuck on the chosen execution until
+        # the cache TTL expires.
+        if st.session_state.get(session_key):
+            if st.button(
+                "↺ Return to canonical cadence view",
+                key=f"clear_pin_{sm_name}",
+            ):
+                st.session_state.pop(session_key, None)
+                st.rerun()
+
+
 def _render_section(arn: str) -> None:
-    result = read_pipeline_state_with_fallback(arn)
+    canonical_role = _canonical_role_for(arn)
+    sm_name = arn.rsplit(":", 1)[-1]
+    session_key = f"pinned_execution_{sm_name}"
+    pinned_arn = st.session_state.get(session_key)
+
+    if pinned_arn:
+        # Operator pinned a specific execution via the disclosure.
+        result = read_pipeline_state_with_fallback(arn, execution_arn=pinned_arn)
+    elif canonical_role:
+        # Default: filter to canonical cadence role for this SF.
+        result = read_pipeline_state_with_fallback(
+            arn, role_filter={canonical_role}
+        )
+    else:
+        # No canonical role registered (future SF added without an entry
+        # in _CANONICAL_ROLE_BY_SF) — fall back to most-recent overall.
+        result = read_pipeline_state_with_fallback(arn)
 
     _render_run_header(result.run, arn)
     _render_banner(result)
 
-    if result.run is None:
-        return  # banner already told the operator why; no table to show
+    if result.run is not None:
+        _render_task_table(result.run, arn)
 
-    _render_task_table(result.run, arn)
+    _render_recent_executions_disclosure(arn, canonical_role)
 
 
 # ── Page ──────────────────────────────────────────────────────────────────
@@ -274,7 +386,13 @@ st.caption(
 # Refresh button — bypasses st.cache_data and writes the S3 last-good cache.
 if st.button("🔄 Refresh now", help="Forces a live poll + writes the last-good S3 cache"):
     with st.spinner("Polling SFN…"):
-        refresh_and_write_cache(_ALL_ARNS)
+        arns_with_filters: list[tuple[str, Optional[set[str]]]] = []
+        for arn in _ALL_ARNS:
+            canonical_role = _canonical_role_for(arn)
+            arns_with_filters.append(
+                (arn, {canonical_role} if canonical_role else None)
+            )
+        refresh_and_write_cache(arns_with_filters)
     st.rerun()
 
 for arn in _ALL_ARNS:

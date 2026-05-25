@@ -201,7 +201,10 @@ def test_refresh_skips_cache_write_when_no_arns_read_live_successfully():
     ), patch(
         "loaders.pipeline_status_loader._write_last_good_cache"
     ) as mock_write:
-        refresh_and_write_cache([SAT_ARN])
+        # Option-D 2026-05-25 — refresh_and_write_cache now takes
+        # (arn, role_filter) tuples so the cache warm matches the
+        # filter the page will use on render.
+        refresh_and_write_cache([(SAT_ARN, {"weekly"})])
 
     mock_write.assert_not_called()
 
@@ -211,7 +214,7 @@ def test_refresh_writes_cache_when_some_arns_succeed():
 
     call_count = [0]
 
-    def alternating_side_effect(arn):
+    def alternating_side_effect(arn, role_filter_tuple=None, execution_arn=None):
         call_count[0] += 1
         if call_count[0] == 1:
             return fake_run.model_dump(mode="json")
@@ -223,7 +226,9 @@ def test_refresh_writes_cache_when_some_arns_succeed():
     ), patch(
         "loaders.pipeline_status_loader._write_last_good_cache"
     ) as mock_write:
-        refresh_and_write_cache([SAT_ARN, "arn:fake:2"])
+        refresh_and_write_cache(
+            [(SAT_ARN, {"weekly"}), ("arn:fake:2", {"daily"})]
+        )
 
     # Cache write called once with the one successful ARN
     mock_write.assert_called_once()
