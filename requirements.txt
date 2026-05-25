@@ -12,4 +12,4 @@ pyyaml>=6.0
 # the pipeline-reporting-revamp arc (ROADMAP L3050).
 # The [flow_doctor] extra pulls flow-doctor; no other extras are needed
 # (dashboard reads S3, not ArcticDB). Public since 2026-05-03.
-alpha-engine-lib[flow_doctor] @ git+https://github.com/cipher813/alpha-engine-lib@v0.32.0
+alpha-engine-lib[flow_doctor] @ git+https://github.com/cipher813/alpha-engine-lib@v0.34.1
