@@ -196,3 +196,56 @@ class TestImplausibleCostRowDefense:
             with patch.object(mod, "_s3_get_object", return_value=parquet):
                 df = mod.load_llm_cost_parquets()
         assert len(df) == 2
+
+
+class TestSectorTeamColumnPreservation:
+    """Page 23's "By sector team" tab (L1141 deliverable c) pivots on
+    ``sector_team_id``. The loader must preserve the column end-to-end
+    through the parquet roundtrip + capture-date tag + implausibility
+    filter, including the NaN values that cross-sector agents
+    (``macro_economist``, ``ic_cio``) carry by design.
+    """
+
+    def test_sector_team_id_preserved_for_team_agents(self):
+        mod = _import_s3_loader()
+        rows = [
+            {"run_id": "2026-05-15", "agent_id": "sector_team:tech",
+             "sector_team_id": "tech", "cost_usd": 0.10,
+             "input_tokens": 4000, "output_tokens": 1200},
+            {"run_id": "2026-05-15", "agent_id": "sector_team:financials",
+             "sector_team_id": "financials", "cost_usd": 0.20,
+             "input_tokens": 5000, "output_tokens": 1300},
+        ]
+        parquet = _make_cost_parquet_bytes(rows)
+        with patch.object(mod, "list_s3_prefixes", return_value=["2026-05-15"]):
+            with patch.object(mod, "_s3_get_object", return_value=parquet):
+                df = mod.load_llm_cost_parquets()
+        assert "sector_team_id" in df.columns
+        assert set(df["sector_team_id"]) == {"tech", "financials"}
+
+    def test_sector_team_id_preserves_none_for_cross_sector_agents(self):
+        # macro_economist + ic_cio carry sector_team_id=None upstream; the
+        # page surfaces them under "(none)" via fillna. The loader must
+        # not coerce them to something that breaks downstream fillna.
+        mod = _import_s3_loader()
+        rows = [
+            {"run_id": "2026-05-15", "agent_id": "sector_team:tech",
+             "sector_team_id": "tech", "cost_usd": 0.10,
+             "input_tokens": 4000, "output_tokens": 1200},
+            {"run_id": "2026-05-15", "agent_id": "macro_economist",
+             "sector_team_id": None, "cost_usd": 0.05,
+             "input_tokens": 1000, "output_tokens": 200},
+            {"run_id": "2026-05-15", "agent_id": "ic_cio",
+             "sector_team_id": None, "cost_usd": 0.07,
+             "input_tokens": 1200, "output_tokens": 300},
+        ]
+        parquet = _make_cost_parquet_bytes(rows)
+        with patch.object(mod, "list_s3_prefixes", return_value=["2026-05-15"]):
+            with patch.object(mod, "_s3_get_object", return_value=parquet):
+                df = mod.load_llm_cost_parquets()
+        # Three rows survived; two of them have null sector_team_id.
+        assert len(df) == 3
+        assert df["sector_team_id"].isna().sum() == 2
+        # The page's fillna("(none)") should produce the expected key.
+        filled = df["sector_team_id"].fillna("(none)").astype(str)
+        assert set(filled) == {"tech", "(none)"}
