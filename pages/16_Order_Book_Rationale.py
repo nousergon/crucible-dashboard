@@ -53,12 +53,9 @@ _STATE_COLOR = {
     "risk_blocked": "#880e4f",        # magenta — hard risk gate
     "held": "#004d40",                # teal — currently held in portfolio
     "no_action": "#1e1e1e",           # neutral — pre-1.2.0 aggregate slug
-    # 1.2.0+ sub-states — same neutral family so they don't out-shout
-    # the actioned rows above, but each carries a distinct hue so an
-    # operator can scan for "research said HOLD" vs "optimizer chose 0"
-    # vs the surprising "unknown" case at a glance.
-    "no_action_research_hold": "#263238",          # slate
-    "no_action_research_exit": "#3e2723",          # brown
+    # 1.2.0+ sub-states — research HOLD/EXIT/REDUCE on non-held tickers
+    # is filtered at the producer (dead signal — no order possible), so
+    # the only sub-states reachable here are the optimizer-driven ones.
     "no_action_optimizer_zero_weight": "#1a237e",  # indigo
     "no_action_unknown": "#5d4037",                # muted-red — bug-flag
 }
@@ -73,8 +70,6 @@ _STATE_LABEL = {
     "no_action": "No action",
     # 1.2.0+ sub-states — labels phrase the operator-readable reason so
     # the table answers "why?" without requiring the drill-down.
-    "no_action_research_hold": "No action — research HOLD (not held)",
-    "no_action_research_exit": "No action — research EXIT (orphan)",
     "no_action_optimizer_zero_weight": "No action — optimizer chose 0",
     "no_action_unknown": "No action — unknown (investigate)",
 }
