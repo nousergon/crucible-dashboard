@@ -24,6 +24,12 @@ import streamlit as st
 
 from components.artifact_archive import ArchiveEntry, render_artifact_archive
 from loaders.s3_loader import load_order_book_rationale_history
+from shared.reconciliation import (
+    STATUS_GAP_NO_TRADE,
+    STATUS_IN_BAND,
+    STATUS_WOULD_TRADE,
+    build_reconciliation_rows,
+)
 
 
 st.set_page_config(
@@ -59,6 +65,12 @@ _STATE_LABEL = {
     "no_action": "No action",
 }
 
+_RECON_STATUS_COLOR = {
+    STATUS_IN_BAND: "#1e1e1e",
+    STATUS_WOULD_TRADE: "#1b5e20",
+    STATUS_GAP_NO_TRADE: "#b71c1c",
+}
+
 
 def _chain_str(chain: list[dict]) -> str:
     """Compact one-line decision chain: stage:result → stage:result."""
@@ -69,6 +81,84 @@ def _chain_str(chain: list[dict]) -> str:
             seg += f"({s['rule']})"
         parts.append(seg)
     return "  →  ".join(parts)
+
+
+def _render_reconciliation(payload: dict) -> None:
+    """Render the target-vs-current-vs-planned reconciliation section.
+
+    Sourced from the producer's schema-1.1.0 portfolio_nav +
+    optimizer_trades + rebalance_band_pct fields. Gracefully no-ops
+    with an explanatory caption on pre-1.1.0 artifacts.
+    """
+    rows, summary = build_reconciliation_rows(payload, state_label=_STATE_LABEL)
+    st.markdown("##### Portfolio reconciliation — target vs current vs planned")
+    if not rows or summary["nav"] is None:
+        st.caption(
+            "Reconciliation view requires optimizer fields (schema ≥ 1.1.0). "
+            "This artifact is either pre-deploy or from a legacy "
+            "non-optimizer run — re-runs after the producer ships will "
+            "populate it."
+        )
+        return
+
+    nav = summary["nav"]
+    band_pct = summary["band_pct"]
+    cols = st.columns(5)
+    cols[0].metric("NAV", f"${nav:,.0f}")
+    cols[1].metric(
+        "Would trade",
+        summary["n_would_trade"],
+        help="Tickers the optimizer wants to rebalance (|Δ| ≥ band).",
+    )
+    cols[2].metric(
+        "In band",
+        summary["n_in_band"],
+        help=(
+            "Tickers inside the rebalance band — optimizer's "
+            "intentional no-trade decision."
+        ),
+    )
+    cols[3].metric(
+        "Gap, no trade",
+        summary["n_gap_no_trade"],
+        help=(
+            "Tickers with |Δ| ≥ band but no planned trade — should "
+            "be 0; non-zero is worth investigating."
+        ),
+    )
+    cols[4].metric(
+        "Turnover ($)",
+        f"${summary['total_turnover']:,.0f}",
+        help="Sum of |planned $| across would-trade rows.",
+    )
+    if band_pct is not None:
+        st.caption(
+            f"Rebalance band: **{band_pct * 100:.2f}%** of NAV "
+            f"(`{band_pct * nav:,.0f}` USD). "
+            "Planned $ is the optimizer's would-be trade at morning-planner run time — "
+            "intraday fills + open daemon orders are not yet reflected here."
+        )
+
+    df = pd.DataFrame(rows)
+    display_df = df.drop(columns=["_status_raw", "_abs_delta_d"])
+
+    def _row_color(display_row):
+        status = df.at[display_row.name, "_status_raw"]
+        color = _RECON_STATUS_COLOR.get(status, "#1e1e1e")
+        return [f"background-color: {color}; color: #fff"] * len(display_row)
+
+    styled = display_df.style.apply(_row_color, axis=1).format(
+        {
+            "Cur %": "{:.2f}%",
+            "Tgt %": "{:.2f}%",
+            "Δ %": "{:+.2f}%",
+            "Δ $": "${:+,.0f}",
+            "Planned $": "${:+,.0f}",
+            "Residual $": "${:+,.0f}",
+        },
+        na_rep="—",
+    )
+    st.dataframe(styled, use_container_width=True, hide_index=True)
 
 
 def _exclusion_str(exc: dict | None) -> str:
@@ -118,6 +208,9 @@ def _render_rationale(payload: dict) -> None:
         f"prediction_date: {payload.get('prediction_date', '—')}  ·  "
         f"run_id: `{payload.get('run_id', '—')}`"
     )
+
+    _render_reconciliation(payload)
+    st.markdown("##### Per-ticker decision chain")
 
     rows = []
     for r in payload["tickers"]:
