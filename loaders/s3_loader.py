@@ -964,6 +964,18 @@ def load_intraday_latest_prices() -> dict | None:
 
 
 @st.cache_data(ttl=_ttl("signals"))
+def load_open_orders_latest() -> dict | None:
+    """Daemon-published open-IB-orders snapshot (trades/open_orders/latest.json).
+
+    Producer: ``executor/open_orders_artifact.py::OpenOrdersSnapshotWriter``
+    invoked each daemon tick. Consumed by the order-book rationale
+    reconciliation view to render the "Working $" column alongside the
+    optimizer's "Planned $".
+    """
+    return _fetch_s3_json(_research_bucket(), "trades/open_orders/latest.json")
+
+
+@st.cache_data(ttl=_ttl("signals"))
 def list_dated_artifact_keys(
     prefix: str,
     *,

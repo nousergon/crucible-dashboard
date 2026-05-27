@@ -23,7 +23,10 @@ import pandas as pd
 import streamlit as st
 
 from components.artifact_archive import ArchiveEntry, render_artifact_archive
-from loaders.s3_loader import load_order_book_rationale_history
+from loaders.s3_loader import (
+    load_open_orders_latest,
+    load_order_book_rationale_history,
+)
 from shared.reconciliation import (
     STATUS_GAP_NO_TRADE,
     STATUS_IN_BAND,
@@ -99,7 +102,15 @@ def _render_reconciliation(payload: dict) -> None:
     optimizer_trades + rebalance_band_pct fields. Gracefully no-ops
     with an explanatory caption on pre-1.1.0 artifacts.
     """
-    rows, summary = build_reconciliation_rows(payload, state_label=_STATE_LABEL)
+    # Open-IB-orders snapshot is daemon-published each tick; absent
+    # before the producer ships (alpha-engine #223) or outside trading
+    # hours. Tolerated as None — the table just omits Working $.
+    open_orders_payload = load_open_orders_latest()
+    rows, summary = build_reconciliation_rows(
+        payload,
+        state_label=_STATE_LABEL,
+        open_orders_payload=open_orders_payload,
+    )
     st.markdown("##### Portfolio reconciliation — target vs current vs planned")
     if not rows or summary["nav"] is None:
         st.caption(
@@ -141,12 +152,25 @@ def _render_reconciliation(payload: dict) -> None:
         help="Sum of |planned $| across would-trade rows.",
     )
     if band_pct is not None:
-        st.caption(
-            f"Rebalance band: **{band_pct * 100:.2f}%** of NAV "
-            f"(`{band_pct * nav:,.0f}` USD). "
-            "Planned $ is the optimizer's would-be trade at morning-planner run time — "
-            "intraday fills + open daemon orders are not yet reflected here."
-        )
+        # Caption phrasing depends on whether daemon snapshot is live.
+        # When open_orders_payload is None the Working $ column is
+        # omitted and Residual = Δ - Planned (legacy reconciliation).
+        if summary.get("total_working") is not None:
+            st.caption(
+                f"Rebalance band: **{band_pct * 100:.2f}%** of NAV "
+                f"(`{band_pct * nav:,.0f}` USD).  ·  "
+                f"Working $ (live from IB Gateway): "
+                f"**${summary['total_working']:,.0f}** across "
+                f"{summary['n_working_tickers']} ticker(s). "
+                f"Residual $ = Δ$ − Planned $ − Working $ (gap still untouched)."
+            )
+        else:
+            st.caption(
+                f"Rebalance band: **{band_pct * 100:.2f}%** of NAV "
+                f"(`{band_pct * nav:,.0f}` USD).  ·  "
+                "Working-orders snapshot not available — "
+                "Residual $ = Δ$ − Planned $."
+            )
 
     df = pd.DataFrame(rows)
     display_df = df.drop(columns=["_status_raw", "_abs_delta_d"])
@@ -163,6 +187,7 @@ def _render_reconciliation(payload: dict) -> None:
             "Δ %": "{:+.2f}%",
             "Δ $": "${:+,.0f}",
             "Planned $": "${:+,.0f}",
+            "Working $": "${:+,.0f}",
             "Residual $": "${:+,.0f}",
         },
         na_rep="—",
