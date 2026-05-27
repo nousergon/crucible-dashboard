@@ -176,6 +176,48 @@ def get_predictor_outcomes(symbol: str | None = None) -> pd.DataFrame:
     )
 
 
+def canonicalize_predictor_outcomes(df: pd.DataFrame) -> pd.DataFrame:
+    """Add `_resolved` (0/1, nullable) and `_realized_alpha` columns to a
+    `predictor_outcomes` frame by coalescing canonical 21d columns onto
+    legacy 5d columns.
+
+    `alpha-engine-data/collectors/signal_returns.py` stopped dual-writing
+    legacy columns at the 2026-05-09 canonical-alpha cutover. Every row
+    written after that date has `correct` / `actual_log_alpha` populated
+    and `correct_5d` / `actual_5d_return` NULL. Pre-cutover rows are the
+    reverse. Reading only the legacy columns silently drops every live
+    prediction; this helper makes the COALESCE explicit at the call site.
+
+    Returns the input frame with two new columns. Idempotent on already-
+    canonicalized frames. No-op on an empty frame.
+    """
+    if df.empty:
+        return df
+    out = df.copy()
+    canonical = pd.to_numeric(out["correct"], errors="coerce") if "correct" in out.columns else None
+    legacy = pd.to_numeric(out["correct_5d"], errors="coerce") if "correct_5d" in out.columns else None
+    if canonical is not None and legacy is not None:
+        out["_resolved"] = canonical.combine_first(legacy)
+    elif canonical is not None:
+        out["_resolved"] = canonical
+    elif legacy is not None:
+        out["_resolved"] = legacy
+    else:
+        out["_resolved"] = pd.Series([None] * len(out), index=out.index)
+
+    canonical_alpha = pd.to_numeric(out["actual_log_alpha"], errors="coerce") if "actual_log_alpha" in out.columns else None
+    legacy_return = pd.to_numeric(out["actual_5d_return"], errors="coerce") if "actual_5d_return" in out.columns else None
+    if canonical_alpha is not None and legacy_return is not None:
+        out["_realized_alpha"] = canonical_alpha.combine_first(legacy_return)
+    elif canonical_alpha is not None:
+        out["_realized_alpha"] = canonical_alpha
+    elif legacy_return is not None:
+        out["_realized_alpha"] = legacy_return
+    else:
+        out["_realized_alpha"] = pd.Series([None] * len(out), index=out.index)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Focus list audit (scanner-placement arc, PR 7)
 # ---------------------------------------------------------------------------

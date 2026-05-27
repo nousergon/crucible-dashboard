@@ -5,6 +5,7 @@ Predictor charts — model drift / rolling accuracy trend.
 import pandas as pd
 import plotly.graph_objects as go
 
+from loaders.db_loader import canonicalize_predictor_outcomes
 from shared.constants import get_thresholds
 
 
@@ -23,19 +24,19 @@ def make_model_drift_chart(outcomes_df: pd.DataFrame) -> go.Figure:
         fig.update_layout(title="Model Performance Trend — No data")
         return fig
 
-    df = outcomes_df.copy()
+    # Idempotent — caller may have already canonicalized.
+    df = canonicalize_predictor_outcomes(outcomes_df)
     df["prediction_date"] = pd.to_datetime(df["prediction_date"])
     df = df.sort_values("prediction_date")
-    df["correct_5d"] = pd.to_numeric(df["correct_5d"], errors="coerce")
 
-    resolved = df[df["correct_5d"].notna()].copy()
+    resolved = df[df["_resolved"].notna()].copy()
     if len(resolved) < 60:
         fig = go.Figure()
         fig.update_layout(title=f"Model Performance Trend — Need ≥60 resolved predictions ({len(resolved)} available)")
         return fig
 
-    resolved["roll_30d"] = resolved["correct_5d"].rolling(30, min_periods=15).mean() * 100
-    resolved["roll_90d"] = resolved["correct_5d"].rolling(90, min_periods=30).mean() * 100
+    resolved["roll_30d"] = resolved["_resolved"].rolling(30, min_periods=15).mean() * 100
+    resolved["roll_90d"] = resolved["_resolved"].rolling(90, min_periods=30).mean() * 100
 
     fig = go.Figure()
 

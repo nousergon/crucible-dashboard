@@ -15,7 +15,7 @@ import streamlit as st
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from loaders.s3_loader import load_predictions_json, load_predictor_metrics, load_production_health, load_signals_json, load_mode_history, load_feature_importance
-from loaders.db_loader import get_predictor_outcomes
+from loaders.db_loader import get_predictor_outcomes, canonicalize_predictor_outcomes
 from loaders.signal_loader import get_available_signal_dates
 from charts.predictor_chart import make_model_drift_chart, make_feature_importance_chart
 from shared.constants import get_thresholds
@@ -29,6 +29,8 @@ _ACC_BASELINE = _TH["accuracy_baseline"]
 st.set_page_config(page_title="Predictor — Alpha Engine", layout="wide")
 
 st.title("Predictor")
+
+
 
 # ---------------------------------------------------------------------------
 # Model health banner
@@ -51,16 +53,26 @@ else:
 
 st.subheader(f"Model Health — {badge}")
 
+# Defensive coercion: `dict.get(key, default)` returns the stored value
+# when the key EXISTS, even if that value is None — only a missing key
+# triggers the default. Producer-side `production_health.py` writes
+# `training_samples=None` and `ic_30d=None` when the latest metric cycle
+# couldn't compute them (early-cycle or n<threshold). `or default`
+# folds None back to the default so format specs don't blow up.
+_training_samples = metrics.get("training_samples") or 0
+_ic_30d = metrics.get("ic_30d") or 0.0
+_ic_ir_30d = metrics.get("ic_ir_30d") or 0.0
+
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("Version", metrics.get("model_version", "—"))
 m2.metric("Last Trained", metrics.get("last_trained", "—"))
-m3.metric("Training Samples", f"{metrics.get('training_samples', 0):,}")
+m3.metric("Training Samples", f"{_training_samples:,}")
 m4.metric("High-Confidence Today", metrics.get("n_high_confidence", 0))
 
 m5, m6, m7, m8 = st.columns(4)
 m5.metric("Hit Rate (30d Rolling)", f"{hit_rate:.1%}")
-m6.metric("IC (30d)", f"{metrics.get('ic_30d', 0):.3f}")
-m7.metric("IC IR (30d)", f"{metrics.get('ic_ir_30d', 0):.3f}")
+m6.metric("IC (30d)", f"{_ic_30d:.3f}")
+m7.metric("IC IR (30d)", f"{_ic_ir_30d:.3f}")
 m8.metric("Predictions Today", metrics.get("n_predictions_today", 0))
 
 st.divider()
@@ -181,17 +193,194 @@ else:
 st.divider()
 
 # ---------------------------------------------------------------------------
+# Fetch outcome history (used by Calls vs Actual + every downstream section)
+# ---------------------------------------------------------------------------
+
+outcomes_df = canonicalize_predictor_outcomes(get_predictor_outcomes())
+
+# ---------------------------------------------------------------------------
+# Predictor Calls vs Actual — longitudinal view (added 2026-05-27)
+# ---------------------------------------------------------------------------
+#
+# Three lenses on "what we said vs what happened" aggregated across all
+# tickers over time:
+#   1. Daily hit rate trend — resolved predictions only, grouped by
+#      prediction_date. Shows whether the model's overall accuracy is
+#      trending or drifting.
+#   2. Confidence vs realized alpha scatter — every resolved prediction
+#      colored by predicted direction. The cleanest visual test of
+#      whether high confidence corresponds to large realized moves.
+#   3. Direction-specific accuracy over time — UP-call vs DOWN-call hit
+#      rate trended separately, since UP/DOWN often calibrate differently
+#      (e.g. veto path dominates DOWN, score-modifier dominates UP).
+#
+# Rows where `_resolved` is null are excluded — predictions emitted
+# within the last ~21 trading days haven't closed their horizon yet.
+# Explicit unresolved-count callout below each chart so the lag is visible.
+
+st.subheader("Predictor Calls vs Actual — Timeline")
+st.caption(
+    "Aggregated across all tickers. Each prediction resolves once its 21-day "
+    "horizon closes; recent predictions are still pending."
+)
+
+if outcomes_df.empty:
+    st.info("No prediction history available yet.")
+else:
+    cva = outcomes_df.copy()
+    cva["prediction_date"] = pd.to_datetime(cva["prediction_date"])
+    cva = cva.sort_values("prediction_date")
+    cva_resolved = cva[cva["_resolved"].notna()].copy()
+    n_resolved = len(cva_resolved)
+    n_total = len(cva)
+    n_pending = n_total - n_resolved
+
+    pcols = st.columns(3)
+    pcols[0].metric("Total predictions tracked", f"{n_total:,}")
+    pcols[1].metric("Resolved (21d window closed)", f"{n_resolved:,}")
+    pcols[2].metric("Pending resolution", f"{n_pending:,}")
+
+    if n_resolved < 20:
+        st.info(
+            f"Need ≥20 resolved predictions to plot the timeline "
+            f"(currently {n_resolved}). Coverage backfills weekly via "
+            "`alpha-engine-data/collectors/signal_returns.py`."
+        )
+    else:
+        # ---- (1) Daily hit rate trend ------------------------------------
+        daily = (
+            cva_resolved.groupby("prediction_date")
+            .agg(hit_rate=("_resolved", "mean"), n=("_resolved", "count"))
+            .reset_index()
+        )
+        # 30-day rolling smoother for readability — daily counts can be
+        # low (n=5..20) so per-day points are noisy.
+        daily["roll_30d"] = (
+            daily["hit_rate"].rolling(30, min_periods=10).mean()
+        )
+
+        hit_fig = go.Figure()
+        hit_fig.add_trace(go.Scatter(
+            x=daily["prediction_date"], y=daily["hit_rate"],
+            mode="markers", name="Per-day hit rate",
+            marker=dict(
+                size=(daily["n"] / max(daily["n"].max(), 1) * 12 + 4),
+                color="#94a3b8", opacity=0.55,
+            ),
+            hovertemplate="<b>%{x|%Y-%m-%d}</b><br>Hit rate: %{y:.0%}<extra></extra>",
+        ))
+        hit_fig.add_trace(go.Scatter(
+            x=daily["prediction_date"], y=daily["roll_30d"],
+            mode="lines", name="30-day rolling",
+            line=dict(color="#1f77b4", width=2.5),
+            hovertemplate="<b>%{x|%Y-%m-%d}</b><br>30d rolling: %{y:.0%}<extra></extra>",
+        ))
+        hit_fig.add_hline(
+            y=_ACC_BASELINE,
+            line=dict(color="gray", width=1, dash="dash"),
+            annotation_text=f"baseline {_ACC_BASELINE:.0%}",
+            annotation_position="bottom right",
+        )
+        hit_fig.update_layout(
+            title="Daily Hit Rate (calls that resolved in the predicted direction)",
+            xaxis=dict(title="Prediction Date"),
+            yaxis=dict(title="Hit Rate", tickformat=".0%", range=[0, 1]),
+            plot_bgcolor="white", paper_bgcolor="white",
+            height=320, margin=dict(t=50, b=40, l=60, r=20),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        )
+        st.plotly_chart(hit_fig, use_container_width=True)
+
+        # ---- (2) Confidence vs realized alpha scatter --------------------
+        scat = cva_resolved.copy()
+        scat["prediction_confidence"] = pd.to_numeric(
+            scat["prediction_confidence"], errors="coerce"
+        )
+        scat = scat[scat["_realized_alpha"].notna() & scat["prediction_confidence"].notna()]
+        if not scat.empty:
+            scat_fig = go.Figure()
+            for direction, color in (
+                ("UP", "#16a34a"),
+                ("FLAT", "#94a3b8"),
+                ("DOWN", "#dc2626"),
+            ):
+                sub = scat[scat["predicted_direction"] == direction]
+                if sub.empty:
+                    continue
+                scat_fig.add_trace(go.Scatter(
+                    x=sub["prediction_confidence"],
+                    y=sub["_realized_alpha"],
+                    mode="markers", name=direction,
+                    marker=dict(size=7, color=color, opacity=0.6, line=dict(width=0)),
+                    customdata=sub[["symbol", "prediction_date"]].values,
+                    hovertemplate=(
+                        "<b>%{customdata[0]}</b> · %{customdata[1]}<br>"
+                        "Confidence: %{x:.0%}<br>Realized log-α: %{y:+.3f}<extra></extra>"
+                    ),
+                ))
+            scat_fig.add_hline(y=0, line=dict(color="gray", width=1, dash="dash"))
+            scat_fig.update_layout(
+                title="Confidence vs Realized 21d Log-Alpha (color = predicted direction)",
+                xaxis=dict(title="Prediction Confidence", tickformat=".0%"),
+                yaxis=dict(title="Realized log-α (21d, log-domain)"),
+                plot_bgcolor="white", paper_bgcolor="white",
+                height=380, margin=dict(t=50, b=40, l=60, r=20),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            )
+            st.plotly_chart(scat_fig, use_container_width=True)
+            st.caption(
+                "An ideal model places UP markers in the upper-right and DOWN markers "
+                "in the lower-right. Markers near y=0 across high confidence = "
+                "overconfident on noise."
+            )
+
+        # ---- (3) Direction-specific accuracy over time -------------------
+        dir_daily = (
+            cva_resolved.assign(direction=cva_resolved["predicted_direction"])
+            .groupby(["prediction_date", "direction"])
+            .agg(hit_rate=("_resolved", "mean"), n=("_resolved", "count"))
+            .reset_index()
+        )
+        if not dir_daily.empty:
+            dir_fig = go.Figure()
+            for direction, color in (("UP", "#16a34a"), ("DOWN", "#dc2626")):
+                sub = dir_daily[dir_daily["direction"] == direction].sort_values("prediction_date")
+                if sub.empty:
+                    continue
+                sub = sub.assign(
+                    roll=sub["hit_rate"].rolling(30, min_periods=10).mean()
+                )
+                dir_fig.add_trace(go.Scatter(
+                    x=sub["prediction_date"], y=sub["roll"],
+                    mode="lines", name=f"{direction}-call 30d rolling",
+                    line=dict(color=color, width=2),
+                ))
+            dir_fig.add_hline(
+                y=_ACC_BASELINE,
+                line=dict(color="gray", width=1, dash="dash"),
+            )
+            dir_fig.update_layout(
+                title="UP-call vs DOWN-call Hit Rate (30d rolling)",
+                xaxis=dict(title="Prediction Date"),
+                yaxis=dict(title="Hit Rate", tickformat=".0%", range=[0, 1]),
+                plot_bgcolor="white", paper_bgcolor="white",
+                height=300, margin=dict(t=50, b=40, l=60, r=20),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            )
+            st.plotly_chart(dir_fig, use_container_width=True)
+
+st.divider()
+
+# ---------------------------------------------------------------------------
 # Model Performance Trend (Gap #5)
 # ---------------------------------------------------------------------------
 
 st.subheader("Model Performance Trend")
 
-outcomes_df = get_predictor_outcomes()
-
 if outcomes_df.empty:
     st.info("No prediction history available yet.")
 else:
-    resolved = outcomes_df[outcomes_df["correct_5d"].notna()].copy()
+    resolved = outcomes_df[outcomes_df["_resolved"].notna()].copy()
     if len(resolved) < 60:
         st.info(
             f"Model drift chart requires ≥60 resolved predictions "
@@ -456,9 +645,9 @@ else:
         ))
         fig.add_hline(y=0, line_dash="dash", line_color="gray")
 
-        resolved = ticker_df[ticker_df["correct_5d"].notna()]
-        correct = resolved[resolved["correct_5d"] == 1]
-        wrong = resolved[resolved["correct_5d"] == 0]
+        resolved = ticker_df[ticker_df["_resolved"].notna()]
+        correct = resolved[resolved["_resolved"] == 1]
+        wrong = resolved[resolved["_resolved"] == 0]
 
         if not correct.empty:
             fig.add_trace(go.Scatter(
@@ -483,7 +672,7 @@ else:
         st.plotly_chart(fig, use_container_width=True)
 
         total = len(resolved)
-        n_correct = int(resolved["correct_5d"].sum()) if total > 0 else 0
+        n_correct = int(resolved["_resolved"].sum()) if total > 0 else 0
         acc = n_correct / total if total > 0 else 0
         st.caption(f"Running accuracy: **{n_correct} correct of {total} predictions ({acc:.1%})**")
 
@@ -499,7 +688,7 @@ st.caption("Validates that confidence is monotonically predictive. Non-monotonic
 if outcomes_df.empty:
     st.info("No predictor outcome data available yet.")
 else:
-    resolved_bucket = outcomes_df[outcomes_df["correct_5d"].notna()].copy()
+    resolved_bucket = outcomes_df[outcomes_df["_resolved"].notna()].copy()
     if len(resolved_bucket) < 20:
         st.info(
             f"Requires ≥20 resolved predictions (currently {len(resolved_bucket)}). "
@@ -515,7 +704,7 @@ else:
             right=False,
         )
         bucket_stats = (
-            resolved_bucket.groupby("conf_bucket", observed=True)["correct_5d"]
+            resolved_bucket.groupby("conf_bucket", observed=True)["_resolved"]
             .agg(["mean", "count"])
             .reset_index()
         )
@@ -549,7 +738,7 @@ st.divider()
 st.subheader("Confidence Calibration")
 
 if not outcomes_df.empty:
-    resolved_all = outcomes_df[outcomes_df["correct_5d"].notna()].copy()
+    resolved_all = outcomes_df[outcomes_df["_resolved"].notna()].copy()
     resolved_all["prediction_confidence"] = pd.to_numeric(
         resolved_all["prediction_confidence"], errors="coerce"
     )
@@ -564,8 +753,8 @@ if not outcomes_df.empty:
         )
         cal = resolved_all.groupby("conf_decile", observed=True).agg(
             avg_conf=("prediction_confidence", "mean"),
-            hit_rate=("correct_5d", "mean"),
-            n=("correct_5d", "count"),
+            hit_rate=("_resolved", "mean"),
+            n=("_resolved", "count"),
         ).reset_index()
 
         cal_fig = go.Figure()
