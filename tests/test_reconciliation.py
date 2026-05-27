@@ -217,3 +217,121 @@ def test_empty_tickers_list_returns_empty_summary():
     assert rows == []
     assert summary["n_tickers"] == 0
     assert summary["total_turnover"] == 0.0
+
+
+# ── Working $ column (daemon-side open-orders snapshot) ───────────────
+
+
+def _open_order(
+    ticker: str,
+    action: str,
+    *,
+    remaining: int = 100,
+    limit: float | None = 50.0,
+    aux: float | None = None,
+    is_working: bool = True,
+) -> dict:
+    return {
+        "ticker": ticker,
+        "action": action,
+        "remaining": remaining,
+        "limit_price": limit,
+        "aux_price": aux,
+        "is_working": is_working,
+    }
+
+
+def test_working_column_added_when_open_orders_payload_present():
+    payload = _payload(
+        [_record("AAPL", cur_w=0.0, tgt_w=0.041)],
+        trades=[{"ticker": "AAPL", "delta_dollars": 5125.0}],
+    )
+    open_orders = {"open_orders": [_open_order("AAPL", "BUY", remaining=50, limit=100.0)]}
+    rows, summary = build_reconciliation_rows(
+        payload, open_orders_payload=open_orders,
+    )
+    r = rows[0]
+    assert "Working $" in r
+    assert r["Working $"] == 5000.0  # 50 shares × $100 limit
+    # Residual = Δ$ - Planned $ - Working $ = 5125 - 5125 - 5000 = -5000
+    assert r["Residual $"] == -5000.0
+    assert summary["total_working"] == 5000.0
+    assert summary["n_working_tickers"] == 1
+
+
+def test_working_column_omitted_when_no_open_orders_payload():
+    payload = _payload(
+        [_record("AAPL", cur_w=0.0, tgt_w=0.041)],
+        trades=[{"ticker": "AAPL", "delta_dollars": 5125.0}],
+    )
+    rows, summary = build_reconciliation_rows(payload)
+    assert "Working $" not in rows[0]
+    assert summary["total_working"] is None
+    # Legacy residual math: Δ$ - Planned $ (no working subtraction)
+    assert rows[0]["Residual $"] == 0.0
+
+
+def test_sell_orders_sign_working_dollars_negative():
+    payload = _payload([_record("MSFT", cur_w=0.032, tgt_w=0.0)])
+    open_orders = {"open_orders": [
+        _open_order("MSFT", "SELL", remaining=50, limit=80.0),
+    ]}
+    rows, _ = build_reconciliation_rows(payload, open_orders_payload=open_orders)
+    msft = rows[0]
+    assert msft["Working $"] == -4000.0
+    # Δ$ = (0 - 0.032) × 125000 = -4000; Residual = -4000 - 0 - (-4000) = 0
+    assert msft["Residual $"] == 0.0
+
+
+def test_terminal_status_orders_excluded_from_working():
+    # Filled / Cancelled orders show is_working=False — must not
+    # contribute to Working $ even if they're in the snapshot.
+    payload = _payload([_record("AAPL", cur_w=0.0, tgt_w=0.041)])
+    open_orders = {"open_orders": [
+        _open_order("AAPL", "BUY", remaining=100, limit=50.0, is_working=False),
+    ]}
+    rows, _ = build_reconciliation_rows(payload, open_orders_payload=open_orders)
+    assert rows[0]["Working $"] == 0.0
+
+
+def test_market_order_without_limit_excluded_from_working_dollars():
+    # Market orders have limit_price=0; without a usable price the
+    # working-$ contribution is 0 (they fill ~instantly anyway).
+    payload = _payload([_record("AAPL", cur_w=0.0, tgt_w=0.041)])
+    open_orders = {"open_orders": [
+        _open_order("AAPL", "BUY", remaining=100, limit=0.0, aux=None),
+    ]}
+    rows, _ = build_reconciliation_rows(payload, open_orders_payload=open_orders)
+    assert rows[0]["Working $"] == 0.0
+
+
+def test_stop_order_uses_aux_price_when_no_limit():
+    payload = _payload([_record("AAPL", cur_w=0.041, tgt_w=0.0)])
+    open_orders = {"open_orders": [
+        _open_order("AAPL", "SELL", remaining=100, limit=0.0, aux=45.0),
+    ]}
+    rows, _ = build_reconciliation_rows(payload, open_orders_payload=open_orders)
+    assert rows[0]["Working $"] == -4500.0
+
+
+def test_multiple_orders_for_same_ticker_summed():
+    payload = _payload([_record("AAPL", cur_w=0.0, tgt_w=0.041)])
+    open_orders = {"open_orders": [
+        _open_order("AAPL", "BUY", remaining=30, limit=50.0),
+        _open_order("AAPL", "BUY", remaining=20, limit=50.0),
+    ]}
+    rows, _ = build_reconciliation_rows(payload, open_orders_payload=open_orders)
+    assert rows[0]["Working $"] == 2500.0  # 50 shares × $50
+
+
+def test_empty_open_orders_payload_treated_as_no_working():
+    payload = _payload(
+        [_record("AAPL", cur_w=0.0, tgt_w=0.041)],
+        trades=[{"ticker": "AAPL", "delta_dollars": 5125.0}],
+    )
+    rows, summary = build_reconciliation_rows(
+        payload, open_orders_payload={"open_orders": []},
+    )
+    assert rows[0]["Working $"] == 0.0
+    assert summary["total_working"] == 0.0
+    assert summary["n_working_tickers"] == 0
