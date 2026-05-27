@@ -121,6 +121,40 @@ st.caption(
 )
 
 
+# ─── Section 0: Artifact Freshness Monitor KPI strip ────────────────────
+# Companion summary for the dedicated page at /Artifact_Freshness.
+# Reads the same _freshness_monitor/heartbeat.json the Lambda emits
+# every 15min. Absence-driven monitoring complement to the
+# event-driven flow-doctor / SF Catch surfaces below.
+
+
+@st.cache_data(ttl=60)
+def _load_freshness_heartbeat() -> dict | None:
+    return _fetch_s3_json(_research_bucket(), "_freshness_monitor/heartbeat.json")
+
+
+_freshness_heartbeat = _load_freshness_heartbeat()
+if _freshness_heartbeat is not None:
+    st.subheader("Artifact Freshness Monitor")
+    _counts = _freshness_heartbeat.get("counts", {})
+    _last_run = _freshness_heartbeat.get("last_run", "")
+    _alerts_enabled = _freshness_heartbeat.get("alerts_enabled", False)
+    _kpi_cols = st.columns(7)
+    _kpi_cols[0].metric("Total checked", _freshness_heartbeat.get("n_entries_checked", 0))
+    _kpi_cols[1].metric("✅ fresh", _counts.get("fresh", 0))
+    _kpi_cols[2].metric("⏳ grace", _counts.get("grace_period", 0))
+    _kpi_cols[3].metric("⚠️ stale", _counts.get("stale", 0))
+    _kpi_cols[4].metric("❌ missing", _counts.get("missing", 0))
+    _kpi_cols[5].metric("🚨 probe failed", _counts.get("probe_failed", 0))
+    _kpi_cols[6].metric(
+        "Mode", "🔔 alerts live" if _alerts_enabled else "👁 observe",
+    )
+    st.caption(
+        f"Last run: `{_last_run}` — full per-artifact detail at "
+        "[/Artifact_Freshness](/Artifact_Freshness)."
+    )
+    st.divider()
+
 
 # ===========================================================================
 # Page body — Modules & Data
