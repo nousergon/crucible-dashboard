@@ -16,18 +16,36 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+# Preloaded so they're in sys.modules BEFORE _load_live_loader's
+# `patch("builtins.open", ...)` window — otherwise a first-time `import
+# pandas` during exec_module reads files through the mocked open (on macOS
+# it reads a SystemVersion plist → re TypeError). With them preloaded the
+# open-mock only covers the live module's config.yaml read.
+import pandas  # noqa: F401
+import yaml  # noqa: F401
 import pytest
 
 _LIVE = Path(__file__).parent.parent / "live"
 
 
 def _load_live_loader():
+    """Load live/loaders/s3_loader.py via importlib with config mocked.
+
+    The @st.cache_data(ttl=_ttl(...)) decorators evaluate _ttl() → load_config()
+    at module-exec time, which reads the gitignored live/config.yaml (absent in
+    CI). Mock open + yaml.safe_load during exec_module, mirroring
+    test_s3_loader.py::TestLiveGetS3Client._load_live_loader."""
     spec = importlib.util.spec_from_file_location(
         f"live_s3_loader_td_{id(object())}", str(_LIVE / "loaders" / "s3_loader.py")
     )
     module = importlib.util.module_from_spec(spec)
-    with patch.object(spec.loader, "exec_module", wraps=spec.loader.exec_module):
-        spec.loader.exec_module(module)
+    with patch("builtins.open", MagicMock()):
+        with patch("yaml.safe_load", return_value={
+            "s3": {"research_bucket": "test", "trades_bucket": "test"},
+            "cache_ttl": {"research": 3600, "trades": 900},
+            "paths": {"eod_pnl": "trades/eod_pnl.csv"},
+        }):
+            spec.loader.exec_module(module)
     return module
 
 
