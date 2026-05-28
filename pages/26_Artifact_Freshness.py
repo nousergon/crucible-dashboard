@@ -46,6 +46,7 @@ st.set_page_config(
 
 HEARTBEAT_KEY = "_freshness_monitor/heartbeat.json"
 CHECK_RESULTS_KEY = "_freshness_monitor/check_results.json"
+HISTORY_KEY = "_freshness_monitor/history.json"
 
 # State → display color. Mirrors the substrate's CheckResult.state
 # vocabulary. fresh = green; grace_period = muted green (not at-risk
@@ -76,6 +77,14 @@ def _load_heartbeat() -> dict | None:
 @st.cache_data(ttl=60)
 def _load_check_results() -> dict | None:
     return _fetch_s3_json(_research_bucket(), CHECK_RESULTS_KEY)
+
+
+@st.cache_data(ttl=300)
+def _load_history() -> dict | None:
+    """Per-artifact historical-cycle probe results from the daily 04:00
+    UTC historical run. Higher TTL than check_results because the
+    underlying data refreshes once/day, not every 15min."""
+    return _fetch_s3_json(_research_bucket(), HISTORY_KEY)
 
 
 def _format_age(iso_ts) -> str:
@@ -287,6 +296,36 @@ if filtered.empty:
 filtered["state_display"] = filtered["state"].map(_STATE_LABEL).fillna(filtered["state"])
 filtered["last_modified_age"] = filtered["last_modified"].apply(_format_age)
 
+# Historical gap-count column — derived from the daily history.json
+# probe (alpha-engine-data freshness-monitor historical mode).
+# ✅ continuous, ⚠️ N gaps, — if history not yet covered for this id
+# (e.g. a continuous-cadence artifact, which historical mode skips).
+history_payload = _load_history()
+_history_artifacts = (history_payload or {}).get("artifacts", {})
+
+
+def _format_history_summary(artifact_id: str) -> str:
+    entry = _history_artifacts.get(artifact_id)
+    if entry is None:
+        return "—"
+    if entry.get("is_latest_pointer"):
+        # latest-pointer artifacts don't have a meaningful gap count
+        # (single point); show present/absent state only.
+        h = entry.get("history") or []
+        if h and h[0].get("present"):
+            return "✅ exists (latest-pointer)"
+        return "❌ absent (latest-pointer)"
+    gap_count = entry.get("gap_count")
+    lookback = entry.get("lookback_cycles", 0)
+    if gap_count is None or lookback == 0:
+        return "—"
+    if gap_count == 0:
+        return f"✅ {lookback}/{lookback} continuous"
+    return f"⚠️ {gap_count}/{lookback} gaps"
+
+
+filtered["history_summary"] = filtered["artifact_id"].apply(_format_history_summary)
+
 # Sort: probe_failed → missing → stale → grace → fresh, then severity desc.
 _STATE_ORDER = {
     "probe_failed": 0,
@@ -308,6 +347,7 @@ display_cols = [
     "severity",
     "canonical_key",
     "last_modified_age",
+    "history_summary",
     "sla_violated_by_minutes",
     "recovery_substituted",
     "reason",
@@ -321,6 +361,7 @@ display_df = filtered[display_cols].rename(columns={
     "severity": "Severity",
     "canonical_key": "S3 Key",
     "last_modified_age": "Last Modified",
+    "history_summary": "History (12wk)",
     "sla_violated_by_minutes": "SLA breach (min)",
     "recovery_substituted": "Recovery sub?",
     "reason": "Reason",
@@ -340,6 +381,106 @@ st.dataframe(
 )
 
 st.divider()
+
+
+# ── Historical-cycle per-artifact drill-down ────────────────────────────────
+#
+# Reads _freshness_monitor/history.json (written daily at 04:00 UTC by
+# the freshness-monitor Lambda's historical mode). Shows the per-cycle
+# history for any artifact whose summary on the main table reads
+# something other than ✅ continuous — i.e., the artifacts that need
+# attention. Latest-pointer artifacts surface their current state only.
+#
+# Calendar-naive — NYSE holidays may render as false-positive ❌ absent
+# cells; operator interprets in context. Calendar-aware probe is a
+# future enhancement.
+
+
+_filtered_history_artifacts = {
+    aid: _history_artifacts[aid]
+    for aid in filtered["artifact_id"].tolist()
+    if aid in _history_artifacts
+}
+
+if history_payload is None:
+    st.info(
+        "No historical probe data yet. The daily 04:00 UTC EB cron "
+        "(`alpha-engine-freshness-monitor-historical-cron`) writes "
+        f"`s3://{_research_bucket()}/{HISTORY_KEY}`. First firing "
+        "lands tomorrow; manual invoke: "
+        "`aws lambda invoke --function-name alpha-engine-freshness-monitor "
+        "--payload '{\"mode\":\"historical\"}' --cli-binary-format raw-in-base64-out /tmp/out.json`."
+    )
+elif _filtered_history_artifacts:
+    st.subheader("Per-artifact history drill-down")
+    st.caption(
+        f"Generated {history_payload.get('generated_at', '?')}. "
+        f"Lookback: {history_payload.get('lookback', {})}. "
+        "Click any artifact below to see the per-cycle sequence."
+    )
+
+    # Surface gappy + latest-pointer-absent artifacts first; expand the
+    # worst offenders by default.
+    def _drill_sort_key(item):
+        aid, entry = item
+        if entry.get("is_latest_pointer"):
+            # latest-pointer absent → high priority; present → low
+            present = (entry.get("history") or [{}])[0].get("present")
+            return (0 if not present else 9, aid)
+        gap = entry.get("gap_count") or 0
+        if gap == 0:
+            return (8, aid)  # continuous → low priority
+        return (1, -gap, aid)  # gappy → high priority, most gaps first
+
+    sorted_history = sorted(
+        _filtered_history_artifacts.items(),
+        key=_drill_sort_key,
+    )
+
+    # Auto-expand the first 3 worst-offender entries.
+    for idx, (aid, entry) in enumerate(sorted_history):
+        cadence = entry.get("cadence", "?")
+        if entry.get("is_latest_pointer"):
+            h = entry.get("history") or []
+            present = h[0].get("present") if h else None
+            badge = "✅ exists" if present else "❌ absent"
+            label = f"{aid}  ({cadence}, latest-pointer, {badge})"
+        else:
+            gap = entry.get("gap_count", 0)
+            lookback = entry.get("lookback_cycles", 0)
+            if gap == 0:
+                badge = f"✅ {lookback}/{lookback} continuous"
+            else:
+                badge = f"⚠️ {gap}/{lookback} gaps"
+            label = f"{aid}  ({cadence}, {badge})"
+
+        with st.expander(label, expanded=(idx < 3)):
+            rows = []
+            for c in entry.get("history") or []:
+                rows.append({
+                    "date": c.get("date"),
+                    "present": "✅" if c.get("present") else "❌",
+                    "size": c.get("size", ""),
+                    "last_modified": c.get("last_modified", ""),
+                    "error_code": c.get("error_code", ""),
+                })
+            if rows:
+                hist_df = pd.DataFrame(rows)
+                st.dataframe(hist_df, use_container_width=True, hide_index=True)
+            else:
+                st.caption(
+                    f"No history cycles probed (cadence={cadence!r} — "
+                    "continuous artifacts are skipped by historical mode; "
+                    "current-state probe covers them)."
+                )
+            st.caption(
+                f"S3 key template: `{entry.get('s3_key_template', '?')}`  •  "
+                f"severity: `{entry.get('severity', '?')}`  •  "
+                f"owner: `{entry.get('owner_repo', '?')}`"
+            )
+
+st.divider()
+
 
 # ── Footnotes / operator runbook ────────────────────────────────────────────
 
