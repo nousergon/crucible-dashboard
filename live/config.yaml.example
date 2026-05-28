@@ -1,19 +1,27 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # DESCRIPTIVE / DOCUMENTATION ONLY
 #
-# Production reads the live config from public/config.yaml on the dashboard
-# EC2 instance (gitignored, lives in ~/alpha-engine-dashboard/public/
-# config.yaml on the host that runs nous-ergon-public.service — the public
-# site at nousergon.ai). The live config is NOT in alpha-engine-config
-# (unlike most other modules) — it's per-instance state on the EC2 host.
+# Production reads the live config from live/config.yaml on the dashboard
+# EC2 instance (gitignored, lives in ~/alpha-engine-dashboard/live/
+# config.yaml on the host that runs nous-ergon-live.service — the live
+# console at live.nousergon.ai). The live config is NOT in alpha-engine-
+# config (unlike most other modules) — it's per-instance state on the
+# EC2 host.
+#
+# (Note: the nousergon.ai apex itself is served by Cloudflare Pages from
+# the Astro build in marketing/, NOT by any EC2 systemd unit. Pre-2026-
+# 05-22 this file's header referred to a now-retired nous-ergon-public.
+# service that served the apex from EC2; that path is gone. Only live.
+# nousergon.ai and console.nousergon.ai are EC2-served.)
 #
 # Edits to this .example file affect ONLY:
 #   1. New-environment bootstrap (copies this template to config.yaml), and
-#   2. Public-repo schema documentation for the public-site config surface.
+#   2. Public-repo schema documentation for the live-console config surface.
 #
-# Edits here have ZERO effect on the live public site. To change a runtime
-# value, SSH to the dashboard host and edit ~/alpha-engine-dashboard/public/
-# config.yaml directly, then restart nous-ergon-public.service.
+# Edits here have ZERO effect on the running live console. To change a
+# runtime value, SSH to the dashboard host and edit ~/alpha-engine-
+# dashboard/live/config.yaml directly, then restart nous-ergon-live.
+# service.
 # ─────────────────────────────────────────────────────────────────────────────
 
 s3:
