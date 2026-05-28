@@ -251,6 +251,11 @@ else:
     # drivers only (HMM + Stage-F forced_bear). The counterfactual delta
     # is composed-vs-baseline: what the discrete gates WOULD see if the
     # flag were on, vs what acts today (flag default-off).
+    # 3-class Ang-Bekaert macro taxonomy (v0.42.0 / 2026-05-28 —
+    # caution-regime-retirement-260528.md). Legacy 4-class "caution"
+    # tier retired (its driving signals flow through regime_intensity_z
+    # continuously); historical payloads carrying "caution" map to
+    # severity 2 (between neutral and bear) for grandfather ordering.
     _ORDER = {"bull": 0, "neutral": 1, "caution": 2, "bear": 3}
     baseline_drivers = [
         drivers.get("hmm"), drivers.get("forced_bear"),
@@ -391,10 +396,17 @@ if dates:
 if agent_regime is None:
     st.info("Macro agent regime call not yet available — `signals.json` for the latest date is missing or empty.")
 else:
-    # Map 4-class taxonomy (bull/neutral/caution/bear) to 3-state for
-    # apples-to-apples comparison with the HMM. "caution" maps to "bear"
-    # on the substrate side (HMM has no caution state; caution-tilted
-    # severity is encoded in intensity_z rather than label).
+    # 3-class Ang-Bekaert macro taxonomy (v0.42.0 / 2026-05-28 —
+    # caution-regime-retirement-260528.md). New emissions are 3-class
+    # (bull/neutral/bear); historical signals.json artifacts predating
+    # the cutover carry the legacy 4-class "caution" — map to "bear"
+    # for grandfather attribution continuity (caution-tier stress had
+    # higher protective severity than neutral, so the bear collapse
+    # preserves the protective tilt at the cost of compressing a
+    # half-step into a full bear posture). Caution-tilted severity for
+    # new data is encoded continuously in regime_intensity_z (META_FEATURE
+    # 13) and discretely in the predictor drawdown leg's
+    # drawdown_protective_severity ordinal (axis ORTHOGONAL to macro).
     def _normalize(label: str) -> str:
         if label in ("bear", "caution"):
             return "bear"

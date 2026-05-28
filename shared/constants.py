@@ -20,13 +20,29 @@ SIGNAL_COLORS = {
 
 VETO_COLOR = "#f5c6cb"
 
+# 3-class Ang-Bekaert macro taxonomy (v0.42.0 / 2026-05-28 —
+# caution-regime-retirement-260528.md). "caution" glyph preserved for
+# grandfather of historical signals.json artifacts whose market_regime
+# field still carries the legacy 4-class value; new emissions are 3-class.
+# The portfolio-protective drawdown axis (risk_on/caution/risk_off) lives
+# in DRAWDOWN_TIER_EMOJI below.
 REGIME_EMOJI = {
     "bull": "🐂",
     "bear": "🐻",
     "neutral": "➡️",
-    "caution": "⚠️",
+    "caution": "⚠️",  # legacy 4-class grandfather (pre-v0.42.0 artifacts)
 }
 REGIME_EMOJI_DEFAULT = "📊"
+
+# Drawdown leg protective-tier glyphs (3-state Bridgewater All-Weather
+# hysteresis pattern preserved post-Phase-2A). Axis ORTHOGONAL to macro
+# regime: composed by consumers via most-protective override.
+DRAWDOWN_TIER_EMOJI = {
+    "risk_on": "✅",
+    "caution": "⚠️",
+    "risk_off": "🛑",
+}
+DRAWDOWN_TIER_EMOJI_DEFAULT = "❓"
 
 # ---------------------------------------------------------------------------
 # Return styling (CSS)

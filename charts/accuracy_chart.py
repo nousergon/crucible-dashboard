@@ -290,6 +290,9 @@ def make_accuracy_by_regime_chart(perf_df: pd.DataFrame, macro_df: pd.DataFrame)
     grouped["acc_10d"] = grouped["acc_10d"] * 100
     grouped["acc_30d"] = grouped["acc_30d"] * 100
 
+    # 3-class Ang-Bekaert macro taxonomy (v0.42.0 / 2026-05-28 —
+    # caution-regime-retirement-260528.md) + grandfather for historical
+    # rows carrying legacy "caution". "unknown" for null/missing.
     regime_order = ["bull", "neutral", "bear", "caution", "unknown"]
     grouped["regime"] = pd.Categorical(grouped["regime"], categories=regime_order, ordered=True)
     grouped = grouped.sort_values("regime")
@@ -472,6 +475,9 @@ def make_regime_alpha_chart(eod_df: pd.DataFrame, macro_df: pd.DataFrame) -> go.
         days=("daily_alpha_pct", "count"),
     ).reset_index()
 
+    # 3-class Ang-Bekaert macro taxonomy (v0.42.0 / 2026-05-28 —
+    # caution-regime-retirement-260528.md) + grandfather for historical
+    # rows carrying legacy "caution". "unknown" for null/missing.
     regime_order = ["bull", "neutral", "bear", "caution", "unknown"]
     grouped["regime"] = pd.Categorical(grouped["regime"], categories=regime_order, ordered=True)
     grouped = grouped.sort_values("regime")
