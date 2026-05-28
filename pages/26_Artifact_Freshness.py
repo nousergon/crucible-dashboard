@@ -35,6 +35,7 @@ import streamlit as st
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from loaders.s3_loader import _fetch_s3_json, _research_bucket
+from loaders.observation_registry_loader import load_observation_registry
 
 st.set_page_config(
     page_title="Artifact Freshness — Alpha Engine",
@@ -184,8 +185,62 @@ if check_results is None or not check_results.get("results"):
 rows = check_results["results"]
 df = pd.DataFrame(rows)
 
+
+# ── Type derivation — observation vs production ─────────────────────────────
+#
+# Surfaces which artifacts exist for observe-mode rollouts (parallel-observe,
+# soak-gated cutover) vs which are load-bearing for production. Derived from
+# the cross-link in OBSERVATION_REGISTRY.yaml (composes_with) + the artifact's
+# severity. Rule:
+#
+#   - production: severity == critical (load-bearing for trading, regardless
+#     of whether an observation entry references it), OR no active
+#     observation references this artifact (severity=warning entries are
+#     secondary observability for production runs).
+#   - observation: severity == warning AND at least one active observation
+#     entry (state != gated-off) lists this artifact in composes_with.
+#
+# Composes with feedback_observe_mode_unconditional_gates_govern_cutover —
+# this column makes the production/observation distinction visible on the
+# freshness surface, complementing /Active_Observations (page 27).
+@st.cache_data(ttl=60)
+def _load_active_observation_artifact_refs() -> set[str]:
+    """Return the set of artifact_ids referenced by ACTIVE (state in
+    {always-on, gated-on}) observation entries' composes_with. None
+    return if the registry can't be loaded — treat as empty set."""
+    reg = load_observation_registry()
+    if reg is None:
+        return set()
+    active_states = {"always-on", "gated-on"}
+    refs: set[str] = set()
+    for obs in reg.get("observations", []) or []:
+        if obs.get("state") not in active_states:
+            continue
+        for ref in obs.get("composes_with") or []:
+            if isinstance(ref, str):
+                refs.add(ref)
+    return refs
+
+
+def _derive_type(severity: str, artifact_id: str, observation_refs: set[str]) -> str:
+    """Apply the production-vs-observation rule. Severity wins (critical
+    is always production); cross-link decides for warning entries."""
+    if severity == "critical":
+        return "production"
+    if artifact_id in observation_refs:
+        return "observation"
+    return "production"
+
+
+_observation_refs = _load_active_observation_artifact_refs()
+df["type"] = df.apply(
+    lambda r: _derive_type(r.get("severity", ""), r.get("artifact_id", ""), _observation_refs),
+    axis=1,
+)
+
+
 # Filters — operator-facing slice-and-dice.
-filter_cols = st.columns(4)
+filter_cols = st.columns(5)
 with filter_cols[0]:
     owner_repos = sorted(df["owner_repo"].dropna().unique().tolist())
     selected_owners = st.multiselect(
@@ -202,12 +257,26 @@ with filter_cols[2]:
 with filter_cols[3]:
     states = sorted(df["state"].dropna().unique().tolist())
     selected_states = st.multiselect("State", states, default=states)
+with filter_cols[4]:
+    types_present = sorted(df["type"].dropna().unique().tolist())
+    selected_types = st.multiselect(
+        "Type",
+        types_present,
+        default=types_present,
+        help=(
+            "production = load-bearing for trading or a production "
+            "run's secondary observability. observation = artifact "
+            "emitted for an observe-mode rollout that hasn't been "
+            "cut over yet. See /Active_Observations for full context."
+        ),
+    )
 
 filtered = df[
     df["owner_repo"].isin(selected_owners)
     & df["cadence"].isin(selected_cadences)
     & df["severity"].isin(selected_severities)
     & df["state"].isin(selected_states)
+    & df["type"].isin(selected_types)
 ].copy()
 
 if filtered.empty:
@@ -232,6 +301,7 @@ filtered = filtered.sort_values(["_sort_state", "_sort_sev", "artifact_id"])
 
 display_cols = [
     "state_display",
+    "type",
     "artifact_id",
     "owner_repo",
     "cadence",
@@ -244,6 +314,7 @@ display_cols = [
 ]
 display_df = filtered[display_cols].rename(columns={
     "state_display": "State",
+    "type": "Type",
     "artifact_id": "Artifact",
     "owner_repo": "Owner",
     "cadence": "Cadence",
