@@ -441,3 +441,146 @@ class TestSaveCalibrationReview:
         mock_s3["client"].put_object.side_effect = RuntimeError("S3 down")
         ok = save_calibration_review({"review_id": "x"}, bucket="test-bucket")
         assert ok is False
+
+
+# ── Judge spot-check (ROADMAP L480 2026-05-29 re-scope) ───────────────────
+
+from loaders.eval_loader import (  # noqa: E402
+    load_judged_artifact,
+    load_recent_evals_for_spotcheck,
+    save_spotcheck_flag,
+)
+
+
+class TestLoadRecentEvalsForSpotcheck:
+    def test_newest_date_first_then_uncertainty(self, mock_s3):
+        old_art = _eval_artifact_payload(scores=[("d1", 3), ("d2", 3)])
+        new_certain = _eval_artifact_payload(scores=[("d1", 1), ("d2", 5)])
+        new_uncertain = _eval_artifact_payload(scores=[("d1", 3), ("d2", 3)])
+        old_art["run_id"] = "OLD"
+        new_certain["run_id"] = "NC"
+        new_uncertain["run_id"] = "NU"
+
+        _setup_paginator_responses(
+            mock_s3["paginator"],
+            dates=["2026-05-15", "2026-05-22"],
+            keys_by_date={
+                "2026-05-15": ["old.json"],
+                "2026-05-22": ["nc.json", "nu.json"],
+            },
+        )
+
+        def fetch(_b, key):
+            return {
+                "old.json": old_art,
+                "nc.json": new_certain,
+                "nu.json": new_uncertain,
+            }[key]
+
+        mock_s3["fetch_json"].side_effect = fetch
+
+        batch = load_recent_evals_for_spotcheck(
+            n=5, lookback_days=365, bucket="test-bucket",
+        )
+        # Newest date (05-22) first; within it the uncertain (midpoint)
+        # call ranks ahead of the certain one. Old date trails.
+        assert [a["run_id"] for a in batch] == ["NU", "NC", "OLD"]
+
+    def test_excludes_judge_skipped(self, mock_s3):
+        skipped = _eval_artifact_payload()
+        skipped["judge_skip_reason"] = "degenerate_input"
+        real = _eval_artifact_payload(scores=[("d1", 3)])
+        _setup_paginator_responses(
+            mock_s3["paginator"],
+            dates=["2026-05-22"],
+            keys_by_date={"2026-05-22": ["a.json", "b.json"]},
+        )
+        mock_s3["fetch_json"].side_effect = lambda _b, k: (
+            skipped if k == "a.json" else real
+        )
+        batch = load_recent_evals_for_spotcheck(
+            n=5, lookback_days=365, bucket="test-bucket",
+        )
+        assert len(batch) == 1
+        assert "judge_skip_reason" not in batch[0]
+
+    def test_respects_n_cap(self, mock_s3):
+        _setup_paginator_responses(
+            mock_s3["paginator"],
+            dates=["2026-05-22"],
+            keys_by_date={"2026-05-22": ["a.json", "b.json", "c.json"]},
+        )
+        mock_s3["fetch_json"].side_effect = lambda _b, _k: _eval_artifact_payload(
+            scores=[("d1", 3)]
+        )
+        batch = load_recent_evals_for_spotcheck(
+            n=2, lookback_days=365, bucket="test-bucket",
+        )
+        assert len(batch) == 2
+
+
+class TestLoadJudgedArtifact:
+    def test_none_key_returns_none(self, mock_s3):
+        assert load_judged_artifact(None, bucket="test-bucket") is None
+        mock_s3["fetch_json"].assert_not_called()
+
+    def test_hydrates_decision_artifact(self, mock_s3):
+        mock_s3["fetch_json"].side_effect = lambda _b, _k: {
+            "agent_output": {"ranked_picks": [{"ticker": "AAPL"}]},
+            "input_data_snapshot": {"prices": "..."},
+        }
+        out = load_judged_artifact(
+            "decision_artifacts/2026/05/22/sector_quant/r1.json",
+            bucket="test-bucket",
+        )
+        assert out["agent_output"]["ranked_picks"][0]["ticker"] == "AAPL"
+
+    def test_unfetchable_returns_none(self, mock_s3):
+        mock_s3["fetch_json"].side_effect = lambda _b, _k: None
+        assert load_judged_artifact("missing.json", bucket="test-bucket") is None
+
+
+class TestSaveSpotcheckFlag:
+    def test_missing_id_rejected(self, mock_s3):
+        ok = save_spotcheck_flag({"verdict": "looks_right"}, bucket="test-bucket")
+        assert ok is False
+        mock_s3["client"].put_object.assert_not_called()
+
+    def test_first_write_stamps_and_uploads(self, mock_s3):
+        mock_s3["client"].get_object.side_effect = Exception("NoSuchKey")
+        ok = save_spotcheck_flag(
+            {"spotcheck_id": "2026-05-22__ic_cio__r1__haiku", "verdict": "looks_wrong"},
+            bucket="test-bucket",
+        )
+        assert ok is True
+        body = mock_s3["client"].put_object.call_args.kwargs["Body"]
+        if isinstance(body, bytes):
+            body = body.decode("utf-8")
+        import json as _json
+        parsed = _json.loads(body.strip())
+        assert parsed["verdict"] == "looks_wrong"
+        assert "flagged_at_utc" in parsed
+
+    def test_append_preserves_prior(self, mock_s3):
+        mock_s3["client"].get_object.side_effect = None
+        mock_s3["client"].get_object.return_value = {
+            "Body": MagicMock(read=lambda: b'{"spotcheck_id": "old"}\n')
+        }
+        ok = save_spotcheck_flag(
+            {"spotcheck_id": "new", "verdict": "looks_right"}, bucket="test-bucket",
+        )
+        assert ok is True
+        body = mock_s3["client"].put_object.call_args.kwargs["Body"]
+        if isinstance(body, bytes):
+            body = body.decode("utf-8")
+        import json as _json
+        lines = [_json.loads(ln) for ln in body.strip().split("\n") if ln]
+        assert [ln["spotcheck_id"] for ln in lines] == ["old", "new"]
+
+    def test_failure_returns_false_no_raise(self, mock_s3):
+        mock_s3["client"].get_object.side_effect = Exception("NoSuchKey")
+        mock_s3["client"].put_object.side_effect = RuntimeError("S3 down")
+        ok = save_spotcheck_flag(
+            {"spotcheck_id": "x", "verdict": "looks_right"}, bucket="test-bucket",
+        )
+        assert ok is False

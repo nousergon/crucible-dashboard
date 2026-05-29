@@ -26,9 +26,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from loaders.eval_loader import (
     load_eval_artifacts,
+    load_judged_artifact,
     load_recent_eval_artifacts_for_review,
+    load_recent_evals_for_spotcheck,
     load_reviewed_ids,
     save_calibration_review,
+    save_spotcheck_flag,
 )
 from loaders.s3_loader import load_latest_provenance_grounding
 
@@ -80,8 +83,8 @@ if df.empty:
 # Tabs
 # ---------------------------------------------------------------------------
 
-tab_trend, tab_versions, tab_provenance, tab_calibrate, tab_data = st.tabs(
-    ["Trend", "Versions", "Provenance", "Calibrate", "Data"]
+tab_trend, tab_versions, tab_provenance, tab_spotcheck, tab_calibrate, tab_data = st.tabs(
+    ["Trend", "Versions", "Provenance", "Spot-check", "Calibrate", "Data"]
 )
 
 
@@ -272,6 +275,161 @@ with tab_provenance:
                 )
 
 
+# ── Spot-check tab (ROADMAP L480 2026-05-29 re-scope — PRIMARY human surface) ──
+#
+# Read-only weekly transparency pass. For each judge call, render WHAT
+# THE JUDGE SAW (the judged agent's output + input snapshot, hydrated
+# via `judged_artifact_s3_key`) beside WHAT THE JUDGE SAID (per-dimension
+# scores + reasoning). No blind scoring — eyeball, don't grade. The
+# optional 👍/👎 captures the rare "this judge call is wrong" as a
+# flagged exemplar for the outcome-IC study. Blind-κ (Calibrate tab) is
+# now an optional deep-dive, not the primary obligation.
+
+
+with tab_spotcheck:
+    st.subheader("Judge spot-check")
+    st.caption(
+        "Read-only weekly transparency pass over recent LLM-as-judge "
+        "calls. See **what the judge saw** (the agent's output + input) "
+        "next to **what the judge said** (scores + reasoning) — and "
+        "eyeball whether the verdict is reasonable. No scoring required. "
+        "Hit 👍/👎 only on the rare call that looks clearly right or "
+        "wrong; that flags an exemplar for the outcome-IC study. "
+        "ROADMAP L480 (2026-05-29 re-scope)."
+    )
+
+    sc_cols = st.columns([1, 1, 2])
+    sc_n = sc_cols[0].number_input(
+        "How many", min_value=1, max_value=30, value=8, step=1,
+        help="Recent judge calls to surface (newest date first).",
+        key="sc_n",
+    )
+    sc_lookback = sc_cols[1].number_input(
+        "Lookback days", min_value=7, max_value=180, value=30, step=7,
+        help="How far back to draw recent judge calls from.",
+        key="sc_lookback",
+    )
+    if sc_cols[2].button("🔄 Refresh", key="sc_refresh", help="Re-poll S3."):
+        st.cache_data.clear()
+        st.rerun()
+
+    sc_batch = load_recent_evals_for_spotcheck(
+        n=int(sc_n), lookback_days=int(sc_lookback),
+    )
+
+    if not sc_batch:
+        st.info(
+            f"No judge calls in the last {sc_lookback}d. "
+            "Refresh after the next Saturday SF Research cycle."
+        )
+    else:
+        st.caption(
+            f"**{len(sc_batch)}** recent judge call(s), newest first "
+            "(borderline calls — scores nearest the rubric midpoint — "
+            "surface first within a date)."
+        )
+
+        for art in sc_batch:
+            sid = art["_review_id"]
+            agent_id = art.get("judged_agent_id", "—")
+            rubric_id = art.get("rubric_id", "—")
+            rubric_version = art.get("rubric_version", "—")
+            judge_model = art.get("judge_model", "—")
+            eval_date = art["_eval_date"]
+            dim_scores = art.get("dimension_scores") or []
+            overall_reasoning = art.get("overall_reasoning", "")
+            uncertainty = art.get("_uncertainty", float("inf"))
+            mean_score = (
+                sum(float(d.get("score")) for d in dim_scores if d.get("score") is not None)
+                / max(1, len([d for d in dim_scores if d.get("score") is not None]))
+            ) if dim_scores else None
+            mean_label = f"{mean_score:.1f}" if mean_score is not None else "—"
+
+            with st.expander(
+                f"**{agent_id}** · {eval_date} · `{rubric_id}` v{rubric_version} "
+                f"· judge `{judge_model}` · mean score {mean_label}/5",
+                expanded=False,
+            ):
+                left, right = st.columns(2)
+
+                # ── What the judge SAID ──
+                with left:
+                    st.markdown("**What the judge said**")
+                    for dim in dim_scores:
+                        dim_name = dim.get("dimension", "")
+                        score = dim.get("score")
+                        reasoning = dim.get("reasoning", "")
+                        st.markdown(f"**`{dim_name}`** → **{score}/5**")
+                        st.caption(reasoning or "_(no reasoning)_")
+                    if overall_reasoning:
+                        st.markdown("**Overall**")
+                        st.caption(overall_reasoning)
+
+                # ── What the judge SAW ──
+                with right:
+                    st.markdown("**What the judge saw**")
+                    judged = load_judged_artifact(art.get("judged_artifact_s3_key"))
+                    if judged is None:
+                        st.caption(
+                            "_Judged artifact unavailable "
+                            "(`judged_artifact_s3_key` missing or unfetchable)._"
+                        )
+                    else:
+                        agent_output = judged.get("agent_output")
+                        input_snapshot = judged.get("input_data_snapshot")
+                        if agent_output is not None:
+                            st.markdown("_Agent output (judged):_")
+                            if isinstance(agent_output, (dict, list)):
+                                st.json(agent_output, expanded=False)
+                            else:
+                                st.code(str(agent_output))
+                        if input_snapshot is not None:
+                            st.markdown("_Input snapshot (what the agent saw):_")
+                            if isinstance(input_snapshot, (dict, list)):
+                                st.json(input_snapshot, expanded=False)
+                            else:
+                                st.code(str(input_snapshot))
+                        if agent_output is None and input_snapshot is None:
+                            st.caption("_Judged artifact has no agent_output / input snapshot._")
+
+                # ── Optional one-click verdict ──
+                st.divider()
+                v_cols = st.columns([1, 1, 4])
+                note = v_cols[2].text_input(
+                    "Note (optional)", key=f"sc_note__{sid}",
+                    placeholder="Only if flagging — what's right/wrong about this call?",
+                )
+
+                def _flag(verdict: str, _sid=sid, _art=art, _note_key=f"sc_note__{sid}"):
+                    rec = {
+                        "spotcheck_id": _sid,
+                        "eval_date": _art["_eval_date"],
+                        "judged_agent_id": _art.get("judged_agent_id"),
+                        "run_id": _art.get("run_id"),
+                        "rubric_id": _art.get("rubric_id"),
+                        "judge_model": _art.get("judge_model"),
+                        "verdict": verdict,
+                        "note": st.session_state.get(_note_key) or None,
+                        "source_eval_s3_key": _art.get("_s3_key"),
+                        "reviewer": "operator",
+                    }
+                    if save_spotcheck_flag(rec):
+                        st.session_state[f"sc_flagged__{_sid}"] = verdict
+                        st.cache_data.clear()
+                        st.rerun()
+                    else:
+                        st.error("Flag save failed — check CloudWatch / S3 perms.")
+
+                already = st.session_state.get(f"sc_flagged__{sid}")
+                if already:
+                    st.success(f"✓ Flagged: {already}")
+                else:
+                    if v_cols[0].button("👍 Looks right", key=f"sc_up__{sid}"):
+                        _flag("looks_right")
+                    if v_cols[1].button("👎 Looks wrong", key=f"sc_down__{sid}"):
+                        _flag("looks_wrong")
+
+
 # ── Calibrate tab (ROADMAP L480 SOTA reframe) ─────────────────────────────
 #
 # Two-step judge-anchored review with anchoring-bias isolation:
@@ -289,6 +447,13 @@ with tab_provenance:
 
 with tab_calibrate:
     st.subheader("Judge Calibration Review")
+    st.info(
+        "**Optional deep-dive** (ROADMAP L480 re-scoped 2026-05-29). Primary "
+        "judge validation is now automated outcome-IC + the read-only "
+        "**Spot-check** tab — this blind-κ flow is retained for a rigorous "
+        "human-anchored estimate but is no longer required.",
+        icon="ℹ️",
+    )
     st.caption(
         "Two-step judge-anchored review of LLM-as-judge scores. "
         "**Step 1 (blind):** score the agent output yourself before "

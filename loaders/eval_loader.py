@@ -360,3 +360,139 @@ def save_calibration_review(review: dict, *, bucket: str | None = None) -> bool:
     except Exception as exc:  # noqa: BLE001
         logger.warning("[eval_loader] save_calibration_review failed: %s", exc)
         return False
+
+
+# ── Judge spot-check (ROADMAP L480 2026-05-29 re-scope) ───────────────────
+#
+# Read-only weekly transparency surface. Renders WHAT THE JUDGE SAW (the
+# judged agent's output + input snapshot, hydrated via the eval
+# artifact's ``judged_artifact_s3_key`` foreign key) beside WHAT THE
+# JUDGE SAID (per-dimension scores + reasoning). No blind scoring — an
+# eyeball pass, not a graded annotation. Optional 👍/👎 flags persist
+# the rare "this judge call is wrong" exemplar for the outcome-IC study.
+# Demotes blind-κ to optional per the 2026-05-29 re-scope.
+
+
+_SPOTCHECK_PREFIX = "decision_artifacts/_spotcheck/"
+
+
+@st.cache_data(ttl=300)
+def load_recent_evals_for_spotcheck(
+    n: int = 10,
+    *,
+    bucket: str | None = None,
+    lookback_days: int = 30,
+) -> list[dict]:
+    """Return up to ``n`` recent eval artifacts for read-only spot-check,
+    newest-date-first then ascending band-midpoint distance (borderline
+    judge calls surface first within a date).
+
+    Unlike the calibration queue this does NOT dedupe against a reviewed
+    set — spot-check is a re-skimmable transparency pass, not a one-shot
+    annotation. Judge-skipped artifacts (no dimension scores) are still
+    excluded since there is no judge verdict to inspect.
+    """
+    bkt = bucket or _research_bucket()
+    cutoff = (date.today() - timedelta(days=lookback_days)).isoformat()
+    out: list[dict] = []
+    for d in sorted(_list_eval_dates(bkt), reverse=True):
+        if d < cutoff:
+            continue
+        day_arts: list[dict] = []
+        for key in _list_eval_keys_for_date(bkt, d):
+            artifact = _fetch_s3_json(bkt, key)
+            if not artifact or not isinstance(artifact, dict):
+                continue
+            if artifact.get("judge_skip_reason"):
+                continue
+            artifact["_review_id"] = _review_id(
+                d,
+                artifact.get("judged_agent_id", ""),
+                artifact.get("run_id", ""),
+                artifact.get("judge_model", ""),
+            )
+            artifact["_eval_date"] = d
+            artifact["_s3_key"] = key
+            artifact["_uncertainty"] = _score_uncertainty(
+                artifact.get("dimension_scores") or []
+            )
+            day_arts.append(artifact)
+        day_arts.sort(key=lambda a: a["_uncertainty"])
+        out.extend(day_arts)
+        if len(out) >= n:
+            break
+    return out[:n]
+
+
+@st.cache_data(ttl=900)
+def load_judged_artifact(
+    s3_key: str | None, *, bucket: str | None = None,
+) -> dict | None:
+    """Hydrate the DecisionArtifact the judge scored, via the eval
+    artifact's ``judged_artifact_s3_key`` foreign key.
+
+    Returns the raw DecisionArtifact dict (``agent_output``,
+    ``input_data_snapshot``, ``full_prompt_context`` …) or ``None`` when
+    the key is absent / unfetchable. The foreign-key design (vs inlining
+    the agent output into every eval artifact) is deliberate — this
+    loader is the read-side of that contract, so a weekly spot-check can
+    see everything the judge saw without bloating each eval artifact.
+    """
+    if not s3_key:
+        return None
+    bkt = bucket or _research_bucket()
+    artifact = _fetch_s3_json(bkt, s3_key)
+    if not artifact or not isinstance(artifact, dict):
+        return None
+    return artifact
+
+
+def save_spotcheck_flag(flag: dict, *, bucket: str | None = None) -> bool:
+    """Append one spot-check verdict to
+    ``decision_artifacts/_spotcheck/{today}/flags.jsonl``.
+
+    Lightweight companion to ``save_calibration_review`` — captures the
+    rare "this judge call looks right/wrong" eyeball verdict (👍/👎 +
+    optional note) as a flagged exemplar for the outcome-IC study.
+    Auto-stamps ``flagged_at_utc``. Returns True on success, False on any
+    failure. Never raises.
+    """
+    import json
+    from datetime import datetime, timezone
+
+    if not isinstance(flag, dict) or "spotcheck_id" not in flag:
+        logger.warning("[eval_loader] save_spotcheck_flag rejected: missing spotcheck_id")
+        return False
+
+    bkt = bucket or _research_bucket()
+    today = date.today().isoformat()
+    key = f"{_SPOTCHECK_PREFIX}{today}/flags.jsonl"
+
+    flag.setdefault(
+        "flagged_at_utc",
+        datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+    )
+
+    try:
+        client = get_s3_client()
+        existing = b""
+        try:
+            obj = client.get_object(Bucket=bkt, Key=key)
+            existing = obj["Body"].read()
+        except Exception:  # noqa: BLE001 — treat as first write
+            existing = b""
+        new_line = (json.dumps(flag, default=str) + "\n").encode("utf-8")
+        client.put_object(
+            Bucket=bkt,
+            Key=key,
+            Body=existing + new_line,
+            ContentType="application/x-ndjson",
+        )
+        logger.info(
+            "[eval_loader] wrote spotcheck flag %s → s3://%s/%s",
+            flag.get("spotcheck_id"), bkt, key,
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[eval_loader] save_spotcheck_flag failed: %s", exc)
+        return False
