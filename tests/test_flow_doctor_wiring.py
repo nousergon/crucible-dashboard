@@ -267,10 +267,11 @@ class TestLibVersionPin:
             "to be importable"
         )
         assert "@main" not in text, "alpha-engine-lib must be pinned to a tag, not @main"
-        assert "@v0.42.0" in text, (
-            "alpha-engine-lib should pin to v0.42.0 (RegimeLiteral 3-class "
-            "chokepoint — caution-regime-retirement-260528.md Phase 3A "
-            "dashboard cleanup). Earlier version history retained: "
+        assert "@v0.43.0" in text, (
+            "alpha-engine-lib should pin to v0.43.0 (transparency non-fatal "
+            "`degraded` status — artifact-completion-monitoring Phase 1a/1c; "
+            "activates the substrate-health check run from this venv). "
+            "Earlier version history retained: "
             "v0.36.1 (Option-D execution-picker + AggregateCosts registry "
             "entry — Page 25 needs v0.36.0+ to filter SF executions by "
             "pipeline_role so smoke / recovery / operator-replay runs "
@@ -279,7 +280,8 @@ class TestLibVersionPin:
             "(universe_writer_lock + PyPI summary guard), v0.39 "
             "(ssm_dispatcher diagnostics-write), v0.40 "
             "(artifact_freshness), v0.41 (build_batches_request_params), "
-            "v0.42 (RegimeLiteral 3-class). The Pydantic V2 / 3.9 "
+            "v0.42 (RegimeLiteral 3-class), v0.43 (transparency degraded "
+            "status). The Pydantic V2 / 3.9 "
             "eval_type_backport conditional dep shipped in v0.32.0 still "
             "applies. Update this test if the pin moves further forward."
         )
