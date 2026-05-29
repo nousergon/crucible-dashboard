@@ -12,4 +12,10 @@ pyyaml>=6.0
 # the pipeline-reporting-revamp arc (ROADMAP L3050).
 # The [flow_doctor] extra pulls flow-doctor; no other extras are needed
 # (dashboard reads S3, not ArcticDB). Public since 2026-05-03.
-alpha-engine-lib[flow_doctor] @ git+https://github.com/cipher813/alpha-engine-lib@v0.42.0
+# v0.43.0 (2026-05-29): transparency adds the non-fatal `degraded` status —
+# activates artifact-completion Phase 1a/1c. The substrate-health check runs
+# from this venv (Sat/EOD SF `pip install -r requirements.txt` then
+# `python -m alpha_engine_lib.transparency`), and the updated
+# transparency_inventory.yaml (pipeline_execution non_fatal + agent_decisions
+# non_fatal_statuses) ships in the wheel — so this bump is the activation.
+alpha-engine-lib[flow_doctor] @ git+https://github.com/cipher813/alpha-engine-lib@v0.43.0
