@@ -14,7 +14,7 @@ import streamlit as st
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from loaders.s3_loader import load_predictions_json, load_predictor_metrics, load_production_health, load_signals_json, load_mode_history, load_feature_importance
+from loaders.s3_loader import load_predictions_json, load_predictor_metrics, load_predictor_training_state, load_production_health, load_signals_json, load_mode_history, load_feature_importance
 from loaders.db_loader import get_predictor_outcomes, canonicalize_predictor_outcomes
 from loaders.signal_loader import get_available_signal_dates
 from charts.predictor_chart import make_model_drift_chart, make_feature_importance_chart
@@ -37,6 +37,13 @@ st.title("Predictor")
 # ---------------------------------------------------------------------------
 
 metrics = load_predictor_metrics()
+# L4468 SSOT: training state (promoted / last_trained / leak-free OOS IC) reads
+# from the authoritative manifest (fresh every Saturday training), NOT from
+# latest.json's training-mirror fields (refreshed only by weekday inference, so
+# stale all weekend — the 2026-05-30 false "skill drought" read). latest.json is
+# still the source for the ROLLING/operational fields below (hit rate, ic_30d,
+# n_high_confidence, today's run).
+training_state = load_predictor_training_state()
 
 if not metrics:
     st.error("No predictor metrics found. Is the predictor running?")
@@ -63,11 +70,37 @@ _training_samples = metrics.get("training_samples") or 0
 _ic_30d = metrics.get("ic_30d") or 0.0
 _ic_ir_30d = metrics.get("ic_ir_30d") or 0.0
 
-m1, m2, m3, m4 = st.columns(4)
-m1.metric("Version", metrics.get("model_version", "—"))
-m2.metric("Last Trained", metrics.get("last_trained", "—"))
-m3.metric("Training Samples", f"{_training_samples:,}")
-m4.metric("High-Confidence Today", metrics.get("n_high_confidence", 0))
+m1, m2, m3, m4, m5 = st.columns(5)
+m1.metric("Version", training_state.get("version") or metrics.get("model_version", "—"))
+# Authoritative training state from the manifest (never weekend-stale).
+m2.metric("Last Trained", training_state.get("last_trained") or metrics.get("last_trained", "—"))
+_promoted = training_state.get("promoted")
+m3.metric("Promoted", "—" if _promoted is None else ("Yes" if _promoted else "No"))
+m4.metric("Training Samples", f"{_training_samples:,}")
+m5.metric("High-Confidence Today", metrics.get("n_high_confidence", 0))
+
+# W1 (L4469, observe): the leak-free OOS meta IC — the trustworthy lens vs the
+# inflated in-sample IC. Populates from the first post-merge Saturday training
+# run; shows "—" until then.
+_lf = training_state.get("oos_ic_leakfree") or {}
+_ps = training_state.get("promotion_stats") or {}
+_dn = (_ps.get("downside") or {}) if isinstance(_ps, dict) else {}
+if isinstance(_lf, dict) and _lf.get("status") == "ok":
+    w1, w2, w3, w4 = st.columns(4)
+    w1.metric("Leak-free OOS IC (xsec)", f"{_lf.get('xsec_ic', float('nan')):.3f}")
+    _is = training_state.get("meta_ic_in_sample")
+    w2.metric("In-sample meta IC", f"{_is:.3f}" if isinstance(_is, (int, float)) else "—",
+              help="W1.0: in-sample, inflated — compare to the leak-free OOS IC at left.")
+    _sortino = _dn.get("sortino_of_ic") if isinstance(_dn, dict) else None
+    w3.metric("Sortino-of-IC", "∞" if _sortino is None and _dn else (f"{_sortino:.2f}" if isinstance(_sortino, (int, float)) else "—"),
+              help="Downside-aware skill (skilled-risk basket): mean(IC)/downside-deviation.")
+    w4.metric("CVaR-of-IC (worst 5%)", f"{_dn.get('cvar_of_ic', float('nan')):.3f}" if isinstance(_dn.get('cvar_of_ic'), (int, float)) else "—")
+    st.caption(
+        "Training state + leak-free OOS metrics read from the authoritative "
+        "`predictor/weights/meta/manifest.json` (fresh every Saturday training) "
+        "— L4468 single-source-of-truth. Rolling/operational fields below read "
+        "from `latest.json`."
+    )
 
 m5, m6, m7, m8 = st.columns(4)
 m5.metric("Hit Rate (30d Rolling)", f"{hit_rate:.1%}")

@@ -18,4 +18,4 @@ pyyaml>=6.0
 # `python -m alpha_engine_lib.transparency`), and the updated
 # transparency_inventory.yaml (pipeline_execution non_fatal + agent_decisions
 # non_fatal_statuses) ships in the wheel — so this bump is the activation.
-alpha-engine-lib[flow_doctor] @ git+https://github.com/cipher813/alpha-engine-lib@v0.43.0
+alpha-engine-lib[flow_doctor] @ git+https://github.com/cipher813/alpha-engine-lib@v0.45.0

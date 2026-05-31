@@ -30,6 +30,7 @@ from loaders.s3_loader import (
     load_eod_pnl,
     load_latest_grading,
     load_predictor_metrics,
+    load_predictor_training_state,
     load_trades_full,
     load_uptime_history,
     predictor_horizon_days,
@@ -148,16 +149,32 @@ def _trade_count() -> int | None:
 
 
 def _predictor_ic() -> dict:
-    if not predictor_metrics or not isinstance(predictor_metrics, dict):
-        return {}
+    # L4468 SSOT: predictor TRAINING-state ICs read from the authoritative
+    # manifest (fresh every Saturday training), not latest.json's weekday-
+    # inference-cadence mirror (stale all weekend). The leak-free OOS IC (W1)
+    # is the trustworthy lens; the in-sample meta IC is kept for reference.
+    ts = load_predictor_training_state()
     out: dict = {}
-    for k in ("ensemble_ic", "meta_ic", "val_ic", "oos_ic"):
-        if k in predictor_metrics:
-            out[k] = predictor_metrics[k]
-    components = predictor_metrics.get("components") or predictor_metrics.get("layer1") or {}
-    if isinstance(components, dict):
-        out["components"] = components
-    out["_run_ts"] = predictor_metrics.get("run_ts") or predictor_metrics.get("trained_at")
+    if isinstance(ts, dict) and ts:
+        _lf = ts.get("oos_ic_leakfree") or {}
+        if isinstance(_lf, dict) and isinstance(_lf.get("xsec_ic"), (int, float)):
+            out["oos_ic"] = _lf["xsec_ic"]            # leak-free, trustworthy
+        if isinstance(ts.get("meta_ic_in_sample"), (int, float)):
+            out["meta_ic"] = ts["meta_ic_in_sample"]  # in-sample (inflated)
+        out["components"] = {
+            "momentum": ts.get("momentum_median_ic"),
+            "volatility": ts.get("volatility_median_ic"),
+        }
+        out["_run_ts"] = ts.get("last_trained")
+    # Fall back to latest.json only for any field the manifest didn't provide.
+    if (not out) and predictor_metrics and isinstance(predictor_metrics, dict):
+        for k in ("ensemble_ic", "meta_ic", "val_ic", "oos_ic"):
+            if k in predictor_metrics:
+                out[k] = predictor_metrics[k]
+        components = predictor_metrics.get("components") or predictor_metrics.get("layer1") or {}
+        if isinstance(components, dict):
+            out["components"] = components
+        out["_run_ts"] = predictor_metrics.get("run_ts") or predictor_metrics.get("trained_at")
     return out
 
 
