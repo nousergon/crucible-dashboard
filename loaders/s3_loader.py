@@ -884,6 +884,43 @@ def load_predictor_manifest() -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def load_predictor_training_state() -> dict:
+    """Authoritative predictor TRAINING state from the manifest (SSOT — L4468).
+
+    The manifest (`predictor/weights/meta/manifest.json`) is written by EVERY
+    Saturday training run, so it is always fresh. `latest.json`'s training-mirror
+    fields (promoted / last_trained / meta IC) are only refreshed by the WEEKDAY
+    inference path, so they lag all weekend (no weekend inference) — the cause
+    of the 2026-05-30 false "skill drought" read, where latest.json still showed
+    the Friday pre-training snapshot while the manifest was correct. Read
+    training state from HERE, never from latest.json. Returns normalized keys
+    (incl. the W1/L4469 leak-free OOS metrics); {} on failure.
+    """
+    m = load_predictor_manifest()
+    if not isinstance(m, dict) or not m:
+        return {}
+    models = m.get("models") if isinstance(m.get("models"), dict) else {}
+    wf = m.get("walk_forward") if isinstance(m.get("walk_forward"), dict) else {}
+    meta = models.get("meta_model") if isinstance(models.get("meta_model"), dict) else {}
+    mom = models.get("momentum") if isinstance(models.get("momentum"), dict) else {}
+    vol = models.get("volatility") if isinstance(models.get("volatility"), dict) else {}
+    return {
+        "last_trained": m.get("date"),
+        "promoted": m.get("promoted"),
+        "version": m.get("version"),
+        # In-sample meta IC (the legacy headline; W1.0 showed it is inflated).
+        "meta_ic_in_sample": meta.get("ic"),
+        "momentum_test_ic": mom.get("test_ic"),
+        "volatility_test_ic": vol.get("test_ic"),
+        "momentum_median_ic": wf.get("momentum_median_ic"),
+        "volatility_median_ic": wf.get("volatility_median_ic"),
+        # W1 (L4469, observe) leak-free honest metrics — the trustworthy lens.
+        "oos_ic_leakfree": m.get("meta_model_oos_ic_leakfree"),
+        "oos_ic_cpcv": m.get("meta_model_oos_ic_cpcv"),
+        "promotion_stats": m.get("meta_model_promotion_stats"),
+    }
+
+
 def predictor_horizon_days(default: int = 21) -> int:
     """Convenience: read the predictor's current training horizon from
     the manifest. Default reflects the active production state post

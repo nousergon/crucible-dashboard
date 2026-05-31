@@ -267,8 +267,12 @@ class TestLibVersionPin:
             "to be importable"
         )
         assert "@main" not in text, "alpha-engine-lib must be pinned to a tag, not @main"
-        assert "@v0.43.0" in text, (
-            "alpha-engine-lib should pin to v0.43.0 (transparency non-fatal "
+        assert "@v0.45.0" in text, (
+            "alpha-engine-lib should pin to v0.45.0 (L4472 pipeline-status "
+            "registry: PredictorBacktest + PortfolioOptimizerBacktest split "
+            "states — required so test_pipeline_status_registry_drift passes "
+            "after the backtester phase-split; v0.44 added the L249 per-cycle "
+            "artifact-completion rollup). Earlier: v0.43 (transparency non-fatal "
             "`degraded` status — artifact-completion-monitoring Phase 1a/1c; "
             "activates the substrate-health check run from this venv). "
             "Earlier version history retained: "
