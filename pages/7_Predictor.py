@@ -14,7 +14,7 @@ import streamlit as st
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from loaders.s3_loader import load_predictions_json, load_predictor_metrics, load_predictor_training_state, load_production_health, load_signals_json, load_mode_history, load_feature_importance
+from loaders.s3_loader import load_predictions_json, load_predictor_metrics, load_predictor_training_state, load_production_health, load_signals_json, load_mode_history, load_feature_importance, load_hold_book_flag
 from loaders.db_loader import get_predictor_outcomes, canonicalize_predictor_outcomes
 from loaders.signal_loader import get_available_signal_dates
 from charts.predictor_chart import make_model_drift_chart, make_feature_importance_chart
@@ -29,6 +29,26 @@ _ACC_BASELINE = _TH["accuracy_baseline"]
 st.set_page_config(page_title="Predictor — Alpha Engine", layout="wide")
 
 st.title("Predictor")
+
+# ---------------------------------------------------------------------------
+# Hold-book safeguard banner (2026-06-01) — if the executor suppressed the
+# optimizer rebalance because the predictor output_distribution_gate flagged
+# the batch "strongly biased", surface it prominently for operator review.
+# ---------------------------------------------------------------------------
+_hb = load_hold_book_flag()
+if _hb.get("held"):
+    _m = _hb.get("gate_metrics") or {}
+    st.error(
+        "🛑 **HOLD-BOOK SAFEGUARD FIRED** — the optimizer rebalance was "
+        f"**suppressed** for predictions dated **{_hb.get('predictions_date', '?')}** "
+        f"(run {_hb.get('run_date', '?')}); the current book was **held** rather "
+        "than rotated off a flagged model batch. Daemon hard-risk overrides "
+        "remained active. **Review before trusting the next rebalance.**\n\n"
+        f"- Failed check: `{_hb.get('failed_check', '?')}`\n"
+        f"- Reason: {_hb.get('reason', '—')}\n"
+        f"- direction_skew: {_m.get('direction_skew', '?')} "
+        f"(n_up={_m.get('n_up', '?')}, n_down={_m.get('n_down', '?')})"
+    )
 
 
 

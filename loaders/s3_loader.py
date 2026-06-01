@@ -860,6 +860,19 @@ def load_predictor_metrics() -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def load_hold_book_flag() -> dict:
+    """Load the executor hold-book flag (`executor/hold_book_flags/latest.json`).
+
+    Written by the morning planner when the predictor output_distribution_gate
+    flagged the batch "strongly biased" and the optimizer rebalance was
+    suppressed (current book held). Returns {} when absent — the safeguard has
+    not fired (the common case). The reader compares ``run_date`` /
+    ``predictions_date`` to decide whether the flag is for the current cycle.
+    """
+    data = _fetch_s3_json(_research_bucket(), "executor/hold_book_flags/latest.json")
+    return data if isinstance(data, dict) else {}
+
+
 def load_production_health() -> dict:
     """Load the backtester-written predictor production-health metrics
     (`predictor/metrics/production_health.json`) — rolling 30d IC, hit
