@@ -99,6 +99,31 @@ m3.metric("Promoted", "—" if _promoted is None else ("Yes" if _promoted else "
 m4.metric("Training Samples", f"{_training_samples:,}")
 m5.metric("High-Confidence Today", metrics.get("n_high_confidence", 0))
 
+# ---------------------------------------------------------------------------
+# PROD vs latest-training disambiguation (2026-06-01) — answers "what model is
+# actually live, and did the latest training promote (or what's still
+# promoted)?". metrics.model_version = the version inference actually ran with
+# (the live/promoted weights); manifest (training_state) = the latest training
+# attempt + whether it was accepted. When promoted=False the live weights stay
+# at the PRIOR promoted version — the case operators must see clearly.
+# ---------------------------------------------------------------------------
+_prod_version = metrics.get("model_version", "—")        # what inference loaded = live/prod
+_trained_date = training_state.get("last_trained") or "—"
+if _promoted is True:
+    st.success(
+        f"✅ **PROD model (live): `{_prod_version}`** — the latest training "
+        f"({_trained_date}) was **PROMOTED**, so prod = latest training."
+    )
+elif _promoted is False:
+    st.warning(
+        f"⚠️ **PROD model (live): `{_prod_version}`** — the latest training "
+        f"({_trained_date}) was **NOT promoted**; production remains on the "
+        f"**prior promoted version** above. Review the promotion gate "
+        f"(`output_distribution_gate` + leak-free OOS IC below) for why."
+    )
+else:
+    st.info(f"**PROD model (live): `{_prod_version}`** — promotion state unknown (manifest unavailable).")
+
 # W1 (L4469, observe): the leak-free OOS meta IC — the trustworthy lens vs the
 # inflated in-sample IC. Populates from the first post-merge Saturday training
 # run; shows "—" until then.
