@@ -176,6 +176,75 @@ def get_predictor_outcomes(symbol: str | None = None) -> pd.DataFrame:
     )
 
 
+def _per_version_metrics(df: pd.DataFrame, stage: str) -> pd.DataFrame:
+    """Per-model-version realized scorecard from a resolved-outcomes frame.
+
+    Computes, per ``model_version``: cross-sectional rank IC (Fama-MacBeth —
+    per-date Spearman(p_up, actual_log_alpha), then averaged across dates, the
+    way the system actually trades), hit-rate (mean ``correct``), and counts.
+    Empty frame in → empty frame out.
+    """
+    if df.empty:
+        return pd.DataFrame()
+    d = df.copy()
+    d["p_up"] = pd.to_numeric(d["p_up"], errors="coerce")
+    d["actual_log_alpha"] = pd.to_numeric(d["actual_log_alpha"], errors="coerce")
+    d["correct"] = pd.to_numeric(d["correct"], errors="coerce")
+    d["model_version"] = d["model_version"].fillna("champion-legacy")
+
+    rows = []
+    for version, g in d.groupby("model_version"):
+        # Per-date Spearman, then mean (cross-sectional, not pooled). A date
+        # with <2 finite name-pairs or zero variance yields NaN and is dropped.
+        per_date = []
+        for _, day in g.groupby("prediction_date"):
+            sub = day[["p_up", "actual_log_alpha"]].dropna()
+            if len(sub) >= 2 and sub["p_up"].std() > 0 and sub["actual_log_alpha"].std() > 0:
+                # Spearman = Pearson on ranks — computed scipy-free (the
+                # dashboard image omits scipy; pandas method="spearman" imports it).
+                per_date.append(sub["p_up"].rank().corr(sub["actual_log_alpha"].rank()))
+        rank_ic = float(pd.Series(per_date).mean()) if per_date else float("nan")
+        rows.append({
+            "model_version": version,
+            "stage": stage,
+            "rank_ic": rank_ic,
+            "hit_rate": float(g["correct"].mean()) if g["correct"].notna().any() else float("nan"),
+            "n_predictions": int(len(g)),
+            "n_dates": int(g["prediction_date"].nunique()),
+        })
+    return pd.DataFrame(rows)
+
+
+def get_model_version_scorecard() -> pd.DataFrame:
+    """Champion/challenger per-version realized scorecard (L4469 Phase 3).
+
+    Unions the live champion outcomes (``predictor_outcomes``) with the
+    challenger outcomes (``predictor_outcomes_shadow``, written by the Phase-1
+    shadow runner + scored in Phase 2), computing per-version rank-IC + hit-rate
+    so the operator can see which model version actually has out-of-sample edge
+    before promoting one to champion. Returns columns: model_version, stage,
+    rank_ic, hit_rate, n_predictions, n_dates — sorted by rank_ic desc. Empty
+    until challengers exist; the champion's own scorecard shows immediately.
+    Missing shadow table degrades to champion-only (query returns empty).
+    """
+    cols = "model_version, prediction_date, p_up, actual_log_alpha, correct"
+    live = query_research_db(
+        f"SELECT {cols} FROM predictor_outcomes WHERE actual_log_alpha IS NOT NULL"
+    )
+    shadow = query_research_db(
+        f"SELECT {cols} FROM predictor_outcomes_shadow WHERE actual_log_alpha IS NOT NULL"
+    )
+    parts = [
+        _per_version_metrics(live, "champion"),
+        _per_version_metrics(shadow, "challenger"),
+    ]
+    parts = [p for p in parts if not p.empty]
+    if not parts:
+        return pd.DataFrame()
+    out = pd.concat(parts, ignore_index=True)
+    return out.sort_values("rank_ic", ascending=False, na_position="last").reset_index(drop=True)
+
+
 def canonicalize_predictor_outcomes(df: pd.DataFrame) -> pd.DataFrame:
     """Add `_resolved` (0/1, nullable) and `_realized_alpha` columns to a
     `predictor_outcomes` frame by coalescing canonical 21d columns onto
