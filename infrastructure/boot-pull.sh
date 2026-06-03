@@ -23,6 +23,48 @@ log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$LOG"; }
 
 log "=== boot-pull started ==="
 
+# ── Refresh the GitHub PAT in ~/.netrc from SSM ────────────────────────────
+# alpha-engine-config is the only PRIVATE repo pulled below; git authenticates
+# to it over HTTPS via the fine-grained PAT in ~/.netrc (libcurl reads ~/.netrc
+# by default). That token used to be hand-copied onto each box, so a PAT
+# rotation silently broke every box's private-repo pull until someone re-pasted
+# it. 2026-06-03 incident: the executor PAT was rotated, this box's stale
+# ~/.netrc (mtime Mar 9) started returning 401, and boot-pull FAILed on
+# alpha-engine-config with "could not read Username".
+#
+# /alpha-engine/GITHUB_TOKEN (SecureString) is now the single source of truth.
+# Hydrating ~/.netrc from it on every run means a future rotation only needs an
+# SSM update — it auto-propagates to every box within one boot-pull cycle, the
+# same self-bootstrapping pattern as the SSM-hydrated config.yaml files below.
+#
+# Best-effort by design (per ~/Development/CLAUDE.md item 3 — fail-loud): a
+# refresh failure here is WARN-only and MUST NOT clobber a working ~/.netrc,
+# because (a) the on-disk token may still be valid, and (b) the REAL failure
+# mode — alpha-engine-config unfetchable — is already surfaced loudly by the
+# FAILED_REPOS → flow-doctor report at the end of this script. We only
+# overwrite ~/.netrc when SSM hands back a non-empty token, so a transient SSM
+# blip can never wipe valid credentials.
+GH_USER="cipher813"
+NETRC="/home/ec2-user/.netrc"
+if GH_TOKEN=$(aws ssm get-parameter --name /alpha-engine/GITHUB_TOKEN \
+        --with-decryption --query "Parameter.Value" --output text 2>>"$LOG") \
+        && [ -n "$GH_TOKEN" ] && [ "$GH_TOKEN" != "None" ]; then
+    NEW_NETRC="machine github.com login ${GH_USER} password ${GH_TOKEN}"
+    if [ ! -f "$NETRC" ] || [ "$NEW_NETRC" != "$(cat "$NETRC" 2>/dev/null)" ]; then
+        # umask 077 + atomic tmp→mv so the token never lands in a
+        # world-readable or half-written file.
+        ( umask 077; printf '%s\n' "$NEW_NETRC" > "${NETRC}.tmp.$$" )
+        mv "${NETRC}.tmp.$$" "$NETRC"
+        chmod 600 "$NETRC"
+        log "OK   ~/.netrc refreshed from SSM /alpha-engine/GITHUB_TOKEN"
+    else
+        log "OK   ~/.netrc unchanged from SSM"
+    fi
+    unset GH_TOKEN NEW_NETRC
+else
+    log "WARN ~/.netrc refresh skipped — SSM /alpha-engine/GITHUB_TOKEN unreadable/empty; keeping existing ~/.netrc (private-repo pull will FAIL-loud below if the on-disk token is also stale)"
+fi
+
 # Repos the micro needs at runtime. Order matters only for dependency
 # (alpha-engine-config first so other repos can reference it on pull).
 REPOS=(
