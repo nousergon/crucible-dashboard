@@ -1,0 +1,18 @@
+[Unit]
+Description=Shared dashboard EC2 resource + service watchdog (memory + ports)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ec2-user
+ExecStart=/usr/local/bin/box_health.sh
+# Region for alpha_engine_lib.alerts SNS publish (Telegram creds load from
+# /home/ec2-user/.alpha-engine.env inside the script).
+Environment=AWS_REGION=us-east-1
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:/home/ec2-user/.local/bin
+TimeoutStartSec=120
+RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target

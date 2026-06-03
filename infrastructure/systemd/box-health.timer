@@ -1,0 +1,14 @@
+[Unit]
+Description=Run the dashboard EC2 watchdog every 10 minutes
+Requires=box-health.service
+
+[Timer]
+# First run 3 min after boot (let services settle), then every 10 min.
+OnBootSec=3min
+OnUnitActiveSec=10min
+# Catch up one missed run if the box was down at the scheduled slot.
+Persistent=true
+Unit=box-health.service
+
+[Install]
+WantedBy=timers.target
