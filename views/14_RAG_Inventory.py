@@ -32,11 +32,6 @@ import streamlit as st
 
 from loaders.s3_loader import load_rag_manifest
 
-st.set_page_config(
-    page_title="RAG Inventory — Alpha Engine",
-    page_icon="📚",
-    layout="wide",
-)
 
 
 st.divider()

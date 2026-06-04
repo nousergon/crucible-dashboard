@@ -39,11 +39,6 @@ from loaders.observation_registry_loader import (
     summarize_by_state,
 )
 
-st.set_page_config(
-    page_title="Active Observations — Alpha Engine",
-    page_icon="👁",
-    layout="wide",
-)
 
 
 _STATE_COLOR: dict[str, str] = {

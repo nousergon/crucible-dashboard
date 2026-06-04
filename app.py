@@ -50,17 +50,17 @@ import streamlit as st
 logger = logging.getLogger(__name__)
 
 from loaders.db_loader import get_macro_snapshots
+from components.report_card_v2 import render_home_summary
 from loaders.s3_loader import (
     _fetch_s3_json,
     _research_bucket,
     _trades_bucket,
     get_recent_s3_errors,
-    list_backtest_dates,
-    load_backtest_file,
     load_eod_pnl,
     load_order_book_summary,
     load_predictions_json,
     load_predictor_metrics,
+    load_report_card,
     load_trades_full,
 )
 from shared.constants import get_thresholds
@@ -325,52 +325,15 @@ def _render_alerts(
 # ---------------------------------------------------------------------------
 
 
-_GRADE_BANDS = [
-    (90, "A"), (80, "A-"), (73, "B+"), (65, "B"), (58, "B-"),
-    (50, "C+"), (42, "C"), (35, "C-"), (28, "D+"), (20, "D"), (0, "F"),
-]
-
-
-def _grade_letter(score: float | None) -> str:
-    if score is None:
-        return "N/A"
-    for threshold, letter in _GRADE_BANDS:
-        if score >= threshold:
-            return letter
-    return "F"
-
-
 def _render_report_card() -> None:
-    """Display system report card grades from latest backtest."""
-    dates = list_backtest_dates()
-    if not dates:
-        st.info("No backtest results available yet.")
-        return
+    """Home headline — the Report Card v2 overall + 7-tile chips.
 
-    metrics = load_backtest_file(dates[0], "metrics.json")
-    if not metrics or "report_card" not in metrics:
-        st.caption(f"Report card not available (last backtest: {dates[0]})")
-        return
-
-    rc = metrics["report_card"]
-    overall = rc.get("overall", {})
-    og = overall.get("grade")
-
-    c1, c2, c3, c4 = st.columns(4)
-    for col, key, label in [
-        (c1, "research", "Research"),
-        (c2, "predictor", "Predictor"),
-        (c3, "executor", "Executor"),
-    ]:
-        mod = rc.get(key, {})
-        g = mod.get("grade")
-        with col:
-            st.metric(label, _grade_letter(g), f"{g:.0f}/100" if g is not None else None)
-
-    with c4:
-        st.metric("Overall", _grade_letter(og), f"{og:.0f}/100" if og is not None else None)
-
-    st.caption(f"Last backtest: {dates[0]}")
+    Reads the evaluator's ``report_card.json`` (7-tile MetricRecord substrate);
+    full detail lives on the Report Card pages. Replaces the legacy v1
+    grading.json summary (3 modules, letters only).
+    """
+    render_home_summary(load_report_card())
+    st.caption("Full breakdown → **Report Card** + **Report Card — Detail** (top of the sidebar).")
 
 
 def main() -> None:
@@ -411,7 +374,73 @@ def main() -> None:
     _render_alerts(health_rows, eod_df)
 
 
-if __name__ == "__main__":
-    main()
-else:
-    main()
+# ---------------------------------------------------------------------------
+# Navigation — grouped sections (st.navigation) replacing the flat pages/ menu.
+#
+# Order is intentional: the NEW Report Card surface leads; then the reused
+# operational categories; then a Deprecated section (candidates the Report Card
+# substantially covers — kept, not yet removed, pending operator confirmation).
+# set_page_config (top of file) is the single entrypoint config; the view
+# scripts no longer call it (st.navigation requirement).
+# ---------------------------------------------------------------------------
+
+def _build_navigation():
+    home = st.Page(main, title="Home", icon="🏠", default=True)
+
+    def page(path, title, icon):
+        return st.Page(f"views/{path}", title=title, icon=icon)
+
+    return st.navigation({
+        "🎯 Overview & Report Card": [
+            home,
+            page("Report_Card.py", "Report Card", "📋"),
+            page("Report_Card_Detail.py", "Report Card — Detail", "🔎"),
+        ],
+        "📈 Performance": [
+            page("1_Portfolio.py", "Portfolio", "💼"),
+            page("6_Execution.py", "Execution", "⚡"),
+            page("19_EOD_Reconcile_Archive.py", "EOD Reconcile (archive)", "🧾"),
+        ],
+        "🔬 Research & Signals": [
+            page("2_Signals_and_Research.py", "Signals & Research", "🧭"),
+            page("5_Focus_List.py", "Focus List", "🎯"),
+            page("16_Order_Book_Rationale.py", "Order Book Rationale", "📒"),
+            page("17_Research_Briefing_Archive.py", "Research Briefing (archive)", "📰"),
+            page("22_Intraday_Surveillance.py", "Intraday Surveillance", "👁"),
+        ],
+        "🤖 Predictor": [
+            page("7_Predictor.py", "Predictor", "🤖"),
+            page("15_Regime.py", "Regime", "🌐"),
+            page("13_Feature_Store.py", "Feature Store", "🗃"),
+            page("18_Predictor_Briefing_Archive.py", "Predictor Briefing (archive)", "📨"),
+            page("20_Predictor_Training_Archive.py", "Training Runs (archive)", "🏋"),
+        ],
+        "🧪 Backtester & Eval": [
+            page("3_Analysis.py", "Analysis", "📊"),
+            page("8_Eval_Quality.py", "Eval Quality", "⚖"),
+            page("12_Feedback_Loop.py", "Feedback Loop", "🔁"),
+            page("21_Backtester_Evaluator_Archive.py", "Backtester Report (archive)", "📑"),
+        ],
+        "🩺 System & Ops": [
+            page("4_System_Health.py", "System Health", "🩺"),
+            page("25_Pipeline_Status.py", "Pipeline Status", "🚦"),
+            page("26_Artifact_Freshness.py", "Artifact Freshness", "⏱"),
+            page("27_Active_Observations.py", "Active Observations", "🔭"),
+            page("23_LLM_Cost.py", "LLM Cost", "💰"),
+        ],
+        "📚 Reference & Deep-Dives": [
+            page("10_Architecture.py", "Architecture", "🏛"),
+            page("11_Signal_Lifecycle.py", "Signal Lifecycle", "🧬"),
+            page("14_RAG_Inventory.py", "RAG Inventory", "📚"),
+        ],
+        # Candidates the Report Card v2 substantially subsumes on the console
+        # (both primarily back the PUBLIC site, which is unaffected). Kept for
+        # now — confirm before removal.
+        "🗑 Deprecated (review)": [
+            page("9_Metrics.py", "Metrics (legacy)", "🧮"),
+            page("24_Evidence.py", "Evidence (legacy)", "🔖"),
+        ],
+    })
+
+
+_build_navigation().run()

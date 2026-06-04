@@ -50,11 +50,6 @@ from loaders.s3_loader import (
 from loaders.signal_loader import get_available_signal_dates, load_signals
 
 
-st.set_page_config(
-    page_title="Regime — Alpha Engine",
-    page_icon="📊",
-    layout="wide",
-)
 
 
 st.divider()

@@ -367,6 +367,23 @@ def load_signals_json(date_str: str) -> dict | None:
     return download_s3_json(_research_bucket(), key)
 
 
+@st.cache_data(ttl=_ttl("signals"))
+def load_report_card(date_str: str | None = None) -> dict | None:
+    """Load the evaluator Report Card v2 (the 7-tile MetricRecord substrate).
+
+    Reads ``evaluator/{date}/report_card.json`` written by the
+    ``alpha-engine-evaluator`` grading Lambda. ``date_str=None`` resolves the
+    most recent available cycle. Returns the parsed card (which carries its own
+    ``_provenance.run_date``) or None when no card has been published yet.
+    """
+    bucket = _research_bucket()
+    if date_str is None:
+        date_str = get_latest_prefix(bucket, "evaluator/")
+        if date_str is None:
+            return None
+    return download_s3_json(bucket, f"evaluator/{date_str}/report_card.json")
+
+
 def load_trades_full() -> pd.DataFrame | None:
     """Load trades_full.csv from the executor bucket."""
     cfg = load_config()

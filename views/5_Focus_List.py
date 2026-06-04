@@ -35,7 +35,6 @@ from loaders.db_loader import (
 )
 
 
-st.set_page_config(page_title="Focus List — Alpha Engine", layout="wide")
 st.title("Focus List")
 st.caption(
     "Regime-blended factor-composite focus list vs the quant agent's actual "

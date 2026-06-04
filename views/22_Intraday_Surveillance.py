@@ -25,11 +25,6 @@ import streamlit as st
 from loaders.s3_loader import load_intraday_heartbeat, load_intraday_latest_prices
 
 
-st.set_page_config(
-    page_title="Intraday Surveillance — Alpha Engine",
-    page_icon="📡",
-    layout="wide",
-)
 
 st.divider()
 

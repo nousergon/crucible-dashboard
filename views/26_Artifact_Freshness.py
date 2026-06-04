@@ -37,11 +37,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from loaders.s3_loader import _fetch_s3_json, _research_bucket
 from loaders.observation_registry_loader import load_observation_registry
 
-st.set_page_config(
-    page_title="Artifact Freshness — Alpha Engine",
-    page_icon="📡",
-    layout="wide",
-)
 
 
 HEARTBEAT_KEY = "_freshness_monitor/heartbeat.json"

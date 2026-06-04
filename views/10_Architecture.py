@@ -33,11 +33,6 @@ from loaders.s3_loader import predictor_horizon_days
 # the active production state post Track A cutover (2026-05-09).
 _PRED_H = predictor_horizon_days()
 
-st.set_page_config(
-    page_title="Architecture — Alpha Engine",
-    page_icon="📈",
-    layout="wide",
-)
 
 
 st.divider()

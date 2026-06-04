@@ -45,11 +45,6 @@ from loaders.s3_loader import (
 )
 from loaders.signal_loader import get_available_signal_dates, load_signals, signals_to_df
 
-st.set_page_config(
-    page_title="Signal Lifecycle — Alpha Engine",
-    page_icon="📈",
-    layout="wide",
-)
 
 
 st.divider()

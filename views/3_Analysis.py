@@ -46,7 +46,6 @@ from loaders.s3_loader import (
 )
 from shared.formatters import format_pct
 
-st.set_page_config(page_title="Analysis — Alpha Engine", layout="wide")
 
 # ---------------------------------------------------------------------------
 # Helpers

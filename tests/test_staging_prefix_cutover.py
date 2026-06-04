@@ -56,7 +56,7 @@ def test_health_checker_no_legacy_prefix():
 
 
 def test_system_health_page_uses_staging_prefix():
-    src = _read("pages/4_System_Health.py")
+    src = _read("views/4_System_Health.py")
     assert '"staging/daily_closes/"' in src, (
         "pages/4_System_Health.py is not counting staging/daily_closes/ "
         "objects. The 2026-04-29 prefix migration requires this exact "
@@ -65,7 +65,7 @@ def test_system_health_page_uses_staging_prefix():
 
 
 def test_system_health_page_no_legacy_prefix():
-    src = _read("pages/4_System_Health.py")
+    src = _read("views/4_System_Health.py")
     assert "predictor/daily_closes" not in src, (
         "pages/4_System_Health.py contains 'predictor/daily_closes' — "
         "the prefix was migrated to staging/. No fallback."

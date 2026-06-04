@@ -38,7 +38,6 @@ from shared.formatters import regime_label
 _TH = get_thresholds()
 _VETO_CONF_DEFAULT = _TH["veto_confidence"]
 
-st.set_page_config(page_title="Signals & Research — Alpha Engine", layout="wide")
 
 # ---------------------------------------------------------------------------
 # Helpers

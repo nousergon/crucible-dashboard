@@ -375,7 +375,6 @@ def _render_section(arn: str) -> None:
 # ── Page ──────────────────────────────────────────────────────────────────
 
 
-st.set_page_config(page_title="Pipeline Status", page_icon="🚦", layout="wide")
 st.title("🚦 Pipeline Status")
 st.caption(
     "Per-Step-Function execution state from `states:DescribeExecution` + "

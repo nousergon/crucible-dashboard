@@ -43,11 +43,6 @@ from loaders.s3_loader import (
 )
 
 
-st.set_page_config(
-    page_title="Evidence — Alpha Engine",
-    page_icon="🔎",
-    layout="wide",
-)
 
 
 st.divider()

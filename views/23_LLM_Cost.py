@@ -25,11 +25,6 @@ import streamlit as st
 
 from loaders.s3_loader import load_llm_cost_parquets
 
-st.set_page_config(
-    page_title="LLM Cost — Alpha Engine",
-    page_icon="💸",
-    layout="wide",
-)
 
 st.divider()
 

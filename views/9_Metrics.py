@@ -45,11 +45,6 @@ _PRED_DOMAIN_LABEL = (
     else "arithmetic sector-relative"
 )
 
-st.set_page_config(
-    page_title="Metrics — Alpha Engine",
-    page_icon="📈",
-    layout="wide",
-)
 
 
 st.divider()

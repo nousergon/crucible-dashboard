@@ -13,6 +13,7 @@ import sys
 from datetime import date, datetime, timedelta
 
 import pandas as pd
+import plotly.express as px
 import streamlit as st
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -25,10 +26,10 @@ from loaders.s3_loader import (
     get_s3_client,
     list_s3_prefixes,
     load_eod_pnl,
+    load_executor_params,
     load_trades_full,
 )
 
-st.set_page_config(page_title="System Health — Alpha Engine", layout="wide")
 
 # ---------------------------------------------------------------------------
 # Shared helpers

@@ -35,11 +35,6 @@ from shared.reconciliation import (
 )
 
 
-st.set_page_config(
-    page_title="Order Book Rationale — Alpha Engine",
-    page_icon="📋",
-    layout="wide",
-)
 
 
 st.divider()

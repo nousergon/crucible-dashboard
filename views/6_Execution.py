@@ -20,7 +20,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from loaders.s3_loader import list_backtest_dates, load_backtest_file, load_trades_full
 from loaders.db_loader import get_score_performance
 
-st.set_page_config(page_title="Execution — Alpha Engine", layout="wide")
 
 # ---------------------------------------------------------------------------
 # Constants / helpers

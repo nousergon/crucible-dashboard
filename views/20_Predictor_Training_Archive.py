@@ -21,11 +21,6 @@ import streamlit as st
 from components.process_archive import ProcessArchiveSpec, render_process_archive
 
 
-st.set_page_config(
-    page_title="Predictor Training Archive — Alpha Engine",
-    page_icon="🏋️",
-    layout="wide",
-)
 
 st.divider()
 

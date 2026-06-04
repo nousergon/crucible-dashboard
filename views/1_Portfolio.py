@@ -38,7 +38,6 @@ _HHI_DIVERSIFIED = _TH["hhi_diversified"]
 _HHI_CONCENTRATED = _TH["hhi_concentrated"]
 _SHARPE_MIN_ROWS = int(_TH["sharpe_min_rows"])
 
-st.set_page_config(page_title="Portfolio — Alpha Engine", layout="wide")
 
 # ---------------------------------------------------------------------------
 # Helpers

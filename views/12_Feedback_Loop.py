@@ -46,11 +46,6 @@ from loaders.s3_loader import (
     load_scoring_weights_history,
 )
 
-st.set_page_config(
-    page_title="Feedback Loop — Alpha Engine",
-    page_icon="🔁",
-    layout="wide",
-)
 
 
 st.divider()

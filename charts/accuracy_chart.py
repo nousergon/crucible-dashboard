@@ -276,6 +276,17 @@ def make_accuracy_by_regime_chart(perf_df: pd.DataFrame, macro_df: pd.DataFrame)
 
     merged = perf.merge(macro[["date", regime_col]], left_on="score_date", right_on="date", how="left")
     merged = merged.rename(columns={regime_col: "regime"})
+    # A column collision (perf already carrying a 'regime'/'market_regime') makes
+    # pandas suffix the merged column ('regime_x'/'regime_y'), leaving no plain
+    # 'regime'. Coalesce from the suffixed variant, else degrade gracefully
+    # rather than KeyError (pre-existing crash surfaced 2026-06-04).
+    if "regime" not in merged.columns:
+        suffixed = next((c for c in ("regime_y", "regime_x") if c in merged.columns), None)
+        if suffixed is None:
+            fig = go.Figure()
+            fig.update_layout(title="Accuracy by Regime — regime column unavailable after merge")
+            return fig
+        merged = merged.rename(columns={suffixed: "regime"})
     merged["regime"] = merged["regime"].fillna("unknown")
 
     for col in ["beat_spy_10d", "beat_spy_30d"]:

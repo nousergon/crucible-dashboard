@@ -36,7 +36,6 @@ from loaders.eval_loader import (
 from loaders.s3_loader import load_latest_provenance_grounding
 
 
-st.set_page_config(page_title="Eval Quality — Alpha Engine", layout="wide")
 st.title("Eval Quality")
 st.caption(
     "LLM-as-judge rubric scores per agent + criterion. "
@@ -329,8 +328,12 @@ with tab_spotcheck:
             "surface first within a date)."
         )
 
-        for art in sc_batch:
+        for _i, art in enumerate(sc_batch):
             sid = art["_review_id"]
+            # _review_id is not guaranteed unique within a batch (two reviews can
+            # share date/thesis/model), which collides Streamlit widget keys. Use
+            # a batch-index-suffixed key for widgets; keep `sid` for the record.
+            wkey = f"{sid}__{_i}"
             agent_id = art.get("judged_agent_id", "—")
             rubric_id = art.get("rubric_id", "—")
             rubric_version = art.get("rubric_version", "—")
@@ -396,11 +399,11 @@ with tab_spotcheck:
                 st.divider()
                 v_cols = st.columns([1, 1, 4])
                 note = v_cols[2].text_input(
-                    "Note (optional)", key=f"sc_note__{sid}",
+                    "Note (optional)", key=f"sc_note__{wkey}",
                     placeholder="Only if flagging — what's right/wrong about this call?",
                 )
 
-                def _flag(verdict: str, _sid=sid, _art=art, _note_key=f"sc_note__{sid}"):
+                def _flag(verdict: str, _sid=sid, _art=art, _wkey=wkey, _note_key=f"sc_note__{wkey}"):
                     rec = {
                         "spotcheck_id": _sid,
                         "eval_date": _art["_eval_date"],
@@ -414,19 +417,19 @@ with tab_spotcheck:
                         "reviewer": "operator",
                     }
                     if save_spotcheck_flag(rec):
-                        st.session_state[f"sc_flagged__{_sid}"] = verdict
+                        st.session_state[f"sc_flagged__{_wkey}"] = verdict
                         st.cache_data.clear()
                         st.rerun()
                     else:
                         st.error("Flag save failed — check CloudWatch / S3 perms.")
 
-                already = st.session_state.get(f"sc_flagged__{sid}")
+                already = st.session_state.get(f"sc_flagged__{wkey}")
                 if already:
                     st.success(f"✓ Flagged: {already}")
                 else:
-                    if v_cols[0].button("👍 Looks right", key=f"sc_up__{sid}"):
+                    if v_cols[0].button("👍 Looks right", key=f"sc_up__{wkey}"):
                         _flag("looks_right")
-                    if v_cols[1].button("👎 Looks wrong", key=f"sc_down__{sid}"):
+                    if v_cols[1].button("👎 Looks wrong", key=f"sc_down__{wkey}"):
                         _flag("looks_wrong")
 
 

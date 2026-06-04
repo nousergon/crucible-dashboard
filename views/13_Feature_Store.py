@@ -44,11 +44,6 @@ from loaders.s3_loader import (
 )
 from loaders.utils import production_feature_set, research_feature_set
 
-st.set_page_config(
-    page_title="Feature Store — Alpha Engine",
-    page_icon="🗂️",
-    layout="wide",
-)
 
 
 st.divider()

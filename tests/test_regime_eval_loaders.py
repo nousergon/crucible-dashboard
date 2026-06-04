@@ -205,7 +205,7 @@ class TestLoadRegimeStratifiedSortinoHistory:
 def test_regime_page_imports_eval_loaders():
     """The Regime page must import the four new eval loaders. Catches
     an accidental removal of the T1/T2 dashboard tabs during refactors."""
-    page = Path(__file__).resolve().parents[1] / "pages" / "15_Regime.py"
+    page = Path(__file__).resolve().parents[1] / "views" / "15_Regime.py"
     body = page.read_text()
     assert "load_regime_retrospective_eval_latest" in body
     assert "load_regime_retrospective_eval_history" in body

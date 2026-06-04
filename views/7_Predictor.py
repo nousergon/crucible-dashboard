@@ -26,7 +26,6 @@ _MODEL_HEALTHY = _TH["model_healthy"]
 _MODEL_DEGRADED = _TH["model_degraded"]
 _ACC_BASELINE = _TH["accuracy_baseline"]
 
-st.set_page_config(page_title="Predictor — Alpha Engine", layout="wide")
 
 st.title("Predictor")
 
