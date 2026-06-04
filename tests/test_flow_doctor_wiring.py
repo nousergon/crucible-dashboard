@@ -267,9 +267,14 @@ class TestLibVersionPin:
             "to be importable"
         )
         assert "@main" not in text, "alpha-engine-lib must be pinned to a tag, not @main"
-        assert "@v0.45.0" in text, (
-            "alpha-engine-lib should pin to v0.45.0 (L4472 pipeline-status "
-            "registry: PredictorBacktest + PortfolioOptimizerBacktest split "
+        assert "@v0.52.1" in text, (
+            "alpha-engine-lib should pin to v0.52.1 (pipeline-status registry: "
+            "ReportCard SF-state entry — the Director arc added a ReportCard "
+            "Task state to the Saturday SF (alpha-engine-data #367), required so "
+            "test_pipeline_status_registry_drift passes + page-25 deep-links it "
+            "to the Report Card page; also v0.52.0 MetricRecord + quant.stats "
+            "intervals the Report Card v2 surface consumes). v0.45.0 (L4472 "
+            "pipeline-status registry: PredictorBacktest + PortfolioOptimizerBacktest split "
             "states — required so test_pipeline_status_registry_drift passes "
             "after the backtester phase-split; v0.44 added the L249 per-cycle "
             "artifact-completion rollup). Earlier: v0.43 (transparency non-fatal "
