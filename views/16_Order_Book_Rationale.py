@@ -55,8 +55,16 @@ _STATE_COLOR = {
     # is filtered at the producer (dead signal — no order possible), so
     # the only sub-states reachable here are the optimizer-driven ones.
     "no_action_optimizer_zero_weight": "#1a237e",  # indigo
+    # ERROR — optimizer assigned a non-zero target but no order was created
+    # (allocation dropped downstream, e.g. an IBKR price-resolve failure).
+    # Bright red so it reads as a fault, not a benign no-action.
+    "no_action_optimizer_dropped": "#d50000",      # bright red — ERROR
     "no_action_unknown": "#5d4037",                # muted-red — bug-flag
 }
+
+# Terminal states that are genuine producer faults — surfaced as a page-top
+# error banner so the operator cannot miss them (not just a colored row).
+_ERROR_STATES = ("no_action_optimizer_dropped", "no_action_unknown")
 
 _STATE_LABEL = {
     "approved_entry": "Approved entry",
@@ -69,6 +77,7 @@ _STATE_LABEL = {
     # 1.2.0+ sub-states — labels phrase the operator-readable reason so
     # the table answers "why?" without requiring the drill-down.
     "no_action_optimizer_zero_weight": "No action — optimizer chose 0",
+    "no_action_optimizer_dropped": "⚠ ERROR — optimizer targeted, order dropped",
     "no_action_unknown": "No action — unknown (investigate)",
 }
 
@@ -237,6 +246,35 @@ def _render_rationale(payload: dict) -> None:
         f"prediction_date: {payload.get('prediction_date', '—')}  ·  "
         f"run_id: `{payload.get('run_id', '—')}`"
     )
+
+    # ── ERROR banner — producer faults the operator must not miss ───────────
+    # A non-zero optimizer target that never became an order
+    # (no_action_optimizer_dropped) means the allocation was LOST downstream
+    # (e.g. an IBKR price-resolve failure). Surface it as a page-top error,
+    # not just a red row, so it's caught even when the table is collapsed.
+    _dropped = [
+        r.get("ticker")
+        for r in payload["tickers"]
+        if r.get("terminal_state") == "no_action_optimizer_dropped"
+    ]
+    _unknown = [
+        r.get("ticker")
+        for r in payload["tickers"]
+        if r.get("terminal_state") == "no_action_unknown"
+    ]
+    if _dropped:
+        st.error(
+            f"⚠ **{len(_dropped)} optimizer allocation(s) DROPPED** — the "
+            f"optimizer targeted a non-zero weight but no order was created "
+            f"for: **{', '.join(_dropped)}**. The allocation was lost "
+            f"(likely a price-resolve failure). Check the executor log + the "
+            f"`AlphaEngine/Executor/optimizer_target_dropped` CloudWatch alarm."
+        )
+    if _unknown:
+        st.warning(
+            f"{len(_unknown)} ticker(s) in **unknown** no-action state "
+            f"(investigate): {', '.join(_unknown)}."
+        )
 
     _render_reconciliation(payload)
     st.markdown("##### Per-ticker decision chain")
