@@ -43,11 +43,31 @@ for s in "${SERVICES[@]}"; do
     systemctl is-active --quiet "$s" || problems+=("service down: $s")
 done
 
-# listening ports (mnemon/bun has no systemd unit here, so port is the probe)
-listening=$(ss -tln 2>/dev/null)
-for p in "${PORTS[@]}"; do
-    echo "$listening" | grep -qE "127\.0\.0\.1:$p\b" || problems+=("port not listening: $p")
+# listening ports (mnemon/bun has no systemd unit here, so port is the probe).
+# Resolve `ss` by absolute path: it lives in /usr/sbin, which the systemd unit's
+# PATH does not include, so a bare `ss` is "command not found" under the service.
+SS_BIN=""
+for cand in /usr/sbin/ss /sbin/ss /usr/bin/ss /bin/ss; do
+    [ -x "$cand" ] && { SS_BIN="$cand"; break; }
 done
+if [ -z "$SS_BIN" ]; then
+    # Fail loud: a missing probe tool is a watchdog malfunction, NOT a port
+    # outage. Reporting it distinctly stops a tooling/PATH regression from
+    # masquerading as a fake all-ports-down alert (no-silent-fails).
+    problems+=("watchdog: ss probe unavailable (ss not found in /usr/sbin /sbin /usr/bin /bin)")
+else
+    # Match ANY bind address: Streamlit binds 127.0.0.1:850x, but mnemon (bun)
+    # binds *:8503, so an address-specific pattern false-alarms on 8503.
+    listening=$("$SS_BIN" -tln 2>/dev/null)
+    if [ -z "$listening" ]; then
+        # Empty output from a present binary = probe failure, not 5 dead ports.
+        problems+=("watchdog: ss probe returned no output (cannot verify ports)")
+    else
+        for p in "${PORTS[@]}"; do
+            echo "$listening" | grep -qE ":$p\b" || problems+=("port not listening: $p")
+        done
+    fi
+fi
 
 # quiet on success — this is the common path
 if [ "${#problems[@]}" -eq 0 ]; then
