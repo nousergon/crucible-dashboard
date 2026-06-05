@@ -214,7 +214,7 @@ sequenceDiagram
 """, height=540)
 
 st.markdown("### Weekday SF — daily trading loop")
-st.caption("Fires Mon-Fri 13:00 UTC (6:00 AM PT). Halt on NYSE holidays.")
+st.caption("Fires Mon-Fri 12:45 UTC (5:45 AM PT). Halt on NYSE holidays.")
 render_mermaid(f"""
 sequenceDiagram
     participant EB as EventBridge
@@ -226,7 +226,7 @@ sequenceDiagram
     participant MP as Morning Planner
     participant D as Daemon
 
-    EB->>DDC: cron(0 13 ? * MON-FRI *)
+    EB->>DDC: cron(45 12 ? * MON-FRI *)
     DDC->>DDC: block on weights/SF stamp drift
     DDC->>EC2: start trading instance
     EC2->>CTD: instance ready
