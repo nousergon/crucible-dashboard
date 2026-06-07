@@ -7,11 +7,16 @@ import pandas as pd
 import pytest
 
 from loaders.signal_loader import (
+    _cio_output,
     _extract_sub_scores,
+    entrant_detail_df,
+    entrant_flow_row,
     get_buy_candidates_df,
     get_sector_ratings_df,
     get_signal_counts,
+    population_tickers,
     signals_to_df,
+    ADVANCE_DECISIONS,
 )
 
 
@@ -181,3 +186,147 @@ class TestGetSignalCounts:
     def test_no_signals(self):
         counts = get_signal_counts({"universe": [{"ticker": "A"}]})
         assert counts["ENTER"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Population flow / new-entrant tracking
+# ---------------------------------------------------------------------------
+
+
+class TestCioOutput:
+    def test_unwraps_envelope(self):
+        raw = {"run_date": "2026-06-05", "agent_id": "ic_cio",
+               "output": {"ic_decisions": [], "advanced_tickers": []}}
+        assert _cio_output(raw) == {"ic_decisions": [], "advanced_tickers": []}
+
+    def test_accepts_bare_output(self):
+        bare = {"ic_decisions": [{"ticker": "X", "decision": "ADVANCE"}]}
+        assert _cio_output(bare) is bare
+
+    def test_none_and_malformed(self):
+        assert _cio_output(None) is None
+        assert _cio_output({"run_date": "x"}) is None  # no ic_decisions anywhere
+        assert _cio_output("not a dict") is None
+
+
+class TestPopulationTickers:
+    def test_string_entries(self):
+        assert population_tickers({"population": ["AAPL", "MSFT"]}) == {"AAPL", "MSFT"}
+
+    def test_dict_entries(self):
+        data = {"population": [{"ticker": "AAPL"}, {"ticker": "MSFT"}]}
+        assert population_tickers(data) == {"AAPL", "MSFT"}
+
+    def test_empty_and_none(self):
+        assert population_tickers(None) == set()
+        assert population_tickers({}) == set()
+
+
+class TestAdvanceDecisions:
+    def test_includes_forced(self):
+        # ADVANCE_FORCED must count as an entrant — the floor-enforcement bug class.
+        assert "ADVANCE" in ADVANCE_DECISIONS
+        assert "ADVANCE_FORCED" in ADVANCE_DECISIONS
+        assert "REJECT" not in ADVANCE_DECISIONS
+
+
+class TestEntrantFlowRow:
+    def _cio(self):
+        # 2 incumbents re-advanced, 1 fresh advanced, 2 fresh rejected.
+        return {"ic_decisions": [
+            {"ticker": "HELD1", "decision": "ADVANCE", "conviction": 80},
+            {"ticker": "HELD2", "decision": "ADVANCE", "conviction": 75},
+            {"ticker": "NEWA", "decision": "ADVANCE", "conviction": 64},
+            {"ticker": "NEWR1", "decision": "REJECT", "conviction": 40},
+            {"ticker": "NEWR2", "decision": "REJECT", "conviction": 35},
+        ]}
+
+    def test_net_new_counts_only_fresh_advances(self):
+        prior = {"HELD1", "HELD2"}
+        cur = {"HELD1", "HELD2", "NEWA"}
+        row = entrant_flow_row("2026-06-05", self._cio(), prior, cur, have_prior=True)
+        assert row["net_new_entrants"] == 1          # NEWA only — incumbents excluded
+        assert row["new_candidates"] == 3            # NEWA, NEWR1, NEWR2
+        assert row["new_rejected"] == 2
+        assert row["candidates_total"] == 5
+        assert row["new_conv_max"] == 64
+        assert row["advanced_new_tickers"] == ["NEWA"]
+        assert row["population_size"] == 3
+
+    def test_zero_new_when_all_advances_are_incumbents(self):
+        # Reproduces the 2026-06-05 case: every advance is already held.
+        prior = {"HELD1", "HELD2"}
+        cur = {"HELD1", "HELD2"}
+        cio = {"ic_decisions": [
+            {"ticker": "HELD1", "decision": "ADVANCE", "conviction": 80},
+            {"ticker": "HELD2", "decision": "ADVANCE", "conviction": 75},
+            {"ticker": "FRESH", "decision": "REJECT", "conviction": 40},
+        ]}
+        row = entrant_flow_row("2026-06-05", cio, prior, cur, have_prior=True)
+        assert row["net_new_entrants"] == 0
+        assert row["new_candidates"] == 1            # FRESH
+        assert row["new_conv_max"] == 40
+
+    def test_advance_forced_counts_as_entrant(self):
+        prior = {"HELD1"}
+        cur = {"HELD1", "FORCED"}
+        cio = {"ic_decisions": [
+            {"ticker": "HELD1", "decision": "ADVANCE", "conviction": 80},
+            {"ticker": "FORCED", "decision": "ADVANCE_FORCED", "conviction": 45},
+        ]}
+        row = entrant_flow_row("2026-06-05", cio, prior, cur, have_prior=True)
+        assert row["net_new_entrants"] == 1
+        assert row["advanced_new_tickers"] == ["FORCED"]
+
+    def test_missing_prior_baseline_yields_none(self):
+        row = entrant_flow_row("2026-06-05", self._cio(), set(), {"A"}, have_prior=False)
+        assert row["net_new_entrants"] is None
+        assert row["new_candidates"] is None
+        assert row["candidates_total"] == 5          # still report raw candidate count
+
+    def test_none_cio_returns_none(self):
+        assert entrant_flow_row("d", None, set(), set(), have_prior=True) is None
+
+
+class TestEntrantDetailDf:
+    def test_only_fresh_with_context_sorted(self):
+        cio = {"ic_decisions": [
+            {"ticker": "HELD", "decision": "ADVANCE", "conviction": 80,
+             "rationale": "incumbent"},
+            {"ticker": "GMED", "decision": "REJECT", "conviction": 40,
+             "rationale": "merger risk"},
+            {"ticker": "CART", "decision": "REJECT", "conviction": 35,
+             "rationale": "anemic growth"},
+        ]}
+        sector_map = {"GMED": "Healthcare", "CART": "Consumer Discretionary"}
+        sector_ratings = {"Healthcare": {"rating": "overweight"},
+                          "Consumer Discretionary": {"rating": "underweight"}}
+        df = entrant_detail_df(cio, {"HELD"}, sector_map, sector_ratings, have_prior=True)
+        assert list(df["ticker"]) == ["GMED", "CART"]    # incumbent excluded, conv desc
+        assert df.iloc[0]["sector_rating"] == "overweight"
+        assert df.iloc[1]["sector_rating"] == "underweight"
+        assert df.iloc[0]["decision"] == "❌ Rejected"
+
+    def test_advanced_label_and_forced(self):
+        cio = {"ic_decisions": [
+            {"ticker": "NEWA", "decision": "ADVANCE", "conviction": 64},
+            {"ticker": "FORCED", "decision": "ADVANCE_FORCED", "conviction": 45},
+        ]}
+        df = entrant_detail_df(cio, set(), {}, {}, have_prior=True)
+        assert set(df["decision"]) == {"✅ Advanced"}
+
+    def test_empty_cio(self):
+        assert entrant_detail_df(None, set(), {}, {}, have_prior=True).empty
+
+    def test_drops_all_empty_sector_columns(self):
+        # No sector_map → sector/sector_rating all-None → columns dropped,
+        # but reason (which carries the sector rationale) is retained.
+        cio = {"ic_decisions": [
+            {"ticker": "CART", "decision": "REJECT", "conviction": 35,
+             "rationale": "Consumer Discretionary is underweight"},
+        ]}
+        df = entrant_detail_df(cio, set(), {}, {}, have_prior=True)
+        assert "sector" not in df.columns
+        assert "sector_rating" not in df.columns
+        assert "reason" in df.columns
+        assert "underweight" in df.iloc[0]["reason"]
