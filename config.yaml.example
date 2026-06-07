@@ -22,6 +22,7 @@ s3:
 
 paths:
   signals: signals/{date}/signals.json
+  cio_decisions: archive/agent_runs/{date}/cio.json
   research_db: research.db
   trades_full: trades/trades_full.csv
   eod_pnl: trades/eod_pnl.csv
@@ -52,3 +53,5 @@ thresholds:
   hhi_diversified: 0.15       # HHI < this → "Diversified"
   hhi_concentrated: 0.25      # HHI ≥ this → "Concentrated" (else "Moderate")
   sharpe_min_rows: 30         # Min days required to compute Sharpe ratio
+  population_target: 25       # Research target_size — population above this has 0 open slots
+  entrant_conviction_bar: 60  # De-facto CIO conviction bar a fresh name clears to enter (reference line)
