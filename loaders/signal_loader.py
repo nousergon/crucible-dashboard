@@ -341,7 +341,10 @@ def entrant_detail_df(
         ticker = d.get("ticker")
         if have_prior and ticker in prior_pop:
             continue  # incumbent re-advance — not a fresh candidate
-        sector = sector_map.get(ticker)
+        # Prefer the sector persisted on the decision (research L4533) — it
+        # covers REJECTED fresh names that never entered the universe; fall
+        # back to the universe sector_map for older cio.json without the field.
+        sector = d.get("sector") or sector_map.get(ticker)
         rating = sector_ratings.get(sector, {}) if sector else {}
         rating = rating.get("rating") if isinstance(rating, dict) else rating
         decision = d.get("decision")

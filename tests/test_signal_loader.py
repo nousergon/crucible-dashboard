@@ -318,6 +318,18 @@ class TestEntrantDetailDf:
     def test_empty_cio(self):
         assert entrant_detail_df(None, set(), {}, {}, have_prior=True).empty
 
+    def test_prefers_sector_from_decision_l4533(self):
+        # Rejected fresh name isn't in the universe sector_map, but research
+        # L4533 now persists sector on the decision — that must win.
+        cio = {"ic_decisions": [
+            {"ticker": "CART", "decision": "REJECT", "conviction": 35,
+             "sector": "Consumer Discretionary", "rationale": "weak"},
+        ]}
+        sector_ratings = {"Consumer Discretionary": {"rating": "underweight"}}
+        df = entrant_detail_df(cio, set(), {}, sector_ratings, have_prior=True)
+        assert df.iloc[0]["sector"] == "Consumer Discretionary"
+        assert df.iloc[0]["sector_rating"] == "underweight"
+
     def test_drops_all_empty_sector_columns(self):
         # No sector_map → sector/sector_rating all-None → columns dropped,
         # but reason (which carries the sector rationale) is retained.
