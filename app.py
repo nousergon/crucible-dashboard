@@ -427,6 +427,7 @@ def _build_navigation():
             page("25_Pipeline_Status.py", "Pipeline Status", "🚦"),
             page("26_Artifact_Freshness.py", "Artifact Freshness", "⏱"),
             page("27_Active_Observations.py", "Active Observations", "🔭"),
+            page("28_Retros.py", "Retros", "📓"),
             page("23_LLM_Cost.py", "LLM Cost", "💰"),
         ],
         "📚 Reference & Deep-Dives": [
