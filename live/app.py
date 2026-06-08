@@ -44,6 +44,11 @@ pg = st.navigation([
     # 7 tiles). Publishing thin-sample self-grades on a brand surface was all
     # downside; the page file is retained (unreachable) for easy re-enable.
     # st.Page(os.path.join(_HERE, "pages", "evaluation.py"), title="Evaluation"),
-    st.Page(os.path.join(_HERE, "pages", "performance.py"), title="Performance"),
+    # Performance page also removed from the public nav 2026-06-08 — it
+    # publishes Cumulative Alpha vs S&P 500 + the NAV-vs-SPY chart, which
+    # currently shows the portfolio underperforming SPY (Phase 2). Same
+    # brand-surface logic as Evaluation above; page file retained for easy
+    # re-enable once the system beats SPY (then it becomes a credibility flex).
+    # st.Page(os.path.join(_HERE, "pages", "performance.py"), title="Performance"),
 ])
 pg.run()
