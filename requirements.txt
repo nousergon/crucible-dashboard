@@ -3,6 +3,10 @@ pandas>=2.0
 plotly>=5.18
 boto3>=1.34
 pyyaml>=6.0
+# yfinance: 15-min delayed quote for the live Holdings modal's "Day return"
+# (live/loaders/s3_loader.py::load_live_day_return) so it shows TODAY's % change
+# rather than the last EOD snapshot. Fail-soft to the snapshot if unavailable.
+yfinance>=0.2.40
 # alpha-engine-lib provides setup_logging used by app.py + health_checker.py
 # to attach the FlowDoctorHandler when FLOW_DOCTOR_ENABLED=1, the
 # transparency.substrate_health checker invoked by the Sat SF's

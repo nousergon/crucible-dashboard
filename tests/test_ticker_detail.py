@@ -113,6 +113,47 @@ def test_load_company_names_failsoft_on_error():
         assert loader.load_company_names() == {}
 
 
+def _fake_yf(last, prev=None, raises=False):
+    """A stand-in `yfinance` module: Ticker(t).fast_info.{last_price,previous_close}."""
+    mod = MagicMock()
+    if raises:
+        mod.Ticker.side_effect = RuntimeError("network")
+        return mod
+    fast = type("FI", (), {"last_price": last, "previous_close": prev})()
+    tk = MagicMock()
+    tk.fast_info = fast
+    mod.Ticker.return_value = tk
+    return mod
+
+
+def test_load_live_day_return_computes_today_pct():
+    loader = _load_live_loader()
+    # last 492.4 vs prior close 466.38 → ~+5.58% (today's % change, not the snapshot)
+    with patch.dict(sys.modules, {"yfinance": _fake_yf(492.4, 466.38)}):
+        out = loader.load_live_day_return("AMD")
+    assert out == pytest.approx((492.4 / 466.38 - 1) * 100, rel=1e-9)
+    assert out > 0  # up today, opposite sign to the stale −4.7% snapshot value
+
+
+def test_load_live_day_return_cash_and_empty_short_circuit():
+    loader = _load_live_loader()
+    # No yfinance import should even be attempted for these.
+    assert loader.load_live_day_return("CASH") is None
+    assert loader.load_live_day_return("") is None
+
+
+def test_load_live_day_return_failsoft_missing_fields():
+    loader = _load_live_loader()
+    with patch.dict(sys.modules, {"yfinance": _fake_yf(None, None)}):
+        assert loader.load_live_day_return("AMD") is None
+
+
+def test_load_live_day_return_failsoft_on_exception():
+    loader = _load_live_loader()
+    with patch.dict(sys.modules, {"yfinance": _fake_yf(0, 0, raises=True)}):
+        assert loader.load_live_day_return("AMD") is None
+
+
 def test_load_order_book_rationale_key():
     loader = _load_live_loader()
     captured = {}

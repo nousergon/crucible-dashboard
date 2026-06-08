@@ -27,6 +27,7 @@ import streamlit as st
 from loaders.s3_loader import (
     load_company_names,
     load_latest_signals,
+    load_live_day_return,
     load_order_book_rationale,
     load_predictions_json,
     load_universe_archive,
@@ -126,7 +127,25 @@ def _render(ticker: str, positions_snapshot, trades_df: "pd.DataFrame | None") -
         c2.metric("Unrealized P&L", f"${upnl:,.0f}" if isinstance(upnl, (int, float)) else "—")
         # daily_return_pct / alpha_contribution_pct are already in percent points
         # (eod_reconcile pre-scales by ×100) — format WITHOUT a second ×100.
-        c3.metric("Day return", _fmt_pct_points(pos.get("daily_return_pct")))
+        #
+        # Day return: prefer a live 15-min-delayed quote (today's % change vs
+        # prior close) so the modal reflects TODAY, not the last EOD snapshot
+        # (which lags a full session until tonight's reconcile). Falls back to
+        # the snapshot's stored daily_return_pct when the quote is unavailable.
+        live_dr = load_live_day_return(ticker)
+        is_live = live_dr is not None
+        day_return = live_dr if is_live else pos.get("daily_return_pct")
+        c3.metric(
+            "Day return" + (" (live)" if is_live else ""),
+            _fmt_pct_points(day_return),
+            help=(
+                "Live 15-min-delayed quote — today's % change vs prior close."
+                if is_live
+                else "Last closed session (from the EOD snapshot) — live quote unavailable."
+            ),
+        )
+        # Alpha contrib stays the EOD attribution figure (portfolio-weighted
+        # excess vs SPY) — an inherently end-of-session number, not live.
         c3.metric("Alpha contrib", _fmt_pct_points(pos.get("alpha_contribution_pct")))
 
     # ── Rationale ────────────────────────────────────────────────────────

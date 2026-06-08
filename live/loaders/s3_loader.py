@@ -156,6 +156,38 @@ def load_company_names() -> dict[str, str]:
     return out
 
 
+@st.cache_data(ttl=900)
+def load_live_day_return(ticker: str) -> float | None:
+    """Today's % change (in percent points) for ``ticker`` from a 15-min
+    delayed yfinance quote: ``(last_price / previous_close - 1) * 100``.
+
+    The live site is otherwise EOD-sourced (`positions_snapshot`), whose
+    `daily_return_pct` lags a full session until tonight's reconcile runs —
+    so the per-ticker modal's "Day return" showed the LAST CLOSED session's
+    return, not today's. This gives the modal today's number (yfinance's own
+    `previous_close` is the prior-session close, so no snapshot-date
+    reconciliation is needed). 15-min TTL matches the delayed feed.
+
+    Fail-soft: missing yfinance, a bad symbol, or any missing field returns
+    None and the caller falls back to the snapshot's stored
+    `daily_return_pct` (feedback_no_silent_fails — the recording surface for
+    this best-effort display lookup is the WARN log)."""
+    if not ticker or ticker == "CASH":
+        return None
+    try:
+        import yfinance as yf
+
+        fi = yf.Ticker(ticker).fast_info
+        last = getattr(fi, "last_price", None)
+        prev = getattr(fi, "previous_close", None)
+        if last and prev and prev > 0:
+            return (last / prev - 1) * 100
+        logger.warning("load_live_day_return(%s): missing last/prev (last=%s prev=%s)", ticker, last, prev)
+    except Exception as e:  # best-effort live overlay — WARN + fall back to EOD snapshot
+        logger.warning("load_live_day_return(%s) failed: %s", ticker, e)
+    return None
+
+
 @st.cache_data(ttl=_ttl("research"))
 def load_population_json() -> dict | None:
     """Load population/latest.json from the research bucket."""
