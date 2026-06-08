@@ -176,6 +176,170 @@ def get_predictor_outcomes(symbol: str | None = None) -> pd.DataFrame:
     )
 
 
+# ---------------------------------------------------------------------------
+# Agent-decision review (L4567 Phase 3) — read the decision audit trail the
+# research pipeline writes every cycle (scanner_evaluations / team_candidates
+# / cio_evaluations / investment_thesis). Mirrors alpha-engine-research's
+# scripts/decision_review.py query+funnel logic for the console UI.
+# ---------------------------------------------------------------------------
+
+# Canonical "this CIO decision admits the ticker" set — match BOTH "ADVANCE"
+# (rubric) and "ADVANCE_FORCED" (floor-fill), or forced entrants read as
+# rejections. Mirrors graph.state_schemas.ADVANCE_DECISIONS.
+_ADVANCE_DECISIONS = {"ADVANCE", "ADVANCE_FORCED"}
+
+
+def get_decision_eval_dates(limit: int = 30) -> list[str]:
+    """Distinct eval_dates with recorded decisions, most recent first."""
+    df = query_research_db(
+        "SELECT DISTINCT eval_date FROM scanner_evaluations "
+        "ORDER BY eval_date DESC LIMIT ?",
+        params=(limit,),
+    )
+    if df.empty or "eval_date" not in df.columns:
+        return []
+    return df["eval_date"].astype(str).tolist()
+
+
+def get_ticker_decision(ticker: str, eval_date: str) -> dict[str, pd.DataFrame]:
+    """Everything the pipeline recorded about ``ticker`` on ``eval_date``:
+    scanner / team_candidates / cio / thesis frames (each possibly empty)."""
+    t = (ticker or "").upper()
+    return {
+        "scanner": query_research_db(
+            "SELECT * FROM scanner_evaluations WHERE ticker=? AND eval_date=?",
+            params=(t, eval_date),
+        ),
+        "team_candidates": query_research_db(
+            "SELECT * FROM team_candidates WHERE ticker=? AND eval_date=? "
+            "ORDER BY quant_rank",
+            params=(t, eval_date),
+        ),
+        "cio": query_research_db(
+            "SELECT * FROM cio_evaluations WHERE ticker=? AND eval_date=?",
+            params=(t, eval_date),
+        ),
+        "thesis": query_research_db(
+            "SELECT * FROM investment_thesis WHERE symbol=? AND date=? "
+            "ORDER BY run_time DESC LIMIT 1",
+            params=(t, eval_date),
+        ),
+    }
+
+
+def get_cycle_funnel(eval_date: str) -> dict:
+    """Funnel counts for one cycle: scanned→passed, ranked→recommended,
+    cio evaluated→advanced, plus the advanced rows."""
+    scanned = query_research_db(
+        "SELECT COUNT(*) AS n, SUM(quant_filter_pass) AS passed "
+        "FROM scanner_evaluations WHERE eval_date=?",
+        params=(eval_date,),
+    )
+    team = query_research_db(
+        "SELECT COUNT(*) AS n, SUM(team_recommended) AS rec "
+        "FROM team_candidates WHERE eval_date=?",
+        params=(eval_date,),
+    )
+    cio = query_research_db(
+        "SELECT ticker, cio_decision, cio_rank, cio_conviction, final_score "
+        "FROM cio_evaluations WHERE eval_date=? ORDER BY cio_rank",
+        params=(eval_date,),
+    )
+
+    def _int(df, col):
+        if df.empty or col not in df.columns or pd.isna(df.iloc[0][col]):
+            return 0
+        return int(df.iloc[0][col])
+
+    advanced = cio
+    if not cio.empty and "cio_decision" in cio.columns:
+        advanced = cio[
+            cio["cio_decision"].astype(str).str.upper().isin(_ADVANCE_DECISIONS)
+        ]
+    return {
+        "eval_date": eval_date,
+        "scanner_screened": _int(scanned, "n"),
+        "scanner_passed": _int(scanned, "passed"),
+        "team_ranked": _int(team, "n"),
+        "team_recommended": _int(team, "rec"),
+        "cio_evaluated": 0 if cio.empty else len(cio),
+        "cio_advanced": 0 if (isinstance(advanced, pd.DataFrame) and advanced.empty) else len(advanced),
+        "advanced": advanced,
+        "cio_all": cio,
+    }
+
+
+def explain_why_not(ticker: str, eval_date: str) -> dict:
+    """Walk the decision funnel and report where ``ticker`` was dropped.
+
+    Returns ``{ticker, eval_date, stage, verdict}`` where ``stage`` is one of
+    ``no_record`` / ``scanner`` / ``team`` / ``cio`` / ``chosen``. Mirrors the
+    CLI's funnel logic (recognizes ADVANCE_FORCED as chosen)."""
+    t = (ticker or "").upper()
+    rec = get_ticker_decision(t, eval_date)
+    scanner, teams, cio = rec["scanner"], rec["team_candidates"], rec["cio"]
+    s = None if scanner.empty else scanner.iloc[0]
+
+    if scanner.empty and teams.empty and cio.empty:
+        return {"ticker": t, "eval_date": eval_date, "stage": "no_record",
+                "verdict": (f"No decision record for {t} on {eval_date} — not in the "
+                            f"screened universe that cycle, or no cycle ran on this date.")}
+
+    # Stage 1 — scanner quant filter.
+    if s is not None and not int(s.get("quant_filter_pass") or 0):
+        reason = s.get("filter_fail_reason") or "below_thresholds"
+        gates = {g: s.get(g) for g in ("liquidity_pass", "volatility_pass", "balance_sheet_pass")}
+        failed = [g for g, v in gates.items() if v == 0]
+        return {"ticker": t, "eval_date": eval_date, "stage": "scanner",
+                "verdict": (f"Dropped at the SCANNER stage: filter_fail_reason={reason}"
+                            + (f"; failed gates: {', '.join(failed)}" if failed else "")
+                            + f" (tech_score={s.get('tech_score')}).")}
+
+    # Stage 2 — sector-team quant ranking.
+    if not teams.empty:
+        recommended = teams[teams["team_recommended"] == 1] if "team_recommended" in teams.columns else teams.iloc[0:0]
+        if recommended.empty:
+            t0 = teams.iloc[0]
+            tid = t0.get("team_id")
+            ctx = query_research_db(
+                "SELECT ticker, quant_score FROM team_candidates "
+                "WHERE team_id=? AND eval_date=? AND team_recommended=1 ORDER BY quant_rank",
+                params=(tid, eval_date),
+            )
+            recs = [] if ctx.empty else ctx["ticker"].tolist()
+            smin = None if ctx.empty else ctx["quant_score"].min()
+            smax = None if ctx.empty else ctx["quant_score"].max()
+            return {"ticker": t, "eval_date": eval_date, "stage": "team",
+                    "verdict": (f"Screened by the '{tid}' team but NOT recommended "
+                                f"(team_recommended=0): quant_rank={t0.get('quant_rank')}, "
+                                f"quant_score={t0.get('quant_score')}, qual_score={t0.get('qual_score')}. "
+                                f"The team recommended {len(recs)} pick(s) "
+                                f"({', '.join(recs) or 'none'}) with quant_score {smin}–{smax}.")}
+    elif s is not None and int(s.get("quant_filter_pass") or 0):
+        return {"ticker": t, "eval_date": eval_date, "stage": "team",
+                "verdict": (f"Passed the scanner quant filter but did not appear in any "
+                            f"sector team's ranked picks — the team's quant analyst screened "
+                            f"it out without surfacing it.")}
+
+    # Stage 3 — CIO.
+    if not cio.empty:
+        c = cio.iloc[0]
+        decision = str(c.get("cio_decision") or "").upper()
+        if decision in _ADVANCE_DECISIONS:
+            return {"ticker": t, "eval_date": eval_date, "stage": "chosen",
+                    "verdict": (f"{t} WAS chosen: CIO decision={decision}, rank={c.get('cio_rank')}, "
+                                f"conviction={c.get('cio_conviction')}, final_score={c.get('final_score')}. "
+                                f"Rationale: {c.get('rationale') or '(none recorded)'}")}
+        return {"ticker": t, "eval_date": eval_date, "stage": "cio",
+                "verdict": (f"Reached the CIO but was not advanced: decision={decision or '(none)'}, "
+                            f"final_score={c.get('final_score')}. "
+                            f"Rationale: {c.get('rationale') or '(none recorded)'}")}
+
+    return {"ticker": t, "eval_date": eval_date, "stage": "no_record",
+            "verdict": (f"{t} was recommended by its team on {eval_date} but has no CIO row — "
+                        f"the CIO stage may not have run, or it wasn't persisted.")}
+
+
 def _per_version_metrics(df: pd.DataFrame, stage: str) -> pd.DataFrame:
     """Per-model-version realized scorecard from a resolved-outcomes frame.
 
