@@ -33,6 +33,7 @@ from shared.reconciliation import (
     STATUS_WOULD_TRADE,
     build_reconciliation_rows,
 )
+from shared.target_weights import build_target_weight_matrix
 
 
 
@@ -350,7 +351,80 @@ def _summary_caption(payload: dict) -> str:
     )
 
 
+def _tw_cell_styles(df: pd.DataFrame) -> pd.DataFrame:
+    """Per-cell green-intensity background scaled to target % (cap 15%).
+
+    Manual CSS styler (no matplotlib ``background_gradient`` dependency —
+    matplotlib is not a dashboard dep). NaN cells get no background so
+    "—" reads as absent, not as a 0% target. Interpolates from the page's
+    neutral ``#1e1e1e`` to the approved-entry teal-green ``#1b5e20``.
+    """
+    styles = pd.DataFrame("", index=df.index, columns=df.columns)
+    for col in df.columns:
+        for idx in df.index:
+            v = df.at[idx, col]
+            if v is None or pd.isna(v):
+                continue
+            frac = max(0.0, min(float(v) / 15.0, 1.0))
+            r = round(0x1E + (0x1B - 0x1E) * frac)
+            g = round(0x1E + (0x5E - 0x1E) * frac)
+            b = round(0x1E + (0x20 - 0x1E) * frac)
+            styles.at[idx, col] = f"background-color: #{r:02x}{g:02x}{b:02x}; color: #fff"
+    return styles
+
+
+def _render_target_weight_timeseries(history: list[dict]) -> None:
+    """Cross-day matrix of optimizer holdings targets — target % per trading
+    day. Read-only: pivots the ``optimizer.target_weight`` already carried
+    in each loaded artifact (no producer change). The actual/forming book
+    by default; toggle to the full considered universe."""
+    st.markdown("##### Target-weight evolution — optimizer holdings targets by trading day")
+    usable = [p for p in (history or []) if isinstance(p, dict) and p.get("tickers")]
+    if len(usable) < 2:
+        st.caption(
+            "Target-weight history needs ≥2 trading days of order-book "
+            "rationale artifacts — this fills in as executor runs accumulate."
+        )
+        return
+
+    full_universe = st.toggle(
+        "Show full considered universe",
+        value=False,
+        key="obr_tw_full_universe",
+        help=(
+            "Off: held positions + approved entries only (the actual / "
+            "forming book). On: every ticker the optimizer assigned a "
+            "target on any day in the window."
+        ),
+    )
+    df = build_target_weight_matrix(usable, held_only=not full_universe)
+    if df.empty:
+        st.caption("No optimizer target weights in the loaded window.")
+        return
+
+    full_days = list(df.columns)
+    # Narrow column labels (MM-DD); the full window is stated in the caption.
+    df = df.rename(columns={d: d[5:] if len(d) >= 10 else d for d in full_days})
+    st.caption(
+        f"{len(df)} ticker(s) × {len(df.columns)} trading day(s) "
+        f"({full_days[0]} → {full_days[-1]}). Cells are target % of NAV; "
+        "**—** = no optimizer target that day (not in the universe), "
+        "distinct from a deliberate 0.00%. Rows sorted by latest-day target."
+    )
+    styled = df.style.format("{:.2f}%", na_rep="—").apply(_tw_cell_styles, axis=None)
+    st.dataframe(styled, use_container_width=True)
+
+    with st.expander("Line chart", expanded=False):
+        # Transpose → index = trading day, one line per ticker. NaN gaps
+        # break the line where a ticker left the universe.
+        st.line_chart(df.T)
+
+
 history = load_order_book_rationale_history(n_recent=14)
+
+_render_target_weight_timeseries(history)
+st.divider()
+
 entries = [
     ArchiveEntry(
         label=_label(p),
