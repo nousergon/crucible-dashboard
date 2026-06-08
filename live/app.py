@@ -38,7 +38,12 @@ pg = st.navigation([
         default=True,
     ),
     st.Page(os.path.join(_HERE, "pages", "uptime.py"), title="Uptime"),
-    st.Page(os.path.join(_HERE, "pages", "evaluation.py"), title="Evaluation"),
+    # Evaluation page removed from the public nav 2026-06-08 — the legacy
+    # backtest/{date}/grading.json report card (A–F, 3 modules) it renders is
+    # superseded by the console's Report Card v2 (evaluator/{date}/report_card.json,
+    # 7 tiles). Publishing thin-sample self-grades on a brand surface was all
+    # downside; the page file is retained (unreachable) for easy re-enable.
+    # st.Page(os.path.join(_HERE, "pages", "evaluation.py"), title="Evaluation"),
     st.Page(os.path.join(_HERE, "pages", "performance.py"), title="Performance"),
 ])
 pg.run()
