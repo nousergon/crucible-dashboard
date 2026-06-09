@@ -34,7 +34,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 pg = st.navigation([
     st.Page(
         os.path.join(_HERE, "pages", "holdings_and_trades.py"),
-        title="Holdings & Trades",
+        title="Live Portfolio",
         default=True,
     ),
     st.Page(os.path.join(_HERE, "pages", "system_pulse.py"), title="System Pulse"),
