@@ -35,7 +35,7 @@ const pillars = [
           href="#en-1"
           id="en-1-ref"
           class="text-sky-400 hover:text-sky-300 ml-0.5 text-[10px] no-underline"
-          aria-label="See endnote 1: what instrumented end-to-end means">[1]</a
+          aria-label="Jump to: what instrumented end-to-end means">[1]</a
         ></sup
       >.
     </p>
@@ -68,66 +68,74 @@ const pillars = [
 
   <PhaseIndicator current="Reliability + Measurability" />
 
-  <aside
-    class="max-w-3xl mx-auto px-6 pt-6 pb-20 text-zinc-400"
-    aria-label="Endnotes"
-  >
-    <div class="border-t border-white/10 pt-6">
-      <h2 class="text-[11px] uppercase tracking-[0.2em] text-zinc-500 mb-4">
-        Endnotes
-      </h2>
-      <ol class="space-y-3 text-[13px] leading-relaxed list-none counter-reset-[en]">
-        <li id="en-1" class="flex gap-3">
-          <span class="text-zinc-500 shrink-0 pt-0.5" aria-hidden="true">[1]</span>
-          <div>
-            <em class="text-zinc-300">Instrumented end-to-end</em> means every
-            layer of the pipeline is observable and auditable:
-            <ul class="mt-2 space-y-1.5 list-disc list-outside pl-5 marker:text-zinc-600">
-              <li>
-                <strong class="text-zinc-300">Decision artifacts</strong> &mdash; research-agent
-                LLM calls capture prompt, response, tool calls, and structured metadata to
-                <code>s3://alpha-engine-research/decision_artifacts/</code>, with LLM-as-judge
-                rubric scores attached on every load-bearing agent type (sector quant, qual,
-                peer-review, thesis-update, macro economist, CIO).
-              </li>
-              <li>
-                <strong class="text-zinc-300">Cost telemetry</strong> &mdash; per-call cost
-                tracked at LLM call time and aggregated to a weekly cost parquet.
-              </li>
-              <li>
-                <strong class="text-zinc-300">Trade audit log</strong> &mdash; every order,
-                fill, and exit decision recorded with per-trade <code>realized_pnl</code>
-                and rationale where applicable; the audit trail that surfaced the
-                <a class="text-sky-400 hover:text-sky-300 transition" href="/retros/01-pfe-short-sell/"
-                  >PFE short-sell retro</a
-                >.
-              </li>
-              <li>
-                <strong class="text-zinc-300">Performance metrics</strong> &mdash; signal
-                accuracy at 10d / 30d, predictor rolling 30d IC, NAV vs SPY daily returns,
-                per-trade realized P&amp;L, daily portfolio-level attribution
-                (position P&amp;L + interest + unattributed residual).
-              </li>
-              <li>
-                <strong class="text-zinc-300">LangSmith tracing</strong> &mdash; trace ID +
-                token counts on every production LLM call.
-              </li>
-              <li>
-                <strong class="text-zinc-300">Parity replay</strong> &mdash; the backtester
-                replays the morning-planner stage of historical runs as an observational diff
-                against current code.
-              </li>
-            </ul>
-            <a
-              href="#en-1-ref"
-              class="inline-block mt-3 text-zinc-500 hover:text-zinc-300 transition text-[12px]"
-              aria-label="Back to reference"
-            >
-              &uarr; back
-            </a>
-          </div>
-        </li>
-      </ol>
+  <section id="en-1" class="max-w-3xl mx-auto px-6 pt-6 pb-20 scroll-mt-8">
+    <h2 class="text-xs font-semibold uppercase tracking-wider text-sky-400 mb-2 text-center">
+      Instrumented end-to-end<sup class="text-zinc-500 ml-1 normal-case tracking-normal">[1]</sup>
+    </h2>
+    <p class="text-sm text-zinc-400 leading-relaxed text-center mb-6 max-w-xl mx-auto">
+      Every layer of the pipeline is observable and auditable:
+    </p>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div class="rounded-lg border border-white/10 bg-white/[0.02] p-5">
+        <div class="text-sm font-semibold text-zinc-100 mb-1.5">Decision artifacts</div>
+        <p class="text-sm text-zinc-400 leading-relaxed">
+          Research-agent LLM calls capture prompt, response, tool calls, and
+          structured metadata to
+          <code>s3://alpha-engine-research/decision_artifacts/</code>, with
+          LLM-as-judge rubric scores attached on every load-bearing agent type
+          (sector quant, qual, peer-review, thesis-update, macro economist, CIO).
+        </p>
+      </div>
+      <div class="rounded-lg border border-white/10 bg-white/[0.02] p-5">
+        <div class="text-sm font-semibold text-zinc-100 mb-1.5">Trade audit log</div>
+        <p class="text-sm text-zinc-400 leading-relaxed">
+          Every order, fill, and exit decision recorded with per-trade
+          <code>realized_pnl</code> and rationale where applicable; the audit
+          trail that surfaced the
+          <a class="text-sky-400 hover:text-sky-300 transition" href="/retros/01-pfe-short-sell/"
+            >PFE short-sell retro</a
+          >.
+        </p>
+      </div>
+      <div class="rounded-lg border border-white/10 bg-white/[0.02] p-5">
+        <div class="text-sm font-semibold text-zinc-100 mb-1.5">Performance metrics</div>
+        <p class="text-sm text-zinc-400 leading-relaxed">
+          Signal accuracy at 10d / 30d, predictor rolling 30d IC, NAV vs SPY
+          daily returns, per-trade realized P&amp;L, daily portfolio-level
+          attribution (position P&amp;L + interest + unattributed residual).
+        </p>
+      </div>
+      <div class="rounded-lg border border-white/10 bg-white/[0.02] p-5">
+        <div class="text-sm font-semibold text-zinc-100 mb-1.5">Cost telemetry</div>
+        <p class="text-sm text-zinc-400 leading-relaxed">
+          Per-call cost tracked at LLM call time and aggregated to a weekly
+          cost parquet.
+        </p>
+      </div>
+      <div class="rounded-lg border border-white/10 bg-white/[0.02] p-5">
+        <div class="text-sm font-semibold text-zinc-100 mb-1.5">LangSmith tracing</div>
+        <p class="text-sm text-zinc-400 leading-relaxed">
+          Trace ID + token counts on every production LLM call.
+        </p>
+      </div>
+      <div class="rounded-lg border border-white/10 bg-white/[0.02] p-5">
+        <div class="text-sm font-semibold text-zinc-100 mb-1.5">Parity replay</div>
+        <p class="text-sm text-zinc-400 leading-relaxed">
+          The backtester replays the morning-planner stage of historical runs
+          as an observational diff against current code.
+        </p>
+      </div>
     </div>
-  </aside>
+  </section>
 </Base>
+
+<style>
+  code {
+    color: rgb(125 211 252);
+    background: rgba(255, 255, 255, 0.04);
+    padding: 0.1em 0.35em;
+    border-radius: 3px;
+    font-size: 0.875em;
+    word-break: break-all;
+  }
+</style>
