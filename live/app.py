@@ -37,7 +37,11 @@ pg = st.navigation([
         title="Holdings & Trades",
         default=True,
     ),
-    st.Page(os.path.join(_HERE, "pages", "uptime.py"), title="Uptime"),
+    st.Page(os.path.join(_HERE, "pages", "system_pulse.py"), title="System Pulse"),
+    # Uptime page absorbed into System Pulse as its Reliability strip
+    # (L4570e, 2026-06-09) — same substrate + renderer, one fewer nav stop.
+    # Page file retained (unreachable) like evaluation/performance below.
+    # st.Page(os.path.join(_HERE, "pages", "uptime.py"), title="Uptime"),
     # Evaluation page removed from the public nav 2026-06-08 — the legacy
     # backtest/{date}/grading.json report card (A–F, 3 modules) it renders is
     # superseded by the console's Report Card v2 (evaluator/{date}/report_card.json,
