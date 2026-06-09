@@ -19,7 +19,7 @@ const SITE_URL = 'https://nousergon.ai';
 
 const {
   title = 'Nous Ergon — A harness for rigorous AI/ML experiments in finance',
-  description = 'A harness for rigorous AI/ML experiments in finance. An autonomous equity research-and-trading system — multi-agent research, machine-learning prediction, risk-gated execution — instrumented end-to-end and governed by a finance-specific evaluation layer. Every experiment runs against a pre-committed acceptance bar.',
+  description = 'A harness for rigorous AI/ML experiments in finance. An equity research-and-trading system — multi-agent research, machine-learning prediction, risk-gated execution — instrumented end-to-end from signal to P&L.',
   jsonLd,
 } = Astro.props;
 
@@ -119,8 +119,6 @@ const resolvedJsonLd = jsonLd ?? defaultJsonLd;
           <a href="/about" class="hover:text-zinc-100 transition">About</a>
           <a href="/architecture" class="hover:text-zinc-100 transition">Architecture</a>
           <a href="/stack" class="hover:text-zinc-100 transition">Stack</a>
-          <a href="/components" class="hover:text-zinc-100 transition">Components</a>
-          <a href="/experiments" class="hover:text-zinc-100 transition">Experiments</a>
           <a href="/retros/" class="hover:text-zinc-100 transition">Retros</a>
           <a href="/blog/" class="hover:text-zinc-100 transition">Blog</a>
           <a

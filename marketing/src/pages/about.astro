@@ -16,18 +16,16 @@ import Base from '../layouts/Base.astro';
       weekly self-tuning, and a finance-specific evaluation layer over all of
       it &mdash; and instrument every decision it makes end-to-end. Seven
       modules collaborate through S3 contracts, three Step Function pipelines
-      run on a fixed cadence, and an autonomous feedback loop writes optimized
+      run on a fixed cadence, and a weekly feedback loop writes optimized
       parameters back into the system through named statistical gates.
     </p>
     <p class="text-sm md:text-base text-zinc-300 leading-relaxed mb-8">
       The harness is the durable artifact; the strategies and agents that run
-      on it are experiments, each with a pre-committed acceptance bar and a
-      recorded result &mdash; the <a class="text-sky-400 hover:text-sky-300 transition" href="/experiments">register</a>
-      tracks them. The system is in
+      on it are treated as experiments, each against a pre-committed
+      acceptance bar. The system is in
       <strong class="text-zinc-100">Phase 2: Reliability + Measurability</strong>
-      &mdash; the substrate every experiment depends on. Alpha capture against
-      the S&amp;P 500 runs continuously as a background metric; the featured
-      experiments today are the evaluation and infrastructure arcs.
+      &mdash; building the substrate those experiments depend on. Alpha capture
+      against the S&amp;P 500 runs continuously as the background benchmark.
     </p>
 
     <h2 class="text-xs font-semibold uppercase tracking-wider text-sky-400 mb-3">Origin</h2>
@@ -52,10 +50,10 @@ import Base from '../layouts/Base.astro';
       implementation pass. Each module's repo is public.
     </p>
     <p class="text-sm md:text-base text-zinc-300 leading-relaxed mb-4">
-      Nous Ergon runs two experiment families on one harness: agentic
-      experiments (evaluation methodology, multi-agent research quality,
-      LLM-judge calibration) and finance experiments (signals, models,
-      execution). Equities were chosen as the domain because financial data is
+      Nous Ergon is built to run two experiment families on one harness:
+      agentic experiments (evaluation methodology, multi-agent research
+      quality, LLM-judge calibration) and finance experiments (signals,
+      models, execution). Equities were chosen as the domain because financial data is
       abundant, decisions are unambiguous, and outcomes are continuously
       verifiable.
     </p>

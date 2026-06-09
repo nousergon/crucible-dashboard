@@ -58,8 +58,7 @@ pg = st.navigation([
 with st.sidebar:
     st.caption(
         "What this system is and how it's designed: "
-        "[nousergon.ai](https://nousergon.ai) · "
-        "[experiments](https://nousergon.ai/experiments)"
+        "[nousergon.ai](https://nousergon.ai)"
     )
 
 pg.run()
