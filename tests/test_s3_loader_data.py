@@ -179,6 +179,43 @@ class TestLoadPredictorMetrics:
         assert result == {}
 
 
+class TestLoadModelZooLeaderboard:
+    """Tests for load_model_zoo_leaderboard (L4544/L4571 model-zoo panel)."""
+
+    def test_valid_leaderboard(self):
+        loader = _get_loader()
+        board = {
+            "date": "2026-06-13", "mode": "cutover",
+            "champion": {"forward_days": 21, "cpcv_mean_ic": 0.058},
+            "margin": 0.01,
+            "candidates": [
+                {"spec_id": "champion-arch", "version_id": "base-v",
+                 "forward_days": 21, "cpcv_mean_ic": 0.09, "passes_gate": True,
+                 "eligible": True, "reason": "eligible"},
+            ],
+            "winner_version_id": "base-v", "promoted": "base-v",
+        }
+        with patch.object(loader, "_s3_get_object", return_value=json.dumps(board).encode()):
+            result = loader.load_model_zoo_leaderboard("2026-06-13")
+        assert result["mode"] == "cutover"
+        assert result["promoted"] == "base-v"
+        assert result["candidates"][0]["spec_id"] == "champion-arch"
+
+    def test_missing_returns_empty_dict(self):
+        loader = _get_loader()
+        with patch.object(loader, "_s3_get_object", return_value=None):
+            result = loader.load_model_zoo_leaderboard()
+        assert result == {}
+
+    def test_list_dates_delegates_to_prefix_listing(self):
+        loader = _get_loader()
+        with patch.object(loader, "list_s3_prefixes",
+                          return_value=["2026-06-13", "2026-06-20"]) as m:
+            dates = loader.list_model_zoo_leaderboard_dates()
+        assert dates == ["2026-06-13", "2026-06-20"]
+        assert m.call_args[0][1] == "predictor/model_zoo/leaderboard/"
+
+
 class TestLoadModeHistory:
     """Tests for load_mode_history."""
 

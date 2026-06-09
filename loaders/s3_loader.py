@@ -908,6 +908,30 @@ def load_predictor_metrics() -> dict:
     return data if isinstance(data, dict) else {}
 
 
+_MODEL_ZOO_LEADERBOARD_PREFIX = "predictor/model_zoo/leaderboard/"
+
+
+@st.cache_data(ttl=_ttl("research"), show_spinner=False)
+def load_model_zoo_leaderboard(date_str: str | None = None) -> dict:
+    """Load the weekly model-zoo selection leaderboard (L4544/L4571) from S3.
+
+    Schema: ``{date, mode: "observe"|"cutover", champion: {forward_days,
+    cpcv_mean_ic}, margin, candidates: [{spec_id, model_version, forward_days,
+    cpcv_mean_ic, passes_gate, eligible, reason}], winner_version_id, promoted}``.
+    ``date_str=None`` → ``latest.json``. Returns {} on any failure (none exists
+    until the first Saturday rotation writes one).
+    """
+    key = f"{_MODEL_ZOO_LEADERBOARD_PREFIX}{date_str or 'latest'}.json"
+    data = _fetch_s3_json(_research_bucket(), key)
+    return data if isinstance(data, dict) else {}
+
+
+@st.cache_data(ttl=_ttl("research"), show_spinner=False)
+def list_model_zoo_leaderboard_dates() -> list[str]:
+    """Sorted ISO dates that have a model-zoo leaderboard (for the history picker)."""
+    return list_s3_prefixes(_research_bucket(), _MODEL_ZOO_LEADERBOARD_PREFIX)
+
+
 def load_hold_book_flag() -> dict:
     """Load the executor hold-book flag (`executor/hold_book_flags/latest.json`).
 
