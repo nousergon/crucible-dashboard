@@ -1,4 +1,4 @@
-"""Per-ticker detail modal for live.nousergon.ai Holdings & Trades (ROADMAP L176).
+"""Per-ticker detail modal for live.nousergon.ai Live Portfolio (ROADMAP L176).
 
 `show_ticker_detail(ticker, positions_snapshot, trades_df)` is an `st.dialog`
 that joins everything the system already knows about one ticker onto a single
