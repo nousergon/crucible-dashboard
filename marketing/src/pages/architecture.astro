@@ -22,6 +22,7 @@ const systemDiagram = `flowchart LR
     Predictor[Predictor<br/>L1 momentum/vol GBMs + research calibrator<br/>+ L2 Ridge meta-learner]
     Executor[Executor<br/>risk-gated sizing + intraday daemon]
     Backtester[Backtester<br/>eval + parity + 4 config optimizers]
+    Evaluator[Evaluator<br/>7-tile report card<br/>+ Director · advisory, approval-gated]
     Dashboard[Dashboard<br/>nousergon.ai + console.nousergon.ai]
 
     Data --> Research
@@ -35,27 +36,42 @@ const systemDiagram = `flowchart LR
     Backtester -.config auto-apply.-> Predictor
     Backtester -.config auto-apply.-> Executor
 
+    Research --> Evaluator
+    Predictor --> Evaluator
+    Executor --> Evaluator
+    Backtester --> Evaluator
+
     Data -.read-only.-> Dashboard
     Research -.read-only.-> Dashboard
     Predictor -.read-only.-> Dashboard
     Executor -.read-only.-> Dashboard
-    Backtester -.read-only.-> Dashboard`;
+    Backtester -.read-only.-> Dashboard
+    Evaluator -.read-only.-> Dashboard`;
 
 const saturdayDiagram = `flowchart LR
-    Trigger((Sat<br/>09:00 UTC)) --> P1
-    P1[DataPhase1<br/>EC2 SSM<br/>30 min] --> RAG
-    RAG[RAGIngestion<br/>EC2 SSM<br/>30 min] --> R
-    R[Research<br/>Lambda · 15 min<br/><i>incl. LLM-as-judge</i>] --> P2
-    P2[DataPhase2<br/>Lambda<br/>10 min] --> Train
-    Train[PredictorTraining<br/>EC2 spot<br/>90 min] --> BT
-    BT[Backtester<br/>EC2 spot · 120 min<br/><i>eval + parity + 4 optimizers</i>] --> Notify((SNS))`;
+    Trigger((Sat<br/>09:00 UTC)) --> Pin
+    Pin[LibPinDriftCheck<br/><i>pre-spend gate</i>] --> P1
+    P1[MorningEnrich<br/>+ DataPhase1<br/>EC2 spot] --> RAG
+    RAG[RAGIngestion<br/>EC2 spot · ~25 min] --> R
+    RAG --> Train
+    R[Research<br/>EC2 spot<br/><i>incl. LLM-as-judge</i>] --> P2
+    P2[DataPhase2<br/>Lambda] --> Zoo
+    Train[PredictorTraining<br/>EC2 spot<br/><i>parallel branch</i>] --> Zoo
+    Zoo[ModelZooRotation<br/><i>champion/challenger</i>] --> Drift
+    Drift[DriftDetection<br/><i>SF vs CFN</i>] --> BT
+    BT[Backtester + Parity<br/>EC2 spot<br/><i>4 optimizers</i>] --> Eval
+    Eval[Evaluator chain<br/><i>per-signal eval · judge rubric<br/>· rolling mean</i>] --> RC
+    RC[ReportCard<br/><i>7 graded tiles</i>] --> Dir
+    Dir[Director<br/><i>advisory plan ·<br/>approval-gated PR</i>] --> Notify((Health checks<br/>+ SNS))`;
 
 const weekdayDiagram = `flowchart LR
-    Trigger((6:05 AM PT)) --> Inf
-    Inf[PredictorInference<br/>Lambda] --> Start
-    Start[StartExecutorEC2] --> Boot
-    Boot[Trading EC2 boots<br/>systemd] --> Plan
-    Plan[Executor Planner<br/>~6:15 AM PT] --> Daemon((Executor Daemon<br/>~6:20 AM PT))`;
+    Trigger((Mon–Fri<br/>5:45 AM PT)) --> DD
+    DD[DeployDriftCheck<br/><i>block on drift</i>] --> Start
+    Start[StartExecutorEC2<br/>+ wait-ready] --> CTD
+    CTD[CheckTradingDay<br/><i>halt on NYSE holidays</i>] --> ME
+    ME[MorningEnrich<br/>EC2 SSM<br/><i>daily OHLCV</i>] --> Inf
+    Inf[PredictorInference<br/>Lambda<br/><i>+ coverage check</i>] --> Plan
+    Plan[MorningPlanner<br/><i>places no orders</i>] --> Daemon((Executor Daemon<br/><i>sole order executor</i>))`;
 
 const eodDiagram = `flowchart LR
     Trigger((Daemon shutdown<br/>~1:15 PM PT)) --> Post
@@ -76,14 +92,18 @@ const s3Diagram = `flowchart TB
         Pred["predictor/predictions/{date}.json"]
         Trades["trades/eod_pnl.csv<br/>trades/trades_full.csv"]
         Cfg["config/scoring_weights.json<br/>config/executor_params.json<br/>config/predictor_params.json<br/>config/research_params.json"]
+        Card["evaluator/{date}/report_card.json"]
         Arc["ArcticDB universe library<br/>predictor/price_cache_slim/<br/>predictor/daily_closes/"]
     end
+
+    Ev[Evaluator]
 
     D --> Arc
     R --> Sig
     P --> Pred
     E --> Trades
     B --> Cfg
+    Ev --> Card
 
     Sig --> P
     Sig --> E
@@ -111,12 +131,12 @@ const feedbackDiagram = `flowchart LR
 
 <Base
   title="Architecture — Nous Ergon"
-  description="System architecture: six modules, three Step Function pipelines on a fixed cadence, autonomous parameter feedback."
+  description="System architecture: seven modules, three Step Function pipelines on a fixed cadence, autonomous parameter feedback."
 >
   <section class="max-w-4xl mx-auto px-6 pt-12 pb-16">
     <h1 class="text-2xl md:text-3xl font-semibold text-zinc-100 mb-3">Architecture</h1>
     <p class="text-sm md:text-base text-zinc-400 leading-relaxed mb-6">
-      The system flow at a glance &mdash; six modules, three Step Functions,
+      The system flow at a glance &mdash; seven modules, three Step Functions,
       autonomous parameter feedback. For per-module deep dives, see the
       per-repo READMEs at
       <a class="text-sky-400 hover:text-sky-300 transition" target="_blank" rel="noopener noreferrer" href="https://github.com/cipher813">
@@ -151,11 +171,16 @@ const feedbackDiagram = `flowchart LR
               <a class="text-sky-400 hover:text-sky-300 transition" target="_blank" rel="noopener noreferrer" href="https://github.com/cipher813/alpha-engine-backtester">Backtester</a>
             </td>
           </tr>
-          <tr class="hover:bg-white/[0.025] transition">
+          <tr class="border-b border-white/5 hover:bg-white/[0.025] transition">
+            <td class="px-12 py-5 min-w-[220px]">
+              <a class="text-sky-400 hover:text-sky-300 transition" target="_blank" rel="noopener noreferrer" href="https://github.com/cipher813/alpha-engine-evaluator">Evaluator</a>
+            </td>
             <td class="px-12 py-5 min-w-[220px]">
               <a class="text-sky-400 hover:text-sky-300 transition" target="_blank" rel="noopener noreferrer" href="https://github.com/cipher813/alpha-engine-dashboard">Dashboard</a>
             </td>
-            <td class="px-12 py-5 min-w-[220px]">
+          </tr>
+          <tr class="hover:bg-white/[0.025] transition">
+            <td class="px-12 py-5 min-w-[220px]" colspan="2">
               <a class="text-sky-400 hover:text-sky-300 transition" target="_blank" rel="noopener noreferrer" href="https://github.com/cipher813/alpha-engine-lib">Library</a>
             </td>
           </tr>
@@ -172,8 +197,10 @@ const feedbackDiagram = `flowchart LR
       System
     </h2>
     <p class="text-sm text-zinc-400 mb-3">
-      Six modules communicating exclusively through S3 &mdash; research, predictor,
-      executor, backtester, dashboard, and the data layer that feeds them.
+      Seven modules communicating exclusively through S3 &mdash; research,
+      predictor, executor, backtester, evaluator, dashboard, and the data layer
+      that feeds them. The evaluator grades the others' raw artifacts into a
+      weekly report card; its Director agent proposes &mdash; humans approve.
     </p>
     <div class="mermaid-frame mb-12">
       <pre class="mermaid">{systemDiagram}</pre>
@@ -202,7 +229,7 @@ const feedbackDiagram = `flowchart LR
       Weekday morning &mdash; <code class="text-sky-300">alpha-engine-weekday-pipeline</code>
     </div>
     <p class="text-xs text-zinc-500 mb-3">
-      EventBridge <code>cron(5 13 ? * MON-FRI *)</code> &mdash; 6:05 AM PT
+      EventBridge <code>cron(45 12 ? * MON-FRI *)</code> &mdash; 5:45 AM PT
     </p>
     <div class="mermaid-frame mb-3">
       <pre class="mermaid">{weekdayDiagram}</pre>

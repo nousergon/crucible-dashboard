@@ -26,7 +26,7 @@ const PHASES: Phase[] = [
     name: 'Completeness',
     kpi: 'Coverage',
     description: [
-      'Six modules wired end-to-end via S3 — research, prediction, execution, evaluation, data, dashboard.',
+      'Seven modules wired end-to-end via S3 — data, research, prediction, execution, backtesting, evaluation, dashboard.',
       'Multi-agent research, stacked meta-ensemble, risk-gated executor, autonomous backtester.',
       'Three Step Functions running unattended (Saturday weekly + weekday morning + EOD).',
     ],
@@ -44,7 +44,7 @@ const PHASES: Phase[] = [
     name: 'Performance (paper)',
     kpi: 'Alpha vs SPY',
     description: [
-      'Operates the autonomous feedback loop on a Phase-2-trustworthy substrate.',
+      'Runs featured experiments against pre-committed bars on the Phase-2 substrate.',
       'Broader feature breadth in inference (current 21 features → ~50-feature ArcticDB store).',
       'Gated on ≥99% SF success rate over 8 weeks + transparency-inventory complete.',
     ],
@@ -104,8 +104,8 @@ const STATUS_ICON: Record<Status, string> = {
       Current phase
     </p>
     <p class="text-sm text-zinc-400 italic max-w-2xl mx-auto">
-      Every aspect of the system reliable and measurable, so Phase 3 can
-      evaluate decisions on data, not vibes.
+      Every aspect of the system reliable and measurable &mdash; every
+      experiment decided on data, not vibes.
     </p>
   </div>
 

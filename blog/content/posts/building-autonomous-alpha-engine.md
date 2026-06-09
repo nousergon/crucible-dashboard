@@ -128,7 +128,7 @@ The infrastructure is built. All five modules are deployed on AWS, wired end-to-
 
 Now comes the hard part: making it actually generate alpha.
 
-The system hasn't yet demonstrated sustained outperformance against SPY. That's the work ahead — refining signal quality, tuning the ML models, calibrating risk parameters, expanding the prediction ensemble, and iterating on the scoring weights until the system finds edges that persist. Once the system demonstrates that ability consistently in paper trading, the plan is to transition to real capital in small amounts.
+Alpha capture runs as an experiment with a pre-committed bar: sustained outperformance against SPY in paper trading. The work it drives — refining signal quality, tuning the ML models, calibrating risk parameters, expanding the prediction ensemble, iterating on scoring weights — is the research program. When the experiment clears its bar, the plan is to transition to real capital in small amounts.
 
 Building the infrastructure was the engineering challenge. Generating alpha is the research challenge. This is where it gets interesting.
 

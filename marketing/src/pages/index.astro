@@ -4,44 +4,55 @@ import PhaseIndicator from '../components/PhaseIndicator.astro';
 
 const pillars = [
   {
-    title: 'Multi-agent orchestration',
+    title: 'Evaluation layer',
+    body: 'Three-layer eval stack: typed metric records, a seven-tile weekly report card with honest N/A semantics, and an advisory Director agent gated through human-approved PRs. Calibrated LLM judges score every load-bearing agent decision.',
+  },
+  {
+    title: 'Multi-agent research',
     body: 'Six sector teams, a portfolio decision agent, and a macro layer on LangGraph + Claude. Structured outputs, LLM-as-judge.',
   },
   {
-    title: 'Machine-learning overlay',
-    body: 'Stacked ensemble of gradient-boosted and linear models. 21-day market-relative return predictions with confidence-driven veto.',
+    title: 'Statistical validation',
+    body: 'Stacked ensemble of gradient-boosted and linear models predicting 21-day market-relative returns. Promotion is governed by leak-free cross-validation, deflated performance metrics, and multiplicity-aware screening — not point estimates.',
   },
   {
-    title: 'Self-improvement loop',
-    body: "Weekly evaluation writes optimized parameters back to four S3 configs. Downstream modules read them on cold-start.",
+    title: 'Gated self-improvement',
+    body: 'Weekly optimizers and a champion/challenger model zoo auto-tune and auto-promote — only through named statistical gates with observe modes, revert paths, and registries. The system improves itself; humans approve the consequential moves.',
   },
-  {
-    title: 'End-to-end measurement',
-    body: 'Every signal, prediction, fill, and dollar of P&L instrumented and traceable. The console is a view, not a measurement layer.',
-  },
+];
+
+const proofPoints = [
+  'Combinatorial purged cross-validation + deflated Sharpe (DSR/PSR) + BH-FDR multiplicity screening on every model promotion',
+  'Model zoo with auto-promote, loud revert paths, and turnover-governed cutover — institutional champion/challenger governance',
+  'Three-layer evaluation stack with honest N/A semantics and an advisory Director agent gated through human-approved PRs',
+  'Uncertainty-penalized portfolio optimization with covariance shrinkage at 25-name scale',
+  'Absence-driven artifact-freshness monitoring against a declarative SLA registry — a missing artifact is itself an alarm',
+  'Units-suffix schema contracts with cross-repo consumer tests on the feature store',
+  'All of the above at low tens of dollars per month of infrastructure',
 ];
 ---
 
 <Base>
   <section class="max-w-3xl mx-auto px-6 pt-10 md:pt-12 pb-16 text-center">
     <h1 class="text-2xl md:text-[1.75rem] font-medium text-zinc-100 leading-snug tracking-tight mb-5 max-w-2xl mx-auto">
-      An experimentation harness for systematic equity strategies.
+      A harness for rigorous AI/ML experiments in finance.
     </h1>
     <p class="text-sm md:text-base text-zinc-400 leading-relaxed max-w-xl mx-auto">
-      Multi-agent research, ML prediction, risk-gated execution, weekly self-tuning
-      &mdash; instrumented end-to-end<sup
+      An autonomous equity research-and-trading system &mdash; multi-agent
+      research, ML prediction, risk-gated execution &mdash; instrumented
+      end-to-end<sup
         ><a
           href="#en-1"
           id="en-1-ref"
           class="text-sky-400 hover:text-sky-300 ml-0.5 text-[10px] no-underline"
           aria-label="See endnote 1: what instrumented end-to-end means">[1]</a
         ></sup
-      >.
+      > and governed by a finance-specific evaluation layer.
     </p>
     <p class="text-sm md:text-base text-zinc-400 italic leading-relaxed max-w-xl mx-auto mt-3">
-      First experiment: alpha capture against the S&amp;P 500.
+      Every experiment runs against a pre-committed acceptance bar.
     </p>
-    <div class="mt-8 flex items-center justify-center gap-3 text-sm">
+    <div class="mt-8 flex flex-wrap items-center justify-center gap-3 text-sm">
       <a
         href="https://live.nousergon.ai/"
         target="_blank"
@@ -49,6 +60,20 @@ const pillars = [
         class="rounded-md border border-white/15 px-4 py-2 text-zinc-100 hover:bg-white/5 transition"
       >
         Open the Dashboard &rarr;
+      </a>
+      <a
+        href="/experiments"
+        class="rounded-md border border-white/15 px-4 py-2 text-zinc-100 hover:bg-white/5 transition"
+      >
+        Experiment Register
+      </a>
+      <a
+        href="https://github.com/cipher813/alpha-engine-evaluator"
+        target="_blank"
+        rel="noopener noreferrer"
+        class="rounded-md border border-white/15 px-4 py-2 text-zinc-100 hover:bg-white/5 transition"
+      >
+        Evaluator (MIT)
       </a>
     </div>
   </section>
@@ -66,6 +91,23 @@ const pillars = [
         ))
       }
     </div>
+  </section>
+
+  <section class="max-w-3xl mx-auto px-6 pb-16">
+    <h2 class="text-xs font-semibold uppercase tracking-wider text-sky-400 mb-2 text-center">
+      Institutional patterns at solo-operator cost
+    </h2>
+    <p class="text-sm text-zinc-400 leading-relaxed text-center mb-6 max-w-xl mx-auto">
+      The machinery, not adjectives. Each of these is in production today:
+    </p>
+    <ul class="space-y-2.5 text-sm text-zinc-300 leading-relaxed list-disc list-outside pl-5 marker:text-sky-500/60">
+      {proofPoints.map((p) => <li>{p}</li>)}
+    </ul>
+    <p class="text-sm text-zinc-400 leading-relaxed mt-6 text-center">
+      How it fits together: <a href="/architecture" class="text-sky-400 hover:text-sky-300 transition">Architecture</a>
+      &middot; the reusable pieces: <a href="/components" class="text-sky-400 hover:text-sky-300 transition">Components</a>
+      &middot; what's being tested: <a href="/experiments" class="text-sky-400 hover:text-sky-300 transition">Experiments</a>
+    </p>
   </section>
 
   <PhaseIndicator current="Reliability + Measurability" />
