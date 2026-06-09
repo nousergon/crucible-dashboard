@@ -22,4 +22,7 @@ yfinance>=0.2.40
 # `python -m alpha_engine_lib.transparency`), and the updated
 # transparency_inventory.yaml (pipeline_execution non_fatal + agent_decisions
 # non_fatal_statuses) ships in the wheel — so this bump is the activation.
-alpha-engine-lib[flow_doctor] @ git+https://github.com/cipher813/alpha-engine-lib@v0.52.1
+# v0.57.1 (2026-06-09): pipeline_status.registry gains the ModelZooRotation
+# (L4544/L4571) + LibPinDriftCheck (L4517) + RunDailyNews SF states (+ their
+# WaitFor* companions) — clears the page-25 "Registry drift" cells for them.
+alpha-engine-lib[flow_doctor] @ git+https://github.com/cipher813/alpha-engine-lib@v0.57.1
