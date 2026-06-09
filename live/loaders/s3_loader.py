@@ -426,11 +426,16 @@ def load_uptime_history(max_sessions: int = 20) -> list[dict]:
 
     Returns list sorted oldest → newest. Each dict matches the schema written
     by alpha-engine/executor/uptime_tracker.py.
+
+    Bucket fix (L4570e, 2026-06-09): the tracker writes to the RESEARCH
+    bucket (s3://alpha-engine-research/uptime/ — current through today);
+    this loader read the executor bucket, whose uptime/ prefix is empty,
+    so the public Uptime page rendered its empty state in production.
     """
     import json
 
     client = get_s3_client()
-    bucket = _trades_bucket()
+    bucket = _research_bucket()
     try:
         resp = client.list_objects_v2(Bucket=bucket, Prefix="uptime/")
     except Exception as e:

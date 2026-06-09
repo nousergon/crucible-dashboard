@@ -178,6 +178,47 @@ class TestSummarizeActivity:
         assert out["population"] == 0
 
 
+class TestUptimeBucket:
+    """Regression: uptime records live in the RESEARCH bucket.
+
+    The loader read the executor bucket (empty uptime/ prefix) — the public
+    Uptime page silently rendered its empty state in production. Locks the
+    bucket choice (L4570e finding, 2026-06-09).
+    """
+
+    def test_load_uptime_history_lists_research_bucket(self):
+        sys.path.insert(0, str(_LIVE))
+        try:
+            saved = {
+                k: sys.modules.pop(k)
+                for k in list(sys.modules)
+                if k.split(".")[0] == "loaders"
+            }
+            try:
+                with patch("builtins.open", MagicMock()):
+                    with patch("yaml.safe_load", return_value=_FAKE_CONFIG):
+                        spec = importlib.util.spec_from_file_location(
+                            "live_s3_loader_uptime_test",
+                            str(_LIVE / "loaders" / "s3_loader.py"),
+                        )
+                        s3l = importlib.util.module_from_spec(spec)
+                        spec.loader.exec_module(s3l)
+                client = MagicMock()
+                client.list_objects_v2.return_value = {"Contents": []}
+                with patch.object(s3l, "get_s3_client", return_value=client):
+                    assert s3l.load_uptime_history(max_sessions=5) == []
+                client.list_objects_v2.assert_called_once_with(
+                    Bucket="test-research", Prefix="uptime/"
+                )
+            finally:
+                for k in list(sys.modules):
+                    if k.split(".")[0] == "loaders":
+                        sys.modules.pop(k)
+                sys.modules.update(saved)
+        finally:
+            sys.path.remove(str(_LIVE))
+
+
 class TestSummarizeCost:
     def test_total_and_calls(self, pulse):
         df = pd.DataFrame({"cost_usd": [1.25, 2.50, 0.25]})

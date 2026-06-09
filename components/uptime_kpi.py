@@ -45,10 +45,12 @@ def _progress_bar_html(pct: float) -> str:
 
 
 def render_uptime_kpi(records: list[dict]) -> None:
-    """Render the reliability hero block. Pass in the rolling-window records."""
-    st.markdown("### Reliability — Phase 2 Primary KPI")
-    st.caption("Phase 2's primary measurement target. The 99% goal gates Phase 3.")
+    """Render the reliability KPI block. Pass in the rolling-window records.
 
+    Headings belong to the caller (System Pulse renders its own section
+    header; the heading + "Phase 2 Primary KPI" caption that used to live
+    here duplicated it and carried the hedge stripped in L4570a).
+    """
     if not records:
         st.info("No uptime sessions recorded yet. Data will appear after the first post-tick-log EOD run.")
         return
