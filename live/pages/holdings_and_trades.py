@@ -1,8 +1,8 @@
-"""Holdings & Trades — current positions plus the last 5 trading days of fills.
+"""Live Portfolio — current positions plus the last 5 trading days of fills.
 
-Default landing page for live.nousergon.ai. Positions parse out of the
-EOD `positions_snapshot` field; trades come from `trades_full`. Both
-read-only.
+Default landing page for live.nousergon.ai ("Live Portfolio" titling per
+the public-presence plan §9b.1, L4570e). Positions parse out of the EOD
+`positions_snapshot` field; trades come from `trades_full`. Both read-only.
 """
 
 import json
@@ -36,7 +36,8 @@ def _maybe_open_detail(state_key: str, selection_rows, ticker_series, positions,
 
 _RECENT_TRADES_WINDOW_DAYS = 5
 
-st.title("Holdings & Trades")
+st.title("Live Portfolio")
+st.caption("Current positions and recent fills from the running system, as of the last close.")
 
 prep = load_and_prepare_eod()
 if prep is None:
