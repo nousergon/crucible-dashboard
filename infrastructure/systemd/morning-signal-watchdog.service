@@ -1,0 +1,17 @@
+[Unit]
+Description=Morning Signal episode freshness watchdog (alerts if today's episode didn't publish)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ec2-user
+ExecStart=/usr/local/bin/morning-signal-watchdog.sh
+# Region for alpha_engine_lib.alerts SNS publish; Telegram creds load from
+# /home/ec2-user/.alpha-engine.env inside the script (NOT the runner role).
+Environment=AWS_REGION=us-east-1
+TimeoutStartSec=180
+RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target
