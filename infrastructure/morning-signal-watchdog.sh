@@ -38,7 +38,11 @@ export MORNING_SIGNAL_SSM_REGION=us-east-1
 
 day="$(TZ=America/Los_Angeles date +%F)"
 
-out="$("$MS_BIN" watchdog 2>&1)"; rc=$?
+# Pin --edition am: production ships a SINGLE 5 AM edition (PM dropped
+# 2026-06-04). The CLI otherwise infers the edition from the clock and would
+# check a non-existent {date}-pm.mp3 on any afternoon run — e.g. a Persistent=true
+# catch-up firing after the box was down at 06:15 — and false-alarm.
+out="$("$MS_BIN" watchdog --edition am 2>&1)"; rc=$?
 if [ "$rc" -eq 0 ]; then
     echo "morning-signal-watchdog: OK ($day) — $out"
     exit 0
