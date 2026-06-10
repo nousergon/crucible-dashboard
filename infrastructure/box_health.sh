@@ -9,8 +9,11 @@
 #   8501 dashboard.service        (alpha-engine console)
 #   8502 nous-ergon-live.service  (live.nousergon.ai)
 #   8503 mnemon (bun)             (memory.nousergon.ai)
-#   8504 robodashboard.service    (portfolio.nousergon.ai)
 #   8505 signal.service           (signal.thecyphering.com)
+#   8000 metron-api.service       (Metron FastAPI backend, internal)
+#   3000 metron-web.service       (Metron Next.js, behind portfolio.nousergon.ai)
+# (robodashboard.service / :8504 decommissioned 2026-06-10 — Metron succeeds it at
+#  portfolio.nousergon.ai; robodashboard is now local-only.)
 #
 # Confirm-on-retry (2026-06-04): every check is sampled up to RETRY_ATTEMPTS
 # times RETRY_DELAY apart, and only problems present in EVERY sample are
@@ -45,8 +48,8 @@ INSTANCE_ID=$(curl -s --max-time 2 -H "X-aws-ec2-metadata-token: ${_imds_tok}" h
 
 # ── thresholds ──────────────────────────────────────────────────────────
 MEM_MIN_MB=150                       # alert if MemAvailable drops below this
-SERVICES=(dashboard.service nous-ergon-live.service robodashboard.service signal.service)
-PORTS=(8501 8502 8503 8504 8505)
+SERVICES=(dashboard.service nous-ergon-live.service signal.service metron-api.service metron-web.service)
+PORTS=(8501 8502 8503 8505 8000 3000)
 RETRY_ATTEMPTS=3                     # samples before a problem is confirmed
 RETRY_DELAY=2                        # seconds between confirmation samples
 
