@@ -29,6 +29,14 @@ MS_BIN="/home/ec2-user/morning-signal/.venv/bin/morning-signal"
 if [ -f "$ENV_FILE" ]; then set -a; . "$ENV_FILE"; set +a; fi
 export AWS_REGION="${AWS_REGION:-us-east-1}"
 
+# .alpha-engine.env ships STATIC creds for the cipher813 IAM *user*, but that
+# user is NOT a principal in morning-signal-runner-role's trust policy — only
+# this box's instance role (alpha-engine-dashboard-role) is. Drop the user creds
+# so boto3 falls back to the instance role: the watchdog's AssumeRole then
+# succeeds, and alpha_engine_lib.alerts' SNS publish still works (the instance
+# role holds alpha-engine-sns-publish). Telegram uses its bot token, not AWS.
+unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+
 # Same runtime env the generate service uses, so the check assumes the runner
 # role + reads SSM identically. If that assume fails, the watchdog exits
 # non-zero and we alert below from the independent identity.
