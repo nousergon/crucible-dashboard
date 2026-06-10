@@ -3,7 +3,7 @@ name: Deploy
 # Auto-deploys console.nousergon.ai + nousergon.ai on every push to main.
 #
 # The streamlit services run from this repo on a single EC2 instance
-# (i-09b539c844515d549). They do NOT auto-restart on code-only changes —
+# (id in the DASHBOARD_INSTANCE_ID repo variable). They do NOT auto-restart on code-only changes —
 # boot-pull's daily 12:00-UTC timer only restarts services whose .service
 # unit files change. This workflow closes that "merged but stale" gap.
 #
@@ -32,6 +32,11 @@ jobs:
     name: Deploy dashboard via SSM
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      # Dashboard EC2 instance, sourced from the repo variable (not hardcoded)
+      # so the box identifier lives in one place. Set via: gh variable set
+      # DASHBOARD_INSTANCE_ID. Non-secret identifier — a variable, not a secret.
+      DASHBOARD_INSTANCE_ID: ${{ vars.DASHBOARD_INSTANCE_ID }}
 
     steps:
       - name: Configure AWS credentials via OIDC
@@ -55,7 +60,7 @@ jobs:
           # back-to-back merge racing this deploy.
           CMD_BODY="set -e; cd /home/ec2-user/alpha-engine-dashboard && sudo -u ec2-user git fetch origin --quiet && sudo -u ec2-user git reset --hard ${GITHUB_SHA} --quiet && bash infrastructure/deploy-on-merge.sh ${GITHUB_SHA}"
           CMD_ID=$(aws ssm send-command \
-            --instance-ids i-09b539c844515d549 \
+            --instance-ids ${DASHBOARD_INSTANCE_ID} \
             --document-name AWS-RunShellScript \
             --comment "alpha-engine-dashboard deploy ${GITHUB_SHA}" \
             --parameters "commands=[\"${CMD_BODY}\"]" \
@@ -67,7 +72,7 @@ jobs:
       - name: Wait for SSM command to finish
         run: |
           aws ssm wait command-executed \
-            --instance-id i-09b539c844515d549 \
+            --instance-id ${DASHBOARD_INSTANCE_ID} \
             --command-id "${{ steps.send.outputs.command_id }}"
 
       - name: Fetch deploy output
@@ -75,17 +80,17 @@ jobs:
         run: |
           set +e
           aws ssm get-command-invocation \
-            --instance-id i-09b539c844515d549 \
+            --instance-id ${DASHBOARD_INSTANCE_ID} \
             --command-id "${{ steps.send.outputs.command_id }}" \
             --query '[Status,ResponseCode]' --output text
           echo "── stdout ──"
           aws ssm get-command-invocation \
-            --instance-id i-09b539c844515d549 \
+            --instance-id ${DASHBOARD_INSTANCE_ID} \
             --command-id "${{ steps.send.outputs.command_id }}" \
             --query 'StandardOutputContent' --output text
           echo "── stderr ──"
           aws ssm get-command-invocation \
-            --instance-id i-09b539c844515d549 \
+            --instance-id ${DASHBOARD_INSTANCE_ID} \
             --command-id "${{ steps.send.outputs.command_id }}" \
             --query 'StandardErrorContent' --output text
 

@@ -1,6 +1,6 @@
 #!/bin/bash
 # box_health.sh — lightweight resource + service watchdog for the shared
-# dashboard EC2 (i-09b539c844515d549). The box runs ~5 web services
+# dashboard EC2. The box runs ~5 web services
 # (4 Streamlit + mnemon on bun) plus nginx on a small instance, so the
 # binding constraint is RAM, not CPU. This alerts (deduped) when memory
 # runs low or an expected service/port is down. Quiet on success.
@@ -38,6 +38,10 @@ VENV_PY="/home/ec2-user/alpha-engine-dashboard/.venv/bin/python"
 # Load Telegram creds etc. (SNS auth comes from the instance role).
 if [ -f "$ENV_FILE" ]; then set -a; . "$ENV_FILE"; set +a; fi
 export AWS_REGION="${AWS_REGION:-us-east-1}"
+# Self-discover this box's instance id (IMDSv2) for alert context — the box
+# identifies itself rather than hardcoding the id. Degrade gracefully.
+_imds_tok=$(curl -s --max-time 2 -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 60" 2>/dev/null || true)
+INSTANCE_ID=$(curl -s --max-time 2 -H "X-aws-ec2-metadata-token: ${_imds_tok}" http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null || echo "dashboard-ec2")
 
 # ── thresholds ──────────────────────────────────────────────────────────
 MEM_MIN_MB=150                       # alert if MemAvailable drops below this
@@ -122,7 +126,7 @@ printf 'box_health: confirmed problems after %d samples:\n%s\n' "$attempt" "$con
 # build message + a dedup key derived from the problem set, so the same
 # ongoing issue alerts once per dedup window rather than every 10 min.
 mapfile -t problems <<< "$confirmed"
-msg="dashboard EC2 (i-09b539c844515d549) health alert:"
+msg="dashboard EC2 (${INSTANCE_ID}) health alert:"
 for p in "${problems[@]}"; do msg="$msg"$'\n'" - $p"; done
 dkey="boxhealth-$(printf '%s' "${problems[*]}" | tr ' /' '__' | cut -c1-72)"
 
