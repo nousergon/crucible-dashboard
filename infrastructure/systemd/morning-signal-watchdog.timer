@@ -1,0 +1,15 @@
+[Unit]
+Description=Run the Morning Signal episode freshness watchdog daily after the generate slot
+Requires=morning-signal-watchdog.service
+
+[Timer]
+# Generate fires at 05:00 PT (morning-signal.timer). 06:15 PT gives the run
+# (+ the 04:55 pull) ample time to finish before we verify the deliverable.
+# DST-aware via the timezone suffix, matching morning-signal.timer.
+OnCalendar=*-*-* 06:15:00 America/Los_Angeles
+# Catch up one missed run if the box was down at the scheduled slot.
+Persistent=true
+Unit=morning-signal-watchdog.service
+
+[Install]
+WantedBy=timers.target
