@@ -6,7 +6,7 @@
 [![Python](https://img.shields.io/badge/python-3.13+-blue?style=flat-square)](https://www.python.org/)
 [![Streamlit](https://img.shields.io/badge/Streamlit-1a73e8?style=flat-square)](https://streamlit.io/)
 [![Plotly](https://img.shields.io/badge/Plotly-1a73e8?style=flat-square)](https://plotly.com/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)](LICENSE)
+[![License: AGPL-3.0-only](https://img.shields.io/badge/License-AGPL--3.0--only-yellow?style=flat-square)](LICENSE)
 [![Phase 2 · Reliability](https://img.shields.io/badge/Phase_2-Reliability-e9c46a?style=flat-square)](https://github.com/cipher813/alpha-engine-docs#phase-trajectory)
 
 Read-only Streamlit dashboard for monitoring the full Alpha Engine system. Powers the public [`nousergon.ai`](https://nousergon.ai) home page (transitional — moving to `live.nousergon.ai` once the Astro marketing site lands at apex) and the private `console.nousergon.ai` (Cloudflare Access). Reads from S3 only — never writes.
