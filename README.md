@@ -58,4 +58,4 @@ This repo is **public**. Bucket names + email recipients in `config.yaml` are gi
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+AGPL-3.0-only — see [LICENSE](LICENSE). Commercial licenses available — contact brian@nousergon.ai.
