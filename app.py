@@ -87,12 +87,15 @@ st.set_page_config(
 # ---------------------------------------------------------------------------
 
 
+# (module, bucket, stale_after_hrs) — weekly Saturday-pipeline modules are
+# legitimately up to ~7 days old by Friday; daily modules span weekends
+# (Fri EOD → Mon run ≈ 67h, +24h on holiday Mondays).
 HEALTH_MODULES = [
-    ("research", "research"),
-    ("predictor_training", "research"),
-    ("predictor_inference", "research"),
-    ("executor", "research"),
-    ("eod_reconcile", "trades"),
+    ("research", "research", 8 * 24),
+    ("predictor_training", "research", 8 * 24),
+    ("predictor_inference", "research", 4 * 24),
+    ("executor", "research", 4 * 24),
+    ("eod_reconcile", "trades", 4 * 24),
 ]
 
 
@@ -101,12 +104,18 @@ def _load_module_health() -> list[dict]:
     """Load health/{module}.json for each pipeline module."""
     now = datetime.utcnow()
     rows = []
-    for module_name, bucket_key in HEALTH_MODULES:
+    for module_name, bucket_key, stale_after_hrs in HEALTH_MODULES:
         bucket = _research_bucket() if bucket_key == "research" else _trades_bucket()
         health = _fetch_s3_json(bucket, f"health/{module_name}.json")
 
         if health is None:
-            rows.append({"module": module_name, "status": "unknown", "age_hrs": None, "error": None})
+            rows.append({
+                "module": module_name,
+                "status": "unknown",
+                "age_hrs": None,
+                "error": None,
+                "stale_after_hrs": stale_after_hrs,
+            })
             continue
 
         last_success = health.get("last_success")
@@ -123,6 +132,7 @@ def _load_module_health() -> list[dict]:
             "status": health.get("status", "unknown"),
             "age_hrs": age_hrs,
             "error": health.get("error"),
+            "stale_after_hrs": stale_after_hrs,
         })
     return rows
 
@@ -293,7 +303,7 @@ def _render_alerts(
             alerts.append(f"❌ Module **{row['module']}** FAILED — {err}")
         elif row["status"] == "unknown":
             alerts.append(f"⚠ Module **{row['module']}** has no health status (never run?)")
-        elif row.get("age_hrs") is not None and row["age_hrs"] > 48:
+        elif row.get("age_hrs") is not None and row["age_hrs"] > row.get("stale_after_hrs", 48):
             alerts.append(f"⚠ Module **{row['module']}** stale — last success {row['age_hrs']:.0f}h ago")
 
     # Drawdown warning
