@@ -25,4 +25,4 @@ yfinance>=0.2.40
 # v0.57.1 (2026-06-09): pipeline_status.registry gains the ModelZooRotation
 # (L4544/L4571) + LibPinDriftCheck (L4517) + RunDailyNews SF states (+ their
 # WaitFor* companions) — clears the page-25 "Registry drift" cells for them.
-alpha-engine-lib[flow_doctor] @ git+https://github.com/cipher813/alpha-engine-lib@v0.57.1
+alpha-engine-lib[flow_doctor] @ git+https://github.com/cipher813/alpha-engine-lib@v0.59.2

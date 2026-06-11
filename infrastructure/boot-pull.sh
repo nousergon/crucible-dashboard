@@ -116,29 +116,17 @@ for repo in "${REPOS[@]}"; do
             fi
         fi
 
-        # Always refresh alpha-engine-lib (pinned @main ecosystem-wide).
-        # The conditional block above skips when requirements.txt is unchanged,
-        # which would leave lib frozen at whatever was installed last —
-        # defeating the @main pin. Cheap: single package, wheel cached, ~1-2s.
-        if [ -f ".venv/bin/pip" ] && [ -f "requirements.txt" ] && grep -q "alpha-engine-lib" requirements.txt 2>/dev/null; then
-            if .venv/bin/pip install --quiet --upgrade alpha-engine-lib >> "$LOG" 2>&1; then
-                log "OK   $repo — alpha-engine-lib refreshed from @main"
-            else
-                log "WARN $repo — alpha-engine-lib upgrade failed (non-fatal; previous version retained)"
-            fi
-        fi
-
-        # Install flow-doctor from bundled source if this repo has a venv and
-        # flow-doctor is cloned. Matches the trading instance pattern —
-        # editable install overrides the PyPI pin so we can test unreleased
-        # flow-doctor changes without waiting for a release.
-        if [ -f ".venv/bin/pip" ] && [ -d "/home/ec2-user/flow-doctor" ] && [ "$repo" != "/home/ec2-user/flow-doctor" ]; then
-            if .venv/bin/pip install --quiet -e /home/ec2-user/flow-doctor >> "$LOG" 2>&1; then
-                log "OK   $repo — flow-doctor installed"
-            else
-                log "WARN $repo — flow-doctor install failed (non-fatal)"
-            fi
-        fi
+        # NOTE (2026-06-11): two legacy blocks removed here — see git history.
+        # (1) "Always refresh alpha-engine-lib" dated from the @main-pin era;
+        # the fleet pins stable tags now (@main is CI-forbidden), so a daily
+        # `pip install --upgrade alpha-engine-lib` VIOLATED every repo's pin by
+        # pulling latest PyPI (it had been failing daily on venv remnants and
+        # WARN-swallowing — the requirements-diff GATE above is the one
+        # correct dep path: venv changes exactly when the pin changes).
+        # (2) the flow-doctor editable-install override (stale local clone was
+        # serving rc3 over the lib-pinned rc5) — the trading box's boot-pull
+        # removed this pattern for the same reason; flow-doctor arrives
+        # transitively via alpha-engine-lib[flow_doctor].
     else
         log "FAIL $repo — fetch/reset failed"
         PULL_FAILURES=$((PULL_FAILURES + 1))
