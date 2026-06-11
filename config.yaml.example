@@ -18,7 +18,9 @@
 
 s3:
   research_bucket: alpha-engine-research
-  trades_bucket: alpha-engine-executor
+  # Live trade artifacts (trades/, health/eod_reconcile.json, uptime/) migrated
+  # to the research bucket 2026-04; alpha-engine-executor is legacy/stale.
+  trades_bucket: alpha-engine-research
 
 paths:
   signals: signals/{date}/signals.json
