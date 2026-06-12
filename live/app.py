@@ -65,4 +65,12 @@ with st.sidebar:
         "[nousergon.ai](https://nousergon.ai)"
     )
 
+# Paper-trading disclaimer, rendered globally (before pg.run() = on every
+# page, above page content) so a new page can't ship values without it.
+st.caption(
+    "**Paper trading** — all values shown are from a simulated Interactive "
+    "Brokers paper account (nominal \\$1M start); no real money is traded. "
+    "Nothing on this site is investment advice."
+)
+
 pg.run()
