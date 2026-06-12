@@ -30,6 +30,7 @@ jobs:
     name: build + check + lint (${{ matrix.site }})
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         site: [marketing, marketing-apex]
     defaults:
