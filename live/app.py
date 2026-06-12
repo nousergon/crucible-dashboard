@@ -58,11 +58,12 @@ pg = st.navigation([
 
 # Link-funnel (public-presence role matrix): this surface is the live
 # proof-of-life tier; the narrative (what the system is, how it's designed)
-# is owned by the Astro apex — link out rather than re-tell it here.
+# is owned by the Crucible product site (2026-06-12 restructure: the apex
+# is the lab landing) — link out rather than re-tell it here.
 with st.sidebar:
     st.caption(
         "What this system is and how it's designed: "
-        "[nousergon.ai](https://nousergon.ai)"
+        "[crucible.nousergon.ai](https://crucible.nousergon.ai)"
     )
 
 pg.run()
