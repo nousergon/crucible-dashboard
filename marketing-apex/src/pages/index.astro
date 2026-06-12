@@ -57,6 +57,8 @@ const oss = [
         products.map((p) => (
           <a
             href={p.href}
+            target="_blank"
+            rel="noopener noreferrer"
             class={`block rounded-lg border p-6 transition hover:bg-white/[0.05] ${
               p.featured
                 ? 'border-sky-400/40 bg-white/[0.04]'
@@ -88,6 +90,8 @@ const oss = [
         oss.map((t) => (
           <a
             href={t.href}
+            target="_blank"
+            rel="noopener noreferrer"
             class="block rounded-lg border border-white/10 bg-white/[0.02] p-5 transition hover:bg-white/[0.05]"
           >
             <div class="text-sm font-semibold text-zinc-100 mb-1.5">{t.name}</div>
