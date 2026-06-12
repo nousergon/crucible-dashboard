@@ -1,6 +1,5 @@
 ---
-import { Image } from 'astro:assets';
-import nousErgonLogo from '../assets/nous-ergon-logo.png';
+import nousErgonLogo from '../assets/nous-ergon-logo.webp';
 import '../styles/global.css';
 
 interface Props {
@@ -85,14 +84,18 @@ const resolvedJsonLd = jsonLd ?? defaultJsonLd;
     <header class="pt-8 md:pt-10 pb-6">
       <div class="max-w-5xl mx-auto px-6 flex flex-col items-center">
         <a href="/" class="block" aria-label="Nous Ergon — Intelligence at work, home">
-          <Image
-            src={nousErgonLogo}
+          <!-- Plain <img> on the lossless asset: Astro's <Image> lossy
+               re-encode shifts the logo's near-black halo off true #000
+               against the bg-black page (the prod "two blacks" bug). -->
+          <img
+            src={nousErgonLogo.src}
+            width={nousErgonLogo.width}
+            height={nousErgonLogo.height}
             alt="Nous Ergon — Intelligence at work"
-            widths={[400, 600, 900, 1200]}
-            sizes="(min-width: 768px) 460px, 80vw"
             class="w-full max-w-[460px] h-auto"
             loading="eager"
             decoding="sync"
+            fetchpriority="high"
           />
         </a>
         <nav

@@ -1,6 +1,5 @@
 ---
-import { Image } from 'astro:assets';
-import crucibleLogo from '../assets/nous-ergon-crucible-logo.png';
+import crucibleLogo from '../assets/nous-ergon-crucible-logo.webp';
 import '../styles/global.css';
 
 interface Props {
@@ -100,15 +99,19 @@ const resolvedJsonLd = jsonLd ?? defaultJsonLd;
       <div class="max-w-5xl mx-auto px-6 flex flex-col items-center">
         <a href="/" class="block" aria-label="Crucible, a Nous Ergon product — home">
           <!-- The lockup's background is pure black (edge max rgb(3)) — no
-               feathering needed; sharpened from the source via unsharp mask. -->
-          <Image
-            src={crucibleLogo}
+               feathering needed. Served as LOSSLESS webp via plain <img>:
+               Astro's <Image> lossy re-encode macroblocks near-black
+               gradients (the "chunky fade" bug) and shifts the field off
+               true #000 — this asset must reach the browser byte-exact. -->
+          <img
+            src={crucibleLogo.src}
+            width={crucibleLogo.width}
+            height={crucibleLogo.height}
             alt="Nous Ergon — Crucible"
-            widths={[400, 600, 900]}
-            sizes="(min-width: 768px) 440px, 80vw"
             class="w-full max-w-[440px] h-auto"
             loading="eager"
             decoding="sync"
+            fetchpriority="high"
           />
         </a>
         <div class="mt-2 text-[11px] uppercase tracking-[0.18em] text-zinc-500">Experiment harness</div>
