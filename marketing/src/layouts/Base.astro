@@ -99,8 +99,10 @@ const resolvedJsonLd = jsonLd ?? defaultJsonLd;
       </a>
       <div class="max-w-5xl mx-auto px-6 flex flex-col items-center">
         <a href="/" class="relative block" aria-label="Crucible, a Nous Ergon product — home">
-          <!-- Soft navy glow matched to the lockup's baked-in background so the
-               masked edges dissolve into it rather than into hard black. -->
+          <!-- Soft navy glow matched to the lockup's plate tone; the asset
+               carries a baked-in asymmetric alpha feather (tight on the sides
+               where the lettering runs to 95% width, deep on top/bottom) so
+               the plate dissolves into this glow. -->
           <div
             class="absolute inset-[-12%] -z-10 rounded-full"
             style="background: radial-gradient(ellipse 60% 55% at center, rgba(23, 32, 51, 0.85) 0%, rgba(13, 18, 30, 0.5) 55%, transparent 78%);"
@@ -112,7 +114,7 @@ const resolvedJsonLd = jsonLd ?? defaultJsonLd;
             alt="Nous Ergon — Crucible"
             widths={[400, 600, 900]}
             sizes="(min-width: 768px) 440px, 80vw"
-            class="w-full max-w-[440px] h-auto logo-blend"
+            class="w-full max-w-[440px] h-auto"
             loading="eager"
             decoding="sync"
           />
@@ -176,20 +178,3 @@ const resolvedJsonLd = jsonLd ?? defaultJsonLd;
     </footer>
   </body>
 </html>
-
-<style>
-  /* Feather the rectangular logo plate into the page so the baked-in
-     brushed-navy background reads as a vignette, not a box. */
-  .logo-blend {
-    -webkit-mask-image: radial-gradient(
-      ellipse 72% 68% at center,
-      black 52%,
-      transparent 97%
-    );
-    mask-image: radial-gradient(
-      ellipse 72% 68% at center,
-      black 52%,
-      transparent 97%
-    );
-  }
-</style>
