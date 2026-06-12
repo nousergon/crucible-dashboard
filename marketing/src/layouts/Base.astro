@@ -1,5 +1,8 @@
 ---
-import crucibleLogo from '../assets/nous-ergon-crucible-logo.webp';
+// Temporary design-comparison swap (Brian 2026-06-12): the original
+// Nous Ergon / Alpha Engine masthead, served lossless. The Crucible lockup
+// stays in assets/ — swap the import back to compare.
+import crucibleLogo from '../assets/nous-ergon-alpha-engine-logo.webp';
 import '../styles/global.css';
 
 interface Props {
@@ -98,16 +101,15 @@ const resolvedJsonLd = jsonLd ?? defaultJsonLd;
       </a>
       <div class="max-w-5xl mx-auto px-6 flex flex-col items-center">
         <a href="/" class="block" aria-label="Crucible, a Nous Ergon product — home">
-          <!-- The lockup's background is pure black (edge max rgb(3)) — no
-               feathering needed. Served as LOSSLESS webp via plain <img>:
-               Astro's <Image> lossy re-encode macroblocks near-black
-               gradients (the "chunky fade" bug) and shifts the field off
-               true #000 — this asset must reach the browser byte-exact. -->
+          <!-- Served as LOSSLESS webp via plain <img>: Astro's <Image> lossy
+               re-encode macroblocks near-black gradients and shifts the field
+               off true #000 — masthead assets must reach the browser
+               byte-exact. -->
           <img
             src={crucibleLogo.src}
             width={crucibleLogo.width}
             height={crucibleLogo.height}
-            alt="Nous Ergon — Crucible"
+            alt="Nous Ergon — Alpha Engine"
             class="w-full max-w-[440px] h-auto"
             loading="eager"
             decoding="sync"
