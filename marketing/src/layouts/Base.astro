@@ -99,9 +99,8 @@ const resolvedJsonLd = jsonLd ?? defaultJsonLd;
       </a>
       <div class="max-w-5xl mx-auto px-6 flex flex-col items-center">
         <a href="/" class="block" aria-label="Crucible, a Nous Ergon product — home">
-          <!-- The lockup self-vignettes to black; the asset carries only a
-               narrow baked-in side/top alpha feather to dissolve the residual
-               edge seam (no bottom fade — the tagline sits at 97% height). -->
+          <!-- The lockup's background is pure black (edge max rgb(3)) — no
+               feathering needed; sharpened from the source via unsharp mask. -->
           <Image
             src={crucibleLogo}
             alt="Nous Ergon — Crucible"
