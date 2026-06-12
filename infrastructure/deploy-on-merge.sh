@@ -24,9 +24,11 @@ LOG="/var/log/dashboard-deploy.log"
 TARGET_SHA="${1:-HEAD}"
 
 # Streamlit /_stcore/health endpoints. Console = 8501, live = 8502.
-# Ports sourced from the systemd unit files in this repo.
+# Ports sourced from the systemd unit files in this repo. The live app
+# sets baseUrlPath = "live" (live/.streamlit/config.toml, 2026-06-12 site
+# cutover), which moves ALL its routes — including health — under /live.
 CONSOLE_URL="http://localhost:8501/_stcore/health"
-LIVE_URL="http://localhost:8502/_stcore/health"
+LIVE_URL="http://localhost:8502/live/_stcore/health"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$LOG"; }
 fail() { log "FAIL $*"; exit 1; }
