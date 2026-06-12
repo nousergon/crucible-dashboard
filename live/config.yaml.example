@@ -25,7 +25,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 s3:
-  trades_bucket: alpha-engine-executor
+  trades_bucket: alpha-engine-research
   research_bucket: alpha-engine-research
 
 paths:

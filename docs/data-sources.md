@@ -8,8 +8,7 @@ All data is read-only. The dashboard downloads from two S3 buckets using the EC2
 
 | Bucket | Contents |
 |--------|----------|
-| `alpha-engine-research` | Signals, research.db, backtest output, scoring weights |
-| `alpha-engine-executor` | Trade log CSVs, EOD P&L |
+| `alpha-engine-research` | Signals, research.db, backtest output, scoring weights, trade log CSVs, EOD P&L |
 
 ---
 
@@ -52,7 +51,7 @@ Per-ticker fields (in `universe[]` and `buy_candidates[]`):
 
 ### eod_pnl.csv
 
-**Path:** `s3://alpha-engine-executor/trades/eod_pnl.csv`
+**Path:** `s3://alpha-engine-research/trades/eod_pnl.csv`
 **Cache:** 15 min
 **Loader:** `loaders/s3_loader.load_eod_pnl()`
 
@@ -81,7 +80,7 @@ Per-ticker fields (in `universe[]` and `buy_candidates[]`):
 
 ### trades_full.csv
 
-**Path:** `s3://alpha-engine-executor/trades/trades_full.csv`
+**Path:** `s3://alpha-engine-research/trades/trades_full.csv`
 **Cache:** 15 min
 **Loader:** `loaders/s3_loader.load_trades_full()`
 
