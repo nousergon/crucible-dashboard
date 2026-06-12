@@ -1,9 +1,11 @@
 ---
-// Temporary design-comparison swap (Brian 2026-06-12): the months-long
-// original NOUS ERGON / ALPHA ENGINE masthead (pre-#185, transparent
-// background — the reason it always blended seamlessly). The Crucible
-// lockup stays in assets/ — swap the import back to compare.
-import crucibleLogo from '../assets/nous-ergon-alpha-engine-logo.webp';
+// Crucible lockup with DERIVED transparent background (black-to-alpha,
+// 2026-06-12): alpha = max(R,G,B) + un-premultiply — composites pixel-
+// identically over black while edges are genuinely transparent (the same
+// property that made the months-long NE/Alpha Engine logo seamless; that
+// original stays in assets/ as nous-ergon-alpha-engine-logo.webp for
+// comparison — a one-line import swap).
+import crucibleLogo from '../assets/nous-ergon-crucible-logo.webp';
 import '../styles/global.css';
 
 interface Props {
@@ -110,7 +112,7 @@ const resolvedJsonLd = jsonLd ?? defaultJsonLd;
             src={crucibleLogo.src}
             width={crucibleLogo.width}
             height={crucibleLogo.height}
-            alt="Nous Ergon — Alpha Engine"
+            alt="Nous Ergon — Crucible"
             class="w-full max-w-[440px] h-auto"
             loading="eager"
             decoding="sync"
