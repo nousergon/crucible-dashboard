@@ -7,6 +7,9 @@ font = "sans serif"
 
 [server]
 maxUploadSize = 0
+# Served under crucible.nousergon.ai/live via a Cloudflare Worker path-proxy
+# (site_restructure_plan_260612.md §4) — assets + websocket resolve under /live.
+baseUrlPath = "live"
 
 [browser]
 gatherUsageStats = false

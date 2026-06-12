@@ -73,8 +73,8 @@ if isinstance(positions, dict) and positions:
         total_invested += mv
         rows.append({
             "Ticker": ticker,
-            "Shares": info.get("shares", "—"),
-            "Value": f"${mv:,.0f}",
+            "Shares": pd.to_numeric(info.get("shares"), errors="coerce"),
+            "Value": float(mv),
             "Sector": info.get("sector", "—") or "—",
             "Rationale": thesis_by_ticker.get(ticker, "—"),
         })
@@ -85,8 +85,8 @@ elif isinstance(positions, list) and positions:
         total_invested += mv
         rows.append({
             "Ticker": ticker,
-            "Shares": p.get("shares", "—"),
-            "Value": f"${mv:,.0f}",
+            "Shares": pd.to_numeric(p.get("shares"), errors="coerce"),
+            "Value": float(mv),
             "Sector": p.get("sector", "—") or "—",
             "Rationale": thesis_by_ticker.get(ticker, "—"),
         })
@@ -95,12 +95,14 @@ if rows:
     cash = prep.nav - total_invested
     rows.append({
         "Ticker": "CASH",
-        "Shares": "—",
-        "Value": f"${cash:,.0f}",
+        "Shares": None,
+        "Value": float(cash),
         "Sector": "—",
     })
+    # Numeric dtypes stay numeric so column-header sorting sorts by VALUE,
+    # not lexically over pre-formatted strings ("$9,800" > "$12,000" was the
+    # bug); display formatting moves to column_config.
     pos_df = pd.DataFrame(rows, columns=["Ticker", "Shares", "Value", "Sector"])
-    pos_df["Shares"] = pos_df["Shares"].astype(str)
     # Rationale + full per-ticker context now live in the click-through
     # modal (ROADMAP L176) — the table stays scan-friendly. Select a row to
     # open it; CASH routes to the modal's operator-reserved stub.
@@ -112,6 +114,10 @@ if rows:
         on_select="rerun",
         selection_mode="single-row",
         key="holdings_table",
+        column_config={
+            "Shares": st.column_config.NumberColumn("Shares", format="%d"),
+            "Value": st.column_config.NumberColumn("Value", format="dollar"),
+        },
     )
     _maybe_open_detail(
         "holdings_detail",
@@ -167,12 +173,8 @@ display = pd.DataFrame({
 action_col = next((c for c in ("action", "signal") if c in rt.columns), None)
 if action_col:
     display["Action"] = rt[action_col].values
-display["Shares"] = [
-    f"{int(round(x))}" if pd.notna(x) else "—" for x in shares_num
-]
-display["Value"] = [
-    f"${v:,.0f}" if pd.notna(v) else "—" for v in value_num
-]
+display["Shares"] = shares_num.round().values
+display["Value"] = value_num.values
 
 display = display.reset_index(drop=True)
 trades_event = st.dataframe(
@@ -182,6 +184,10 @@ trades_event = st.dataframe(
     on_select="rerun",
     selection_mode="single-row",
     key="recent_trades_table",
+    column_config={
+        "Shares": st.column_config.NumberColumn("Shares", format="%d"),
+        "Value": st.column_config.NumberColumn("Value", format="dollar"),
+    },
 )
 _maybe_open_detail(
     "trades_detail",
