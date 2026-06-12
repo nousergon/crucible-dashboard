@@ -98,17 +98,10 @@ const resolvedJsonLd = jsonLd ?? defaultJsonLd;
         Console &rarr;
       </a>
       <div class="max-w-5xl mx-auto px-6 flex flex-col items-center">
-        <a href="/" class="relative block" aria-label="Crucible, a Nous Ergon product — home">
-          <!-- Soft charcoal glow matched to the lockup's brushed-steel plate;
-               the asset carries a baked-in asymmetric alpha feather plus an
-               edge-darkening vignette (the plate's bright top-right corner
-               would otherwise haze against the black page). -->
-          <div
-            class="absolute inset-[-12%] -z-10 rounded-full"
-            style="background: radial-gradient(ellipse 60% 55% at center, rgba(48, 49, 55, 0.75) 0%, rgba(28, 29, 34, 0.45) 55%, transparent 78%);"
-            aria-hidden="true"
-          >
-          </div>
+        <a href="/" class="block" aria-label="Crucible, a Nous Ergon product — home">
+          <!-- The lockup self-vignettes to black; the asset carries only a
+               narrow baked-in side/top alpha feather to dissolve the residual
+               edge seam (no bottom fade — the tagline sits at 97% height). -->
           <Image
             src={crucibleLogo}
             alt="Nous Ergon — Crucible"
