@@ -42,7 +42,7 @@ const oss = [
 <Base>
   <section class="max-w-3xl mx-auto px-6 pt-10 md:pt-12 pb-14 text-center">
     <h1 class="text-2xl md:text-[1.75rem] font-medium text-zinc-100 leading-snug tracking-tight mb-5 max-w-2xl mx-auto">
-      An applied AI lab.
+      An applied AI lab for finance.
     </h1>
     <p class="text-sm md:text-base text-zinc-400 leading-relaxed max-w-xl mx-auto">
       Nous Ergon &mdash; <em>intelligence at work</em>. We build agentic
@@ -57,6 +57,8 @@ const oss = [
         products.map((p) => (
           <a
             href={p.href}
+            target="_blank"
+            rel="noopener noreferrer"
             class={`block rounded-lg border p-6 transition hover:bg-white/[0.05] ${
               p.featured
                 ? 'border-sky-400/40 bg-white/[0.04]'
@@ -88,6 +90,8 @@ const oss = [
         oss.map((t) => (
           <a
             href={t.href}
+            target="_blank"
+            rel="noopener noreferrer"
             class="block rounded-lg border border-white/10 bg-white/[0.02] p-5 transition hover:bg-white/[0.05]"
           >
             <div class="text-sm font-semibold text-zinc-100 mb-1.5">{t.name}</div>
