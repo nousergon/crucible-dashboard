@@ -1,32 +1,40 @@
 name: marketing-ci
 
-# Build + type-check + lint for the Astro static site at marketing/. Path-scoped
-# so changes outside marketing/ don't trigger this workflow, and the Python-side
-# dashboard CI doesn't run on marketing-only changes either. Mirrors the
-# "fail-loud" discipline from ~/Development/CLAUDE.md item 3 — astro check
-# treats type errors as hard failures so they can't ship to apex silently.
+# Build + type-check + lint for the Astro static sites: marketing/ (the
+# Crucible product site, crucible.nousergon.ai) and marketing-apex/ (the
+# Nous Ergon lab landing, nousergon.ai — also builds the Hugo blog into
+# its public/). Path-scoped so changes outside the sites don't trigger this
+# workflow, and the Python-side dashboard CI doesn't run on site-only
+# changes either. Mirrors the "fail-loud" discipline from
+# ~/Development/CLAUDE.md item 3 — astro check treats type errors as hard
+# failures so they can't ship silently.
 
 on:
   pull_request:
     paths:
       - marketing/**
+      - marketing-apex/**
       - blog/**
       - .github/workflows/marketing-ci.yml
   push:
     branches: [main]
     paths:
       - marketing/**
+      - marketing-apex/**
       - blog/**
       - .github/workflows/marketing-ci.yml
   workflow_dispatch:
 
 jobs:
   build:
-    name: build + check + lint
+    name: build + check + lint (${{ matrix.site }})
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        site: [marketing, marketing-apex]
     defaults:
       run:
-        working-directory: marketing
+        working-directory: ${{ matrix.site }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -36,7 +44,7 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-          cache-dependency-path: marketing/package-lock.json
+          cache-dependency-path: ${{ matrix.site }}/package-lock.json
 
       - name: Install dependencies
         run: npm ci
