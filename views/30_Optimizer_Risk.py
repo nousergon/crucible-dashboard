@@ -128,10 +128,12 @@ history = load_optimizer_risk_history()
 
 if not history:
     st.info(
-        "No optimizer risk-history records yet. The backtester posts the first "
-        "record on its next run that produces a covariance-estimator sweep "
-        "(Saturday pipeline, or a manual `backtest.py --mode all`). The backfill "
-        "script (`scripts/backfill_optimizer_risk_history.py`) seeds prior weeks."
+        "No optimizer risk-history records yet. The backtester posts a record on "
+        "each run that produces an optimizer cutover-gate verdict (every "
+        "`backtest.py --mode all`, e.g. the Saturday pipeline); the covariance "
+        "sweep enriches the record when it's producing. The backfill script "
+        "(`scripts/backfill_optimizer_risk_history.py`) seeds prior weeks from "
+        "the historical gate verdicts."
     )
     st.stop()
 
