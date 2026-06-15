@@ -333,8 +333,18 @@ def _render_rationale(payload: dict) -> None:
 
 
 def _label(payload: dict) -> str:
-    td = payload.get("trading_day") or payload.get("calendar_date") or "?"
-    return f"{td}"
+    # Forward-looking intraday artifact: headline the day the order book is
+    # FOR — calendar_date (today, even pre-close, since it executes today) —
+    # NOT the backward-looking trading_day. trading_day is the last-closed
+    # session whose signals/predictions fed the book; it stays as input
+    # provenance (shown secondary), never the headline. Predictive/intraday
+    # operator surfaces use current day; realized artifacts (eval, EOD,
+    # backtest) keep trading_day. See alpha-engine-docs DATE_CONVENTIONS.md.
+    cd = payload.get("calendar_date")
+    td = payload.get("trading_day")
+    if cd and td and cd != td:
+        return f"{cd} (signals {td})"
+    return str(cd or td or "?")
 
 
 def _summary_caption(payload: dict) -> str:
