@@ -103,7 +103,16 @@ for repo in "${REPOS[@]}"; do
 
         # Only run full pip install if requirements.txt actually changed — pip
         # is slow on a 1GB instance and runs every day even when no deps moved.
-        if [ "$PREV_SHA" != "$NEW_SHA" ] && [ -f "requirements.txt" ] && [ -f ".venv/bin/pip" ]; then
+        #
+        # EXCLUDE alpha-engine-data: on this box it runs ONLY the slim daily-news
+        # collector (managed by daily-news.service, which installs
+        # requirements-daily-news.txt into its own .venv). A full
+        # `pip install -r requirements.txt` here would pull the heavy data stack
+        # (arcticdb/voyageai/edgartools, ~1.5 GB) into that slim venv and risk
+        # filling the shared t3.small's disk. The daily-news wrapper owns its
+        # slim deps; boot-pull still git-syncs the repo (reset --hard above).
+        if [ "$repo" != "/home/ec2-user/alpha-engine-data" ] && \
+           [ "$PREV_SHA" != "$NEW_SHA" ] && [ -f "requirements.txt" ] && [ -f ".venv/bin/pip" ]; then
             if git diff "$PREV_SHA" "$NEW_SHA" -- requirements.txt | grep -q "^[+-]"; then
                 log "GATE $repo — requirements.txt changed, running pip install"
                 if .venv/bin/pip install --quiet -r requirements.txt >> "$LOG" 2>&1; then
