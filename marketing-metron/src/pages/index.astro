@@ -5,7 +5,7 @@ import '../styles/global.css';
 const SITE_URL = 'https://metron.nousergon.ai';
 const title = 'Metron — portfolio analytics · Nous Ergon';
 const description =
-  'Metron is portfolio analytics from Nous Ergon: positions, performance, income, tax, and concentration across your brokers and accounts. Read-only, no ads, no trackers. Join the private beta.';
+  'Metron is portfolio analytics from Nous Ergon: positions, performance, income, tax, and concentration across your brokers and accounts. Read-only. Join the private beta.';
 
 // Cloudflare Web Analytics beacon token (privacy-first, no cookies). Injected at
 // build time via PUBLIC_CF_ANALYTICS_TOKEN; the beacon is omitted when unset so a
@@ -115,14 +115,21 @@ const jsonLd = {
             class="mt-6 flex flex-wrap items-center justify-center gap-x-7 gap-y-2 text-[13px] tracking-[0.06em] uppercase text-zinc-400"
             aria-label="Primary"
           >
-            <a href="https://nousergon.ai/" class="hover:text-zinc-100 transition">Home</a>
+            <a
+              href="https://nousergon.ai/"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="hover:text-zinc-100 transition"
+            >
+              Home
+            </a>
           </nav>
           <h1 class="mt-8 text-2xl md:text-4xl font-semibold tracking-tight text-zinc-100 text-balance">
             Your portfolio, in one place.
           </h1>
           <p class="mt-5 text-sm md:text-base text-zinc-400 leading-relaxed max-w-xl text-pretty">
             Metron consolidates positions, performance, income, and tax across your brokers and
-            accounts. Read-only. No ads, no trackers, no advice.
+            accounts &mdash; read-only.
           </p>
 
           <!-- Waitlist capture -->
@@ -186,36 +193,29 @@ const jsonLd = {
           </p>
         </div>
       </section>
-
-      <!-- Trust posture -->
-      <section class="px-6 py-10 border-t border-white/10">
-        <div class="max-w-4xl mx-auto flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-xs text-zinc-400">
-          <span>Read-only — Metron never trades</span>
-          <span class="text-zinc-700" aria-hidden="true">·</span>
-          <span>No ads, no third-party trackers</span>
-          <span class="text-zinc-700" aria-hidden="true">·</span>
-          <span>No advice — analytics, not recommendations</span>
-          <span class="text-zinc-700" aria-hidden="true">·</span>
-          <span>Your data stays yours</span>
-        </div>
-      </section>
     </main>
 
     <footer class="border-t border-white/10">
-      <div
-        class="max-w-5xl mx-auto px-6 py-8 text-xs text-zinc-500 flex flex-col md:flex-row md:items-center md:justify-between gap-3"
-      >
-        <div>
-          <a href="https://nousergon.ai/" class="text-zinc-400 hover:text-zinc-100 transition">
-            Nous Ergon
-          </a>
-          &mdash; an applied AI lab for financial markets
-          &middot;
-          <a href="mailto:nous@nousergon.ai" class="text-zinc-400 hover:text-zinc-100 transition">
-            nous@nousergon.ai
-          </a>
+      <div class="max-w-5xl mx-auto px-6 py-8 text-xs text-zinc-500">
+        <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+          <div>
+            <a
+              href="https://nousergon.ai/"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="text-zinc-400 hover:text-zinc-100 transition"
+            >
+              Nous Ergon
+            </a>
+            &mdash; an applied AI lab for financial markets
+            &middot;
+            <a href="mailto:nous@nousergon.ai" class="text-zinc-400 hover:text-zinc-100 transition">
+              nous@nousergon.ai
+            </a>
+          </div>
+          <div class="text-zinc-600">&nu;&omicron;&upsilon;&sigmaf; &epsilon;&rho;&gamma;&omicron;&nu;</div>
         </div>
-        <div class="text-zinc-600">&nu;&omicron;&upsilon;&sigmaf; &epsilon;&rho;&gamma;&omicron;&nu;</div>
+        <p class="mt-4 text-zinc-600">Portfolio analytics &mdash; not investment advice.</p>
       </div>
     </footer>
 
