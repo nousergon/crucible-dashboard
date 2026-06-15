@@ -1,0 +1,13 @@
+# Cloudflare Pages config for the Metron marketing site (direct-upload project
+# `nousergon-metron`). Declares the D1 binding the waitlist Pages Function uses and
+# the Astro build output dir, so deploys are just `npx wrangler pages deploy` (no args).
+name = "nousergon-metron"
+compatibility_date = "2024-11-06"
+pages_build_output_dir = "./dist"
+
+# Waitlist store — bound as env.WAITLIST_DB in functions/api/waitlist.ts.
+# database_id is the live `metron-waitlist` D1 (region WNAM).
+[[d1_databases]]
+binding = "WAITLIST_DB"
+database_name = "metron-waitlist"
+database_id = "90604c67-5415-4f85-831b-54cdc3667088"
