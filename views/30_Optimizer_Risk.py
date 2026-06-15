@@ -128,10 +128,12 @@ history = load_optimizer_risk_history()
 
 if not history:
     st.info(
-        "No optimizer risk-history records yet. The backtester posts the first "
-        "record on its next run that produces a covariance-estimator sweep "
-        "(Saturday pipeline, or a manual `backtest.py --mode all`). The backfill "
-        "script (`scripts/backfill_optimizer_risk_history.py`) seeds prior weeks."
+        "No optimizer risk-history records yet. The backtester posts a record on "
+        "each run that produces an optimizer cutover-gate verdict (every "
+        "`backtest.py --mode all`, e.g. the Saturday pipeline); the covariance "
+        "sweep enriches the record when it's producing. The backfill script "
+        "(`scripts/backfill_optimizer_risk_history.py`) seeds prior weeks from "
+        "the historical gate verdicts."
     )
     st.stop()
 
@@ -143,10 +145,21 @@ if sort_cols:
 x = _x_axis(df)
 
 latest = df.iloc[-1].to_dict()
+_src = latest.get("metrics_source") or "optimizer_gate"
+_src_label = {
+    "optimizer_gate": "deployed config (optimizer gate)",
+    "cov_sweep": f"cov-sweep cell {latest.get('cov_selected_name')}"
+    + (" (winner)" if latest.get("cov_selected_is_winner") else " (baseline)"),
+}.get(_src, _src)
 st.markdown(
     f"**{len(df)} run snapshot(s)** · latest `{latest.get('trading_day', '?')}` "
-    f"· selected cell **{latest.get('cov_selected_name', '?')}** "
-    f"({'sweep winner' if latest.get('cov_selected_is_winner') else 'baseline'})"
+    f"· metrics from **{_src_label}**"
+)
+st.caption(
+    "Each point is one backtester run. Metrics source per run is the deployed "
+    "optimizer's cutover-gate backtest (`optimizer_gate`), or the covariance-"
+    "sweep selected cell once that sweep is producing (`cov_sweep`). Levers are "
+    "always paired with the config their metrics were measured on."
 )
 
 # ── Current posture ──────────────────────────────────────────────────────────

@@ -5,7 +5,14 @@ Consumer side of the cross-repo optimizer_risk_history contract: tolerate the
 empty/absent case, skip the latest.json sidecar, and pass dated records through.
 """
 
+import sysconfig
 from unittest.mock import MagicMock, patch
+
+# Warm sysconfig's config-var cache BEFORE any test patches builtins.open — a
+# cold import under the patched-open helper below otherwise trips macOS
+# _osx_support (re.search on a MagicMock plist read). The full suite warms this
+# incidentally; warming it here makes this file pass in isolation too.
+sysconfig.get_config_vars()
 
 _MOCK_CONFIG = {
     "s3": {"research_bucket": "test-bucket", "trades_bucket": "test-bucket"},
