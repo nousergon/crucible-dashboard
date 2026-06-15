@@ -626,6 +626,45 @@ def load_executor_params_history() -> list[dict]:
 
 
 @st.cache_data(ttl=_ttl("research"))
+def load_optimizer_risk_history() -> list[dict]:
+    """Return optimizer_risk_history records sorted oldest → newest.
+
+    Reads `config/optimizer_risk_history/{run_id}.json` — written by the
+    backtester (`alpha-engine-backtester/optimizer/optimizer_risk_history.py`)
+    on each run that produces a covariance-estimator sweep. Each record is a
+    flat snapshot of the portfolio optimizer's risk-tolerance levers
+    (risk_aversion, tcost_bps, covariance_shrinkage, sigma_horizon_days,
+    alpha_uncertainty_penalty, turnover/sector caps, …) plus the selected
+    cell's risk metrics (sortino / psr / cvar_95 / max_drawdown /
+    tracking_error_ann / mean_active_share / turnover_one_way_ann / …).
+
+    The `latest.json` sidecar is skipped (it duplicates the newest dated
+    record). Excludes the empty/absent case gracefully (returns []).
+    """
+    bucket = _research_bucket()
+    prefix = f"{_CONFIG_PREFIX}/optimizer_risk_history/"
+    client = get_s3_client()
+    try:
+        resp = client.list_objects_v2(Bucket=bucket, Prefix=prefix)
+    except Exception as e:
+        logger.warning("list optimizer_risk_history failed: %s", e)
+        _record_s3_error(bucket, prefix, type(e).__name__, str(e))
+        return []
+
+    keys = sorted(
+        obj["Key"]
+        for obj in resp.get("Contents", [])
+        if obj["Key"].endswith(".json") and not obj["Key"].endswith("/latest.json")
+    )
+    history: list[dict] = []
+    for key in keys:
+        data = _fetch_s3_json(bucket, key)
+        if isinstance(data, dict):
+            history.append(data)
+    return history
+
+
+@st.cache_data(ttl=_ttl("research"))
 def load_rag_manifest() -> dict | None:
     """Load `rag/manifest/latest.json` — RAG corpus inventory snapshot.
 
