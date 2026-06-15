@@ -7,11 +7,11 @@
 [![Streamlit](https://img.shields.io/badge/Streamlit-1a73e8?style=flat-square)](https://streamlit.io/)
 [![Plotly](https://img.shields.io/badge/Plotly-1a73e8?style=flat-square)](https://plotly.com/)
 [![License: AGPL-3.0-only](https://img.shields.io/badge/License-AGPL--3.0--only-yellow?style=flat-square)](LICENSE)
-[![Phase 2 · Reliability](https://img.shields.io/badge/Phase_2-Reliability-e9c46a?style=flat-square)](https://github.com/cipher813/alpha-engine-docs#phase-trajectory)
+[![Phase 2 · Reliability](https://img.shields.io/badge/Phase_2-Reliability-e9c46a?style=flat-square)](https://github.com/nousergon/nousergon-docs#phase-trajectory)
 
 Read-only Streamlit dashboard for monitoring the full Alpha Engine system. Powers the public [`nousergon.ai`](https://nousergon.ai) home page (transitional — moving to `live.nousergon.ai` once the Astro marketing site lands at apex) and the private `console.nousergon.ai` (Cloudflare Access). Reads from S3 only — never writes.
 
-> System overview, Step Function orchestration, and module relationships live in [`alpha-engine-docs`](https://github.com/cipher813/alpha-engine-docs). Code index lives in [`OVERVIEW.md`](OVERVIEW.md).
+> System overview, Step Function orchestration, and module relationships live in [`alpha-engine-docs`](https://github.com/nousergon/nousergon-docs). Code index lives in [`OVERVIEW.md`](OVERVIEW.md).
 
 ## What this does
 
@@ -48,13 +48,13 @@ This repo is **public**. Bucket names + email recipients in `config.yaml` are gi
 
 | Module | Repo |
 |---|---|
-| Executor | [`alpha-engine`](https://github.com/cipher813/alpha-engine) |
+| Executor | [`alpha-engine`](https://github.com/nousergon/crucible-executor) |
 | Data | [`alpha-engine-data`](https://github.com/cipher813/alpha-engine-data) |
 | Research | [`alpha-engine-research`](https://github.com/cipher813/alpha-engine-research) |
 | Predictor | [`alpha-engine-predictor`](https://github.com/cipher813/alpha-engine-predictor) |
 | Backtester | [`alpha-engine-backtester`](https://github.com/cipher813/alpha-engine-backtester) |
-| Library | [`alpha-engine-lib`](https://github.com/cipher813/alpha-engine-lib) |
-| Docs | [`alpha-engine-docs`](https://github.com/cipher813/alpha-engine-docs) |
+| Library | [`alpha-engine-lib`](https://github.com/nousergon/nousergon-lib) |
+| Docs | [`alpha-engine-docs`](https://github.com/nousergon/nousergon-docs) |
 
 ## License
 
