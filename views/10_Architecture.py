@@ -362,7 +362,7 @@ st.divider()
 st.markdown(
     """
     Deeper material: each module's [public README](https://github.com/cipher813)
-    plus the [system overview](https://github.com/cipher813/alpha-engine-docs#readme)
+    plus the [system overview](https://github.com/nousergon/nousergon-docs#readme)
     in alpha-engine-docs. Per-module trade-offs, failure modes, and decision logs
     live in the private interview kit.
     """
