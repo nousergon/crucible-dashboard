@@ -432,6 +432,7 @@ def _build_navigation():
             page("3_Analysis.py", "Analysis", "📊"),
             page("8_Eval_Quality.py", "Eval Quality", "⚖"),
             page("12_Feedback_Loop.py", "Feedback Loop", "🔁"),
+            page("30_Optimizer_Risk.py", "Optimizer Risk", "🎚"),
             page("21_Backtester_Evaluator_Archive.py", "Backtester Report (archive)", "📑"),
         ],
         "🩺 System & Ops": [
