@@ -269,6 +269,35 @@ def get_cycle_funnel(eval_date: str) -> dict:
     }
 
 
+def get_cio_inputs(eval_date: str) -> pd.DataFrame:
+    """The candidate set handed TO the CIO for ``eval_date`` — the union of
+    every sector team's recommendations (``team_candidates`` rows with
+    ``team_recommended=1``). One row per (team_id, ticker) with the team-stage
+    scores the CIO sees. Empty frame if no cycle ran / table missing."""
+    return query_research_db(
+        "SELECT team_id, ticker, quant_rank, quant_score, qual_score "
+        "FROM team_candidates "
+        "WHERE eval_date=? AND team_recommended=1 "
+        "ORDER BY team_id, quant_rank",
+        params=(eval_date,),
+    )
+
+
+def get_cio_evaluations(eval_date: str) -> pd.DataFrame:
+    """All CIO decisions for ``eval_date`` — every ticker the CIO evaluated,
+    its source team, blended scores, decision, conviction, rank, rationale and
+    rule_tags. Ordered ADVANCEd-first (by rank), then the rest. Empty frame if
+    the CIO stage didn't run / persist that cycle."""
+    return query_research_db(
+        "SELECT ticker, team_id, quant_score, qual_score, combined_score, "
+        "macro_shift, final_score, cio_decision, cio_conviction, cio_rank, "
+        "rationale, rule_tags "
+        "FROM cio_evaluations WHERE eval_date=? "
+        "ORDER BY (cio_rank IS NULL), cio_rank",
+        params=(eval_date,),
+    )
+
+
 def explain_why_not(ticker: str, eval_date: str) -> dict:
     """Walk the decision funnel and report where ``ticker`` was dropped.
 
