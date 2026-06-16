@@ -298,6 +298,33 @@ def get_cio_evaluations(eval_date: str) -> pd.DataFrame:
     )
 
 
+def get_team_candidates(eval_date: str, team_id: str) -> pd.DataFrame:
+    """One sector team's ranked candidates for a cycle — quant rank/score, qual
+    score, the per-sub-signal scores, and the team_recommended flag. Ordered by
+    quant_rank. Empty frame if the team didn't run / persist that cycle."""
+    return query_research_db(
+        "SELECT ticker, quant_rank, quant_score, qual_score, team_recommended, "
+        "rsi_sub_score, macd_sub_score, ma50_sub_score, ma200_sub_score, "
+        "momentum_sub_score "
+        "FROM team_candidates WHERE eval_date=? AND team_id=? "
+        "ORDER BY (quant_rank IS NULL), quant_rank",
+        params=(eval_date, team_id),
+    )
+
+
+def get_team_inputs(eval_date: str, team_id: str) -> pd.DataFrame:
+    """The complete candidate set HANDED to one sector team for a cycle, from
+    the team_inputs ledger (research.db schema v19). Columns: ticker, source
+    ('scanner' | 'held_population'), sector. Empty frame when the table is
+    absent (pre-v19 DB) or the cycle predates the ledger — callers fall back to
+    team_candidates in that case."""
+    return query_research_db(
+        "SELECT ticker, source, sector FROM team_inputs "
+        "WHERE eval_date=? AND team_id=? ORDER BY ticker",
+        params=(eval_date, team_id),
+    )
+
+
 def explain_why_not(ticker: str, eval_date: str) -> dict:
     """Walk the decision funnel and report where ``ticker`` was dropped.
 
