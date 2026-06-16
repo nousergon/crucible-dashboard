@@ -415,6 +415,7 @@ def _build_navigation():
         "🔬 Research & Signals": [
             page("2_Signals_and_Research.py", "Signals & Research", "🧭"),
             page("Daily_News.py", "Daily News", "📰"),
+            page("34_Scanner.py", "Scanner", "🔭"),
             page("29_Decision_Review.py", "Decision Review", "🔍"),
             page("33_Sector_Team_Review.py", "Sector Team Review", "🏟"),
             page("31_CIO_Review.py", "CIO Review", "🏛"),

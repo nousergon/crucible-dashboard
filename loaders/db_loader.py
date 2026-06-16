@@ -325,6 +325,21 @@ def get_team_inputs(eval_date: str, team_id: str) -> pd.DataFrame:
     )
 
 
+def get_scanner_evaluations(eval_date: str) -> pd.DataFrame:
+    """The full scanner screen for a cycle (~900 names) from scanner_evaluations:
+    per-gate pass flags (quant_filter_pass / liquidity_pass / volatility_pass /
+    balance_sheet_pass), filter_fail_reason, scan_path, sector, and the
+    technical indicators. Empty frame if no cycle ran that date."""
+    return query_research_db(
+        "SELECT ticker, sector, tech_score, scan_path, quant_filter_pass, "
+        "liquidity_pass, volatility_pass, balance_sheet_pass, filter_fail_reason, "
+        "rsi_14, atr_pct, price_vs_ma200, current_price, avg_volume_20d "
+        f"FROM scanner_evaluations WHERE eval_date=? "
+        f"ORDER BY sector, tech_score DESC LIMIT {_MAX_QUERY_ROWS}",
+        params=(eval_date,),
+    )
+
+
 def explain_why_not(ticker: str, eval_date: str) -> dict:
     """Walk the decision funnel and report where ``ticker`` was dropped.
 
