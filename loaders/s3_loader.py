@@ -275,6 +275,25 @@ def download_s3_json(bucket: str, key: str) -> dict | list | None:
     return _fetch_s3_json(bucket, key)
 
 
+@st.cache_data(ttl=_ttl("research"))
+def load_sector_team_run(eval_date: str, team_id: str) -> dict | None:
+    """Load a sector team's full run envelope for one cycle:
+    ``archive/sector_team_runs/{eval_date}/{team_id}.json`` (producer:
+    alpha-engine-research ``archive/manager.py::save_sector_team_run``).
+
+    Returns the inner ``output`` dict — recommendations, quant_output,
+    qual_output, peer_review_output, tool_calls, partial/error flags. None if
+    the envelope is absent or malformed. Tolerates both the wrapped
+    ``{"output": {...}}`` shape and a bare output dict."""
+    data = download_s3_json(
+        _research_bucket(), f"archive/sector_team_runs/{eval_date}/{team_id}.json"
+    )
+    if not isinstance(data, dict):
+        return None
+    inner = data.get("output")
+    return inner if isinstance(inner, dict) else data
+
+
 @st.cache_data(ttl=_ttl("trades"))
 def download_s3_csv(bucket: str, key: str) -> pd.DataFrame | None:
     """Download a CSV from S3 and return a DataFrame. Returns None on failure."""
