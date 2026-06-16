@@ -267,12 +267,13 @@ class TestLibVersionPin:
             "to be importable"
         )
         assert "@main" not in text, "alpha-engine-lib must be pinned to a tag, not @main"
-        assert "@v0.59.6" in text, (
-            "alpha-engine-lib should pin to v0.59.6 (pipeline-status registry: "
-            "the config#1083 model-zoo fan-out states ResolveZooSpecs / "
-            "TrainSpecDispatch / ModelZooSelect / PublishModelZooFailureImmediate "
-            "— required so test_pipeline_status_registry_drift passes + page-25 "
-            "deep-links them; config#1115). Earlier: v0.59.2 "
+        assert "@v0.59.7" in text, (
+            "alpha-engine-lib should pin to v0.59.7 (pipeline-status registry: "
+            "the EOD PostMarketArcticAppend state + WaitForPostMarketArcticAppend "
+            "companion — required so test_pipeline_status_registry_drift passes "
+            "for the EOD SF; config#1120). Earlier: v0.59.6 (config#1083 model-zoo "
+            "fan-out states ResolveZooSpecs / TrainSpecDispatch / ModelZooSelect / "
+            "PublishModelZooFailureImmediate; config#1115). Earlier: v0.59.2 "
             "(ChronicGapSelfHeal [L4604] + MorningArcticAppend [L4608] weekday "
             "resilience states + their WaitFor* companions — the 2026-06-11 "
             "weekday-SF split arc; v0.59.x also carries the M0 slot contracts). "
