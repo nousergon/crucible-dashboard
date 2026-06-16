@@ -29,4 +29,7 @@ yfinance>=0.2.40
 # fan-out states (ResolveZooSpecs / TrainSpecDispatch / ModelZooSelect /
 # PublishModelZooFailureImmediate) — clears the remaining page-25 drift cells
 # (config#1115).
-alpha-engine-lib[flow_doctor] @ git+https://github.com/nousergon/nousergon-lib@v0.59.6
+# v0.59.7 (2026-06-16): pipeline_status.registry gains the EOD PostMarketArcticAppend
+# state (+ WaitForPostMarketArcticAppend companion) — clears the last EOD-SF drift
+# cell (config#1120).
+alpha-engine-lib[flow_doctor] @ git+https://github.com/nousergon/nousergon-lib@v0.59.7
