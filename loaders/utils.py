@@ -2,7 +2,39 @@
 Utility helpers for the Alpha Engine Dashboard loaders and pages.
 """
 
+import numpy as np
 import pandas as pd
+
+
+def risk_contribution_shares(
+    target_weights: list[float], covariance_daily: list[list[float]] | None
+) -> np.ndarray:
+    """Per-asset share of total portfolio variance, in percent.
+
+    For weights ``w`` and covariance ``Σ``: the risk contribution of asset i is
+    ``rc_i = w_i · (Σw)_i`` and the portfolio variance is ``wᵀΣw = Σ rc_i``.
+    Returns ``rc_i / wᵀΣw · 100`` (the contributions sum to 100 for a fully
+    invested book). Used by the Optimizer Decision page on the optimizer shadow
+    log's persisted daily covariance — no re-solve.
+
+    Returns an all-NaN array (length = len(target_weights)) when the covariance
+    is absent / not square / dimension-mismatched, or portfolio variance ≤ 0.
+    """
+    n = len(target_weights)
+    nan = np.full(n, np.nan)
+    if not isinstance(covariance_daily, list) or len(covariance_daily) != n:
+        return nan
+    if not all(isinstance(row, list) and len(row) == n for row in covariance_daily):
+        return nan
+    w = np.array(
+        [float(x) if isinstance(x, (int, float)) else 0.0 for x in target_weights]
+    )
+    sigma = np.array(covariance_daily, dtype=float)
+    sigma_w = sigma @ w
+    port_var = float(w @ sigma_w)
+    if port_var <= 0:
+        return nan
+    return w * sigma_w / port_var * 100.0
 
 
 def safe_column(df: pd.DataFrame, *candidates: str) -> str | None:

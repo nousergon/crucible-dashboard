@@ -686,6 +686,43 @@ def load_optimizer_risk_history() -> list[dict]:
 
 
 @st.cache_data(ttl=_ttl("research"))
+def list_optimizer_shadow_dates() -> list[str]:
+    """Return the available daily optimizer-shadow dates (YYYY-MM-DD), oldest →
+    newest. Sourced from `predictor/optimizer_shadow/{date}.json` keys; skips
+    the `latest.json` sidecar and `replays/` re-runs. [] on empty/absent."""
+    bucket = _research_bucket()
+    prefix = "predictor/optimizer_shadow/"
+    client = get_s3_client()
+    try:
+        resp = client.list_objects_v2(Bucket=bucket, Prefix=prefix)
+    except Exception as e:
+        logger.warning("list optimizer_shadow dates failed: %s", e)
+        _record_s3_error(bucket, prefix, type(e).__name__, str(e))
+        return []
+    dates: set[str] = set()
+    for obj in resp.get("Contents", []):
+        key = obj["Key"]
+        if not key.endswith(".json") or key.endswith("/latest.json") or "/replays/" in key:
+            continue
+        stem = key[len(prefix):].removesuffix(".json")
+        if ISO_DATE_PATTERN.match(stem):
+            dates.add(stem)
+    return sorted(dates)
+
+
+@st.cache_data(ttl=_ttl("research"))
+def load_optimizer_shadow(run_date: str) -> dict | None:
+    """Load the FULL daily optimizer shadow log for `run_date` — the complete
+    per-ticker decision record (parallel arrays: tickers, target_weights,
+    current_weights, alpha_hat, alpha_uncertainty, eligibility,
+    eligibility_reasons, stance_caps, sectors, plus covariance_daily,
+    would_be_trades, diagnostics, optimizer_cfg, portfolio_nav). Producer:
+    `alpha-engine/executor/optimizer_shadow.py`. None if absent/unparseable."""
+    data = download_s3_json(_research_bucket(), f"predictor/optimizer_shadow/{run_date}.json")
+    return data if isinstance(data, dict) else None
+
+
+@st.cache_data(ttl=_ttl("research"))
 def load_rag_manifest() -> dict | None:
     """Load `rag/manifest/latest.json` — RAG corpus inventory snapshot.
 
