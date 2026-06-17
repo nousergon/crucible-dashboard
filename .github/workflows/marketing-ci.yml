@@ -67,3 +67,9 @@ jobs:
             || (echo 'sitemap-index.xml not emitted — @astrojs/sitemap regressed' && exit 1)
           test -f dist/robots.txt \
             || (echo 'robots.txt missing from build output' && exit 1)
+
+  notify-main-failure:
+    needs: [build]
+    if: ${{ failure() && github.ref == 'refs/heads/main' }}
+    uses: nousergon/nousergon-lib/.github/workflows/notify-ci-failure.yml@main
+    secrets: inherit
