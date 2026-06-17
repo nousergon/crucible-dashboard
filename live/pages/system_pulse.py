@@ -42,11 +42,36 @@ _STATUS_EMOJI = {
     "ABORTED": "⛔",
     "SKIPPED": "⏭️",
     "NOT_RUN": "·",
+    "NOT-RUN": "·",
+}
+
+# A cycle's headline verdict is judged by artifacts produced, not the Step
+# Function's terminal exit code (config#727 / #856) — see
+# loaders.system_pulse_loader.derive_cycle_verdict.
+_VERDICT_EMOJI = {
+    "COMPLETE": "✅",
+    "PARTIAL": "⚠️",
+    "FAILED": "🔴",
+    "RUNNING": "🚀",
+    "NOT_RUN": "·",
+}
+_VERDICT_LABEL = {
+    "COMPLETE": "Complete",
+    "PARTIAL": "Partial",
+    "FAILED": "Failed",
+    "RUNNING": "Running",
+    "NOT_RUN": "Not run",
 }
 
 
 def _fmt_status(status: str) -> str:
-    return f"{_STATUS_EMOJI.get(status, '·')} {status.replace('_', ' ').title()}"
+    return f"{_STATUS_EMOJI.get(status, '·')} {status.replace('_', ' ').replace('-', ' ').title()}"
+
+
+def _fmt_verdict(verdict: str) -> str:
+    emoji = _VERDICT_EMOJI.get(verdict, "·")
+    label = _VERDICT_LABEL.get(verdict, verdict.replace("_", " ").title())
+    return f"{emoji} {label}"
 
 
 def _fmt_duration(seconds: float | None) -> str:
@@ -74,10 +99,25 @@ def _render_cycle(title: str, caption: str, run: dict | None) -> None:
         st.caption(caption)
         st.info("Pipeline status temporarily unavailable.")
         return
-    st.caption(
+    verdict = run.get("verdict", "")
+    dag_status = run.get("status", "")
+    n_total = run.get("artifacts_total") or 0
+    headline = (
         f"{caption} · Last run {_fmt_when(run.get('start_utc'))} — "
-        f"{_fmt_status(run.get('status', ''))}"
+        f"{_fmt_verdict(verdict)}"
     )
+    if n_total:
+        headline += f" · {run.get('artifacts_produced', 0)}/{n_total} artifacts produced"
+    st.caption(headline)
+    # Transparency: never hide a genuine SF failure. When the run produced
+    # its artifacts but the Step Function still exited non-OK (a Catch /
+    # DataLimitExceeded / terminal-notify step), say so plainly — the cycle
+    # succeeded; the plumbing tripped at a non-artifact step.
+    if verdict == "COMPLETE" and dag_status not in ("SUCCEEDED", "RUNNING", ""):
+        st.caption(
+            f"↳ Step Function reported {_fmt_status(dag_status)} at a "
+            "non-artifact step; all tracked artifacts were produced."
+        )
     tasks = run.get("tasks") or []
     if not tasks:
         st.info("No step detail available for this run.")
@@ -101,6 +141,12 @@ st.caption(
 )
 
 # ── Pipeline cycles ─────────────────────────────────────────────────────
+
+st.caption(
+    "Cycle health reflects whether the run produced its artifacts, not the "
+    "Step Function's terminal exit code — a run can write every artifact yet "
+    "exit non-OK on a downstream notification step."
+)
 
 _render_cycle(
     "Weekly cycle",
