@@ -35,9 +35,11 @@ import streamlit as st
 from alpha_engine_lib.pipeline_status import (
     PipelineExecutionSummary,
     PipelineRun,
+    RunStatus,
     SFNAccessDenied,
     SFNNoExecutions,
     SFNThrottled,
+    TaskStatus,
     list_recent_pipeline_runs,
     read_pipeline_state,
 )
@@ -66,6 +68,71 @@ class LoadOutcome(str, Enum):
     CACHE = "cache"  # SFN failed; rendering last-good from S3 cache
     NO_EXECUTIONS = "no_executions"  # SF exists but has no history
     ERROR = "error"  # SFN failed AND no cache available
+
+
+# An ArchivePageRef-tagged Task (TaskRow.archive.kind == "archive_page_ref")
+# is a substantive state whose SUCCESS produces an operator-readable
+# artifact; ArtifactReason states are substrate / notification / operational
+# only. A cycle is judged COMPLETE by whether it produced its artifacts —
+# NOT the SF terminal RunStatus — because a run that wrote every artifact and
+# then tripped a Catch / States.DataLimitExceeded / a terminal-notify state
+# (HandleFailure, NotifyComplete) still reports RunStatus.FAILED. That's a
+# plumbing fail at a non-artifact step, not a failed cycle (config#727 /
+# config#856).
+_ARTIFACT_KIND = "archive_page_ref"
+
+
+@dataclass(frozen=True)
+class CycleVerdict:
+    """Artifact-completion verdict for a PipelineRun (see derive_cycle_verdict)."""
+
+    verdict: str  # COMPLETE | PARTIAL | FAILED | RUNNING | NOT_RUN
+    artifacts_produced: int
+    artifacts_total: int
+
+    @property
+    def diverges_from_dag(self) -> bool:
+        """True when the run produced its artifacts but the SF still exited non-OK."""
+        return self.verdict == "COMPLETE"
+
+
+def derive_cycle_verdict(run: PipelineRun) -> CycleVerdict:
+    """Project a PipelineRun onto an artifact-completion verdict.
+
+    ``COMPLETE`` (every artifact-bearing state SUCCEEDED, regardless of the
+    DAG terminal status), ``PARTIAL`` (some), ``FAILED`` (none), or
+    ``RUNNING`` / ``NOT_RUN`` passed through. Falls back to the raw DAG
+    status when the run carries no artifact-bearing telemetry, so we never
+    manufacture a green from absent evidence.
+
+    NOTE: mirrors ``live/loaders/system_pulse_loader.derive_cycle_verdict``
+    (the public surface). Both should be lifted into
+    ``alpha_engine_lib.pipeline_status`` on the next lib bump — second
+    adoption is the consolidation signal; bundle with the registry work on
+    config#1102.
+    """
+    dag = run.status
+    produced = total = 0
+    for t in run.tasks:
+        if getattr(t.archive, "kind", None) != _ARTIFACT_KIND:
+            continue
+        total += 1
+        if t.status == TaskStatus.SUCCEEDED:
+            produced += 1
+
+    if dag == RunStatus.RUNNING:
+        verdict = "RUNNING"
+    elif dag == RunStatus.NOT_RUN:
+        verdict = "NOT_RUN"
+    elif total == 0:
+        verdict = "COMPLETE" if dag == RunStatus.SUCCEEDED else "FAILED"
+    elif produced == total:
+        verdict = "COMPLETE"
+    elif produced > 0:
+        verdict = "PARTIAL"
+    else:
+        verdict = "FAILED"
+    return CycleVerdict(verdict, produced, total)
 
 
 @dataclass(frozen=True)

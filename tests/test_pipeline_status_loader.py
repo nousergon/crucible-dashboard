@@ -32,12 +32,15 @@ from alpha_engine_lib.pipeline_status import (
     SFNAccessDenied,
     SFNNoExecutions,
     SFNThrottled,
+    TaskStatus,
 )
-from alpha_engine_lib.pipeline_status.read import PipelineStatusError
+from alpha_engine_lib.pipeline_status.read import PipelineStatusError, TaskRow
+from alpha_engine_lib.pipeline_status.registry import ArchivePageRef, ArtifactReason
 
 from loaders.pipeline_status_loader import (
     LoadOutcome,
     LoadResult,
+    derive_cycle_verdict,
     read_pipeline_state_with_fallback,
     refresh_and_write_cache,
     _read_last_good_cache_for_arn,
@@ -334,3 +337,90 @@ def test_write_cache_swallows_put_failures():
     # Error IS recorded though (per feedback_no_silent_fails — surfaces in
     # the dashboard's S3 error log even if it doesn't propagate)
     mock_record.assert_called_once()
+
+
+# ── derive_cycle_verdict (config#727 / #856 — artifacts, not exit code) ────
+
+
+def _row(name, status, *, artifact=True):
+    """Build a TaskRow; artifact=True → ArchivePageRef (artifact-bearing),
+    artifact=False → ArtifactReason (substrate/notify-only)."""
+    archive = (
+        ArchivePageRef(page="x", artifact_label=name)
+        if artifact
+        else ArtifactReason(reason="substrate-only")
+    )
+    return TaskRow(state_name=name, status=status, archive=archive)
+
+
+def _run_with(status, rows):
+    return PipelineRun(
+        state_machine_arn=SAT_ARN,
+        pretty_label="Saturday SF",
+        execution_arn=f"{SAT_ARN.replace('stateMachine', 'execution')}:t",
+        execution_name="t",
+        status=status,
+        tasks=rows,
+    )
+
+
+class TestDeriveCycleVerdict:
+    def test_all_artifacts_produced_but_dag_failed_is_complete(self):
+        # THE BUG: SF exits FAILED at a non-artifact step but every
+        # artifact-bearing state succeeded → COMPLETE.
+        run = _run_with(
+            RunStatus.FAILED,
+            [
+                _row("Research", TaskStatus.SUCCEEDED),
+                _row("PredictorTraining", TaskStatus.SUCCEEDED),
+                _row("Backtester", TaskStatus.SUCCEEDED),
+                _row("HandleFailure", TaskStatus.SUCCEEDED, artifact=False),
+            ],
+        )
+        cv = derive_cycle_verdict(run)
+        assert cv.verdict == "COMPLETE"
+        assert (cv.artifacts_produced, cv.artifacts_total) == (3, 3)
+        assert cv.diverges_from_dag is True
+
+    def test_some_missing_is_partial(self):
+        run = _run_with(
+            RunStatus.FAILED,
+            [
+                _row("Research", TaskStatus.SUCCEEDED),
+                _row("PredictorTraining", TaskStatus.FAILED),
+            ],
+        )
+        cv = derive_cycle_verdict(run)
+        assert cv.verdict == "PARTIAL"
+        assert (cv.artifacts_produced, cv.artifacts_total) == (1, 2)
+
+    def test_none_produced_is_failed(self):
+        run = _run_with(
+            RunStatus.FAILED,
+            [_row("Research", TaskStatus.FAILED), _row("Backtester", TaskStatus.NOT_RUN)],
+        )
+        assert derive_cycle_verdict(run).verdict == "FAILED"
+
+    def test_clean_success_is_complete(self):
+        run = _run_with(RunStatus.SUCCEEDED, [_row("Research", TaskStatus.SUCCEEDED)])
+        cv = derive_cycle_verdict(run)
+        assert cv.verdict == "COMPLETE"
+        assert cv.diverges_from_dag is True  # COMPLETE; caller gates on dag != SUCCEEDED
+
+    def test_substrate_only_states_do_not_count(self):
+        # Only substrate/notify states present → zero artifact telemetry →
+        # fall back to the DAG status (never manufacture a green).
+        run = _run_with(
+            RunStatus.FAILED,
+            [
+                _row("LibPinDriftCheck", TaskStatus.SUCCEEDED, artifact=False),
+                _row("HandleFailure", TaskStatus.SUCCEEDED, artifact=False),
+            ],
+        )
+        cv = derive_cycle_verdict(run)
+        assert cv.artifacts_total == 0
+        assert cv.verdict == "FAILED"
+
+    def test_running_and_not_run_pass_through(self):
+        assert derive_cycle_verdict(_run_with(RunStatus.RUNNING, [])).verdict == "RUNNING"
+        assert derive_cycle_verdict(_run_with(RunStatus.NOT_RUN, [])).verdict == "NOT_RUN"

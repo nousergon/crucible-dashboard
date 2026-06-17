@@ -65,6 +65,7 @@ from alpha_engine_lib.pipeline_status.registry import ArchivePageRef, ArtifactRe
 from loaders.pipeline_status_loader import (
     LoadOutcome,
     LoadResult,
+    derive_cycle_verdict,
     list_recent_pipeline_runs_for_arn,
     read_pipeline_state_with_fallback,
     refresh_and_write_cache,
@@ -120,6 +121,25 @@ _RUN_STATUS_EMOJI = {
     RunStatus.TIMED_OUT: "⏰",
     RunStatus.ABORTED: "⛔",
     RunStatus.NOT_RUN: "—",
+}
+
+
+# Artifact-completion verdict (config#727 / #856) — judged by artifacts
+# produced, not the SF terminal RunStatus. See
+# loaders.pipeline_status_loader.derive_cycle_verdict.
+_VERDICT_EMOJI = {
+    "COMPLETE": "✅",
+    "PARTIAL": "⚠️",
+    "FAILED": "🔴",
+    "RUNNING": "🚀",
+    "NOT_RUN": "—",
+}
+_VERDICT_LABEL = {
+    "COMPLETE": "Complete",
+    "PARTIAL": "Partial",
+    "FAILED": "Failed",
+    "RUNNING": "Running",
+    "NOT_RUN": "Not run",
 }
 
 
@@ -224,13 +244,25 @@ def _render_run_header(run: Optional[PipelineRun], arn: str) -> None:
         st.subheader(f"{label}")
         return
 
-    emoji = _RUN_STATUS_EMOJI.get(run.status, "❓")
+    # Headline the artifact-completion VERDICT, not the raw SF terminal
+    # status — a run that produced every artifact but tripped a Catch /
+    # DataLimitExceeded / terminal-notify state still reports FAILED
+    # (config#727 / #856). The raw SF status + failing-state detail are kept
+    # below for the operator (this is the gated console, not the public site).
+    cv = derive_cycle_verdict(run)
+    v_emoji = _VERDICT_EMOJI.get(cv.verdict, "❓")
+    v_label = _VERDICT_LABEL.get(cv.verdict, cv.verdict.title())
+    artifact_frag = (
+        f" · {cv.artifacts_produced}/{cv.artifacts_total} artifacts"
+        if cv.artifacts_total
+        else ""
+    )
     # Role badge surfaces whether this execution is the canonical
     # cadence run (weekly / daily / eod) or a smoke / recovery /
     # operator-replay overlay. Pre-Option-D executions render as
     # "role: unknown" until the new cron rule's first cadence firing.
     st.subheader(
-        f"{emoji} {run.pretty_label} — {run.status.value}  "
+        f"{v_emoji} {run.pretty_label} — {v_label}{artifact_frag}  "
         f"{_role_badge(run.pipeline_role)}"
     )
 
@@ -239,7 +271,20 @@ def _render_run_header(run: Optional[PipelineRun], arn: str) -> None:
     col2.metric("End (UTC)", _format_utc(run.end_utc))
     col3.metric("Duration", _format_duration_sec(run.duration_sec))
 
-    if run.status == RunStatus.FAILED and (run.failing_state or run.failure_cause):
+    # Transparency: when the cycle produced its artifacts but the SF still
+    # exited non-OK, surface the divergence as an info note rather than the
+    # alarming red error block — the cycle succeeded; the plumbing tripped.
+    if cv.diverges_from_dag and run.status != RunStatus.SUCCEEDED:
+        st.info(
+            f"Step Function exited **{_RUN_STATUS_EMOJI.get(run.status, '❓')} "
+            f"{run.status.value}** at a non-artifact step "
+            f"(`{run.failing_state or 'unknown'}`) — all tracked artifacts "
+            "were produced, so the cycle is treated as complete."
+        )
+        if run.failure_cause:
+            with st.expander("SF failure cause (non-artifact step)"):
+                st.code(run.failure_cause, language="text")
+    elif run.status == RunStatus.FAILED and (run.failing_state or run.failure_cause):
         st.error(
             f"**Failed at state**: `{run.failing_state or 'unknown'}`  \n"
             f"**Cause**: {run.failure_cause or '(empty)'}"
