@@ -51,17 +51,78 @@ _COST_PREFIX = "decision_artifacts/_cost/"
 # ── Pure curation helpers (unit-tested; no I/O) ──────────────────────────
 
 
+# A TaskRow whose ``archive`` is tagged ``archive_page_ref`` (ArchivePageRef)
+# is a substantive state whose SUCCESS produces an operator-readable
+# artifact; an ``artifact_reason`` tag (ArtifactReason) marks a substrate /
+# notification / operational step that produces no per-run artifact. We
+# judge a CYCLE by whether it produced its artifacts (config#727 artifact-
+# freshness principle + config#856 pull-for-state), NOT by the Step
+# Function's terminal DAG status: a run that wrote every artifact but then
+# tripped a Catch / States.DataLimitExceeded / a terminal-notify state
+# (HandleFailure, NotifyComplete) still reports RunStatus.FAILED — which is
+# a plumbing fail at a non-artifact step, not a failed research cycle.
+_ARTIFACT_KIND = "archive_page_ref"
+
+
+def _status_str(status: Any) -> str:
+    return str(getattr(status, "value", status) or "").upper()
+
+
+def derive_cycle_verdict(run: Any) -> dict:
+    """Artifact-completion verdict for a pipeline run.
+
+    Returns ``{"verdict", "artifacts_produced", "artifacts_total"}``. The
+    verdict is one of:
+
+    - ``RUNNING`` / ``NOT_RUN`` — passed through from the DAG status.
+    - ``COMPLETE`` — every artifact-bearing state SUCCEEDED (regardless of
+      the DAG terminal status — this is the fix for the false-FAIL headline).
+    - ``PARTIAL`` — some but not all artifact-bearing states SUCCEEDED.
+    - ``FAILED`` — no artifact-bearing state SUCCEEDED.
+
+    When the run carries no artifact-bearing telemetry (``artifacts_total``
+    == 0 — e.g. a run that died before any substantive state, or a curated
+    fixture without ``archive`` tags) the verdict falls back to the raw DAG
+    status so we never manufacture a green from absent evidence.
+    """
+    dag = _status_str(getattr(run, "status", None))
+    produced = total = 0
+    for t in getattr(run, "tasks", None) or []:
+        if getattr(getattr(t, "archive", None), "kind", None) != _ARTIFACT_KIND:
+            continue
+        total += 1
+        if _status_str(getattr(t, "status", None)) == "SUCCEEDED":
+            produced += 1
+
+    if dag == "RUNNING":
+        verdict = "RUNNING"
+    elif dag in ("NOT-RUN", "NOT_RUN"):
+        verdict = "NOT_RUN"
+    elif total == 0:
+        verdict = "COMPLETE" if dag == "SUCCEEDED" else "FAILED"
+    elif produced == total:
+        verdict = "COMPLETE"
+    elif produced > 0:
+        verdict = "PARTIAL"
+    else:
+        verdict = "FAILED"
+
+    return {
+        "verdict": verdict,
+        "artifacts_produced": produced,
+        "artifacts_total": total,
+    }
+
+
 def curate_pipeline_run(run: Any) -> dict:
     """Reduce a lib PipelineRun to the public-safe subset.
 
-    Keeps: overall status + start, per-task name / status / start /
-    duration. Drops: failure_cause, execution names, archive refs —
-    internal detail that belongs on the gated console only.
+    Keeps: artifact-completion verdict + artifact counts, the raw DAG
+    terminal status (shown as secondary context so a genuine SF failure is
+    never hidden), per-task name / status / start / duration. Drops:
+    failure_cause, execution names, archive refs — internal detail that
+    belongs on the gated console only.
     """
-
-    def _status_str(status: Any) -> str:
-        return str(getattr(status, "value", status) or "").upper()
-
     tasks = []
     for t in getattr(run, "tasks", None) or []:
         start = getattr(t, "start_utc", None)
@@ -75,9 +136,12 @@ def curate_pipeline_run(run: Any) -> dict:
         )
     start = getattr(run, "start_utc", None)
     return {
+        # ``status`` stays the raw SF terminal status (the page renders it
+        # only as secondary context when it diverges from the verdict).
         "status": _status_str(getattr(run, "status", None)),
         "start_utc": start.isoformat() if start is not None else None,
         "tasks": tasks,
+        **derive_cycle_verdict(run),
     }
 
 

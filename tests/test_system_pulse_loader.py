@@ -68,12 +68,17 @@ def pulse():
         sys.path.remove(str(_LIVE))
 
 
-def _task(name="MorningEnrich", status="SUCCEEDED", start=None, duration=42.0):
+def _task(name="MorningEnrich", status="SUCCEEDED", start=None, duration=42.0, archive_kind=None):
+    # archive_kind mirrors the lib's TaskRow.archive discriminator:
+    # "archive_page_ref" = artifact-bearing (ArchivePageRef),
+    # "artifact_reason" = substrate/notify-only (ArtifactReason), None = absent.
+    archive = SimpleNamespace(kind=archive_kind) if archive_kind else None
     return SimpleNamespace(
         state_name=name,
         status=SimpleNamespace(value=status),
         start_utc=start,
         duration_sec=duration,
+        archive=archive,
     )
 
 
@@ -115,6 +120,95 @@ class TestCuratePipelineRun:
     def test_plain_string_status(self, pulse):
         out = pulse.curate_pipeline_run(_run(status="running"))
         assert out["status"] == "RUNNING"
+
+
+class TestCycleVerdict:
+    """Cycle verdict is judged by artifacts produced, NOT the DAG terminal
+    status (config#727 / #856 — the false-FAIL System Pulse fix).
+    """
+
+    def _artifact_run(self, dag_status, artifact_states):
+        # artifact_states: list of (name, status) for artifact-bearing steps
+        tasks = [
+            _task(name=n, status=s, archive_kind="archive_page_ref")
+            for n, s in artifact_states
+        ]
+        # plus a substrate-only notify state that should never count
+        tasks.append(_task(name="HandleFailure", status="SUCCEEDED", archive_kind="artifact_reason"))
+        return _run(status=SimpleNamespace(value=dag_status), tasks=tasks)
+
+    def test_all_artifacts_produced_but_dag_failed_is_complete(self, pulse):
+        # THE BUG: SF exits FAILED (Catch / DataLimitExceeded / terminal
+        # notify) but every artifact-bearing state succeeded → COMPLETE.
+        run = self._artifact_run(
+            "FAILED",
+            [("Research", "SUCCEEDED"), ("PredictorTraining", "SUCCEEDED"), ("Backtester", "SUCCEEDED")],
+        )
+        out = pulse.curate_pipeline_run(run)
+        assert out["verdict"] == "COMPLETE"
+        assert out["artifacts_produced"] == 3
+        assert out["artifacts_total"] == 3
+        assert out["status"] == "FAILED"  # raw DAG status preserved for transparency
+
+    def test_some_artifacts_missing_is_partial(self, pulse):
+        run = self._artifact_run(
+            "FAILED",
+            [("Research", "SUCCEEDED"), ("PredictorTraining", "FAILED"), ("Backtester", "SUCCEEDED")],
+        )
+        out = pulse.curate_pipeline_run(run)
+        assert out["verdict"] == "PARTIAL"
+        assert out["artifacts_produced"] == 2
+        assert out["artifacts_total"] == 3
+
+    def test_no_artifacts_produced_is_failed(self, pulse):
+        run = self._artifact_run(
+            "FAILED",
+            [("Research", "FAILED"), ("PredictorTraining", "NOT-RUN")],
+        )
+        out = pulse.curate_pipeline_run(run)
+        assert out["verdict"] == "FAILED"
+        assert out["artifacts_produced"] == 0
+        assert out["artifacts_total"] == 2
+
+    def test_clean_success_is_complete(self, pulse):
+        run = self._artifact_run(
+            "SUCCEEDED",
+            [("Research", "SUCCEEDED"), ("Backtester", "SUCCEEDED")],
+        )
+        out = pulse.curate_pipeline_run(run)
+        assert out["verdict"] == "COMPLETE"
+
+    def test_running_passes_through(self, pulse):
+        run = self._artifact_run("RUNNING", [("Research", "SUCCEEDED"), ("Backtester", "RUNNING")])
+        out = pulse.curate_pipeline_run(run)
+        assert out["verdict"] == "RUNNING"
+
+    def test_substrate_only_states_do_not_count(self, pulse):
+        # A run whose ONLY succeeded states are substrate/notify (no
+        # archive_page_ref) has zero artifact telemetry → falls back to DAG.
+        run = _run(
+            status=SimpleNamespace(value="FAILED"),
+            tasks=[
+                _task(name="LibPinDriftCheck", status="SUCCEEDED", archive_kind="artifact_reason"),
+                _task(name="HandleFailure", status="SUCCEEDED", archive_kind="artifact_reason"),
+            ],
+        )
+        out = pulse.curate_pipeline_run(run)
+        assert out["artifacts_total"] == 0
+        assert out["verdict"] == "FAILED"  # no evidence → trust DAG status
+
+    def test_no_archive_telemetry_falls_back_to_dag_status(self, pulse):
+        # Curated fixtures / older runs without archive tags must not
+        # manufacture a verdict from absent evidence.
+        out = pulse.curate_pipeline_run(_run())  # default tasks have no archive
+        assert out["artifacts_total"] == 0
+        assert out["verdict"] == "COMPLETE"  # dag SUCCEEDED → COMPLETE
+        out_failed = pulse.curate_pipeline_run(_run(status=SimpleNamespace(value="FAILED")))
+        assert out_failed["verdict"] == "FAILED"
+
+    def test_not_run_passes_through(self, pulse):
+        out = pulse.curate_pipeline_run(_run(status=SimpleNamespace(value="NOT-RUN"), tasks=[]))
+        assert out["verdict"] == "NOT_RUN"
 
 
 class TestSummarizeFreshness:
