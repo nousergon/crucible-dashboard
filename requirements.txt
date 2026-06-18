@@ -35,4 +35,4 @@ yfinance>=0.2.40
 # v0.59.7 (2026-06-16): pipeline_status.registry gains the EOD PostMarketArcticAppend
 # state (+ WaitForPostMarketArcticAppend companion) — clears the last EOD-SF drift
 # cell (config#1120).
-nousergon-lib[flow_doctor] @ git+https://github.com/nousergon/nousergon-lib@v0.60.1
+nousergon-lib[flow_doctor] @ git+https://github.com/nousergon/nousergon-lib@v0.60.2

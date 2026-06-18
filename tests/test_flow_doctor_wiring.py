@@ -268,11 +268,14 @@ class TestLibVersionPin:
             "alpha_engine_lib import alias still works via the shim)"
         )
         assert "@main" not in text, "nousergon-lib must be pinned to a tag, not @main"
-        assert "@v0.60.1" in text, (
-            "alpha-engine-lib should pin to v0.60.1 (SSM-authoritative flow-doctor "
-            "secret seed when deployed — _seed_flow_doctor_secrets overwrites a "
-            "stale sourced FLOW_DOCTOR_GITHUB_TOKEN with the live SSM value so the "
-            "github_issue notifier stops 403ing; config#1148). Earlier: v0.59.7 "
+        assert "@v0.60.2" in text, (
+            "nousergon-lib should pin to v0.60.2 (alpha_engine_lib alias "
+            "resource-loading shim fix — preserves the real module __spec__ so "
+            "transparency package-data loads when the box runs "
+            "`python -m alpha_engine_lib.transparency`; plus the v0.60.1 "
+            "SSM-authoritative flow-doctor secret seed that overwrites a stale "
+            "sourced FLOW_DOCTOR_GITHUB_TOKEN so the github_issue notifier stops "
+            "403ing; config#1148). Earlier: v0.59.7 "
             "(pipeline-status registry: "
             "the EOD PostMarketArcticAppend state + WaitForPostMarketArcticAppend "
             "companion — required so test_pipeline_status_registry_drift passes "
