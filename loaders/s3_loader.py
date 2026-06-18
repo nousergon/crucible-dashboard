@@ -1246,6 +1246,35 @@ def load_intraday_latest_prices() -> dict | None:
     return _fetch_s3_json(_research_bucket(), "intraday/latest_prices.json")
 
 
+# Live-NAV artifacts get a short 60s TTL (vs the signals TTL above) — they're
+# the live-curve substrate, refreshed each 60s daemon poll, so a fresher cache
+# buys nothing and a longer one would lag the live view.
+@st.cache_data(ttl=60)
+def load_intraday_nav() -> dict | None:
+    """Daemon-published live NAV snapshot (intraday/nav.json).
+
+    Producer: ``executor/intraday_snapshot.py::IntradayNavWriter`` each tick.
+    Raw marks (net_liquidation, total_cash, gross_position_value,
+    unrealized_pnl, spy_last, ib_connected, timestamp); None outside market
+    hours. Powers the live intraday header.
+    """
+    return _fetch_s3_json(_research_bucket(), "intraday/nav.json")
+
+
+@st.cache_data(ttl=60)
+def load_intraday_nav_series(trading_day: str) -> dict | None:
+    """Daemon-published per-day NAV series (intraday/nav_series/{day}.json).
+
+    Producer: ``executor/intraday_snapshot.py::IntradayNavSeriesWriter``.
+    Payload ``{trading_day, updated_at, points: [{t, nav, spy}, ...]}``; None
+    when absent. Powers the intraday portfolio-vs-SPY curve. ``trading_day``
+    is the ET date string (YYYY-MM-DD).
+    """
+    if not trading_day:
+        return None
+    return _fetch_s3_json(_research_bucket(), f"intraday/nav_series/{trading_day}.json")
+
+
 @st.cache_data(ttl=_ttl("signals"))
 def load_open_orders_latest() -> dict | None:
     """Daemon-published open-IB-orders snapshot (trades/open_orders/latest.json).

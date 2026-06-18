@@ -150,3 +150,106 @@ def make_nav_chart(eod_df: pd.DataFrame) -> go.Figure:
         margin=dict(t=60, b=40, l=60, r=20),
     )
     return fig
+
+
+def make_intraday_curve(curve_df: pd.DataFrame) -> go.Figure:
+    """Intraday portfolio-vs-SPY cumulative-return curve with a shaded alpha
+    region.
+
+    curve_df needs columns: ``time`` (datetime, ET), ``port_cum`` and
+    ``spy_cum`` (percent points). The fill between the two lines is green
+    where the portfolio leads SPY and red where it trails, so intraday
+    out/under-performance reads at a glance. ``spy_cum`` may be all-NA (no
+    SPY baseline) — then only the portfolio line is drawn, no shading.
+    """
+    if curve_df is None or curve_df.empty:
+        fig = go.Figure()
+        fig.update_layout(title="Intraday — No data yet")
+        return fig
+
+    df = curve_df.copy()
+    t = df["time"]
+    port = pd.to_numeric(df["port_cum"], errors="coerce")
+    spy = pd.to_numeric(df["spy_cum"], errors="coerce")
+    has_spy = spy.notna().any()
+
+    traces = []
+
+    # Shaded alpha region — only meaningful with a SPY baseline.
+    if has_spy:
+        s = spy.ffill().fillna(0.0)
+        above_mask = port >= s
+        segments = []
+        current_above = bool(above_mask.iloc[0])
+        seg_start = 0
+        for i in range(1, len(above_mask)):
+            if bool(above_mask.iloc[i]) != current_above:
+                segments.append((seg_start, i, current_above))
+                seg_start = i
+                current_above = bool(above_mask.iloc[i])
+        segments.append((seg_start, len(above_mask), current_above))
+
+        for seg_start, seg_end, is_above in segments:
+            idx = range(seg_start, seg_end)
+            d_seg = t.iloc[idx]
+            p_seg = port.iloc[idx]
+            s_seg = s.iloc[idx]
+            upper = p_seg if is_above else s_seg
+            lower = s_seg if is_above else p_seg
+            color = "rgba(0,200,100,0.15)" if is_above else "rgba(220,50,50,0.15)"
+            traces.append(
+                go.Scatter(
+                    x=pd.concat([d_seg, d_seg[::-1]]),
+                    y=pd.concat([upper, lower[::-1]]),
+                    fill="toself", fillcolor=color, line=dict(width=0),
+                    showlegend=False, hoverinfo="skip",
+                )
+            )
+
+    traces.append(
+        go.Scatter(
+            x=t, y=port, mode="lines", name="Portfolio",
+            line=dict(color="#1a73e8", width=2.5),
+            hovertemplate="%{x|%-I:%M %p}<br>Portfolio: %{y:+.2f}%<extra></extra>",
+        )
+    )
+    if has_spy:
+        traces.append(
+            go.Scatter(
+                x=t, y=spy, mode="lines", name="S&P 500",
+                line=dict(color="#7f7f7f", width=2, dash="dash"),
+                hovertemplate="%{x|%-I:%M %p}<br>S&P 500: %{y:+.2f}%<extra></extra>",
+            )
+        )
+
+    traces.append(
+        go.Scatter(
+            x=[t.iloc[0], t.iloc[-1]], y=[0, 0], mode="lines",
+            line=dict(color="rgba(255,255,255,0.3)", width=0.5, dash="dot"),
+            showlegend=False, hoverinfo="skip",
+        )
+    )
+
+    fig = go.Figure(data=traces)
+    fig.update_layout(
+        xaxis=dict(
+            title="", showgrid=True, gridcolor="rgba(255,255,255,0.06)",
+            tickformat="%-I:%M %p", tickfont=dict(color="#aaa"),
+        ),
+        yaxis=dict(
+            title="Today (%)", ticksuffix="%", showgrid=True,
+            gridcolor="rgba(255,255,255,0.06)",
+            zeroline=True, zerolinecolor="rgba(255,255,255,0.15)",
+            tickfont=dict(color="#aaa"), title_font=dict(color="#aaa"),
+        ),
+        hovermode="x unified",
+        legend=dict(
+            orientation="h", yanchor="bottom", y=1.02,
+            xanchor="right", x=1, font=dict(color="#ccc"),
+        ),
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        margin=dict(t=20, b=40, l=60, r=20),
+        height=300,
+    )
+    return fig

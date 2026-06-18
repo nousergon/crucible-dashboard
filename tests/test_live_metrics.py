@@ -22,11 +22,16 @@ import pandas as pd  # noqa: E402
 
 # live/shared.py does `from loaders.s3_loader import load_eod_pnl` at module
 # load, and live/loaders/s3_loader.py reads config.yaml in its decorators.
-# We only need the pure derivation (compute_live_metrics), so load shared.py
-# by file path with a transient stub for that loader import — and restore
-# sys.modules afterward so we don't shadow the real loaders.s3_loader that
-# many other tests import (the repo has both a top-level and a live/ copy).
-_SHARED = os.path.join(os.path.dirname(os.path.dirname(__file__)), "live", "shared.py")
+# We only need the EodPrep-shaped wrappers, so load shared.py by file path
+# with a transient stub for that loader import — and restore sys.modules
+# afterward so we don't shadow the real loaders.s3_loader that many other
+# tests import (the repo has both a top-level and a live/ copy).
+# live/shared.py also `import intraday_live` (the shared pure module) — needs
+# repo root on sys.path for that to resolve during the file-path load.
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+_SHARED = os.path.join(_ROOT, "live", "shared.py")
 _saved = {k: sys.modules.get(k) for k in ("loaders", "loaders.s3_loader")}
 _pkg = types.ModuleType("loaders")
 _pkg.__path__ = []  # mark as a package
