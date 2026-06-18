@@ -23,11 +23,21 @@
 # even though every service was provably up (root-caused from S3 dedup
 # markers: 9 firings in one day, each naming a different random port subset,
 # with zero corresponding service restarts). The same retry window also
-# absorbs the 1-2s port gap during a deploy restart. A genuinely-down
+# absorbs the port gap during a deploy restart. A genuinely-down
 # service/port (or a real PATH/tooling regression) stays missing across all
 # samples and still pages on the first run. Confirmation adds latency only on
 # the non-clean path; the common all-healthy case still exits after one cheap
 # sample.
+#
+# Window sizing (2026-06-18): the window must exceed the SLOWEST guarded
+# service's cold-start, or a deploy restart false-pages. The binding constraint
+# is metron-api (uvicorn), which takes ~5s from `systemctl restart` to binding
+# :8000 ("Application startup complete"). The original 3x2s (~4s) window was
+# tuned for Streamlit's ~2s gap and was narrower than uvicorn's cold-start, so a
+# manual `systemctl restart metron-api` landing just before a probe paged on
+# "port not listening: 8000" even though the service came up seconds later (one
+# such false page on 2026-06-18 during a Metron deploy). 4x4s (~12s) clears it
+# with margin. Cost is paid only on the non-clean path, once per 10-min tick.
 #
 # Alerts go through alpha_engine_lib.alerts (SNS alpha-engine-alerts +
 # Telegram), which dedups so a persistent problem only pages once per
@@ -50,8 +60,8 @@ INSTANCE_ID=$(curl -s --max-time 2 -H "X-aws-ec2-metadata-token: ${_imds_tok}" h
 MEM_MIN_MB=150                       # alert if MemAvailable drops below this
 SERVICES=(dashboard.service nous-ergon-live.service signal.service metron-api.service metron-web.service)
 PORTS=(8501 8502 8503 8505 8000 3000)
-RETRY_ATTEMPTS=3                     # samples before a problem is confirmed
-RETRY_DELAY=2                        # seconds between confirmation samples
+RETRY_ATTEMPTS=4                     # samples before a problem is confirmed
+RETRY_DELAY=4                        # seconds between confirmation samples (4x4s ~12s window > metron-api ~5s cold-start)
 
 # Resolve `ss` by absolute path once: it lives in /usr/sbin, which the systemd
 # unit's PATH does not include, so a bare `ss` is "command not found" under the
