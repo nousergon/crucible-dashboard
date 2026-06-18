@@ -267,8 +267,12 @@ class TestLibVersionPin:
             "to be importable"
         )
         assert "@main" not in text, "alpha-engine-lib must be pinned to a tag, not @main"
-        assert "@v0.59.7" in text, (
-            "alpha-engine-lib should pin to v0.59.7 (pipeline-status registry: "
+        assert "@v0.60.1" in text, (
+            "alpha-engine-lib should pin to v0.60.1 (SSM-authoritative flow-doctor "
+            "secret seed when deployed — _seed_flow_doctor_secrets overwrites a "
+            "stale sourced FLOW_DOCTOR_GITHUB_TOKEN with the live SSM value so the "
+            "github_issue notifier stops 403ing; config#1148). Earlier: v0.59.7 "
+            "(pipeline-status registry: "
             "the EOD PostMarketArcticAppend state + WaitForPostMarketArcticAppend "
             "companion — required so test_pipeline_status_registry_drift passes "
             "for the EOD SF; config#1120). Earlier: v0.59.6 (config#1083 model-zoo "

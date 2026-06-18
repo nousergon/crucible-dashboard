@@ -29,7 +29,10 @@ yfinance>=0.2.40
 # fan-out states (ResolveZooSpecs / TrainSpecDispatch / ModelZooSelect /
 # PublishModelZooFailureImmediate) — clears the remaining page-25 drift cells
 # (config#1115).
+# v0.60.1 (2026-06-18): SSM-authoritative flow-doctor secret seed when deployed —
+# overwrites a stale sourced FLOW_DOCTOR_GITHUB_TOKEN with the live SSM value so the
+# github_issue notifier stops 403ing (config#1148).
 # v0.59.7 (2026-06-16): pipeline_status.registry gains the EOD PostMarketArcticAppend
 # state (+ WaitForPostMarketArcticAppend companion) — clears the last EOD-SF drift
 # cell (config#1120).
-alpha-engine-lib[flow_doctor] @ git+https://github.com/nousergon/nousergon-lib@v0.59.7
+alpha-engine-lib[flow_doctor] @ git+https://github.com/nousergon/nousergon-lib@v0.60.1
