@@ -143,6 +143,27 @@ def _parse_iso_utc(ts: str) -> Optional[datetime]:
         return None
 
 
+def _prior_close(prep: EodPrep, live_date) -> Optional[tuple[float, Optional[float]]]:
+    """Return ``(base_nav, base_spy)`` from the last EOD row STRICTLY before
+    ``live_date`` — the baseline today's live figures are measured against.
+
+    Strictly-prior auto-handles the post-reconcile window where today's row
+    already exists (we measure against yesterday, not today's own freshly
+    booked close). ``base_spy`` is None when that row lacks a usable
+    spy_close. Returns None when there's no prior close or NAV is unusable.
+    """
+    prior = prep.eod[prep.eod["date"].dt.date < live_date]
+    if prior.empty:
+        return None
+    base = prior.iloc[-1]
+    base_nav = pd.to_numeric(base.get("portfolio_nav"), errors="coerce")
+    if not base_nav or base_nav <= 0:
+        return None
+    base_spy = pd.to_numeric(base.get("spy_close"), errors="coerce")
+    base_spy = float(base_spy) if base_spy and base_spy > 0 else None
+    return float(base_nav), base_spy
+
+
 def compute_live_metrics(
     nav_json: Optional[dict],
     prep: Optional[EodPrep],
@@ -174,28 +195,18 @@ def compute_live_metrics(
     if age < 0 or age > _LIVE_STALENESS_SECONDS:
         return None
 
-    # Baseline = last EOD close STRICTLY before the snapshot's trading date.
-    # This auto-handles the post-reconcile window where today's row already
-    # exists (then there's no prior-day baseline mismatch — we measure
-    # against yesterday, not against today's own freshly-booked close).
     live_date = ts.astimezone(_ET).date()
-    eod = prep.eod
-    prior = eod[eod["date"].dt.date < live_date]
-    if prior.empty:
+    base = _prior_close(prep, live_date)
+    if base is None:
         return None
-    base = prior.iloc[-1]
-
-    base_nav = pd.to_numeric(base.get("portfolio_nav"), errors="coerce")
-    if not base_nav or base_nav <= 0:
-        return None
-    day_return = float(nav) / float(base_nav) - 1.0
+    base_nav, base_spy = base
+    day_return = float(nav) / base_nav - 1.0
 
     spy_return: Optional[float] = None
     day_alpha: Optional[float] = None
-    base_spy = pd.to_numeric(base.get("spy_close"), errors="coerce")
     spy_last = nav_json.get("spy_last")
-    if spy_last and base_spy and base_spy > 0:
-        spy_return = float(spy_last) / float(base_spy) - 1.0
+    if spy_last and base_spy:
+        spy_return = float(spy_last) / base_spy - 1.0
         day_alpha = day_return - spy_return
 
     as_of_et = ts.astimezone(_ET).strftime("%-I:%M %p ET")
@@ -208,3 +219,66 @@ def compute_live_metrics(
         as_of_et=as_of_et,
         age_seconds=age,
     )
+
+
+def series_date_for(nav_json: Optional[dict]) -> Optional[str]:
+    """ET trading-date (``YYYY-MM-DD``) of a nav.json snapshot — the
+    nav_series key to fetch for the intraday curve. None if unparseable."""
+    if not nav_json:
+        return None
+    ts = _parse_iso_utc(nav_json.get("timestamp", ""))
+    if ts is None:
+        return None
+    return ts.astimezone(_ET).date().isoformat()
+
+
+def build_intraday_curve(
+    series_json: Optional[dict],
+    prep: Optional[EodPrep],
+) -> Optional[pd.DataFrame]:
+    """Build the intraday portfolio-vs-SPY cumulative-return frame.
+
+    Rebases the daemon's nav_series points to the prior EOD close so the
+    chart shows today's % return path for both the portfolio and SPY.
+    Returns a DataFrame with columns ``time`` (ET, tz-naive), ``port_cum``
+    and ``spy_cum`` (percent points), or None if not renderable. ``spy_cum``
+    is all-NA when the prior close lacks a usable SPY mark.
+    """
+    if not series_json or prep is None:
+        return None
+    points = series_json.get("points")
+    if not isinstance(points, list) or not points:
+        return None
+
+    rows = []
+    for p in points:
+        if not isinstance(p, dict):
+            continue
+        t = _parse_iso_utc(p.get("t", ""))
+        nav = p.get("nav")
+        if t is None or nav is None:
+            continue
+        rows.append((t.astimezone(_ET).replace(tzinfo=None), float(nav), p.get("spy")))
+    if not rows:
+        return None
+
+    # Baseline date: the producer-stamped trading_day, else the last point.
+    td = series_json.get("trading_day")
+    try:
+        live_date = pd.Timestamp(td).date() if td else rows[-1][0].date()
+    except (ValueError, TypeError):
+        live_date = rows[-1][0].date()
+
+    base = _prior_close(prep, live_date)
+    if base is None:
+        return None
+    base_nav, base_spy = base
+
+    df = pd.DataFrame(rows, columns=["time", "nav", "spy"])
+    df["port_cum"] = (df["nav"] / base_nav - 1.0) * 100.0
+    if base_spy:
+        spy = pd.to_numeric(df["spy"], errors="coerce")
+        df["spy_cum"] = (spy / base_spy - 1.0) * 100.0
+    else:
+        df["spy_cum"] = pd.NA
+    return df[["time", "port_cum", "spy_cum"]]

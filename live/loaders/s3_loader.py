@@ -169,6 +169,21 @@ def load_intraday_working_orders() -> dict | None:
     return _download_s3_json_live(_research_bucket(), "trades/open_orders/latest.json")
 
 
+def load_intraday_nav_series(trading_day: str) -> dict | None:
+    """Load intraday/nav_series/{trading_day}.json — the daemon's per-day
+    series of (NAV, SPY) points.
+
+    Returns the raw payload ({trading_day, updated_at, points: [{t, nav,
+    spy}, ...]}) or None when absent. Powers the intraday portfolio-vs-SPY
+    curve. ``trading_day`` is the ET date string (YYYY-MM-DD).
+    """
+    if not trading_day:
+        return None
+    return _download_s3_json_live(
+        _research_bucket(), f"intraday/nav_series/{trading_day}.json"
+    )
+
+
 @st.cache_data(ttl=86400)
 def load_company_names() -> dict[str, str]:
     """Return ``{TICKER: company_name}`` from SEC ``company_tickers.json``.

@@ -48,6 +48,8 @@ finally:
 EodPrep = _shared.EodPrep
 LiveMetrics = _shared.LiveMetrics
 compute_live_metrics = _shared.compute_live_metrics
+build_intraday_curve = _shared.build_intraday_curve
+series_date_for = _shared.series_date_for
 
 
 def _prep() -> EodPrep:
@@ -144,3 +146,78 @@ class TestNotLive:
         nav = _nav(timestamp="2026-06-16T18:37:30.000Z")
         now = datetime(2026, 6, 16, 18, 38, 0, tzinfo=timezone.utc)
         assert compute_live_metrics(nav, _prep(), now_utc=now) is None
+
+
+def _series(points, trading_day="2026-06-18") -> dict:
+    return {"trading_day": trading_day, "points": points}
+
+
+_PTS = [
+    {"t": "2026-06-18T13:45:00Z", "nav": 1_000_564.85, "spy": 740.96},  # = prior close
+    {"t": "2026-06-18T14:45:00Z", "nav": 1_005_000.0, "spy": 745.0},
+    {"t": "2026-06-18T15:45:00Z", "nav": 1_010_000.0, "spy": 744.0},
+]
+
+
+class TestSeriesDateFor:
+    def test_et_date_from_utc_timestamp(self):
+        # 18:37 UTC → 14:37 EDT, same calendar day.
+        assert series_date_for({"timestamp": "2026-06-18T18:37:30.000Z"}) == "2026-06-18"
+
+    def test_utc_evening_maps_back_a_day_in_et(self):
+        # 02:30 UTC on the 19th → 22:30 EDT on the 18th.
+        assert series_date_for({"timestamp": "2026-06-19T02:30:00.000Z"}) == "2026-06-18"
+
+    def test_none_and_unparseable(self):
+        assert series_date_for(None) is None
+        assert series_date_for({"timestamp": "nope"}) is None
+
+
+class TestBuildIntradayCurve:
+    def test_rebases_to_prior_close(self):
+        df = build_intraday_curve(_series(_PTS), _prep())
+        assert df is not None
+        assert list(df.columns) == ["time", "port_cum", "spy_cum"]
+        assert len(df) == 3
+        # First point equals prior close → 0%.
+        assert df["port_cum"].iloc[0] == pytest.approx(0.0)
+        assert df["spy_cum"].iloc[0] == pytest.approx(0.0)
+        # Percent points, measured vs 2026-06-17 close.
+        assert df["port_cum"].iloc[1] == pytest.approx((1_005_000.0 / 1_000_564.85 - 1) * 100)
+        assert df["spy_cum"].iloc[2] == pytest.approx((744.0 / 740.96 - 1) * 100)
+
+    def test_time_is_et_naive(self):
+        df = build_intraday_curve(_series(_PTS), _prep())
+        # 13:45 UTC → 09:45 ET; tz-naive for plotting.
+        first = df["time"].iloc[0]
+        assert first.hour == 9 and first.minute == 45
+        assert first.tzinfo is None
+
+    def test_no_spy_baseline_yields_na_spy_column(self):
+        prep = _prep()
+        prep.eod.loc[:, "spy_close"] = float("nan")
+        df = build_intraday_curve(_series(_PTS), prep)
+        assert df is not None
+        assert df["spy_cum"].isna().all()
+        assert df["port_cum"].iloc[1] == pytest.approx((1_005_000.0 / 1_000_564.85 - 1) * 100)
+
+    def test_skips_points_missing_nav_or_time(self):
+        pts = [
+            {"t": "2026-06-18T13:45:00Z", "nav": 1_000_564.85, "spy": 740.96},
+            {"t": "2026-06-18T14:45:00Z", "nav": None, "spy": 745.0},      # dropped
+            {"t": "bad", "nav": 1_005_000.0, "spy": 745.0},                # dropped
+            {"t": "2026-06-18T15:45:00Z", "nav": 1_010_000.0, "spy": 744.0},
+        ]
+        df = build_intraday_curve(_series(pts), _prep())
+        assert len(df) == 2
+
+    def test_none_inputs_and_empty_points(self):
+        assert build_intraday_curve(None, _prep()) is None
+        assert build_intraday_curve(_series(_PTS), None) is None
+        assert build_intraday_curve(_series([]), _prep()) is None
+        assert build_intraday_curve({"trading_day": "2026-06-18"}, _prep()) is None
+
+    def test_no_prior_close_returns_none(self):
+        # Series dated on the earliest EOD row → no strictly-prior baseline.
+        df = build_intraday_curve(_series(_PTS, trading_day="2026-06-16"), _prep())
+        assert df is None
