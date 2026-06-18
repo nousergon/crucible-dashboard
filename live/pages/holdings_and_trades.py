@@ -14,13 +14,20 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 import pandas as pd
 import streamlit as st
 
+from charts.nav_chart import make_intraday_curve
 from loaders.s3_loader import (
     load_intraday_nav,
+    load_intraday_nav_series,
     load_intraday_working_orders,
     load_thesis_summaries,
     load_trades_full,
 )
-from shared import compute_live_metrics, load_and_prepare_eod
+from shared import (
+    build_intraday_curve,
+    compute_live_metrics,
+    load_and_prepare_eod,
+    series_date_for,
+)
 from ticker_detail import show_ticker_detail
 
 
@@ -87,8 +94,20 @@ def _render_live_header(m):
         "Alpha vs S&P 500",
         f"{m.day_alpha:+.2%}" if m.day_alpha is not None else "—",
     )
-    _render_working_orders()
-    st.divider()
+
+
+def _render_intraday_curve(nav_json, prep):
+    """Render today's intraday portfolio-vs-SPY cumulative-return curve.
+
+    Needs >=2 points to draw a line; silently renders nothing earlier in
+    the session (the header numbers already convey the live state)."""
+    series_date = series_date_for(nav_json)
+    if not series_date:
+        return
+    curve = build_intraday_curve(load_intraday_nav_series(series_date), prep)
+    if curve is None or len(curve) < 2:
+        return
+    st.plotly_chart(make_intraday_curve(curve), width="stretch")
 
 
 st.title("Live Portfolio")
@@ -101,9 +120,13 @@ if prep is None:
 # Live intraday header — shown only while the daemon is publishing a fresh,
 # IB-connected NAV snapshot (i.e. during market hours). Otherwise the page is
 # the standard last-close view. Holdings + trades below are always EOD-sourced.
-_live = compute_live_metrics(load_intraday_nav(), prep)
+_nav_json = load_intraday_nav()
+_live = compute_live_metrics(_nav_json, prep)
 if _live is not None:
     _render_live_header(_live)
+    _render_intraday_curve(_nav_json, prep)
+    _render_working_orders()
+    st.divider()
     st.caption(
         "Live figures above update intraday while the market is open. "
         "Holdings and trades below are as of the last close."
