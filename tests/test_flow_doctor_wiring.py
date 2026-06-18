@@ -262,13 +262,18 @@ class TestLibVersionPin:
 
     def test_requirements_pins_lib_to_stable_tag(self):
         text = (REPO_ROOT / "requirements.txt").read_text()
-        assert "alpha-engine-lib" in text, (
-            "alpha-engine-lib must be a declared dependency for setup_logging "
-            "to be importable"
+        assert "nousergon-lib" in text, (
+            "nousergon-lib must be a declared dependency for setup_logging "
+            "to be importable (renamed from alpha-engine-lib at v0.60.0; the "
+            "alpha_engine_lib import alias still works via the shim)"
         )
-        assert "@main" not in text, "alpha-engine-lib must be pinned to a tag, not @main"
-        assert "@v0.59.7" in text, (
-            "alpha-engine-lib should pin to v0.59.7 (pipeline-status registry: "
+        assert "@main" not in text, "nousergon-lib must be pinned to a tag, not @main"
+        assert "@v0.60.1" in text, (
+            "alpha-engine-lib should pin to v0.60.1 (SSM-authoritative flow-doctor "
+            "secret seed when deployed — _seed_flow_doctor_secrets overwrites a "
+            "stale sourced FLOW_DOCTOR_GITHUB_TOKEN with the live SSM value so the "
+            "github_issue notifier stops 403ing; config#1148). Earlier: v0.59.7 "
+            "(pipeline-status registry: "
             "the EOD PostMarketArcticAppend state + WaitForPostMarketArcticAppend "
             "companion — required so test_pipeline_status_registry_drift passes "
             "for the EOD SF; config#1120). Earlier: v0.59.6 (config#1083 model-zoo "
