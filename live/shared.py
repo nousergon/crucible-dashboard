@@ -11,12 +11,21 @@ via Streamlit, so calling this from every page is cheap.
 
 import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import yaml
 
 from loaders.s3_loader import load_eod_pnl
+
+_ET = ZoneInfo("America/New_York")
+
+# A nav.json older than this is treated as stale → no live header. The daemon
+# poll interval is 60s; 5 min tolerates a few missed ticks / clock skew while
+# still hiding the strip promptly once the daemon stops at EOD.
+_LIVE_STALENESS_SECONDS = 300
 
 
 @dataclass
@@ -101,4 +110,101 @@ def load_and_prepare_eod() -> Optional[EodPrep]:
         down_days=down_days,
         total_days=total_days,
         perf_date=eod["date"].iloc[-1].strftime("%Y-%m-%d"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Live intraday metrics (derived from the daemon's intraday/nav.json snapshot)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class LiveMetrics:
+    """Today's live portfolio numbers, derived from intraday/nav.json.
+
+    The producer publishes RAW marks (NAV + SPY last); all derivation
+    happens here against the prior EOD close so the display convention can
+    change without redeploying the trading box.
+    """
+
+    nav: float
+    day_return: float                 # fraction, e.g. 0.012 = +1.2%
+    day_alpha: Optional[float]        # fraction vs SPY; None if SPY mark absent
+    spy_return: Optional[float]       # fraction
+    as_of_et: str                     # "1:24 PM ET"
+    age_seconds: float
+
+
+def _parse_iso_utc(ts: str) -> Optional[datetime]:
+    """Parse the daemon's ``...Z``-suffixed ISO timestamp as tz-aware UTC."""
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
+def compute_live_metrics(
+    nav_json: Optional[dict],
+    prep: Optional[EodPrep],
+    *,
+    now_utc: Optional[datetime] = None,
+) -> Optional[LiveMetrics]:
+    """Derive today's live NAV / return / alpha, or None if not live.
+
+    Returns None (→ caller shows the standard EOD view) when any of:
+    the snapshot is missing, IB is disconnected, the snapshot is stale
+    (> 5 min old), NAV is absent, or there is no prior EOD close to
+    measure today against (e.g. the snapshot's trading date is already
+    booked in eod_pnl, which happens after the EOD reconcile runs).
+    """
+    if not nav_json or prep is None:
+        return None
+    if not nav_json.get("ib_connected"):
+        return None
+
+    nav = nav_json.get("net_liquidation")
+    if nav is None:
+        return None
+
+    ts = _parse_iso_utc(nav_json.get("timestamp", ""))
+    if ts is None:
+        return None
+    now = now_utc or datetime.now(timezone.utc)
+    age = (now - ts).total_seconds()
+    if age < 0 or age > _LIVE_STALENESS_SECONDS:
+        return None
+
+    # Baseline = last EOD close STRICTLY before the snapshot's trading date.
+    # This auto-handles the post-reconcile window where today's row already
+    # exists (then there's no prior-day baseline mismatch — we measure
+    # against yesterday, not against today's own freshly-booked close).
+    live_date = ts.astimezone(_ET).date()
+    eod = prep.eod
+    prior = eod[eod["date"].dt.date < live_date]
+    if prior.empty:
+        return None
+    base = prior.iloc[-1]
+
+    base_nav = pd.to_numeric(base.get("portfolio_nav"), errors="coerce")
+    if not base_nav or base_nav <= 0:
+        return None
+    day_return = float(nav) / float(base_nav) - 1.0
+
+    spy_return: Optional[float] = None
+    day_alpha: Optional[float] = None
+    base_spy = pd.to_numeric(base.get("spy_close"), errors="coerce")
+    spy_last = nav_json.get("spy_last")
+    if spy_last and base_spy and base_spy > 0:
+        spy_return = float(spy_last) / float(base_spy) - 1.0
+        day_alpha = day_return - spy_return
+
+    as_of_et = ts.astimezone(_ET).strftime("%-I:%M %p ET")
+
+    return LiveMetrics(
+        nav=float(nav),
+        day_return=day_return,
+        day_alpha=day_alpha,
+        spy_return=spy_return,
+        as_of_et=as_of_et,
+        age_seconds=age,
     )

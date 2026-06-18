@@ -116,6 +116,59 @@ def load_trades_full() -> pd.DataFrame | None:
     return download_s3_csv(_trades_bucket(), key)
 
 
+# ---------------------------------------------------------------------------
+# Intraday live artifacts (daemon-published, refreshed each poll tick)
+# ---------------------------------------------------------------------------
+#
+# These power the live intraday header on the Live Portfolio page. A short
+# 60s TTL is hardcoded (NOT config-driven): the daemon poll interval is 60s,
+# so a fresher cache buys nothing and the host config.yaml doesn't carry an
+# `intraday` cache_ttl key. The daemon writes these to its signals_bucket,
+# which is the research bucket.
+
+_INTRADAY_TTL = 60
+
+
+@st.cache_data(ttl=_INTRADAY_TTL)
+def _download_s3_json_live(bucket: str, key: str) -> dict | None:
+    """Short-TTL JSON download for intraday artifacts. Returns None on failure.
+
+    Separate from ``download_s3_json`` (which carries the 1h research TTL) so
+    the live header reflects the daemon's per-tick writes, not hour-stale data.
+    A missing object (daemon down / pre-open) is an expected state, not an
+    error — logged at WARNING only for non-NoSuchKey failures.
+    """
+    import json
+    try:
+        client = get_s3_client()
+        response = client.get_object(Bucket=bucket, Key=key)
+        return json.loads(response["Body"].read())
+    except Exception as e:
+        code = getattr(getattr(e, "response", {}), "get", lambda *a: {})("Error", {}).get("Code", "")
+        if code != "NoSuchKey":
+            logger.warning("Failed to download live JSON %s/%s: %s", bucket, key, e)
+        return None
+
+
+def load_intraday_nav() -> dict | None:
+    """Load intraday/nav.json — the daemon's live NAV snapshot.
+
+    Returns the raw payload (net_liquidation, total_cash,
+    gross_position_value, unrealized_pnl, spy_last, ib_connected, timestamp)
+    or None when absent (daemon not running — i.e. outside market hours).
+    """
+    return _download_s3_json_live(_research_bucket(), "intraday/nav.json")
+
+
+def load_intraday_working_orders() -> dict | None:
+    """Load trades/open_orders/latest.json — the daemon's working-order snapshot.
+
+    Returns the raw payload or None when absent. Powers the live activity
+    panel (orders the daemon currently has working at IB).
+    """
+    return _download_s3_json_live(_research_bucket(), "trades/open_orders/latest.json")
+
+
 @st.cache_data(ttl=86400)
 def load_company_names() -> dict[str, str]:
     """Return ``{TICKER: company_name}`` from SEC ``company_tickers.json``.

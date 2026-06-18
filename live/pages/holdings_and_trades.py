@@ -14,8 +14,13 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 import pandas as pd
 import streamlit as st
 
-from loaders.s3_loader import load_thesis_summaries, load_trades_full
-from shared import load_and_prepare_eod
+from loaders.s3_loader import (
+    load_intraday_nav,
+    load_intraday_working_orders,
+    load_thesis_summaries,
+    load_trades_full,
+)
+from shared import compute_live_metrics, load_and_prepare_eod
 from ticker_detail import show_ticker_detail
 
 
@@ -36,13 +41,78 @@ def _maybe_open_detail(state_key: str, selection_rows, ticker_series, positions,
 
 _RECENT_TRADES_WINDOW_DAYS = 5
 
+
+def _render_working_orders():
+    """Render the daemon's currently-working broker orders, if any."""
+    payload = load_intraday_working_orders() or {}
+    orders = [o for o in (payload.get("open_orders") or []) if o.get("is_working")]
+    if not orders:
+        st.caption("No orders working at the broker right now.")
+        return
+    rows = [
+        {
+            "Ticker": o.get("ticker"),
+            "Action": o.get("action"),
+            "Remaining": pd.to_numeric(o.get("remaining"), errors="coerce"),
+            "Type": o.get("order_type") or "—",
+            "Limit": pd.to_numeric(o.get("limit_price"), errors="coerce"),
+            "Status": o.get("status") or "—",
+        }
+        for o in orders
+    ]
+    st.caption(
+        f"🔵 {len(orders)} order{'s' if len(orders) != 1 else ''} working at the broker"
+    )
+    st.dataframe(
+        pd.DataFrame(rows),
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "Remaining": st.column_config.NumberColumn("Remaining", format="%d"),
+            "Limit": st.column_config.NumberColumn("Limit", format="dollar"),
+        },
+    )
+
+
+def _render_live_header(m):
+    """Render the live intraday header strip (NAV + today's return + alpha)."""
+    st.markdown(f"#### 🟢 Live — as of {m.as_of_et}")
+    cols = st.columns(3)
+    cols[0].metric("Live NAV", f"${m.nav:,.0f}", delta=f"{m.day_return:+.2%} today")
+    cols[1].metric(
+        "S&P 500 — today",
+        f"{m.spy_return:+.2%}" if m.spy_return is not None else "—",
+    )
+    cols[2].metric(
+        "Alpha vs S&P 500",
+        f"{m.day_alpha:+.2%}" if m.day_alpha is not None else "—",
+    )
+    _render_working_orders()
+    st.divider()
+
+
 st.title("Live Portfolio")
-st.caption("Current positions and recent fills from the running system, as of the last close.")
 
 prep = load_and_prepare_eod()
 if prep is None:
     st.warning("Portfolio data temporarily unavailable. Please check back later.")
     st.stop()
+
+# Live intraday header — shown only while the daemon is publishing a fresh,
+# IB-connected NAV snapshot (i.e. during market hours). Otherwise the page is
+# the standard last-close view. Holdings + trades below are always EOD-sourced.
+_live = compute_live_metrics(load_intraday_nav(), prep)
+if _live is not None:
+    _render_live_header(_live)
+    st.caption(
+        "Live figures above update intraday while the market is open. "
+        "Holdings and trades below are as of the last close."
+    )
+else:
+    st.caption(
+        "Current positions and recent fills from the running system, "
+        "as of the last close."
+    )
 
 # ---------------------------------------------------------------------------
 # Current Holdings
