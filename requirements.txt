@@ -7,15 +7,21 @@ pyyaml>=6.0
 # (live/loaders/s3_loader.py::load_live_day_return) so it shows TODAY's % change
 # rather than the last EOD snapshot. Fail-soft to the snapshot if unavailable.
 yfinance>=0.2.40
-# alpha-engine-lib provides setup_logging used by app.py + health_checker.py
+# nousergon-lib (renamed from alpha-engine-lib at v0.60.0) provides
+# setup_logging used by app.py + health_checker.py
 # to attach the FlowDoctorHandler when FLOW_DOCTOR_ENABLED=1, the
 # transparency.substrate_health checker invoked by the Sat SF's
 # WeeklySubstrateHealthCheck state (added in alpha-engine-data 2026-05),
 # and (v0.28.0, 2026-05-24) alpha_engine_lib.pipeline_status — the SF
 # execution-state projection consumed by pages/25_Pipeline_Status.py for
 # the pipeline-reporting-revamp arc (ROADMAP L3050).
-# The [flow_doctor] extra pulls flow-doctor; no other extras are needed
-# (dashboard reads S3, not ArcticDB). Public since 2026-05-03.
+# The [flow-doctor] extra pulls flow-doctor; no other extras are needed
+# (dashboard reads S3, not ArcticDB). Public since 2026-05-03. NOTE: the
+# extra MUST be hyphenated — setuptools normalizes pyproject's `flow_doctor`
+# to `Provides-Extra: flow-doctor`, and older pip (e.g. the box's 22.3.1)
+# does NOT normalize underscore->hyphen, so `[flow_doctor]` silently fails
+# to resolve the extra (leaving a stale flow-doctor) while `[flow-doctor]`
+# resolves on every pip version (PEP 685 canonical form).
 # v0.43.0 (2026-05-29): transparency adds the non-fatal `degraded` status —
 # activates artifact-completion Phase 1a/1c. The substrate-health check runs
 # from this venv (Sat/EOD SF `pip install -r requirements.txt` then
@@ -35,4 +41,4 @@ yfinance>=0.2.40
 # v0.59.7 (2026-06-16): pipeline_status.registry gains the EOD PostMarketArcticAppend
 # state (+ WaitForPostMarketArcticAppend companion) — clears the last EOD-SF drift
 # cell (config#1120).
-nousergon-lib[flow_doctor] @ git+https://github.com/nousergon/nousergon-lib@v0.60.2
+nousergon-lib[flow-doctor] @ git+https://github.com/nousergon/nousergon-lib@v0.60.2
