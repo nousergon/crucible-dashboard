@@ -48,12 +48,14 @@ if [ -f ".venv/bin/pip" ] && [ -f "requirements.txt" ]; then
         sudo -u ec2-user .venv/bin/pip install --quiet -r requirements.txt 2>>"$LOG" \
             || fail "pip install requirements.txt"
     fi
-    # alpha-engine-lib is pinned @main ecosystem-wide so it must refresh
-    # on every deploy regardless of requirements.txt diff.
-    if grep -q 'alpha-engine-lib' requirements.txt 2>/dev/null; then
-        sudo -u ec2-user .venv/bin/pip install --quiet --upgrade alpha-engine-lib 2>>"$LOG" \
-            || log "WARN alpha-engine-lib upgrade failed (non-fatal)"
-    fi
+    # NOTE: nousergon-lib (renamed from alpha-engine-lib at v0.60.0) is
+    # TAG-pinned in requirements.txt (@vX.Y.Z), not @main, so the
+    # requirements.txt-diff-triggered install above is the correct and
+    # sufficient refresh path — a version bump always changes requirements.txt.
+    # A prior unconditional `pip install --upgrade alpha-engine-lib` block
+    # lived here from the @main era; post-rename it matched only a stale
+    # comment and tried to upgrade a dist name that no longer exists, emitting
+    # a misleading "WARN alpha-engine-lib upgrade failed" every deploy. Removed.
 fi
 
 # ── 2. Reload nginx if infrastructure/nginx.conf changed ──────────────────
