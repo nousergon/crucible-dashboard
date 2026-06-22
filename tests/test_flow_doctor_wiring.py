@@ -2,7 +2,7 @@
 
 The dashboard repo had ZERO flow-doctor wiring before this PR — the
 yaml existed at the repo root but no source file imported
-alpha_engine_lib or flow_doctor. This PR closes the gap as the
+nousergon_lib or flow_doctor. This PR closes the gap as the
 fifth and final step in the cross-repo wire-quality arc.
 
 Asserts the canonical alpha-engine-lib pattern is in place for both
@@ -160,7 +160,7 @@ class TestSetupLoggingAttach:
 
     def test_disabled_attaches_no_flow_doctor_handler(self, monkeypatch, reset_root_logger):
         monkeypatch.setenv("FLOW_DOCTOR_ENABLED", "0")
-        from alpha_engine_lib.logging import setup_logging
+        from nousergon_lib.logging import setup_logging
         setup_logging(
             "dashboard-test-disabled",
             flow_doctor_yaml=str(REPO_ROOT / "flow-doctor.yaml"),
@@ -174,7 +174,7 @@ class TestSetupLoggingAttach:
     def test_enabled_attaches_flow_doctor_handler(
         self, stub_flow_doctor_env, reset_root_logger, temp_flow_doctor_yaml
     ):
-        from alpha_engine_lib.logging import setup_logging, get_flow_doctor
+        from nousergon_lib.logging import setup_logging, get_flow_doctor
         setup_logging(
             "dashboard-test-enabled",
             flow_doctor_yaml=temp_flow_doctor_yaml,
@@ -189,7 +189,7 @@ class TestSetupLoggingAttach:
     def test_exclude_patterns_plumbed_to_handler(
         self, stub_flow_doctor_env, reset_root_logger, temp_flow_doctor_yaml
     ):
-        from alpha_engine_lib.logging import setup_logging
+        from nousergon_lib.logging import setup_logging
         patterns = [r"streamlit cache miss", r"S3 ClientError NoSuchKey"]
         setup_logging(
             "dashboard-test-patterns",
@@ -265,7 +265,7 @@ class TestLibVersionPin:
         assert "nousergon-lib" in text, (
             "nousergon-lib must be a declared dependency for setup_logging "
             "to be importable (renamed from alpha-engine-lib at v0.60.0; the "
-            "alpha_engine_lib import alias still works via the shim)"
+            "nousergon_lib import alias still works via the shim)"
         )
         assert "@main" not in text, "nousergon-lib must be pinned to a tag, not @main"
         assert "@v0.60.1" in text, (

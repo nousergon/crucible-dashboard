@@ -202,7 +202,7 @@ def load_pipeline_run(arn: str, role: str) -> dict | None:
     displacing the cadence run (mirrors the console's canonical-role read).
     """
     try:
-        from alpha_engine_lib.pipeline_status import read_pipeline_state
+        from nousergon_lib.pipeline_status import read_pipeline_state
 
         return curate_pipeline_run(read_pipeline_state(arn, role_filter={role}))
     except Exception as exc:  # noqa: BLE001 — consumer-side degrade; WARN is the recording surface (module docstring)

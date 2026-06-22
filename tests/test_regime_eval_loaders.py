@@ -70,7 +70,7 @@ _T1_ARTIFACT = {
 
 class TestLoadRegimeRetrospectiveEvalLatest:
     def test_delegates_with_research_bucket_and_retrospective_prefix(self, loader):
-        import alpha_engine_lib.eval_artifacts as ea
+        import nousergon_lib.eval_artifacts as ea
         fake_client = MagicMock()
         with patch.object(loader, "get_s3_client", return_value=fake_client):
             with patch.object(loader, "_research_bucket", return_value="alpha-engine-research"):
@@ -86,7 +86,7 @@ class TestLoadRegimeRetrospectiveEvalLatest:
     def test_propagates_none_when_lib_returns_none(self, loader):
         """Cold-start (~8 weeks after Lambda creation) → artifact may be
         absent → loader returns None; page renders 'no T1 yet' warning."""
-        import alpha_engine_lib.eval_artifacts as ea
+        import nousergon_lib.eval_artifacts as ea
         with patch.object(loader, "get_s3_client", return_value=MagicMock()):
             with patch.object(loader, "_research_bucket", return_value="b"):
                 with patch.object(ea, "load_latest_eval_artifact", return_value=None):
@@ -96,7 +96,7 @@ class TestLoadRegimeRetrospectiveEvalLatest:
 
 class TestLoadRegimeRetrospectiveEvalHistory:
     def test_delegates_with_n_recent(self, loader):
-        import alpha_engine_lib.eval_artifacts as ea
+        import nousergon_lib.eval_artifacts as ea
         fake_client = MagicMock()
         sentinel = [_T1_ARTIFACT, {**_T1_ARTIFACT, "run_id": "2604260230"}]
         with patch.object(loader, "get_s3_client", return_value=fake_client):
@@ -112,7 +112,7 @@ class TestLoadRegimeRetrospectiveEvalHistory:
         )
 
     def test_default_n_weeks_is_26(self, loader):
-        import alpha_engine_lib.eval_artifacts as ea
+        import nousergon_lib.eval_artifacts as ea
         with patch.object(loader, "get_s3_client", return_value=MagicMock()):
             with patch.object(loader, "_research_bucket", return_value="b"):
                 with patch.object(ea, "list_eval_artifacts", return_value=[]) as mock_lib:
@@ -148,7 +148,7 @@ _T2_ARTIFACT = {
 
 class TestLoadRegimeStratifiedSortinoLatest:
     def test_delegates_with_stratified_sortino_prefix(self, loader):
-        import alpha_engine_lib.eval_artifacts as ea
+        import nousergon_lib.eval_artifacts as ea
         fake_client = MagicMock()
         with patch.object(loader, "get_s3_client", return_value=fake_client):
             with patch.object(loader, "_research_bucket", return_value="alpha-engine-research"):
@@ -162,7 +162,7 @@ class TestLoadRegimeStratifiedSortinoLatest:
         )
 
     def test_propagates_none_when_lib_returns_none(self, loader):
-        import alpha_engine_lib.eval_artifacts as ea
+        import nousergon_lib.eval_artifacts as ea
         with patch.object(loader, "get_s3_client", return_value=MagicMock()):
             with patch.object(loader, "_research_bucket", return_value="b"):
                 with patch.object(ea, "load_latest_eval_artifact", return_value=None):
@@ -172,7 +172,7 @@ class TestLoadRegimeStratifiedSortinoLatest:
 
 class TestLoadRegimeStratifiedSortinoHistory:
     def test_delegates_with_n_recent(self, loader):
-        import alpha_engine_lib.eval_artifacts as ea
+        import nousergon_lib.eval_artifacts as ea
         fake_client = MagicMock()
         sentinel = [_T2_ARTIFACT, {**_T2_ARTIFACT, "run_id": "2604260230"}]
         with patch.object(loader, "get_s3_client", return_value=fake_client):
@@ -188,7 +188,7 @@ class TestLoadRegimeStratifiedSortinoHistory:
         )
 
     def test_default_n_weeks_is_26(self, loader):
-        import alpha_engine_lib.eval_artifacts as ea
+        import nousergon_lib.eval_artifacts as ea
         with patch.object(loader, "get_s3_client", return_value=MagicMock()):
             with patch.object(loader, "_research_bucket", return_value="b"):
                 with patch.object(ea, "list_eval_artifacts", return_value=[]) as mock_lib:

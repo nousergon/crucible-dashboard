@@ -3,7 +3,7 @@
 
 Phase 2 of the pipeline-reporting-revamp arc (ROADMAP L3050, plan doc
 ``~/Development/alpha-engine-docs/private/pipeline-reporting-revamp-260524.md``).
-Phase 1 (lib substrate `alpha_engine_lib.pipeline_status` v0.28.1) merged
+Phase 1 (lib substrate `nousergon_lib.pipeline_status` v0.28.1) merged
 2026-05-24 via alpha-engine-lib PR #60.
 
 What this page shows
@@ -39,7 +39,7 @@ What this page does NOT show
 Substrate dependencies
 ======================
 
-- ``alpha_engine_lib.pipeline_status`` v0.28.1 (lib PR #60 merged 5/24)
+- ``nousergon_lib.pipeline_status`` v0.28.1 (lib PR #60 merged 5/24)
 - ``alpha-engine-dashboard-sfn-read`` IAM policy on
   ``alpha-engine-executor-role`` (alpha-engine PR #206)
 - ``s3://alpha-engine-research/dashboard/pipeline_status_cache.json``
@@ -54,14 +54,14 @@ from typing import Optional
 import pandas as pd
 import streamlit as st
 
-from alpha_engine_lib.pipeline_status import (
+from nousergon_lib.pipeline_status import (
     PIPELINE_LABELS,
     PipelineExecutionSummary,
     PipelineRun,
     RunStatus,
     TaskStatus,
 )
-from alpha_engine_lib.pipeline_status.registry import ArchivePageRef, ArtifactReason
+from nousergon_lib.pipeline_status.registry import ArchivePageRef, ArtifactReason
 from loaders.pipeline_status_loader import (
     LoadOutcome,
     LoadResult,
@@ -445,7 +445,7 @@ for arn in _ALL_ARNS:
 
 st.divider()
 st.caption(
-    "Substrate: `alpha_engine_lib.pipeline_status` (v0.28.1) + "
+    "Substrate: `nousergon_lib.pipeline_status` (v0.28.1) + "
     "`alpha-engine-dashboard-sfn-read` IAM policy on `alpha-engine-executor-role`. "
     "Last-good cache: `s3://alpha-engine-research/dashboard/pipeline_status_cache.json`."
 )

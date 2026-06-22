@@ -33,7 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 #
 # exclude_patterns starts empty by deliberate convention: add patterns
 # only after observing real ERROR-level noise from the dashboard.
-from alpha_engine_lib.logging import setup_logging
+from nousergon_lib.logging import setup_logging
 _FLOW_DOCTOR_EXCLUDE_PATTERNS: list[str] = []
 _FLOW_DOCTOR_YAML = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "flow-doctor.yaml"

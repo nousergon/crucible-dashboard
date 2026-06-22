@@ -6,7 +6,7 @@ the .env-to-SSM arc) — it's a read-only Streamlit service that authenticates
 to AWS via the EC2 instance role and reads from S3 + SQLite, no third-party
 APIs. This test is preventive: if a future dashboard feature adds a secret
 read (e.g. for a new data source), CI fails here, forcing the author to use
-``alpha_engine_lib.secrets.get_secret()`` instead.
+``nousergon_lib.secrets.get_secret()`` instead.
 
 ``ssm_secrets.py`` is allowlisted — it's the per-repo bulk-load shim
 that stays alive until PR 9 of the arc.
@@ -66,6 +66,6 @@ def test_no_secret_environ_reads():
                     violations.append((path.relative_to(_REPO_ROOT), lineno, name))
     assert not violations, (
         "Found os.environ.get / os.getenv reads of pinned secrets — use "
-        "`from alpha_engine_lib.secrets import get_secret` instead:\n"
+        "`from nousergon_lib.secrets import get_secret` instead:\n"
         + "\n".join(f"  {p}:{ln}  {name}" for p, ln, name in violations)
     )

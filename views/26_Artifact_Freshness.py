@@ -125,7 +125,7 @@ st.title("📡 Artifact Freshness")
 st.caption(
     "Absence-driven monitoring for load-bearing S3 artifacts. "
     "Complements flow-doctor / SF Catch (event-driven). "
-    "Substrate: `alpha_engine_lib.artifact_freshness` (v0.40.0); "
+    "Substrate: `nousergon_lib.artifact_freshness` (v0.40.0); "
     "SoT: `alpha-engine-config/private-docs/ARTIFACT_REGISTRY.yaml`."
 )
 
@@ -514,7 +514,7 @@ aws lambda invoke --function-name alpha-engine-freshness-monitor /tmp/r.json && 
 
 - `alpha-engine-data/infrastructure/lambdas/freshness-monitor/` — the Lambda
 - `alpha-engine-config/private-docs/ARTIFACT_REGISTRY.yaml` — the SoT
-- `alpha_engine_lib.artifact_freshness` — the substrate
-- `alpha_engine_lib.alerts.publish` — the alert chokepoint
+- `nousergon_lib.artifact_freshness` — the substrate
+- `nousergon_lib.alerts.publish` — the alert chokepoint
         """
     )
