@@ -28,7 +28,7 @@ from datetime import date, datetime, timedelta, timezone
 # previous logging.basicConfig() call inside main().
 #
 # exclude_patterns starts empty by deliberate convention.
-from alpha_engine_lib.logging import setup_logging
+from nousergon_lib.logging import setup_logging
 _FLOW_DOCTOR_EXCLUDE_PATTERNS: list[str] = []
 _FLOW_DOCTOR_YAML = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "flow-doctor.yaml"
@@ -330,7 +330,7 @@ def main():
     args = parser.parse_args()
 
     # setup_logging already ran at module-top (see comment near the
-    # alpha_engine_lib.logging import). Apply the standard log level.
+    # nousergon_lib.logging import). Apply the standard log level.
     logging.getLogger().setLevel(logging.WARNING)
     results = check_all(args.bucket)
 

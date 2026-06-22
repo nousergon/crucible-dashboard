@@ -275,7 +275,7 @@ import os
 import sys
 sys.path.insert(0, "/home/ec2-user/alpha-engine-dashboard")
 try:
-    from alpha_engine_lib.secrets import get_secret
+    from nousergon_lib.secrets import get_secret
     for _name in ("EMAIL_SENDER", "EMAIL_RECIPIENTS", "GMAIL_APP_PASSWORD", "FLOW_DOCTOR_GITHUB_TOKEN"):
         _val = get_secret(_name, required=False)
         if _val is not None and _name not in os.environ:

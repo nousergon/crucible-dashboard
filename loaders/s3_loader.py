@@ -789,13 +789,13 @@ def load_regime_substrate_latest() -> dict | None:
     intensity_z + BOCPD change_signal + guardrail flags + raw macro
     features + model_metadata.
 
-    Delegates to ``alpha_engine_lib.eval_artifacts.load_latest_eval_artifact``
+    Delegates to ``nousergon_lib.eval_artifacts.load_latest_eval_artifact``
     for canonical sidecar→artifact resolution (the lib's helper
     returns None on any failure mode — missing sidecar, malformed
     pointer, missing artifact body). When None, the dashboard's
     Regime page renders a graceful "no substrate yet" warning.
     """
-    from alpha_engine_lib.eval_artifacts import load_latest_eval_artifact
+    from nousergon_lib.eval_artifacts import load_latest_eval_artifact
 
     return load_latest_eval_artifact(
         get_s3_client(), bucket=_research_bucket(), prefix="regime",
@@ -814,7 +814,7 @@ def load_fast_signal_latest() -> dict | None:
     sidecar helper (None on any failure → page renders "no fast signal
     yet"). Distinct cadence from the weekly substrate above.
     """
-    from alpha_engine_lib.eval_artifacts import load_latest_eval_artifact
+    from nousergon_lib.eval_artifacts import load_latest_eval_artifact
 
     return load_latest_eval_artifact(
         get_s3_client(), bucket=_research_bucket(), prefix="regime/fast_signal",
@@ -835,7 +835,7 @@ def load_drawdown_leg_latest() -> dict | None:
     renders "no drawdown leg yet"). Observe-mode only — no consumer
     acts on it until ``drawdown_regime_enabled`` is flipped.
     """
-    from alpha_engine_lib.eval_artifacts import load_latest_eval_artifact
+    from nousergon_lib.eval_artifacts import load_latest_eval_artifact
 
     return load_latest_eval_artifact(
         get_s3_client(), bucket=_research_bucket(), prefix="regime/drawdown",
@@ -848,11 +848,11 @@ def load_drawdown_leg_history(n_days: int = 14) -> list[dict]:
 
     Used by the regime page's drawdown observe panel to render the
     2-week parallel-observe counterfactual history. Delegates to
-    ``alpha_engine_lib.eval_artifacts.list_eval_artifacts`` (canonical
+    ``nousergon_lib.eval_artifacts.list_eval_artifacts`` (canonical
     YYMMDDHHMM sort + n_recent cap + skip-non-conforming + partial
     progress on body-fetch failure).
     """
-    from alpha_engine_lib.eval_artifacts import list_eval_artifacts
+    from nousergon_lib.eval_artifacts import list_eval_artifacts
 
     return list_eval_artifacts(
         get_s3_client(),
@@ -869,12 +869,12 @@ def load_regime_substrate_history(n_weeks: int = 26) -> list[dict]:
     Used by the regime page to render HMM-probability + composite-
     intensity trends over the observation window.
 
-    Delegates to ``alpha_engine_lib.eval_artifacts.list_eval_artifacts``
+    Delegates to ``nousergon_lib.eval_artifacts.list_eval_artifacts``
     for canonical YYMMDDHHMM chronological sort + n_recent capping +
     skip-non-conforming-keys filtering + partial-progress on body
     fetch failures.
     """
-    from alpha_engine_lib.eval_artifacts import list_eval_artifacts
+    from nousergon_lib.eval_artifacts import list_eval_artifacts
 
     return list_eval_artifacts(
         get_s3_client(),
@@ -901,7 +901,7 @@ def load_regime_retrospective_eval_latest() -> dict | None:
     signals/ archive). The dashboard's Regime page renders a graceful
     "no T1 eval yet" warning under that path.
     """
-    from alpha_engine_lib.eval_artifacts import load_latest_eval_artifact
+    from nousergon_lib.eval_artifacts import load_latest_eval_artifact
 
     return load_latest_eval_artifact(
         get_s3_client(),
@@ -925,7 +925,7 @@ def load_regime_stratified_sortino_latest() -> dict | None:
     Returns the assembled payload or ``None`` if the artifact is
     unavailable. The Regime page handles None gracefully.
     """
-    from alpha_engine_lib.eval_artifacts import load_latest_eval_artifact
+    from nousergon_lib.eval_artifacts import load_latest_eval_artifact
 
     return load_latest_eval_artifact(
         get_s3_client(),
@@ -941,7 +941,7 @@ def load_regime_retrospective_eval_history(n_weeks: int = 26) -> list[dict]:
     Used by the dashboard to render the rolling
     ``asymmetric_weighted_agreement_rate`` timeseries.
     """
-    from alpha_engine_lib.eval_artifacts import list_eval_artifacts
+    from nousergon_lib.eval_artifacts import list_eval_artifacts
 
     return list_eval_artifacts(
         get_s3_client(),
@@ -958,7 +958,7 @@ def load_regime_stratified_sortino_history(n_weeks: int = 26) -> list[dict]:
     Used by the dashboard to render the rolling bull-bear Sortino spread
     timeseries — the headline T2 metric per regime-v3-260514.md §5.3.3.
     """
-    from alpha_engine_lib.eval_artifacts import list_eval_artifacts
+    from nousergon_lib.eval_artifacts import list_eval_artifacts
 
     return list_eval_artifacts(
         get_s3_client(),
@@ -1350,14 +1350,14 @@ def load_order_book_rationale_history(n_recent: int = 14) -> list[dict]:
     "why is ticker X in state S today" for the whole considered
     universe (approved entry / urgent exit / reduce / held /
     risk-blocked / predictor-vetoed) in canonical
-    ``alpha_engine_lib.eval_artifacts`` shape.
+    ``nousergon_lib.eval_artifacts`` shape.
 
     Delegates to ``list_eval_artifacts`` for canonical YYMMDDHHMM
     chronological sort + n_recent capping + partial-progress on body
     fetch failures. Empty list pre-deploy (until the executor next runs
     post-merge) — the page renders a graceful "no artifacts yet" notice.
     """
-    from alpha_engine_lib.eval_artifacts import list_eval_artifacts
+    from nousergon_lib.eval_artifacts import list_eval_artifacts
 
     return list_eval_artifacts(
         get_s3_client(),

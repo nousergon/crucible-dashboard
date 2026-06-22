@@ -4,7 +4,7 @@ Ensures streamlit is mocked before any dashboard module imports.
 Config mocking is handled per-test-file (see test_s3_loader.py pattern).
 
 Also pins ``ALPHA_ENGINE_SECRETS_SOURCE=env`` so any future
-``alpha_engine_lib.secrets.get_secret()`` call sites (post 2026-05-12
+``nousergon_lib.secrets.get_secret()`` call sites (post 2026-05-12
 .env→SSM migration, PR 7 of the arc) read from monkeypatched env vars
 only. Dashboard has zero secret reads today (preventive setup), but
 this keeps the regression-test gate honest if future code adds one.
@@ -34,7 +34,7 @@ def _isolate_secrets_from_ssm(monkeypatch):
     """
     monkeypatch.setenv("ALPHA_ENGINE_SECRETS_SOURCE", "env")
     try:
-        from alpha_engine_lib.secrets import clear_cache
+        from nousergon_lib.secrets import clear_cache
     except ImportError:
         yield
         return

@@ -2,7 +2,7 @@
 
 Since the lib v0.16.0 adoption, ``load_regime_substrate_latest`` and
 ``load_regime_substrate_history`` delegate to
-``alpha_engine_lib.eval_artifacts.load_latest_eval_artifact`` and
+``nousergon_lib.eval_artifacts.load_latest_eval_artifact`` and
 ``list_eval_artifacts`` respectively. The lib has its own comprehensive
 test coverage of all failure modes (missing sidecar, malformed
 artifact_key, missing body, partial-progress on listing, etc.).
@@ -62,13 +62,13 @@ _DATED_ARTIFACT = {
 
 
 class TestLoadRegimeSubstrateLatest:
-    """The dashboard loader delegates to alpha_engine_lib's
+    """The dashboard loader delegates to nousergon_lib's
     load_latest_eval_artifact. These tests pin the wiring (correct
     bucket + prefix, propagated return value) — failure-mode behavior
     is covered by the lib's own tests."""
 
     def test_delegates_to_lib_with_research_bucket_and_regime_prefix(self, loader):
-        import alpha_engine_lib.eval_artifacts as ea
+        import nousergon_lib.eval_artifacts as ea
         fake_client = MagicMock()
         with patch.object(loader, "get_s3_client", return_value=fake_client):
             with patch.object(loader, "_research_bucket", return_value="alpha-engine-research"):
@@ -83,7 +83,7 @@ class TestLoadRegimeSubstrateLatest:
         """When the lib returns None (substrate not yet published), the
         dashboard loader must propagate None — the Regime page renders
         a graceful 'no substrate yet' warning."""
-        import alpha_engine_lib.eval_artifacts as ea
+        import nousergon_lib.eval_artifacts as ea
         with patch.object(loader, "get_s3_client", return_value=MagicMock()):
             with patch.object(loader, "_research_bucket", return_value="b"):
                 with patch.object(ea, "load_latest_eval_artifact", return_value=None):
@@ -96,7 +96,7 @@ class TestLoadRegimeSubstrateHistory:
     list_eval_artifacts with the n_recent cap."""
 
     def test_delegates_to_lib_with_n_recent_capped(self, loader):
-        import alpha_engine_lib.eval_artifacts as ea
+        import nousergon_lib.eval_artifacts as ea
         fake_client = MagicMock()
         sentinel = [
             {"run_id": "2604120230"},
@@ -118,7 +118,7 @@ class TestLoadRegimeSubstrateHistory:
     def test_default_n_weeks_is_26(self, loader):
         """26-week default matches the dashboard's history-window
         display range — pin to catch accidental drift."""
-        import alpha_engine_lib.eval_artifacts as ea
+        import nousergon_lib.eval_artifacts as ea
         with patch.object(loader, "get_s3_client", return_value=MagicMock()):
             with patch.object(loader, "_research_bucket", return_value="b"):
                 with patch.object(ea, "list_eval_artifacts", return_value=[]) as mock_lib:
@@ -128,7 +128,7 @@ class TestLoadRegimeSubstrateHistory:
 
     def test_returns_empty_when_lib_returns_empty(self, loader):
         """Pre-deploy state — no substrate artifacts yet → empty list."""
-        import alpha_engine_lib.eval_artifacts as ea
+        import nousergon_lib.eval_artifacts as ea
         with patch.object(loader, "get_s3_client", return_value=MagicMock()):
             with patch.object(loader, "_research_bucket", return_value="b"):
                 with patch.object(ea, "list_eval_artifacts", return_value=[]):
@@ -147,7 +147,7 @@ class TestLoadFastSignalLatest:
     }
 
     def test_delegates_with_fast_signal_prefix(self, loader):
-        import alpha_engine_lib.eval_artifacts as ea
+        import nousergon_lib.eval_artifacts as ea
         fake_client = MagicMock()
         with patch.object(loader, "get_s3_client", return_value=fake_client):
             with patch.object(loader, "_research_bucket", return_value="alpha-engine-research"):
@@ -159,7 +159,7 @@ class TestLoadFastSignalLatest:
         )
 
     def test_propagates_none_from_lib(self, loader):
-        import alpha_engine_lib.eval_artifacts as ea
+        import nousergon_lib.eval_artifacts as ea
         with patch.object(loader, "get_s3_client", return_value=MagicMock()):
             with patch.object(loader, "_research_bucket", return_value="b"):
                 with patch.object(ea, "load_latest_eval_artifact", return_value=None):
@@ -181,7 +181,7 @@ class TestLoadDrawdownLeg:
     }
 
     def test_latest_delegates_with_drawdown_prefix(self, loader):
-        import alpha_engine_lib.eval_artifacts as ea
+        import nousergon_lib.eval_artifacts as ea
         fake_client = MagicMock()
         with patch.object(loader, "get_s3_client", return_value=fake_client):
             with patch.object(loader, "_research_bucket", return_value="alpha-engine-research"):
@@ -193,7 +193,7 @@ class TestLoadDrawdownLeg:
         )
 
     def test_latest_propagates_none_from_lib(self, loader):
-        import alpha_engine_lib.eval_artifacts as ea
+        import nousergon_lib.eval_artifacts as ea
         with patch.object(loader, "get_s3_client", return_value=MagicMock()):
             with patch.object(loader, "_research_bucket", return_value="b"):
                 with patch.object(ea, "load_latest_eval_artifact", return_value=None):
@@ -201,7 +201,7 @@ class TestLoadDrawdownLeg:
         assert result is None
 
     def test_history_delegates_with_n_recent_capped(self, loader):
-        import alpha_engine_lib.eval_artifacts as ea
+        import nousergon_lib.eval_artifacts as ea
         fake_client = MagicMock()
         sentinel = [self._DD, self._DD]
         with patch.object(loader, "get_s3_client", return_value=fake_client):
@@ -215,7 +215,7 @@ class TestLoadDrawdownLeg:
         )
 
     def test_history_default_n_days_is_14(self, loader):
-        import alpha_engine_lib.eval_artifacts as ea
+        import nousergon_lib.eval_artifacts as ea
         with patch.object(loader, "get_s3_client", return_value=MagicMock()):
             with patch.object(loader, "_research_bucket", return_value="b"):
                 with patch.object(ea, "list_eval_artifacts", return_value=[]) as mock_lib:

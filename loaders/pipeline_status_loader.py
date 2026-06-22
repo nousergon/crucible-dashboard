@@ -1,7 +1,7 @@
 """
 pipeline_status_loader.py — Page 25 loader.
 
-Wraps ``alpha_engine_lib.pipeline_status.read_pipeline_state`` with:
+Wraps ``nousergon_lib.pipeline_status.read_pipeline_state`` with:
 
 - Streamlit cache (60s TTL — short enough for page 25's "open daily and
   trust on transitions" operational pattern, long enough to not hammer
@@ -32,7 +32,7 @@ from typing import Optional
 
 import streamlit as st
 
-from alpha_engine_lib.pipeline_status import (
+from nousergon_lib.pipeline_status import (
     PipelineExecutionSummary,
     PipelineRun,
     RunStatus,
@@ -43,7 +43,7 @@ from alpha_engine_lib.pipeline_status import (
     list_recent_pipeline_runs,
     read_pipeline_state,
 )
-from alpha_engine_lib.pipeline_status.read import PipelineStatusError
+from nousergon_lib.pipeline_status.read import PipelineStatusError
 
 from loaders.s3_loader import (
     _record_s3_error,
@@ -107,7 +107,7 @@ def derive_cycle_verdict(run: PipelineRun) -> CycleVerdict:
 
     NOTE: mirrors ``live/loaders/system_pulse_loader.derive_cycle_verdict``
     (the public surface). Both should be lifted into
-    ``alpha_engine_lib.pipeline_status`` on the next lib bump — second
+    ``nousergon_lib.pipeline_status`` on the next lib bump — second
     adoption is the consolidation signal; bundle with the registry work on
     config#1102.
     """

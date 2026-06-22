@@ -26,7 +26,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from alpha_engine_lib.pipeline_status import (
+from nousergon_lib.pipeline_status import (
     PipelineRun,
     RunStatus,
     SFNAccessDenied,
@@ -34,8 +34,8 @@ from alpha_engine_lib.pipeline_status import (
     SFNThrottled,
     TaskStatus,
 )
-from alpha_engine_lib.pipeline_status.read import PipelineStatusError, TaskRow
-from alpha_engine_lib.pipeline_status.registry import ArchivePageRef, ArtifactReason
+from nousergon_lib.pipeline_status.read import PipelineStatusError, TaskRow
+from nousergon_lib.pipeline_status.registry import ArchivePageRef, ArtifactReason
 
 from loaders.pipeline_status_loader import (
     LoadOutcome,

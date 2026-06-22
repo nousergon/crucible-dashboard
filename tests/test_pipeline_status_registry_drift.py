@@ -2,7 +2,7 @@
 tests/test_pipeline_status_registry_drift.py — Walk the live SF JSONs
 (alpha-engine-data/infrastructure/{step_function,step_function_daily,
 step_function_eod}.json) and assert every substantive Task state has a
-registry entry in ``alpha_engine_lib.pipeline_status.registry``.
+registry entry in ``nousergon_lib.pipeline_status.registry``.
 
 This is the cross-repo invariant guard called out in the registry's
 docstring: ``"A CI test in the consuming repo (alpha-engine-dashboard
@@ -36,7 +36,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from alpha_engine_lib.pipeline_status.registry import (
+from nousergon_lib.pipeline_status.registry import (
     STATE_TO_ARCHIVE_PAGE,
     SUBSTANTIVE_RESOURCES,
     WAIT_GROUPING,
@@ -90,7 +90,7 @@ def test_every_substantive_state_has_registry_entry(label, json_path):
     """The load-bearing cross-repo invariant. If this fails, the dashboard
     page 25 will render a "⚠️ Registry drift" cell for the missing state —
     visible-but-degraded. Fix: add the new state name + ArchivePageRef or
-    ArtifactReason to ``alpha_engine_lib.pipeline_status.registry`` and
+    ArtifactReason to ``nousergon_lib.pipeline_status.registry`` and
     bump the lib version."""
     if not json_path.exists():
         pytest.skip(
@@ -104,7 +104,7 @@ def test_every_substantive_state_has_registry_entry(label, json_path):
 
     assert not missing, (
         f"{label} SF has {len(missing)} substantive Task state(s) NOT in "
-        f"alpha_engine_lib.pipeline_status.registry.STATE_TO_ARCHIVE_PAGE: "
+        f"nousergon_lib.pipeline_status.registry.STATE_TO_ARCHIVE_PAGE: "
         f"{sorted(missing)}. Add each one to the registry with an ArchivePageRef "
         f"deep-link OR an explicit ArtifactReason string, then bump the lib version."
     )
@@ -139,7 +139,7 @@ def test_wait_companions_in_json_are_in_wait_grouping(label, json_path):
 
     assert not missing, (
         f"{label} SF has {len(missing)} ``WaitFor*`` state(s) NOT in "
-        f"alpha_engine_lib.pipeline_status.registry.WAIT_GROUPING: "
+        f"nousergon_lib.pipeline_status.registry.WAIT_GROUPING: "
         f"{sorted(missing)}. Each must map to its parent Task state name; "
         f"otherwise the wait companion will render as its own row instead of "
         f"rolling up."

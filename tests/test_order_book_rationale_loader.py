@@ -1,6 +1,6 @@
 """Wiring test for load_order_book_rationale_history in s3_loader.py.
 
-Delegates to ``alpha_engine_lib.eval_artifacts.list_eval_artifacts``;
+Delegates to ``nousergon_lib.eval_artifacts.list_eval_artifacts``;
 behavioral failure-mode coverage lives in the lib. This pins the
 wiring — correct bucket + prefix + n_recent, return propagated, empty
 list propagated (pre-deploy graceful state). Mirrors
@@ -44,7 +44,7 @@ _ARTIFACTS = [
 
 
 def test_delegates_to_lib_with_research_bucket_and_prefix(loader):
-    import alpha_engine_lib.eval_artifacts as ea
+    import nousergon_lib.eval_artifacts as ea
     fake_client = MagicMock()
     with patch.object(loader, "get_s3_client", return_value=fake_client):
         with patch.object(loader, "_research_bucket", return_value="alpha-engine-research"):
@@ -62,7 +62,7 @@ def test_delegates_to_lib_with_research_bucket_and_prefix(loader):
 def test_propagates_empty_list_pre_deploy(loader):
     """Before the executor first writes the artifact the lib returns
     [] — the page must get [] and render the graceful empty notice."""
-    import alpha_engine_lib.eval_artifacts as ea
+    import nousergon_lib.eval_artifacts as ea
     with patch.object(loader, "get_s3_client", return_value=MagicMock()):
         with patch.object(loader, "_research_bucket", return_value="b"):
             with patch.object(ea, "list_eval_artifacts", return_value=[]):

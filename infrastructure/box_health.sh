@@ -39,7 +39,7 @@
 # such false page on 2026-06-18 during a Metron deploy). 4x4s (~12s) clears it
 # with margin. Cost is paid only on the non-clean path, once per 10-min tick.
 #
-# Alerts go through alpha_engine_lib.alerts (SNS alpha-engine-alerts +
+# Alerts go through nousergon_lib.alerts (SNS alpha-engine-alerts +
 # Telegram), which dedups so a persistent problem only pages once per
 # window. Installed to /usr/local/bin by install-box-health.sh; scheduled
 # by box-health.timer (every 10 min).
@@ -143,7 +143,7 @@ msg="dashboard EC2 (${INSTANCE_ID}) health alert:"
 for p in "${problems[@]}"; do msg="$msg"$'\n'" - $p"; done
 dkey="boxhealth-$(printf '%s' "${problems[*]}" | tr ' /' '__' | cut -c1-72)"
 
-"$VENV_PY" -m alpha_engine_lib.alerts publish \
+"$VENV_PY" -m nousergon_lib.alerts publish \
     --message "$msg" \
     --severity warning \
     --source box-health \
