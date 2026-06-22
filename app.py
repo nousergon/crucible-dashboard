@@ -410,7 +410,13 @@ def _build_navigation():
         "📈 Performance": [
             page("1_Portfolio.py", "Portfolio", "💼"),
             page("6_Execution.py", "Execution", "⚡"),
-            page("19_EOD_Reconcile_Archive.py", "EOD Reconcile (archive)", "🧾"),
+            # url_path pinned to "eod-report" — the EOD email deep-links to
+            # …/eod-report?date=YYYY-MM-DD. Guarded against the executor's
+            # emailer slug by tests/test_eod_report_page.py.
+            st.Page(
+                "views/19_EOD_Report.py", title="EOD Report", icon="🧾",
+                url_path="eod-report",
+            ),
         ],
         "🔬 Research & Signals": [
             page("2_Signals_and_Research.py", "Signals & Research", "🧭"),

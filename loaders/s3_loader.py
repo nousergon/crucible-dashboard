@@ -449,6 +449,47 @@ def load_eod_pnl() -> pd.DataFrame | None:
 
 
 @st.cache_data(ttl=_ttl("trades"))
+def load_eod_report(date_str: str) -> dict | None:
+    """Load the structured EOD report artifact for a trading day.
+
+    Producer: alpha-engine ``executor/eod_report.py`` →
+    ``consolidated/{date}/eod_report.json``. Single source of truth for the
+    console EOD Report page (``views/19_EOD_Report.py``); carries the
+    prior-NAV-basis daily-alpha attribution that ties to the headline alpha.
+    Returns None if the artifact is absent or malformed.
+    """
+    data = _fetch_s3_json(
+        _trades_bucket(), f"consolidated/{date_str}/eod_report.json"
+    )
+    return data if isinstance(data, dict) else None
+
+
+@st.cache_data(ttl=_ttl("trades"))
+def list_eod_report_dates() -> list[str]:
+    """Return available EOD report dates, newest first.
+
+    Lists ``consolidated/{date}/eod_report.json`` objects in the trades bucket.
+    """
+    bucket = _trades_bucket()
+    try:
+        client = get_s3_client()
+        paginator = client.get_paginator("list_objects_v2")
+        dates: set[str] = set()
+        for page in paginator.paginate(Bucket=bucket, Prefix="consolidated/"):
+            for obj in page.get("Contents", []):
+                k = obj.get("Key", "")
+                if k.endswith("/eod_report.json"):
+                    seg = k[len("consolidated/"):].split("/")[0]
+                    if ISO_DATE_PATTERN.match(seg):
+                        dates.add(seg)
+        return sorted(dates, reverse=True)
+    except Exception as e:
+        logger.error("Failed to list eod_report dates: %s", e)
+        _record_s3_error(bucket, "consolidated/", type(e).__name__, str(e))
+        return []
+
+
+@st.cache_data(ttl=_ttl("trades"))
 def load_uptime_history(max_sessions: int = 20) -> list[dict]:
     """List recent uptime/*.json files and load the most recent `max_sessions`.
 
