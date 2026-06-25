@@ -450,6 +450,7 @@ def _build_navigation():
         "🩺 System & Ops": [
             page("4_System_Health.py", "System Health", "🩺"),
             page("25_Pipeline_Status.py", "Pipeline Status", "🚦"),
+            page("37_Saturday_SF_Watch.py", "Saturday SF Watch", "📡"),
             page("26_Artifact_Freshness.py", "Artifact Freshness", "⏱"),
             page("27_Active_Observations.py", "Active Observations", "🔭"),
             page("28_Retros.py", "Retros", "📓"),
