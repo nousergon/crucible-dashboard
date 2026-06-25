@@ -269,7 +269,7 @@ st.caption("How each module produces or filters signal that contributes to long-
 
 
 def _module_card(emoji: str, name: str, repo_path: str, role: str, contribution: str) -> None:
-    repo_url = f"https://github.com/cipher813/{repo_path}"
+    repo_url = f"https://github.com/nousergon/{repo_path}"
     st.markdown(
         f"""
         <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08);
@@ -361,7 +361,7 @@ st.divider()
 
 st.markdown(
     """
-    Deeper material: each module's [public README](https://github.com/cipher813)
+    Deeper material: each module's [public README](https://github.com/nousergon)
     plus the [system overview](https://github.com/nousergon/nousergon-docs#readme)
     in alpha-engine-docs. Per-module trade-offs, failure modes, and decision logs
     live in the private interview kit.
