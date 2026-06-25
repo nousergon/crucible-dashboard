@@ -417,6 +417,7 @@ def _build_navigation():
                 "views/19_EOD_Report.py", title="EOD Report", icon="🧾",
                 url_path="eod-report",
             ),
+            page("37_Attribution_Heatmaps.py", "Attribution Heatmaps", "🟩"),
         ],
         "🔬 Research & Signals": [
             page("2_Signals_and_Research.py", "Signals & Research", "🧭"),
