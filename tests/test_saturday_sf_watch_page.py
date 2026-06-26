@@ -97,3 +97,79 @@ class TestNavRegistration:
         src = (REPO_ROOT / "views" / "37_Saturday_SF_Watch.py").read_text()
         assert "list_saturday_sf_watch_dates" in src
         assert "load_saturday_sf_watch" in src
+
+
+# ── Saturday Integrity gate (GO/NO-GO banner — config#1244) ──────────────────
+
+
+class TestLoadSaturdayIntegrity:
+    def test_returns_dict_on_valid_json(self):
+        payload = {"status": "GO", "checked_at": "2026-06-20T12:00:00Z"}
+        with patch.object(s3_loader, "_research_bucket", return_value="b"), \
+                patch.object(s3_loader, "_s3_get_object",
+                             return_value=json.dumps(payload).encode()):
+            assert s3_loader.load_saturday_integrity("2026-06-20") == payload
+
+    def test_returns_none_on_missing(self):
+        with patch.object(s3_loader, "_research_bucket", return_value="b"), \
+                patch.object(s3_loader, "_s3_get_object", return_value=None):
+            assert s3_loader.load_saturday_integrity("2026-06-20") is None
+
+    def test_returns_none_on_non_dict_json(self):
+        with patch.object(s3_loader, "_research_bucket", return_value="b"), \
+                patch.object(s3_loader, "_s3_get_object", return_value=b"[1, 2, 3]"):
+            assert s3_loader.load_saturday_integrity("2026-06-20") is None
+
+
+class TestListSaturdayIntegrityDates:
+    def _client(self, keys):
+        page = {"Contents": [{"Key": k} for k in keys]}
+        paginator = MagicMock()
+        paginator.paginate.return_value = [page]
+        client = MagicMock()
+        client.get_paginator.return_value = paginator
+        return client
+
+    def test_lists_and_sorts_newest_first(self):
+        keys = [
+            "consolidated/saturday_integrity/2026-06-13.json",
+            "consolidated/saturday_integrity/2026-06-20.json",
+            "consolidated/saturday_integrity/latest.json",   # ignored (not ISO date)
+            "consolidated/saturday_integrity/2026-06-20.txt",  # ignored (not .json)
+            "consolidated/saturday_integrity/",                # ignored (prefix marker)
+        ]
+        with patch.object(s3_loader, "_research_bucket", return_value="b"), \
+                patch.object(s3_loader, "get_s3_client",
+                             return_value=self._client(keys)):
+            assert s3_loader.list_saturday_integrity_dates() == [
+                "2026-06-20", "2026-06-13",
+            ]
+
+    def test_empty_when_no_marker(self):
+        with patch.object(s3_loader, "_research_bucket", return_value="b"), \
+                patch.object(s3_loader, "get_s3_client",
+                             return_value=self._client([])):
+            assert s3_loader.list_saturday_integrity_dates() == []
+
+    def test_empty_on_error(self):
+        client = MagicMock()
+        client.get_paginator.side_effect = RuntimeError("boom")
+        with patch.object(s3_loader, "_research_bucket", return_value="b"), \
+                patch.object(s3_loader, "get_s3_client", return_value=client):
+            assert s3_loader.list_saturday_integrity_dates() == []
+
+
+class TestPageIntegrationFields:
+    """The page must wire the GO/NO-GO banner loaders + the agent enrichment
+    fields (pr_urls / diagnosis / recommended_command) — config#1244."""
+
+    def test_page_uses_integrity_loaders(self):
+        src = (REPO_ROOT / "views" / "37_Saturday_SF_Watch.py").read_text()
+        assert "list_saturday_integrity_dates" in src
+        assert "load_saturday_integrity" in src
+
+    def test_page_surfaces_agent_enrichment_fields(self):
+        src = (REPO_ROOT / "views" / "37_Saturday_SF_Watch.py").read_text()
+        assert "pr_urls" in src
+        assert "diagnosis" in src
+        assert "recommended_command" in src

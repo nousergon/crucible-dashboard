@@ -17,6 +17,13 @@ no autonomous fix is enacted. Later milestones populate ``lane`` /
 Complementary to **Pipeline Status** (live SF run/succeeded/failed state) and
 **Artifact Freshness** (independent artifact-integrity, the Sat→Mon swallow
 safeguard) — this page is the failure-event timeline + what-the-watcher-did log.
+
+Two enrichments (config#1244):
+1. A top **Saturday Integrity GO/NO-GO banner** from the independent integrity
+   gate's marker (config#1227 §8) — the Sat→Mon swallow safeguard, validated
+   independently of the agent's own report.
+2. The watch agent's per-event enrichment fields (``pr_urls`` / ``diagnosis`` /
+   ``recommended_command``) surfaced on the event timeline.
 """
 
 from __future__ import annotations
@@ -30,7 +37,9 @@ import streamlit as st
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from loaders.s3_loader import (  # noqa: E402
+    list_saturday_integrity_dates,
     list_saturday_sf_watch_dates,
+    load_saturday_integrity,
     load_saturday_sf_watch,
 )
 
@@ -48,7 +57,10 @@ _ACTION_LABEL: dict[str, str] = {
     "proposed": "📝 proposed (review)",
     "auto_fixed": "🔧 auto-fixed",
     "merged": "🔧 merged",
+    "fixed_merged_rerun": "🔧 fixed+merged+rerun",
     "rerun": "🔁 rerun",
+    "refused": "🛑 refused",
+    "escalated": "🚨 escalated",
 }
 
 
@@ -58,6 +70,67 @@ st.caption(
     "what the watcher did. Failure-driven: no entry means no failure. "
     "(config#1227)"
 )
+
+
+def _render_integrity_banner() -> None:
+    """Render the Saturday Integrity GO/NO-GO banner from the latest
+    ``consolidated/saturday_integrity/{date}.json`` marker (config#1227 §8 —
+    the independent Sat→Mon swallow safeguard).
+
+    The marker is the integrity gate's output, **not** the agent's own report:
+    GO means every load-bearing Saturday artifact validated fresh/present vs the
+    ARTIFACT_REGISTRY before Monday trades; NO-GO names the missing/stale ones.
+    Absent-tolerant: until the gate emits its first marker the banner stays
+    neutral (mirrors the failure-driven watch-log below).
+    """
+    idates = list_saturday_integrity_dates()
+    if not idates:
+        st.info(
+            "🛈 Saturday Integrity gate: no marker emitted yet. The independent "
+            "Sat→Mon swallow safeguard (config#1227 §8) writes a GO/NO-GO marker "
+            "to `consolidated/saturday_integrity/{date}.json` before Monday "
+            "trades; this banner activates once the first marker lands."
+        )
+        return
+
+    marker = load_saturday_integrity(idates[0]) or {}
+    # Accept both an explicit "status" GO/NO-GO and a boolean "go" field.
+    status = str(marker.get("status", "")).upper()
+    go = marker.get("go")
+    if go is None:
+        go = status in ("GO", "PASS", "OK")
+    else:
+        go = bool(go)
+
+    # Missing/stale artifacts the gate flagged (tolerate a few field shapes).
+    issues = (
+        marker.get("missing_or_stale")
+        or marker.get("stale_artifacts")
+        or marker.get("missing_artifacts")
+        or marker.get("issues")
+        or []
+    )
+    when = marker.get("checked_at") or marker.get("updated_at") or idates[0]
+
+    if go:
+        st.success(
+            f"✅ Saturday Integrity: **GO** — all load-bearing artifacts "
+            f"fresh/present ({when})."
+        )
+    else:
+        st.error(f"⛔ Saturday Integrity: **NO-GO** ({when}).")
+        if issues:
+            st.markdown("**Missing / stale artifacts:**")
+            for item in issues:
+                if isinstance(item, dict):
+                    name = item.get("artifact") or item.get("name") or "—"
+                    reason = item.get("reason") or item.get("status") or ""
+                    st.markdown(f"- `{name}`" + (f" — {reason}" if reason else ""))
+                else:
+                    st.markdown(f"- `{item}`")
+
+
+_render_integrity_banner()
 
 dates = list_saturday_sf_watch_dates()
 
@@ -85,7 +158,10 @@ df = pd.DataFrame(events)
 # ── Headline tiles ──────────────────────────────────────────────────────────
 n_failures = len(events)
 distinct_states = sorted({e.get("failed_state") for e in events if e.get("failed_state")})
-n_auto = sum(1 for e in events if e.get("action") in ("auto_fixed", "merged"))
+n_auto = sum(
+    1 for e in events
+    if e.get("action") in ("auto_fixed", "merged", "fixed_merged_rerun")
+)
 n_proposed = sum(1 for e in events if e.get("action") == "proposed")
 dispatch_on = any(e.get("agent_dispatch_enabled") for e in events)
 
@@ -108,6 +184,15 @@ st.caption(
 # ── Event timeline table ────────────────────────────────────────────────────
 st.subheader("Failure events")
 
+
+def _count_prs(v: object) -> str:
+    """Render the pr_urls list as a compact count (the links live in the detail
+    expander below — a dataframe cell can't hold clickable links)."""
+    if isinstance(v, (list, tuple)) and v:
+        return f"🔗 {len(v)}"
+    return "—"
+
+
 display = pd.DataFrame({
     "Detected": df.get("detected_at"),
     "Status": df.get("status"),
@@ -117,6 +202,8 @@ display = pd.DataFrame({
         lambda a: _ACTION_LABEL.get(a, a or "—")
     ),
     "Lane": df.get("lane"),
+    "Diagnosis": df.get("diagnosis"),
+    "PRs": (df["pr_urls"].map(_count_prs) if "pr_urls" in df else "—"),
     "Execution": df.get("execution_name"),
 })
 
@@ -139,6 +226,38 @@ st.caption(
     "records the failed state + cause but enacts no fix. See config#1227 for the "
     "M2→M5 rollout (propose-only soak → autonomous merge after it earns trust)."
 )
+
+# ── Agent action detail (enrichment fields written by the watch agent) ───────
+# The watch agent enriches each event (schema_version 2) with pr_urls (links),
+# diagnosis (root cause) and recommended_command (when it stopped short). The
+# dataframe above can only summarize these; this section surfaces them in full.
+_enriched = [
+    e for e in events
+    if e.get("pr_urls") or e.get("diagnosis") or e.get("recommended_command")
+]
+if _enriched:
+    st.subheader("Agent action detail")
+    for e in _enriched:
+        label = (
+            e.get("failed_state")
+            or e.get("execution_name")
+            or e.get("detected_at")
+            or "event"
+        )
+        action_label = _ACTION_LABEL.get(e.get("action"), e.get("action") or "observe")
+        with st.expander(f"🔧 {label} — {action_label}"):
+            if e.get("diagnosis"):
+                st.markdown(f"**Diagnosis:** {e['diagnosis']}")
+            pr_urls = e.get("pr_urls") or []
+            if pr_urls:
+                st.markdown("**PRs:**")
+                for url in pr_urls:
+                    st.markdown(f"- [{url}]({url})")
+            if e.get("recommended_command"):
+                st.markdown("**Recommended command** (agent stopped short):")
+                st.code(e["recommended_command"], language="bash")
+            if e.get("rerun_execution_arn"):
+                st.caption(f"Rerun execution: `{e['rerun_execution_arn']}`")
 
 with st.expander("Raw watch-log JSON"):
     st.json(data)

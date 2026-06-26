@@ -537,6 +537,55 @@ def load_saturday_sf_watch(date_str: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+# ---------------------------------------------------------------------------
+# Saturday Integrity gate (Sat→Mon swallow safeguard — config#1227 §8 / #1244)
+# ---------------------------------------------------------------------------
+
+_SATURDAY_INTEGRITY_PREFIX = "consolidated/saturday_integrity/"
+
+
+@st.cache_data(ttl=_ttl("research"))
+def list_saturday_integrity_dates() -> list[str]:
+    """Return Saturday Integrity marker dates, newest first.
+
+    Lists flat ``consolidated/saturday_integrity/{date}.json`` objects in the
+    research bucket — the GO/NO-GO sentinel written by the independent
+    integrity gate (config#1227 §8, the Sat→Mon swallow safeguard). Mirrors
+    :func:`list_saturday_sf_watch_dates`. An empty list (no marker yet emitted)
+    is not an error; the page falls back to a neutral banner.
+    """
+    bucket = _research_bucket()
+    try:
+        client = get_s3_client()
+        paginator = client.get_paginator("list_objects_v2")
+        dates: set[str] = set()
+        for page in paginator.paginate(Bucket=bucket, Prefix=_SATURDAY_INTEGRITY_PREFIX):
+            for obj in page.get("Contents", []):
+                k = obj.get("Key", "")
+                stem = k[len(_SATURDAY_INTEGRITY_PREFIX):]
+                if stem.endswith(".json"):
+                    seg = stem[: -len(".json")]
+                    if ISO_DATE_PATTERN.match(seg):
+                        dates.add(seg)
+        return sorted(dates, reverse=True)
+    except Exception as e:
+        logger.error("Failed to list saturday_integrity dates: %s", e)
+        _record_s3_error(bucket, _SATURDAY_INTEGRITY_PREFIX, type(e).__name__, str(e))
+        return []
+
+
+@st.cache_data(ttl=_ttl("research"))
+def load_saturday_integrity(date_str: str) -> dict | None:
+    """Load ``consolidated/saturday_integrity/{date}.json`` from the research
+    bucket — the GO/NO-GO marker written by the integrity gate (config#1227 §8).
+    None on missing key / parse error. Mirrors :func:`load_saturday_sf_watch`.
+    """
+    data = _fetch_s3_json(
+        _research_bucket(), f"{_SATURDAY_INTEGRITY_PREFIX}{date_str}.json"
+    )
+    return data if isinstance(data, dict) else None
+
+
 @st.cache_data(ttl=_ttl("trades"))
 def load_uptime_history(max_sessions: int = 20) -> list[dict]:
     """List recent uptime/*.json files and load the most recent `max_sessions`.
