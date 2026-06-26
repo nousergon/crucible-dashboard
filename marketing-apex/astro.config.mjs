@@ -1,6 +1,4 @@
 // @ts-check
-// Touched 2026-05-22 to retrigger Cloudflare Pages deploy after a wedged
-// production build for 6f23d00 left nousergon.ai serving HTTP 500.
 import { defineConfig } from 'astro/config';
 
 import tailwindcss from '@tailwindcss/vite';
