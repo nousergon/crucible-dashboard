@@ -480,6 +480,82 @@ def get_model_version_scorecard() -> pd.DataFrame:
     return out.sort_values("rank_ic", ascending=False, na_position="last").reset_index(drop=True)
 
 
+def _per_spec_realized_series(df: pd.DataFrame, stage: str, window: int) -> pd.DataFrame:
+    """Per-spec rolling realized-α series from a resolved-outcomes frame.
+
+    For each ``model_version`` (the "spec"), computes the per-date mean realized
+    21d log-alpha (the daily realized edge of that spec's picks), then a rolling
+    mean over ``window`` prediction-dates so the operator sees the trajectory,
+    not the per-date noise. Returns a long frame: model_version, stage,
+    prediction_date, realized_alpha (per-date mean), rolling_realized_alpha,
+    n_predictions (that date). Empty frame in → empty frame out.
+    """
+    if df.empty:
+        return pd.DataFrame()
+    d = df.copy()
+    d["actual_log_alpha"] = pd.to_numeric(d["actual_log_alpha"], errors="coerce")
+    d["model_version"] = d["model_version"].fillna("champion-legacy")
+    d = d.dropna(subset=["actual_log_alpha"])
+    if d.empty:
+        return pd.DataFrame()
+
+    rows = []
+    for version, g in d.groupby("model_version"):
+        # Per-date mean realized alpha (cross-sectional average of that spec's
+        # resolved picks on each date), ordered by date for the rolling window.
+        per_date = (
+            g.groupby("prediction_date")["actual_log_alpha"]
+            .agg(realized_alpha="mean", n_predictions="size")
+            .reset_index()
+            .sort_values("prediction_date")
+        )
+        # min_periods=1 so the series starts immediately and ramps into the
+        # full window — an empty leaderboard week shouldn't blank the chart.
+        per_date["rolling_realized_alpha"] = (
+            per_date["realized_alpha"].rolling(window=window, min_periods=1).mean()
+        )
+        per_date.insert(0, "stage", stage)
+        per_date.insert(0, "model_version", version)
+        rows.append(per_date)
+    return pd.concat(rows, ignore_index=True)
+
+
+def get_per_spec_realized_alpha_series(window: int = 8) -> pd.DataFrame:
+    """Per-spec rolling realized-α series for the model-zoo noise-monitor panel.
+
+    Companion to ``get_model_version_scorecard`` (the point-in-time table):
+    this returns the *trajectory* — per (model_version, prediction_date) mean
+    realized 21d log-alpha plus a ``window``-date rolling mean — so the Model
+    Zoo page can chart each spec's realized edge over time next to the rotation
+    leaderboard. Observability-only (config#1079): the relative-best promotion
+    ranks by leak-free CPCV mean IC, so this is a noise monitor, not a gate.
+
+    Unions champion outcomes (``predictor_outcomes``) with challenger outcomes
+    (``predictor_outcomes_shadow``). Columns: model_version, stage,
+    prediction_date, realized_alpha, rolling_realized_alpha, n_predictions —
+    sorted by model_version then prediction_date. Empty until outcomes mature;
+    a missing shadow table degrades to champion-only.
+    """
+    cols = "model_version, prediction_date, actual_log_alpha"
+    live = query_research_db(
+        f"SELECT {cols} FROM predictor_outcomes WHERE actual_log_alpha IS NOT NULL"
+    )
+    shadow = query_research_db(
+        f"SELECT {cols} FROM predictor_outcomes_shadow WHERE actual_log_alpha IS NOT NULL"
+    )
+    parts = [
+        _per_spec_realized_series(live, "champion", window),
+        _per_spec_realized_series(shadow, "challenger", window),
+    ]
+    parts = [p for p in parts if not p.empty]
+    if not parts:
+        return pd.DataFrame()
+    out = pd.concat(parts, ignore_index=True)
+    return out.sort_values(
+        ["model_version", "prediction_date"]
+    ).reset_index(drop=True)
+
+
 def canonicalize_predictor_outcomes(df: pd.DataFrame) -> pd.DataFrame:
     """Add `_resolved` (0/1, nullable) and `_realized_alpha` columns to a
     `predictor_outcomes` frame by coalescing canonical 21d columns onto

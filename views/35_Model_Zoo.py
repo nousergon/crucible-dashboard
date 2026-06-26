@@ -31,7 +31,10 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pandas as pd
 import streamlit as st
 
-from loaders.db_loader import get_model_version_scorecard
+from loaders.db_loader import (
+    get_model_version_scorecard,
+    get_per_spec_realized_alpha_series,
+)
 from loaders.s3_loader import (
     list_model_zoo_leaderboard_dates,
     load_model_zoo_history,
@@ -170,6 +173,44 @@ if score is None or score.empty:
     st.caption("No resolved outcomes yet — the scorecard fills as predictions mature (~21d).")
 else:
     st.dataframe(score, use_container_width=True, hide_index=True)
+
+st.divider()
+
+# ---------------------------------------------------------------------------
+# 4 · Per-spec rolling realized-α (noise monitor)  — config#1079
+# ---------------------------------------------------------------------------
+# The trajectory companion to the point-in-time scorecard above: each spec's
+# (model_version's) rolling realized 21d log-alpha over time, next to the
+# rotation leaderboard. Observability-only — promotion ranks by leak-free CPCV
+# mean IC (predictor #268), so this is a noise monitor, not a gate.
+st.markdown("#### Rolling realized-α by spec")
+st.caption(
+    "Per-spec rolling mean of realized 21d log-alpha (8-date window) — the "
+    "trajectory of each champion/challenger version's realized edge. "
+    "Observability-only noise monitor; promotion ranks by leak-free CPCV "
+    "mean IC, not this series. Empty until outcomes mature (~21d)."
+)
+realized_series = get_per_spec_realized_alpha_series()
+if realized_series is None or realized_series.empty:
+    st.caption("No resolved outcomes yet — the series fills as predictions mature (~21d).")
+else:
+    # One line per spec; legend = "stage · model_version" so champion and
+    # challenger versions are distinguishable at a glance.
+    chart_df = realized_series.copy()
+    chart_df["series"] = chart_df["stage"] + " · " + chart_df["model_version"].astype(str)
+    pivot = chart_df.pivot_table(
+        index="prediction_date",
+        columns="series",
+        values="rolling_realized_alpha",
+        aggfunc="last",
+    ).sort_index()
+    st.line_chart(pivot, height=320)
+    st.caption(
+        f"{realized_series['model_version'].nunique()} spec(s) · "
+        f"{realized_series['prediction_date'].nunique()} date(s). "
+        "Values are mean log-alpha across each spec's resolved picks per date, "
+        "smoothed over an 8-date rolling window."
+    )
 
 st.caption(
     "Live-inference health + the L1/L2 IC decomposition are on the **Predictor** "
