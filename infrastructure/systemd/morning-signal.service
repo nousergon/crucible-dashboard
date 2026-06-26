@@ -1,0 +1,30 @@
+[Unit]
+Description=Morning Signal podcast generator
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ec2-user
+Group=ec2-user
+WorkingDirectory=/home/ec2-user/morning-signal
+Environment="MORNING_SIGNAL_RUNNER_ROLE_ARN=arn:aws:iam::711398986525:role/morning-signal-runner-role"
+Environment="MORNING_SIGNAL_USE_SSM=1"
+Environment="MORNING_SIGNAL_SSM_REGION=us-east-1"
+Environment="PATH=/home/ec2-user/morning-signal/.venv/bin:/usr/local/bin:/usr/bin:/bin"
+# Refresh the codebase before every generation (coupled to the run, not a
+# clock) so any merged PR is live on the next podcast regardless of schedule.
+# Best-effort (leading '-'): a transient git/pip blip must never SKIP an
+# episode — it runs last-good code; a genuinely broken merge still surfaces
+# via the generate step + the freshness watchdog.
+ExecStartPre=-/usr/bin/git fetch origin --quiet
+ExecStartPre=-/usr/bin/git reset --hard origin/main
+ExecStartPre=-/home/ec2-user/morning-signal/.venv/bin/pip install -e . --quiet
+ExecStart=/home/ec2-user/morning-signal/.venv/bin/python generate_episode.py generate
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=600
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

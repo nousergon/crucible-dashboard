@@ -1,0 +1,12 @@
+[Unit]
+Description=Morning Signal — 04:00 PT (DST-aware); triggers the daily-news -> podcast chain
+Requires=morning-signal.service
+
+[Timer]
+Unit=morning-signal.service
+OnCalendar=*-*-* 04:00:00 America/Los_Angeles
+Persistent=true
+RandomizedDelaySec=0
+
+[Install]
+WantedBy=timers.target

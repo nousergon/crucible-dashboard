@@ -116,6 +116,21 @@ if sudo -u ec2-user git diff "${CURRENT_SHA}~1" "$CURRENT_SHA" -- $WATCHDOG_PATH
     log "re-installed morning-signal watchdog"
 fi
 
+# ── 2c. Re-install morning-signal core units if they changed ───────────────
+# The morning-signal service/timer/drop-ins + the generate-only recovery
+# wrapper are box-provisioned out of the repo tree by install-morning-signal.sh
+# (they used to be unmanaged box-only units — morning-signal#79). Same
+# conditional-on-diff auto-deploy as the watchdog block above so a unit edit
+# (e.g. the Requires=->Wants= daily-news fix, morning-signal#78) actually
+# reaches the box instead of silently drifting.
+MS_UNIT_PATHS="infrastructure/systemd/morning-signal.service infrastructure/systemd/morning-signal.timer infrastructure/systemd/morning-signal.service.d infrastructure/install-morning-signal.sh infrastructure/morning-signal-recover.sh"
+if sudo -u ec2-user git diff "${CURRENT_SHA}~1" "$CURRENT_SHA" -- $MS_UNIT_PATHS 2>/dev/null | grep -q '^[+-]'; then
+    log "morning-signal core units/recovery wrapper changed — re-installing"
+    bash "$REPO_DIR/infrastructure/install-morning-signal.sh" >>"$LOG" 2>&1 \
+        || fail "install-morning-signal.sh"
+    log "re-installed morning-signal core units"
+fi
+
 # ── 3. Restart both streamlit services (we are root) ───────────────────────
 # Both services run from this same repo. Two-second stagger avoids a
 # simultaneous blip on console + live site.
