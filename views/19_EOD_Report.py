@@ -99,11 +99,22 @@ for w in warnings:
 
 # --- Daily Summary ----------------------------------------------------------
 st.header("Daily Summary")
+_provisional = bool(summary.get("spy_close_provisional"))
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("NAV", _usd(summary.get("nav")))
 c2.metric("Daily Return", _pct(summary.get("daily_return_pct")))
-c3.metric("SPY Return", _pct(summary.get("spy_return_pct")))
-c4.metric("Daily Alpha", _pct(summary.get("daily_alpha_pct")))
+c3.metric(
+    "SPY Return" + (" ⏳" if _provisional else ""),
+    _pct(summary.get("spy_return_pct")),
+    help=("SPY close not yet settled — read at ~4:20pm ET; the T+1 reconcile_audit "
+          "pass re-finalizes it from the settled close (config#1276)." if _provisional else None),
+)
+c4.metric("Daily Alpha" + (" ⏳" if _provisional else ""), _pct(summary.get("daily_alpha_pct")))
+if _provisional:
+    st.caption(
+        "⏳ **Provisional** — the SPY close (and therefore SPY Return / Daily Alpha) "
+        "is not yet settled. These re-finalize automatically on the next EOD run."
+    )
 
 c5, c6, c7, c8 = st.columns(4)
 c5.metric("Cash", _usd(summary.get("cash")))
