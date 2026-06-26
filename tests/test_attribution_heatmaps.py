@@ -84,16 +84,38 @@ class TestBuildLongFrame:
         assert aaa20[COL_RETURN] == pytest.approx(2.0)
         # market-relative = 2.0 - 1.0 (SPY)
         assert aaa20[COL_RELATIVE] == pytest.approx(1.0)
-        # bps = alpha_contribution_pct * 100
-        assert aaa20[COL_CONTRIB_BPS] == pytest.approx(50.0)
+        # bps = alpha_contribution_pct * 100 × (today_nav / prior_nav)
+        # prior trading day is 2026-04-13 (NAV 990); today 1000 → ratio 1000/990
+        assert aaa20[COL_CONTRIB_BPS] == pytest.approx(0.5 * 100 * (1000 / 990))
         assert aaa20["weight"] == pytest.approx(0.1)
 
         bbb20 = df[(df.ticker == "BBB")].iloc[0]
         assert bbb20[COL_RELATIVE] == pytest.approx(-2.0)
-        assert bbb20[COL_CONTRIB_BPS] == pytest.approx(-20.0)
+        assert bbb20[COL_CONTRIB_BPS] == pytest.approx(-0.2 * 100 * (1000 / 990))
 
         aaa21 = df[(df.ticker == "AAA") & (df.date == "2026-04-21")].iloc[0]
         assert aaa21[COL_RELATIVE] == pytest.approx(1.5)  # 1.0 - (-0.5)
+        # prior-NAV basis: prior day 2026-04-20 NAV 1000, today 1010 → 1010/1000
+        assert aaa21[COL_CONTRIB_BPS] == pytest.approx(0.3 * 100 * (1010 / 1000))
+
+    def test_contribution_prior_nav_basis_fallback(self):
+        """First available day (no prior NAV) falls back to today's-NAV basis
+        (ratio 1) — the contribution is unscaled."""
+        eod = pd.DataFrame([
+            {
+                "date": "2026-04-20",
+                "portfolio_nav": 1000.0,
+                "spy_return_pct": 0.0,
+                "positions_snapshot": _snap({
+                    "AAA": {"daily_return_pct": 1.0,
+                            "alpha_contribution_pct": 0.4,
+                            "market_value": 100.0, "sector": "Tech"},
+                }),
+            },
+        ])
+        df = build_long_frame(eod)
+        row = df[df.ticker == "AAA"].iloc[0]
+        assert row[COL_CONTRIB_BPS] == pytest.approx(40.0)
 
     def test_empty_inputs(self):
         assert build_long_frame(None).empty
@@ -114,8 +136,11 @@ class TestBuildWeeklyFrame:
         # geometric market-relative: compound(pos) - compound(SPY), same days
         expected_rel = (1.02 * 1.01 - 1.01 * 0.995) * 100
         assert aaa[COL_RELATIVE] == pytest.approx(expected_rel)
-        # additive contribution: 50 + 30 bps
-        assert aaa[COL_CONTRIB_BPS] == pytest.approx(80.0)
+        # additive contribution on the prior-NAV basis:
+        #   04-20: 0.5×100×(1000/990) + 04-21: 0.3×100×(1010/1000)
+        assert aaa[COL_CONTRIB_BPS] == pytest.approx(
+            0.5 * 100 * (1000 / 990) + 0.3 * 100 * (1010 / 1000)
+        )
 
         bbb = wk[wk.ticker == "BBB"].iloc[0]
         assert bbb["n_days"] == 1
@@ -141,7 +166,9 @@ class TestToMatrix:
         wk = build_weekly_frame(build_long_frame(eod_pnl))
         m = to_matrix(wk, COL_CONTRIB_BPS, period_col="week")
         assert list(m.columns) == ["2026-04-20"]
-        assert m.loc["AAA", "2026-04-20"] == pytest.approx(80.0)
+        assert m.loc["AAA", "2026-04-20"] == pytest.approx(
+            0.5 * 100 * (1000 / 990) + 0.3 * 100 * (1010 / 1000)
+        )
 
     def test_empty_metric_returns_empty(self):
         df = pd.DataFrame({"ticker": ["AAA"], "date": ["2026-04-20"],

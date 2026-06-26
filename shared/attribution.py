@@ -19,6 +19,19 @@ Two alpha lenses (the page toggles between them):
   - **contribution** — NAV-weighted contribution in bps; sums across names to
     the portfolio's daily alpha (the EOD Report convention).
 
+Contribution basis (config#1211): the snapshot's ``alpha_contribution_pct`` is
+NAV-weighted on **today's** NAV. The EOD Report page ties to the headline daily
+alpha on a **prior-NAV** basis. We rebase to prior-NAV here so the two console
+surfaces report identical per-position bps:
+
+    contrib_usd       = alpha_contribution_pct/100 × today_nav
+    contrib_bps_prior = contrib_usd / prior_nav × 10000
+                      = alpha_contribution_pct × 100 × (today_nav / prior_nav)
+
+``prior_nav`` is the previous trading day's ``portfolio_nav`` from the eod_pnl
+history. On the first available day (no prior NAV) we fall back to today's NAV
+(ratio 1) — the original today's-NAV reading.
+
 Weekly rollup: the return-domain series (total return, market-relative alpha)
 compound **geometrically** over the days held in the week; the contribution
 series sums **additively** — daily contributions are additive by construction
@@ -66,6 +79,26 @@ def _iso_week_monday(date_str: str) -> str:
     return date.fromisocalendar(iso[0], iso[1], 1).isoformat()
 
 
+def _prior_nav_by_date(eod_pnl: pd.DataFrame) -> dict[str, float | None]:
+    """Map each date → the previous trading day's ``portfolio_nav``.
+
+    Built from the distinct (date, NAV) pairs in ``eod_pnl``, ordered by date.
+    The earliest date maps to None (no prior NAV). Used to rebase the
+    contribution lens onto the prior-NAV basis (config#1211)."""
+    if "portfolio_nav" not in eod_pnl.columns or "date" not in eod_pnl.columns:
+        return {}
+    nav_by_date: dict[str, float | None] = {}
+    for _, row in eod_pnl.iterrows():
+        d = str(row.get("date"))
+        if d not in nav_by_date:
+            nav_by_date[d] = _coerce_float(row.get("portfolio_nav"))
+    ordered = sorted(nav_by_date)
+    prior: dict[str, float | None] = {}
+    for i, d in enumerate(ordered):
+        prior[d] = nav_by_date[ordered[i - 1]] if i > 0 else None
+    return prior
+
+
 def build_long_frame(eod_pnl: pd.DataFrame | None) -> pd.DataFrame:
     """Explode ``eod_pnl`` rows into one row per (date, ticker).
 
@@ -73,8 +106,9 @@ def build_long_frame(eod_pnl: pd.DataFrame | None) -> pd.DataFrame:
     alpha_contrib_bps, weight, spy_return_pct``. Only positions whose snapshot
     carries a per-ticker ``daily_return_pct`` are included — the pre-attribution
     rows (before 2026-04-20) have snapshots without per-position returns and are
-    skipped. Returns an empty frame (with the right columns) when there is
-    nothing to show.
+    skipped. ``alpha_contrib_bps`` is rebased to the prior-NAV basis (config#1211)
+    to tie out with the EOD Report page. Returns an empty frame (with the right
+    columns) when there is nothing to show.
     """
     if (
         eod_pnl is None
@@ -82,6 +116,8 @@ def build_long_frame(eod_pnl: pd.DataFrame | None) -> pd.DataFrame:
         or "positions_snapshot" not in eod_pnl.columns
     ):
         return pd.DataFrame(columns=_LONG_COLS)
+
+    prior_nav_by_date = _prior_nav_by_date(eod_pnl)
 
     records: list[dict] = []
     for _, row in eod_pnl.iterrows():
@@ -97,6 +133,13 @@ def build_long_frame(eod_pnl: pd.DataFrame | None) -> pd.DataFrame:
         day = str(row.get("date"))
         spy_ret = _coerce_float(row.get("spy_return_pct"))
         nav = _coerce_float(row.get("portfolio_nav"))
+        prior_nav = prior_nav_by_date.get(day)
+        # Rebase today's-NAV contribution onto the prior-NAV basis. Fall back to
+        # ratio 1 when prior NAV is unavailable (first day / missing NAV).
+        nav_ratio = (
+            (nav / prior_nav)
+            if (nav is not None and prior_nav) else 1.0
+        )
         for ticker, pos in snap.items():
             if not isinstance(pos, dict):
                 continue
@@ -112,7 +155,8 @@ def build_long_frame(eod_pnl: pd.DataFrame | None) -> pd.DataFrame:
                 COL_RETURN: dr,
                 COL_RELATIVE: (dr - spy_ret) if spy_ret is not None else None,
                 COL_CONTRIB_BPS: (
-                    contrib_pct * 100.0 if contrib_pct is not None else None
+                    contrib_pct * 100.0 * nav_ratio
+                    if contrib_pct is not None else None
                 ),
                 "weight": (mv / nav) if (mv is not None and nav) else None,
                 "spy_return_pct": spy_ret,
