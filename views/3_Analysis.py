@@ -141,11 +141,18 @@ st.caption("Signal accuracy, backtester results, and pipeline evaluation.")
 backtest_dates = list_backtest_dates()
 selected_backtest_date = None
 if backtest_dates:
+    # Honor the ?date= deep-link from the weekly backtester+eval digest email
+    # (…/analysis?date=YYYY-MM-DD — the backtest run_date / last completed
+    # trading day), defaulting to the latest run. Mirrors the EOD Report page.
+    qp_date = st.query_params.get("date")
+    default_idx = backtest_dates.index(qp_date) if qp_date in backtest_dates else 0
     selected_backtest_date = st.selectbox(
         "Backtest Run Date",
         options=backtest_dates,
+        index=default_idx,
         help="Applies to the Backtester and Pipeline Evaluation tabs",
     )
+    st.query_params["date"] = selected_backtest_date
 
 tab_accuracy, tab_backtest, tab_eval = st.tabs(
     ["Signal Accuracy", "Backtester", "Pipeline Evaluation"]

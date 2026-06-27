@@ -447,7 +447,13 @@ def _build_navigation():
             page("20_Predictor_Training_Archive.py", "Training Runs (archive)", "🏋"),
         ],
         "🧪 Backtester & Eval": [
-            page("3_Analysis.py", "Analysis", "📊"),
+            # url_path pinned to "analysis" — the weekly backtester+eval digest
+            # email deep-links to …/analysis?date=YYYY-MM-DD (the backtest
+            # run_date). Guarded by tests/test_analysis_page.py.
+            st.Page(
+                "views/3_Analysis.py", title="Analysis", icon="📊",
+                url_path="analysis",
+            ),
             page("8_Eval_Quality.py", "Eval Quality", "⚖"),
             page("12_Feedback_Loop.py", "Feedback Loop", "🔁"),
             page("30_Optimizer_Risk.py", "Optimizer Risk", "🎚"),
