@@ -433,7 +433,14 @@ def _build_navigation():
         ],
         "🤖 Predictor": [
             page("7_Predictor.py", "Predictor", "🤖"),
-            page("35_Model_Zoo.py", "Model Zoo", "🦓"),
+            # url_path pinned to "model-zoo" — the predictor's weekly Model-Zoo
+            # Rotation digest email deep-links to …/model-zoo?date=YYYY-MM-DD
+            # (the rotation trading-day key, e.g. Friday for a Saturday run).
+            # Guarded against the producer slug by tests/test_model_zoo_page.py.
+            st.Page(
+                "views/35_Model_Zoo.py", title="Model Zoo", icon="🦓",
+                url_path="model-zoo",
+            ),
             page("15_Regime.py", "Regime", "🌐"),
             page("13_Feature_Store.py", "Feature Store", "🗃"),
             page("18_Predictor_Briefing_Archive.py", "Predictor Briefing (archive)", "📨"),
