@@ -405,7 +405,13 @@ def _build_navigation():
             home,
             page("Report_Card.py", "Report Card", "📋"),
             page("Report_Card_Detail.py", "Report Card — Detail", "🔎"),
-            page("Director_Plan.py", "Director — Weekly Plan", "🧭"),
+            # url_path pinned to "director" — the Director weekly-plan digest
+            # email deep-links to …/director?date=YYYY-MM-DD (the run trading-day
+            # key). Guarded by tests/test_director_page.py.
+            st.Page(
+                "views/Director_Plan.py", title="Director — Weekly Plan", icon="🧭",
+                url_path="director",
+            ),
         ],
         "📈 Performance": [
             page("1_Portfolio.py", "Portfolio", "💼"),
@@ -447,7 +453,13 @@ def _build_navigation():
             page("20_Predictor_Training_Archive.py", "Training Runs (archive)", "🏋"),
         ],
         "🧪 Backtester & Eval": [
-            page("3_Analysis.py", "Analysis", "📊"),
+            # url_path pinned to "analysis" — the weekly backtester+eval digest
+            # email deep-links to …/analysis?date=YYYY-MM-DD (the backtest
+            # run_date). Guarded by tests/test_analysis_page.py.
+            st.Page(
+                "views/3_Analysis.py", title="Analysis", icon="📊",
+                url_path="analysis",
+            ),
             page("8_Eval_Quality.py", "Eval Quality", "⚖"),
             page("12_Feedback_Loop.py", "Feedback Loop", "🔁"),
             page("30_Optimizer_Risk.py", "Optimizer Risk", "🎚"),

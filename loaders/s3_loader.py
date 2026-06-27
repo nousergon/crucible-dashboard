@@ -434,6 +434,18 @@ def load_carryover_ledger() -> dict | None:
     return download_s3_json(_research_bucket(), "director/carryover_ledger.json")
 
 
+@st.cache_data(ttl=_ttl("signals"))
+def list_director_dates() -> list[str]:
+    """Sorted ISO dates (newest first) that have a Director action plan — the
+    date picker / deep-link target list. Scans the ``director/`` prefix and
+    keeps only ``YYYY-MM-DD`` sub-prefixes (the non-date ledgers
+    ``carryover_ledger.json`` / ``retro_trend.json`` are ignored). The Director
+    digest email deep-links to ``…/director?date=<one of these>``.
+    """
+    dates = list_s3_prefixes(_research_bucket(), "director/")
+    return sorted(dates, reverse=True)
+
+
 def load_trades_full() -> pd.DataFrame | None:
     """Load trades_full.csv from the executor bucket."""
     cfg = load_config()
