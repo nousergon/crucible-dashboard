@@ -2,10 +2,10 @@
 
 Reads ``director/{date}/action_plan.json`` + ``director/carryover_ledger.json``
 (produced by the alpha-engine-evaluator-director Lambda, the final Saturday-
-pipeline task once `DIRECTOR_ENABLED` is on). The Director weighs the Report
-Card and *proposes* a structured action plan with carry-over — it never writes
-live trading config and never self-merges. This page is read-only observability
-for the observe-mode soak.
+pipeline task). The Director runs weekly (``DIRECTOR_ENABLED`` is live) and
+weighs the Report Card to *propose* a structured action plan with carry-over —
+it never writes live trading config and never self-merges. This page is
+read-only observability over those weekly proposals.
 """
 
 import streamlit as st
@@ -21,7 +21,7 @@ st.title("🧭 Director — Weekly Action Plan")
 st.caption(
     "The slow loop: a single Opus call over the Report Card proposes the week's "
     "structured action plan (owners, priorities, horizons) with carry-over. "
-    "Advisory only — it proposes; Brian disposes. Dormant until `DIRECTOR_ENABLED`."
+    "Advisory only — it proposes; Brian disposes. Runs weekly on the Saturday pipeline."
 )
 
 # Honor the ?date= deep-link from the Director digest email

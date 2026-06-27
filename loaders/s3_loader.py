@@ -409,10 +409,10 @@ def load_action_plan(date_str: str | None = None) -> dict | None:
 
     Reads ``director/{date}/action_plan.json`` written by the
     ``alpha-engine-evaluator-director`` Lambda (the final Saturday-pipeline
-    task, once ``DIRECTOR_ENABLED`` is on). ``date_str=None`` resolves the most
-    recent available plan. Returns the parsed ``DirectorWeeklyActionPlan`` dict
-    or None when no plan has been published yet (e.g. the Director is still
-    dormant pre-flip).
+    task; the Director runs weekly, ``DIRECTOR_ENABLED`` is live).
+    ``date_str=None`` resolves the most recent available plan. Returns the
+    parsed ``DirectorWeeklyActionPlan`` dict or None when the requested/most-
+    recent plan is absent.
     """
     bucket = _research_bucket()
     if date_str is None:
