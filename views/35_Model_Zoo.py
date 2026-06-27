@@ -62,7 +62,14 @@ if not dates:
     )
     st.stop()
 
-run_date = st.selectbox("Cycle (date)", list(reversed(dates)), index=0)
+# Honor the ?date= deep-link from the model-zoo digest email
+# (…/model-zoo?date=YYYY-MM-DD — the rotation trading-day key). Falls back to
+# the latest cycle when absent or unknown. Mirrors the EOD Report page.
+options = list(reversed(dates))
+qp_date = st.query_params.get("date")
+default_idx = options.index(qp_date) if qp_date in options else 0
+run_date = st.selectbox("Cycle (date)", options, index=default_idx)
+st.query_params["date"] = run_date
 lb = load_model_zoo_leaderboard(run_date)
 if not lb:
     st.error(f"Could not load the leaderboard for {run_date}.")
@@ -90,6 +97,15 @@ if lb.get("promoted"):
         f"**Promoted** `{lb.get('promoted')}` ({lb.get('promoted_kind') or 'n/a'})"
         + (f" — reverted from `{lb.get('reverted_from')}`" if lb.get("reverted_from") else "")
     )
+    # Mirror the digest email's revert affordance: roll the champion back to the
+    # prior version this cycle replaced (alpha-engine-research = the live bucket).
+    if lb.get("reverted_from"):
+        st.caption("Revert to the prior champion:")
+        st.code(
+            f"python -m model.registry --bucket alpha-engine-research "
+            f"--promote {lb.get('reverted_from')}",
+            language="bash",
+        )
 else:
     st.info(
         "No promotion this cycle — "
