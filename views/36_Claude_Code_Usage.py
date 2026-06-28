@@ -21,7 +21,8 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import date, timedelta
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -31,17 +32,49 @@ import streamlit as st
 
 from loaders.s3_loader import load_claude_code_usage
 
-# Calibrate-me ceiling: Brian ran ~700M WET/week with NO throttle, so the true
-# weekly limit is >= that. 1.0B is a headroom placeholder — lower it toward the
-# first observed throttle (cross-check Settings -> Usage in the Claude app).
-WEEKLY_WET_CEILING = 1_000_000_000
+# Calibrated 2026-06-28: /usage showed 78% of the weekly (all-models) limit at a
+# reset-aligned WET of 889.6M -> ceiling ~= 889.6M / 0.78 ~= 1.14B. WET is our
+# price-independent proxy, NOT Anthropic's actual meter, so this is a first anchor
+# to refine as more weeks accrue (config#1347, re-exam 2026-07-06). Lower it
+# toward any observed throttle.
+WEEKLY_WET_CEILING = 1_140_000_000
+
+# Anthropic's Max weekly limit resets every 7 days. The gauge MUST measure WET
+# over the same reset-aligned window the limit uses — a trailing-7d window would
+# read ~78% moments after a reset drops /usage to ~0%, giving false headroom
+# (the number #1348's dynamic allocation depends on). Anchor = one observed reset
+# instant from /usage (2026-06-28 8:59pm America/Los_Angeles); the current window
+# is [most recent reset <= now, next reset). Buckets are PT, so we work in PT.
+# If Anthropic ever shifts the reset cadence, update this anchor from /usage.
+_PT = ZoneInfo("America/Los_Angeles")
+WEEKLY_RESET_ANCHOR = datetime(2026, 6, 28, 20, 59)   # PT, naive
+WEEKLY_PERIOD = timedelta(days=7)
+
+
+def _current_week_window(now_pt: datetime) -> tuple[datetime, datetime]:
+    """Return (window_start, next_reset) for the reset cycle containing now_pt."""
+    k = (now_pt - WEEKLY_RESET_ANCHOR) // WEEKLY_PERIOD
+    start = WEEKLY_RESET_ANCHOR + k * WEEKLY_PERIOD
+    if start > now_pt:
+        start -= WEEKLY_PERIOD
+    return start, start + WEEKLY_PERIOD
+
+
+def _wet_since(df_hour: pd.DataFrame, df_model: pd.DataFrame, start: datetime) -> float:
+    """Sum WET at/after the PT datetime ``start``. Prefer hour-precision (df_hour);
+    fall back to day-granularity (df_model) if the hourly frame is empty."""
+    if not df_hour.empty:
+        dts = pd.to_datetime(df_hour["date"]) + pd.to_timedelta(df_hour["hour"], unit="h")
+        return float(df_hour.loc[dts >= pd.Timestamp(start), "wet"].sum())
+    return float(df_model.loc[df_model["date"] >= start.date().isoformat(), "wet"].sum())
 
 st.divider()
 st.title("Claude Code Usage")
 st.caption(
     "Brian's Claude **Max 20x** consumption, in **WET** (weighted effective tokens — "
-    "price-independent). Raw tokens + notional $ shown underneath. There is no published "
-    "Max weekly limit, so the ceiling below is a calibrate-me estimate — adjust against `/usage`."
+    "price-independent). Raw tokens + notional $ shown underneath. The weekly gauge is "
+    "measured over Anthropic's **reset-aligned** window (resets every 7d) and compared to "
+    "a calibrated ceiling — both approximate, refined against `/usage`."
 )
 
 df_model, df_hour = load_claude_code_usage(n_days=35)
@@ -54,23 +87,25 @@ if df_model.empty:
     )
     st.stop()
 
-today = date.today()
-week_start = today - timedelta(days=today.weekday())          # Monday
-roll_start = today - timedelta(days=6)                          # rolling 7d incl today
-
-wtd = df_model[df_model["date"] >= week_start.isoformat()]["wet"].sum()
-roll = df_model[df_model["date"] >= roll_start.isoformat()]["wet"].sum()
-pct = (roll / WEEKLY_WET_CEILING) if WEEKLY_WET_CEILING else 0.0
+now_pt = datetime.now(_PT).replace(tzinfo=None)
+win_start, next_reset = _current_week_window(now_pt)
+week_wet = _wet_since(df_hour, df_model, win_start)
+roll = df_model[df_model["date"] >= (now_pt.date() - timedelta(days=6)).isoformat()]["wet"].sum()
+pct = (week_wet / WEEKLY_WET_CEILING) if WEEKLY_WET_CEILING else 0.0
+hrs_to_reset = max(0, (next_reset - now_pt).total_seconds()) / 3600.0
 
 # ---- headline gauges -------------------------------------------------------
 c1, c2, c3 = st.columns(3)
-c1.metric("Rolling 7-day WET", f"{roll/1e6:,.0f}M",
-          help="Sum of WET over the trailing 7 days (incl. today).")
-c2.metric("Week-to-date WET", f"{wtd/1e6:,.0f}M",
-          help=f"Since Monday {week_start.isoformat()}.")
-c3.metric("% of weekly ceiling", f"{pct*100:,.0f}%",
-          help=f"Rolling-7d WET / {WEEKLY_WET_CEILING/1e6:,.0f}M (calibrate-me).")
-st.progress(min(pct, 1.0), text=f"{roll/1e6:,.0f}M / {WEEKLY_WET_CEILING/1e6:,.0f}M WET (7d)")
+c1.metric("This week's WET (since reset)", f"{week_wet/1e6:,.0f}M",
+          help=f"Reset-aligned window start {win_start:%Y-%m-%d %H:%M} PT. "
+               f"Rolling-7d (informational): {roll/1e6:,.0f}M.")
+c2.metric("% of weekly ceiling", f"{pct*100:,.0f}%",
+          help=f"This week's WET / {WEEKLY_WET_CEILING/1e6:,.0f}M (calibrated "
+               f"2026-06-28 @ /usage 78%; refine — config#1347).")
+c3.metric("Resets in", f"{hrs_to_reset:,.0f}h",
+          help=f"Next weekly reset {next_reset:%Y-%m-%d %H:%M} PT (every 7 days).")
+st.progress(min(pct, 1.0),
+            text=f"{week_wet/1e6:,.0f}M / {WEEKLY_WET_CEILING/1e6:,.0f}M WET this week")
 
 # ---- daily totals, stacked by source --------------------------------------
 st.subheader("Daily WET (by source)")
