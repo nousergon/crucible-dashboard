@@ -37,6 +37,20 @@ npx wrangler d1 execute metron-waitlist --remote \
   --command "SELECT email, datetime(created_at,'unixepoch') AS joined, source FROM waitlist ORDER BY created_at DESC"
 ```
 
+### Confirmation email (Resend)
+
+On a **new** signup, `waitlist.ts` sends a "you're on the list" confirmation via the
+[Resend](https://resend.com) REST API from `no-reply@nousergon.ai` — making good on the
+landing copy's "we email you" promise. It's best-effort (a Resend failure never fails the
+signup) and new-signups-only (`INSERT OR IGNORE` reports `changes=0` on a duplicate, so
+re-submits don't re-send). The send is **opt-in by config**: it fires only when the
+`RESEND_API_KEY` secret is bound; unset → DB-only, no third-party call.
+
+```sh
+# One-time: bind the Resend key as a Pages secret (uses the verified nousergon.ai domain).
+npx wrangler pages secret put RESEND_API_KEY
+```
+
 ## Analytics (Cloudflare Web Analytics)
 
 Privacy-first, no cookies, no third-party tracker. The beacon is injected only when
