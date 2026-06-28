@@ -107,8 +107,8 @@ if not df_hour.empty:
                       labels=dict(x="", y="hour (PT)", color="WET"))
     fig_h.update_layout(height=380, margin=dict(t=10, b=0, l=0, r=0))
     st.plotly_chart(fig_h, use_container_width=True)
-    st.caption("Daytime band = interactive work; an overnight band will appear once "
-               "the groom's `source='groom'` usage is wired in.")
+    st.caption("Daytime band = interactive (laptop) work; the overnight/8-hourly "
+               "band is the backlog groom's `source='groom'` usage.")
 
 # ---- secondary: raw tokens + notional $ ------------------------------------
 with st.expander("Raw tokens + notional $ (secondary)"):

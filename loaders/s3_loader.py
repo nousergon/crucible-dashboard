@@ -1659,10 +1659,18 @@ def load_news_articles(key: str) -> pd.DataFrame:
 
 @st.cache_data(ttl=900)
 def load_claude_code_usage(n_days: int = 35):
-    """Load Brian's Claude Code Max-plan usage from
-    ``s3://<research>/claude_code_usage/{source}/{date}.json`` (producer:
-    alpha-engine-config ``scripts/collect_usage.py`` via the hourly launchd agent;
-    fast-follow ``source='groom'`` from the GHA groom).
+    """Load Brian's Claude Code Max-plan usage from S3. Two key layouts coexist:
+
+    - ``{source}/{date}.json``            — the laptop's ``source='interactive'``
+      half: a single cumulative producer (hourly launchd) that re-scans the full
+      ``~/.claude`` and overwrites the day's file each run.
+    - ``{source}/{date}/{run_id}.json``   — the GHA ``source='groom'`` half: the
+      groom runs 3x/day on ephemeral runners, each holding only its own run's
+      transcript, so each writes an APPEND-ONLY run-scoped file. Multiple run-files
+      per (date, source) are summed by the page's groupby (each counts distinct
+      tokens, so summing — incl. across hours — is always correct).
+
+    Producer: alpha-engine-config ``scripts/collect_usage.py`` + ``usage_to_s3.sh``.
 
     Returns ``(df_model, df_hour)`` long-form DataFrames (empty if the prefix is
     absent). ``df_model`` is per (date, source, model) with WET / cost_usd / total
@@ -1680,11 +1688,14 @@ def load_claude_code_usage(n_days: int = 35):
         for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
             for obj in page.get("Contents", []):
                 k = obj.get("Key", "")
-                parts = k[len(prefix):].split("/")  # <source>/<date>.json
+                parts = k[len(prefix):].split("/")
+                date_str = None
                 if len(parts) == 2 and parts[1].endswith(".json"):
-                    date_str = parts[1][:-5]
-                    if date_str >= cutoff:
-                        found.append((parts[0], date_str, k))
+                    date_str = parts[1][:-5]                 # <source>/<date>.json
+                elif len(parts) == 3 and parts[2].endswith(".json"):
+                    date_str = parts[1]                      # <source>/<date>/<run>.json
+                if date_str and date_str >= cutoff:
+                    found.append((parts[0], date_str, k))
     except Exception as e:
         logger.error("ccusage list failed: %s", e)
         return pd.DataFrame(), pd.DataFrame()
