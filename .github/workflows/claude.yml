@@ -1,0 +1,62 @@
+# Interactive Claude assistant for PRs / issues.
+#
+# Comment "@claude <request>" on any PR, PR review, or issue and Claude
+# responds. Because this is commit-capable (contents: write + Edit/Write
+# tools), "@claude fix this" will push a fix:
+#   - on a PR comment      -> commits to that PR's branch
+#   - on an issue          -> opens a new branch + PR with the fix
+#
+# AUTH: reuses the org-level Max-plan OAuth token (CLAUDE_CODE_OAUTH_TOKEN),
+# the same secret backlog-groom / saturday-sf-watch use. crucible-dashboard is
+# PUBLIC, so the org secret reaches it. NOTE: this shares the Max-plan quota
+# with the overnight grooms + interactive Claude Code (config#1347/#1348).
+#
+# SECURITY: the author_association gate is load-bearing. Without it, ANY public
+# commenter could trigger a commit-capable agent run on a burnable Max quota.
+# Only OWNER / MEMBER / COLLABORATOR mentions fire the job.
+name: Claude PR Assistant
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+  issues:
+    types: [opened]
+
+# id-token:write is REQUIRED -- the action does an OIDC exchange at startup
+# (omitting it fails "Could not fetch an OIDC token"). contents:write lets
+# @claude push fixes. Same-repo only, so the default GITHUB_TOKEN suffices --
+# no cross-repo PAT needed.
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  id-token: write
+
+jobs:
+  claude:
+    # Fire ONLY on an "@claude" mention AND ONLY from a trusted author.
+    if: |
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude') && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude') && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
+      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude') && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association)) ||
+      (github.event_name == 'issues' && contains(github.event.issue.body, '@claude') && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association))
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # No `prompt:` input -> the action runs in mention mode and reads the
+      # triggering @claude comment as the instruction automatically.
+      - name: Claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: |
+            --model claude-opus-4-8
+            --allowedTools Read,Grep,Glob,Bash,Edit,Write
