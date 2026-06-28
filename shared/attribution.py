@@ -37,6 +37,26 @@ compound **geometrically** over the days held in the week; the contribution
 series sums **additively** — daily contributions are additive by construction
 (they sum to the portfolio's alpha), so geometric compounding would be
 incorrect there.
+
+Pre-attribution backfill (config#1212): snapshots carry per-position
+``daily_return_pct`` / ``alpha_contribution_pct`` only from 2026-04-20 onward.
+Earlier rows (back to 2026-03-09) instead carry only a per-position
+``closing_price`` (plus ``market_value`` / ``sector``). For those rows we
+**reconstruct the price-relative lens read-side**: ``daily_return_pct`` is the
+day-over-day pct change of the ticker's ``closing_price`` versus the most recent
+prior trading day it was held, and ``market_relative_pct`` is that minus the
+row's ``spy_return_pct`` — the *identical* formula used for the stored post-4/20
+rows, so the two windows are comparable. This lights up the RETURN and
+market-relative ALPHA heatmaps back to the start of live history.
+
+HONESTY / known limitation: the NAV-weighted **contribution (bps)** lens needs
+per-position ``alpha_contribution_pct`` (per-name dollar-alpha), which is *not*
+reconstructable from ``closing_price`` alone. We therefore leave
+``alpha_contrib_bps`` as ``None`` for reconstructed pre-4/20 rows rather than
+fabricate it — ``to_matrix`` drops the NaN cells, so the contribution heatmap
+simply shows gaps for those dates while the return lenses fill in. Post-4/20
+behavior is unchanged: rows that already carry ``daily_return_pct`` keep using
+the stored value and full (return + contribution) attribution.
 """
 from __future__ import annotations
 
@@ -60,6 +80,13 @@ _WEEKLY_COLS = [
 ]
 
 
+# Per-position price field in pre-attribution (pre-2026-04-20) snapshots, used
+# to reconstruct ``daily_return_pct`` for rows that predate the stored value.
+# ``closing_price`` is the canonical name (config#1212); the aliases are
+# tolerated defensively in case the producer used a different key.
+_CLOSE_KEYS = ("closing_price", "close_price", "close")
+
+
 def _coerce_float(v):
     """Return ``v`` as a float, or None for None / NaN / unparseable."""
     if v is None:
@@ -69,6 +96,19 @@ def _coerce_float(v):
     except (TypeError, ValueError):
         return None
     return f if pd.notna(f) else None
+
+
+def _closing_price(pos: dict) -> float | None:
+    """Return a per-position closing price from a snapshot struct, or None.
+
+    Looks up the canonical ``closing_price`` field (with defensive aliases) used
+    by pre-attribution snapshots to reconstruct day-over-day returns."""
+    for key in _CLOSE_KEYS:
+        if key in pos:
+            px = _coerce_float(pos.get(key))
+            if px is not None and px > 0:
+                return px
+    return None
 
 
 def _iso_week_monday(date_str: str) -> str:
@@ -103,12 +143,27 @@ def build_long_frame(eod_pnl: pd.DataFrame | None) -> pd.DataFrame:
     """Explode ``eod_pnl`` rows into one row per (date, ticker).
 
     Columns: ``date, ticker, sector, daily_return_pct, market_relative_pct,
-    alpha_contrib_bps, weight, spy_return_pct``. Only positions whose snapshot
-    carries a per-ticker ``daily_return_pct`` are included — the pre-attribution
-    rows (before 2026-04-20) have snapshots without per-position returns and are
-    skipped. ``alpha_contrib_bps`` is rebased to the prior-NAV basis (config#1211)
-    to tie out with the EOD Report page. Returns an empty frame (with the right
-    columns) when there is nothing to show.
+    alpha_contrib_bps, weight, spy_return_pct``.
+
+    Rows whose snapshot carries a per-ticker ``daily_return_pct`` (2026-04-20
+    onward) use the stored value and get full attribution, with
+    ``alpha_contrib_bps`` rebased to the prior-NAV basis (config#1211) to tie out
+    with the EOD Report page.
+
+    Pre-attribution rows (before 2026-04-20) lack ``daily_return_pct`` but carry
+    a per-position ``closing_price``; for those we reconstruct the price-relative
+    lens (config#1212): ``daily_return_pct`` from the ticker's day-over-day
+    ``closing_price`` change vs the most recent prior day it was held, and
+    ``market_relative_pct`` as that minus ``spy_return_pct`` — the same formula
+    used for the stored rows. The NAV-weighted contribution lens is *not*
+    reconstructable from price alone, so ``alpha_contrib_bps`` is left None for
+    these rows (``to_matrix`` drops the NaN cells → the contribution heatmap
+    shows gaps pre-4/20 while the return lenses fill in). A position with neither
+    a stored ``daily_return_pct`` nor a usable prior ``closing_price`` (e.g. its
+    first-ever held day, or a missing/zero price) is skipped.
+
+    Returns an empty frame (with the right columns) when there is nothing to
+    show.
     """
     if (
         eod_pnl is None
@@ -119,8 +174,18 @@ def build_long_frame(eod_pnl: pd.DataFrame | None) -> pd.DataFrame:
 
     prior_nav_by_date = _prior_nav_by_date(eod_pnl)
 
+    # Reconstruction of pre-attribution returns needs each ticker's most recent
+    # prior closing price, so process rows in chronological (date) order and
+    # carry the last-seen close forward per ticker. We sort a positional view
+    # rather than mutating the caller's frame; ties keep input order (stable).
+    if "date" in eod_pnl.columns:
+        ordered_eod = eod_pnl.sort_values("date", kind="stable")
+    else:
+        ordered_eod = eod_pnl
+    last_close_by_ticker: dict[str, float] = {}
+
     records: list[dict] = []
-    for _, row in eod_pnl.iterrows():
+    for _, row in ordered_eod.iterrows():
         raw = row.get("positions_snapshot")
         if raw is None or (isinstance(raw, float) and pd.isna(raw)):
             continue
@@ -143,21 +208,47 @@ def build_long_frame(eod_pnl: pd.DataFrame | None) -> pd.DataFrame:
         for ticker, pos in snap.items():
             if not isinstance(pos, dict):
                 continue
-            dr = _coerce_float(pos.get("daily_return_pct"))
-            if dr is None:
-                continue  # pre-attribution row — nothing to plot
-            contrib_pct = _coerce_float(pos.get("alpha_contribution_pct"))
+            tkr = str(ticker)
             mv = _coerce_float(pos.get("market_value"))
+            close = _closing_price(pos)
+
+            dr = _coerce_float(pos.get("daily_return_pct"))
+            if dr is not None:
+                # Post-attribution row: stored return + full contribution lens.
+                contrib_pct = _coerce_float(pos.get("alpha_contribution_pct"))
+                contrib_bps = (
+                    contrib_pct * 100.0 * nav_ratio
+                    if contrib_pct is not None else None
+                )
+            else:
+                # Pre-attribution row: reconstruct the price-relative lens only
+                # (config#1212). Need a prior held close for this ticker; if we
+                # don't have one (or no usable close today) there's nothing to
+                # plot, so skip — matching the original pre-attribution behavior.
+                prior_close = last_close_by_ticker.get(tkr)
+                if close is None or prior_close is None:
+                    # Carry today's close forward (if any) so the next day this
+                    # ticker is held can chain off it, then skip — there's no
+                    # return to plot for this row.
+                    if close is not None:
+                        last_close_by_ticker[tkr] = close
+                    continue
+                dr = (close / prior_close - 1.0) * 100.0
+                # Contribution lens is not reconstructable from price alone.
+                contrib_bps = None
+
+            # Carry the most recent observed close forward per ticker, so a
+            # later pre-attribution row can reconstruct its return against it.
+            if close is not None:
+                last_close_by_ticker[tkr] = close
+
             records.append({
                 "date": day,
-                "ticker": str(ticker),
+                "ticker": tkr,
                 "sector": pos.get("sector"),
                 COL_RETURN: dr,
                 COL_RELATIVE: (dr - spy_ret) if spy_ret is not None else None,
-                COL_CONTRIB_BPS: (
-                    contrib_pct * 100.0 * nav_ratio
-                    if contrib_pct is not None else None
-                ),
+                COL_CONTRIB_BPS: contrib_bps,
                 "weight": (mv / nav) if (mv is not None and nav) else None,
                 "spy_return_pct": spy_ret,
             })

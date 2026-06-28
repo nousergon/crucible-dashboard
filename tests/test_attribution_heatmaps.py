@@ -124,6 +124,143 @@ class TestBuildLongFrame:
         assert COL_RELATIVE in build_long_frame(None).columns
 
 
+class TestPreAttributionReconstruction:
+    """config#1212: pre-2026-04-20 rows carry only a per-position
+    ``closing_price`` (no stored ``daily_return_pct`` / ``alpha_contribution_pct``).
+    We reconstruct the price-relative lens read-side; the contribution lens is
+    left blank (not reconstructable from price alone)."""
+
+    def _pre_eod(self):
+        """Two consecutive pre-attribution days for DDD with closing prices, and
+        one isolated pre-attribution name EEE held a single day (no prior close
+        → not reconstructable, must be skipped)."""
+        return pd.DataFrame([
+            {
+                "date": "2026-03-09",
+                "portfolio_nav": 900.0,
+                "spy_return_pct": 0.5,
+                "positions_snapshot": _snap({
+                    "DDD": {"closing_price": 100.0, "market_value": 300.0,
+                            "sector": "Tech"},
+                }),
+            },
+            {
+                "date": "2026-03-10",
+                "portfolio_nav": 905.0,
+                "spy_return_pct": 1.0,
+                "positions_snapshot": _snap({
+                    "DDD": {"closing_price": 102.0, "market_value": 306.0,
+                            "sector": "Tech"},
+                    # EEE first appears today: no prior close → skipped.
+                    "EEE": {"closing_price": 50.0, "market_value": 50.0,
+                            "sector": "Health"},
+                }),
+            },
+        ])
+
+    def test_reconstructs_price_relative_lens(self):
+        df = build_long_frame(self._pre_eod())
+        # DDD on 03-09 has no prior close → skipped; DDD on 03-10 reconstructs;
+        # EEE on 03-10 has no prior close → skipped. So exactly one row.
+        assert len(df) == 1
+        row = df.iloc[0]
+        assert row["ticker"] == "DDD"
+        assert row["date"] == "2026-03-10"
+        # day-over-day price return: 102/100 - 1 = +2.0%
+        assert row[COL_RETURN] == pytest.approx(2.0)
+        # market-relative = 2.0 - 1.0 (SPY), same formula as stored rows
+        assert row[COL_RELATIVE] == pytest.approx(1.0)
+        # contribution lens NOT reconstructable from price → blank
+        assert pd.isna(row[COL_CONTRIB_BPS])
+        # weight still derivable from market_value / nav
+        assert row["weight"] == pytest.approx(306.0 / 905.0)
+
+    def test_first_held_day_skipped_no_prior_close(self):
+        """A pre-attribution position on its first held day (no prior close) and
+        a position with neither stored return nor any close are both skipped."""
+        eod = pd.DataFrame([
+            {
+                "date": "2026-03-09",
+                "portfolio_nav": 900.0,
+                "spy_return_pct": 0.0,
+                "positions_snapshot": _snap({
+                    # has a close but no prior → skipped
+                    "DDD": {"closing_price": 100.0, "market_value": 100.0,
+                            "sector": "Tech"},
+                    # neither stored return nor any close → skipped
+                    "FFF": {"market_value": 10.0, "sector": "X"},
+                }),
+            },
+        ])
+        assert build_long_frame(eod).empty
+
+    def test_contribution_matrix_gaps_pre_then_post(self):
+        """Mixed history: pre-attribution rows fill the RETURN/market-relative
+        lenses but leave the contribution matrix with gaps; post rows keep full
+        attribution. The contribution matrix only contains the post-4/20 cell."""
+        eod = pd.DataFrame([
+            {
+                "date": "2026-03-09",
+                "portfolio_nav": 900.0,
+                "spy_return_pct": 0.0,
+                "positions_snapshot": _snap({
+                    "DDD": {"closing_price": 100.0, "market_value": 100.0,
+                            "sector": "Tech"},
+                }),
+            },
+            {
+                "date": "2026-03-10",
+                "portfolio_nav": 900.0,
+                "spy_return_pct": 0.0,
+                "positions_snapshot": _snap({
+                    "DDD": {"closing_price": 110.0, "market_value": 110.0,
+                            "sector": "Tech"},
+                }),
+            },
+            {  # post-attribution: stored return + contribution
+                "date": "2026-04-20",
+                "portfolio_nav": 1000.0,
+                "spy_return_pct": 0.0,
+                "positions_snapshot": _snap({
+                    "DDD": {"daily_return_pct": 1.0,
+                            "alpha_contribution_pct": 0.5,
+                            "market_value": 120.0, "sector": "Tech"},
+                }),
+            },
+        ])
+        df = build_long_frame(eod)
+        # reconstructed 03-10 (+10%) and stored 04-20 (+1%); 03-09 skipped.
+        assert set(df["date"]) == {"2026-03-10", "2026-04-20"}
+        recon = df[df.date == "2026-03-10"].iloc[0]
+        assert recon[COL_RETURN] == pytest.approx(10.0)
+        assert pd.isna(recon[COL_CONTRIB_BPS])
+        # RETURN matrix has both columns; contribution matrix only the post col.
+        ret_m = to_matrix(df, COL_RETURN, period_col="date")
+        assert list(ret_m.columns) == ["2026-03-10", "2026-04-20"]
+        contrib_m = to_matrix(df, COL_CONTRIB_BPS, period_col="date")
+        assert list(contrib_m.columns) == ["2026-04-20"]
+
+    def test_post_attribution_rows_unchanged_with_close_present(self):
+        """A post-attribution row that also happens to carry closing_price must
+        still use its STORED daily_return_pct (not a reconstructed one)."""
+        eod = pd.DataFrame([
+            {
+                "date": "2026-04-20",
+                "portfolio_nav": 1000.0,
+                "spy_return_pct": 0.0,
+                "positions_snapshot": _snap({
+                    "GGG": {"daily_return_pct": 3.0,
+                            "alpha_contribution_pct": 0.1,
+                            "closing_price": 999.0,  # would imply a different ret
+                            "market_value": 100.0, "sector": "Tech"},
+                }),
+            },
+        ])
+        row = build_long_frame(eod).iloc[0]
+        assert row[COL_RETURN] == pytest.approx(3.0)  # stored, not reconstructed
+        assert row[COL_CONTRIB_BPS] == pytest.approx(0.1 * 100)  # ratio-1 first day
+
+
 class TestBuildWeeklyFrame:
     def test_geometric_and_additive_rollup(self, eod_pnl):
         wk = build_weekly_frame(build_long_frame(eod_pnl))
