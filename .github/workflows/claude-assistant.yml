@@ -1,0 +1,45 @@
+# Reusable @claude assistant — the SINGLE SOURCE OF TRUTH for the fleet.
+#
+# Caller repos carry a thin .github/workflows/claude.yml that declares the
+# comment/issue triggers and `uses:` this workflow with `secrets: inherit`.
+# Edit the model, tool scope, or the trusted-author gate HERE once and every
+# caller picks it up from @main — no per-repo edits.
+#
+# AUTH: the caller forwards its CLAUDE_CODE_OAUTH_TOKEN via `secrets: inherit`
+# (org-level token for public callers; repo-level for private ones like
+# alpha-engine-config). crucible-dashboard is PUBLIC so any repo in the org
+# can call this.
+name: claude-assistant (reusable)
+
+on:
+  workflow_call:
+
+jobs:
+  respond:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    # AUTHORITATIVE trusted-author gate (event-aware). The caller does a cheap
+    # "@claude" pre-filter to avoid spinning this on every comment; THIS is the
+    # real security gate. Per-event-name on purpose: for issue_comment the
+    # commenter's association is comment.author_association, NOT
+    # issue.author_association (which is the PR opener's) — ORing them blindly
+    # would let a rando comment ride a trusted PR author's association.
+    if: |
+      (github.event_name == 'issue_comment' && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
+      (github.event_name == 'pull_request_review_comment' && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
+      (github.event_name == 'pull_request_review' && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association)) ||
+      (github.event_name == 'issues' && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association))
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # No `prompt:` input -> mention mode: the action reads the triggering
+      # @claude comment as the instruction automatically.
+      - name: Claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: |
+            --model claude-opus-4-8
+            --allowedTools Read,Grep,Glob,Bash,Edit,Write

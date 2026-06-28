@@ -1,19 +1,16 @@
-# Interactive Claude assistant for PRs / issues.
+# Interactive @claude PR/issue assistant (thin caller).
 #
-# Comment "@claude <request>" on any PR, PR review, or issue and Claude
-# responds. Because this is commit-capable (contents: write + Edit/Write
-# tools), "@claude fix this" will push a fix:
-#   - on a PR comment      -> commits to that PR's branch
-#   - on an issue          -> opens a new branch + PR with the fix
+# Comment "@claude <request>" on a PR (Conversation tab), an inline single
+# comment, a review, or an issue and Claude responds. Commit-capable.
 #
-# AUTH: reuses the org-level Max-plan OAuth token (CLAUDE_CODE_OAUTH_TOKEN),
-# the same secret backlog-groom / saturday-sf-watch use. crucible-dashboard is
-# PUBLIC, so the org secret reaches it. NOTE: this shares the Max-plan quota
-# with the overnight grooms + interactive Claude Code (config#1347/#1348).
+# IMPORTANT: a top-level Conversation-tab comment is the reliable trigger.
+# An @claude typed as an inline comment that is part of a SUBMITTED REVIEW
+# ("Start a review -> Submit review") does NOT fire — use "Add single comment"
+# or the Conversation tab instead.
 #
-# SECURITY: the author_association gate is load-bearing. Without it, ANY public
-# commenter could trigger a commit-capable agent run on a burnable Max quota.
-# Only OWNER / MEMBER / COLLABORATOR mentions fire the job.
+# All behavior (model, tool scope, trusted-author gate) lives in the shared
+# reusable workflow. Edit it THERE once; this caller never changes:
+#   nousergon/crucible-dashboard/.github/workflows/claude-assistant.yml
 name: Claude PR Assistant
 
 on:
@@ -26,37 +23,18 @@ on:
   issues:
     types: [opened]
 
-# id-token:write is REQUIRED -- the action does an OIDC exchange at startup
-# (omitting it fails "Could not fetch an OIDC token"). contents:write lets
-# @claude push fixes. Same-repo only, so the default GITHUB_TOKEN suffices --
-# no cross-repo PAT needed.
-permissions:
-  contents: write
-  pull-requests: write
-  issues: write
-  id-token: write
-
 jobs:
   claude:
-    # Fire ONLY on an "@claude" mention AND ONLY from a trusted author.
+    # Cheap pre-filter: proceed only if "@claude" appears in the relevant body.
+    # The authoritative trusted-author gate is in the reusable workflow.
     if: |
-      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude') && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
-      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude') && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
-      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude') && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association)) ||
-      (github.event_name == 'issues' && contains(github.event.issue.body, '@claude') && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association))
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      # No `prompt:` input -> the action runs in mention mode and reads the
-      # triggering @claude comment as the instruction automatically.
-      - name: Claude
-        uses: anthropics/claude-code-action@v1
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          claude_args: |
-            --model claude-opus-4-8
-            --allowedTools Read,Grep,Glob,Bash,Edit,Write
+      contains(github.event.comment.body, '@claude') ||
+      contains(github.event.review.body, '@claude') ||
+      contains(github.event.issue.body, '@claude')
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+    uses: nousergon/crucible-dashboard/.github/workflows/claude-assistant.yml@main
+    secrets: inherit
