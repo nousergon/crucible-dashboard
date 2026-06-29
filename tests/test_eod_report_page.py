@@ -82,7 +82,11 @@ class TestSlugContract:
         assert f'url_path="{EXPECTED_SLUG}"' in app_src
 
     def test_page_file_exists(self):
-        assert (REPO_ROOT / "views" / "19_EOD_Report.py").exists()
+        # The EOD report is now the as-of view of the canonical Performance page
+        # (merged Portfolio + EOD Report + Attribution Heatmaps); it owns the
+        # eod-report slug. The old standalone EOD Report page is retired.
+        assert (REPO_ROOT / "views" / "1_Performance.py").exists()
+        assert not (REPO_ROOT / "views" / "19_EOD_Report.py").exists()
 
     def test_old_archive_page_removed(self):
         assert not (REPO_ROOT / "views" / "19_EOD_Reconcile_Archive.py").exists()

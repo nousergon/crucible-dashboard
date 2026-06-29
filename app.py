@@ -414,16 +414,16 @@ def _build_navigation():
             ),
         ],
         "📈 Performance": [
-            page("1_Portfolio.py", "Portfolio", "💼"),
-            page("6_Execution.py", "Execution", "⚡"),
+            # Canonical portfolio-outcomes page — merges the former Portfolio,
+            # EOD Report and Attribution Heatmaps pages (legacy Metrics retired).
             # url_path pinned to "eod-report" — the EOD email deep-links to
             # …/eod-report?date=YYYY-MM-DD. Guarded against the executor's
             # emailer slug by tests/test_eod_report_page.py.
             st.Page(
-                "views/19_EOD_Report.py", title="EOD Report", icon="🧾",
+                "views/1_Performance.py", title="Performance", icon="💼",
                 url_path="eod-report",
             ),
-            page("37_Attribution_Heatmaps.py", "Attribution Heatmaps", "🟩"),
+            page("6_Execution.py", "Execution", "⚡"),
         ],
         "🔬 Research & Signals": [
             page("2_Signals_and_Research.py", "Signals & Research", "🧭"),
@@ -483,11 +483,10 @@ def _build_navigation():
             page("11_Signal_Lifecycle.py", "Signal Lifecycle", "🧬"),
             page("14_RAG_Inventory.py", "RAG Inventory", "📚"),
         ],
-        # Candidates the Report Card v2 substantially subsumes on the console
-        # (both primarily back the PUBLIC site, which is unaffected). Kept for
-        # now — confirm before removal.
+        # Candidate the Report Card v2 substantially subsumes on the console
+        # (primarily backs the PUBLIC site, which is unaffected). Kept for now —
+        # confirm before removal. (Metrics retired — absorbed into Performance.)
         "🗑 Deprecated (review)": [
-            page("9_Metrics.py", "Metrics (legacy)", "🧮"),
             page("24_Evidence.py", "Evidence (legacy)", "🔖"),
         ],
     })
