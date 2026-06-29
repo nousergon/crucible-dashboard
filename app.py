@@ -474,6 +474,7 @@ def _build_navigation():
             page("37_Saturday_SF_Watch.py", "Saturday SF Watch", "📡"),
             page("26_Artifact_Freshness.py", "Artifact Freshness", "⏱"),
             page("27_Active_Observations.py", "Active Observations", "🔭"),
+            page("41_Quarantine.py", "Changelog Quarantine", "🚧"),
             page("28_Retros.py", "Retros", "📓"),
             page("23_LLM_Cost.py", "LLM Cost", "💰"),
             page("36_Claude_Code_Usage.py", "Claude Code Usage", "📟"),
