@@ -32,11 +32,19 @@ from shared.position_pnl import (
     enrich_positions,
     parse_positions_snapshot,
 )
+from shared.attribution import build_long_frame
+from shared.correlation import (
+    correlation_matrix,
+    high_correlation_pairs,
+    holdings_return_matrix,
+)
 
 _TH = get_thresholds()
 _HHI_DIVERSIFIED = _TH["hhi_diversified"]
 _HHI_CONCENTRATED = _TH["hhi_concentrated"]
 _SHARPE_MIN_ROWS = int(_TH["sharpe_min_rows"])
+_CORR_HIGH = float(_TH["correlation_high"])
+_CORR_MIN_OVERLAP = int(_TH["correlation_min_overlap"])
 
 
 # ---------------------------------------------------------------------------
@@ -331,7 +339,65 @@ if positions_df is not None and not positions_df.empty:
                     hhi_color = "red"
                 st.metric("HHI Concentration", f"{hhi:.3f} ({hhi_label})")
 
-        st.info("Pairwise correlation analysis requires price history integration (future enhancement).")
+        # --- Holdings Correlation (config#953) ---
+        # The HHI metric above is the static concentration half; this is the
+        # correlation half, previously stubbed as "requires price history
+        # integration". It is no longer blocked: build_long_frame exposes a
+        # per-holding daily-return series (stored post-2026-04-20, reconstructed
+        # from closing_price before that), so we can correlate the names actually
+        # held and surface the MSFT+AAPL+GOOGL>0.8 clustering the issue asks for.
+        st.subheader("Holdings Correlation")
+        held_tickers = (
+            positions_df["ticker"].dropna().astype(str).unique().tolist()
+            if "ticker" in positions_df.columns
+            else []
+        )
+        corr = correlation_matrix(
+            holdings_return_matrix(build_long_frame(eod_df), held_tickers),
+            min_overlap=_CORR_MIN_OVERLAP,
+        )
+        if corr.empty:
+            st.info(
+                "Not enough overlapping daily-return history to correlate current "
+                f"holdings yet (need ≥{_CORR_MIN_OVERLAP} shared trading days per "
+                "pair). The matrix appears as positions accumulate history."
+            )
+        else:
+            corr_fig = go.Figure(
+                data=go.Heatmap(
+                    z=corr.values,
+                    x=list(corr.columns),
+                    y=list(corr.index),
+                    zmin=-1.0,
+                    zmax=1.0,
+                    colorscale="RdBu_r",
+                    colorbar=dict(title="ρ"),
+                    hovertemplate="%{y} ↔ %{x}: %{z:.2f}<extra></extra>",
+                )
+            )
+            corr_fig.update_layout(
+                height=max(320, 34 * len(corr.columns)),
+                margin=dict(l=10, r=10, t=30, b=10),
+                yaxis=dict(autorange="reversed"),
+            )
+            st.plotly_chart(corr_fig, use_container_width=True)
+
+            pairs = high_correlation_pairs(corr, threshold=_CORR_HIGH)
+            if pairs:
+                pairs_df = pd.DataFrame(
+                    [(a, b, f"{c:+.2f}") for a, b, c in pairs],
+                    columns=["Holding A", "Holding B", "Correlation"],
+                )
+                st.caption(
+                    f"Highly correlated pairs (|ρ| ≥ {_CORR_HIGH:g}) — concentrated "
+                    "exposure / limited diversification between these names:"
+                )
+                st.dataframe(pairs_df, use_container_width=True, hide_index=True)
+            else:
+                st.caption(
+                    f"No holding pairs exceed |ρ| ≥ {_CORR_HIGH:g} over the shared "
+                    "return window — pairwise diversification looks healthy."
+                )
 
     # --- Sector Rotation Over Time (Gap #8) ---
     if "positions_snapshot" in eod_df.columns:

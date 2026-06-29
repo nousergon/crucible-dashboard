@@ -81,6 +81,8 @@ DEFAULT_THRESHOLDS: dict[str, float | int] = {
     "hhi_diversified": 0.15,
     "hhi_concentrated": 0.25,
     "sharpe_min_rows": 30,
+    "correlation_high": 0.8,
+    "correlation_min_overlap": 20,
 }
 
 
