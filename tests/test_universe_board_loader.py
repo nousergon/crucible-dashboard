@@ -210,6 +210,10 @@ def test_loader_reads_pinned_latest_key():
 
 
 def test_page_registered_in_nav():
+    # Hosted under the "Universe & Scanner" front page (lazy view-host) post-IA-
+    # reorg rather than registered directly in app.py.
+    host_src = (REPO_ROOT / "views" / "host_universe_scanner.py").read_text()
+    assert "39_Universe_Board.py" in host_src
     app_src = (REPO_ROOT / "app.py").read_text()
-    assert "39_Universe_Board.py" in app_src
+    assert 'page("host_universe_scanner.py"' in app_src
     assert (REPO_ROOT / "views" / "39_Universe_Board.py").exists()
