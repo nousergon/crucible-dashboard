@@ -268,8 +268,17 @@ class TestLibVersionPin:
             "nousergon_lib import alias still works via the shim)"
         )
         assert "@main" not in text, "nousergon-lib must be pinned to a tag, not @main"
-        assert "@v0.60.2" in text, (
-            "nousergon-lib should pin to v0.60.2 (alpha_engine_lib alias "
+        assert "@v0.73.0" in text, (
+            "nousergon-lib should pin to v0.73.0 (config#647 step 3 fleet "
+            "re-pin off the flow-doctor release candidate: lib <= v0.67.0 "
+            "hard-pinned the flow_doctor extra to "
+            "`flow-doctor[diagnosis,s3]==0.6.0rc6`; v0.68.0 delegated the extra "
+            "to `krepis[flow_doctor]`, and krepis v0.5.0 floors "
+            "`flow-doctor>=0.6.0,<0.7`, so this bump moves the dashboard's "
+            "flow-doctor off rc6 onto the 0.6.0 final that shipped via "
+            "flow-doctor#34 / tag v0.6.0 on PyPI; v0.73.0 is a strict superset "
+            "of the pipeline_status/transparency APIs the dashboard consumes). "
+            "Earlier: v0.60.2 (alpha_engine_lib alias "
             "resource-loading shim fix — preserves the real module __spec__ so "
             "transparency package-data loads when the box runs "
             "`python -m alpha_engine_lib.transparency`; plus the v0.60.1 "
