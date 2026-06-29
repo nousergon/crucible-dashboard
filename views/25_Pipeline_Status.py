@@ -9,8 +9,9 @@ Phase 1 (lib substrate `nousergon_lib.pipeline_status` v0.28.1) merged
 What this page shows
 ====================
 
-Three sections — Saturday SF / Weekday SF / EOD SF — each backed by the
-most-recent execution of that state machine via ``read_pipeline_state``.
+Three sections — Weekly Freshness / Pre-open Trading / Post-close Trading —
+each backed by the most-recent execution of that state machine via
+``read_pipeline_state``.
 For each pipeline:
 
 - **Header**: pretty label + run status + duration + start/stop UTC
@@ -80,12 +81,13 @@ def _arn_for(sf_name: str) -> str:
     return f"arn:aws:states:{_REGION}:{_ACCOUNT_ID}:stateMachine:{sf_name}"
 
 
-# Stable order: Saturday first (it's the headline weekly run), then Weekday
-# (daily cadence), then EOD (post-market reconciliation).
+# Stable order: Weekly Freshness first (it's the headline weekly run), then
+# Pre-open Trading (daily cadence), then Post-close Trading (post-market
+# reconciliation).
 _SF_ORDER: list[str] = [
-    "alpha-engine-saturday-pipeline",
-    "alpha-engine-weekday-pipeline",
-    "alpha-engine-eod-pipeline",
+    "ne-weekly-freshness-pipeline",
+    "ne-preopen-trading-pipeline",
+    "ne-postclose-trading-pipeline",
 ]
 _ALL_ARNS: list[str] = [_arn_for(n) for n in _SF_ORDER]
 
@@ -96,9 +98,9 @@ _ALL_ARNS: list[str] = [_arn_for(n) for n in _SF_ORDER]
 # the alpha-engine-data EventBridge cron rules + alpha-engine daemon
 # _trigger_eod_pipeline tag values.
 _CANONICAL_ROLE_BY_SF: dict[str, str] = {
-    "alpha-engine-saturday-pipeline": "weekly",
-    "alpha-engine-weekday-pipeline": "daily",
-    "alpha-engine-eod-pipeline": "eod",
+    "ne-weekly-freshness-pipeline": "weekly",
+    "ne-preopen-trading-pipeline": "daily",
+    "ne-postclose-trading-pipeline": "eod",
 }
 
 

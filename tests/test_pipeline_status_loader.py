@@ -49,14 +49,14 @@ from loaders.pipeline_status_loader import (
 
 
 SAT_ARN = (
-    "arn:aws:states:us-east-1:711398986525:stateMachine:alpha-engine-saturday-pipeline"
+    "arn:aws:states:us-east-1:711398986525:stateMachine:ne-weekly-freshness-pipeline"
 )
 
 
 def _make_run(arn: str = SAT_ARN, status: RunStatus = RunStatus.SUCCEEDED) -> PipelineRun:
     return PipelineRun(
         state_machine_arn=arn,
-        pretty_label="Saturday SF",
+        pretty_label="Weekly Freshness",
         execution_arn=f"{arn.replace('stateMachine', 'execution')}:test-run-1",
         execution_name="test-run-1",
         status=status,
@@ -81,7 +81,7 @@ def test_live_happy_path_returns_live_outcome():
     assert isinstance(result, LoadResult)
     assert result.outcome == LoadOutcome.LIVE
     assert result.run is not None
-    assert result.run.pretty_label == "Saturday SF"
+    assert result.run.pretty_label == "Weekly Freshness"
     assert result.error_message is None
 
 
@@ -277,7 +277,7 @@ def test_cache_read_returns_run_and_age_when_arn_present():
     ):
         run, age = _read_last_good_cache_for_arn(SAT_ARN)
         assert run is not None
-        assert run.pretty_label == "Saturday SF"
+        assert run.pretty_label == "Weekly Freshness"
         assert age is not None
         assert age >= 0  # any positive age relative to "now"
 
@@ -356,7 +356,7 @@ def _row(name, status, *, artifact=True):
 def _run_with(status, rows):
     return PipelineRun(
         state_machine_arn=SAT_ARN,
-        pretty_label="Saturday SF",
+        pretty_label="Weekly Freshness",
         execution_arn=f"{SAT_ARN.replace('stateMachine', 'execution')}:t",
         execution_name="t",
         status=status,

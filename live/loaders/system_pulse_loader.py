@@ -38,10 +38,10 @@ _REGION = "us-east-1"
 _ACCOUNT_ID = "711398986525"
 
 SATURDAY_ARN = (
-    f"arn:aws:states:{_REGION}:{_ACCOUNT_ID}:stateMachine:alpha-engine-saturday-pipeline"
+    f"arn:aws:states:{_REGION}:{_ACCOUNT_ID}:stateMachine:ne-weekly-freshness-pipeline"
 )
 WEEKDAY_ARN = (
-    f"arn:aws:states:{_REGION}:{_ACCOUNT_ID}:stateMachine:alpha-engine-weekday-pipeline"
+    f"arn:aws:states:{_REGION}:{_ACCOUNT_ID}:stateMachine:ne-preopen-trading-pipeline"
 )
 
 _FRESHNESS_HEARTBEAT_KEY = "_freshness_monitor/heartbeat.json"

@@ -216,7 +216,7 @@ const feedbackDiagram = `flowchart LR
     </p>
 
     <div class="text-sm font-medium text-zinc-200 mb-1">
-      Weekly &mdash; <code class="text-sky-300">alpha-engine-saturday-pipeline</code>
+      Weekly Freshness &mdash; <code class="text-sky-300">ne-weekly-freshness-pipeline</code>
     </div>
     <p class="text-xs text-zinc-500 mb-3">
       EventBridge <code>cron(0 9 ? * SAT *)</code> &mdash; Sat 09:00 UTC (Sat 02:00 AM PT)
@@ -226,7 +226,7 @@ const feedbackDiagram = `flowchart LR
     </div>
 
     <div class="text-sm font-medium text-zinc-200 mb-1">
-      Weekday morning &mdash; <code class="text-sky-300">alpha-engine-weekday-pipeline</code>
+      Pre-open Trading &mdash; <code class="text-sky-300">ne-preopen-trading-pipeline</code>
     </div>
     <p class="text-xs text-zinc-500 mb-3">
       EventBridge <code>cron(45 12 ? * MON-FRI *)</code> &mdash; 5:45 AM PT
@@ -242,7 +242,7 @@ const feedbackDiagram = `flowchart LR
     </p>
 
     <div class="text-sm font-medium text-zinc-200 mb-1">
-      EOD &mdash; <code class="text-sky-300">alpha-engine-eod-pipeline</code>
+      Post-close Trading &mdash; <code class="text-sky-300">ne-postclose-trading-pipeline</code>
     </div>
     <p class="text-xs text-zinc-500 mb-3">
       Triggered by daemon shutdown &mdash; single authoritative path, no redundant cron

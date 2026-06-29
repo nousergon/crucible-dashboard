@@ -121,7 +121,7 @@ st.caption(
 
 render_mermaid(f"""
 flowchart LR
-    subgraph Weekly["Weekly Saturday SF"]
+    subgraph Weekly["Weekly Freshness"]
         DATA1[Data Phase 1<br/>prices · macro · RAG ingest]
         RES[Research<br/>LangGraph multi-agent]
         DATA2[Data Phase 2<br/>alternative data]
@@ -129,14 +129,14 @@ flowchart LR
         BT[Backtester<br/>signal quality + param sweep]
     end
 
-    subgraph Daily["Weekday SF"]
+    subgraph Daily["Pre-open Trading"]
         ENRICH[Morning Enrich<br/>OHLCV + intraday]
         INF[Predictor Inference<br/>{_PRED_H}d alpha + veto]
         PLAN[Morning Planner<br/>order book]
         DAEMON[Intraday Daemon<br/>sole order executor]
     end
 
-    subgraph EOD["EOD SF"]
+    subgraph EOD["Post-close Trading"]
         REC[EOD Reconcile<br/>NAV + alpha vs SPY]
     end
 
@@ -184,7 +184,7 @@ st.caption(
     "alerts on any state failure."
 )
 
-st.markdown("### Saturday SF — weekly research + training")
+st.markdown("### Weekly Freshness — weekly research + training")
 st.caption("Fires Sat 09:00 UTC (Sat 02:00 PT — chosen so polygon T+1 daily aggregate has settled).")
 render_mermaid("""
 sequenceDiagram
@@ -213,7 +213,7 @@ sequenceDiagram
     SNS-->>EB: success email
 """, height=540)
 
-st.markdown("### Weekday SF — daily trading loop")
+st.markdown("### Pre-open Trading — daily trading loop")
 st.caption("Fires Mon-Fri 12:45 UTC (5:45 AM PT). Halt on NYSE holidays.")
 render_mermaid(f"""
 sequenceDiagram
@@ -238,10 +238,10 @@ sequenceDiagram
     MP->>MP: risk guard + position sizing
     MP->>D: order book written
     D->>D: intraday triggers + sole executor
-    Note over D: ~1:05 PT shutdown<br/>triggers EOD SF
+    Note over D: ~1:05 PT shutdown<br/>triggers Post-close Trading
 """, height=520)
 
-st.markdown("### EOD SF — post-market reconcile")
+st.markdown("### Post-close Trading — post-market reconcile")
 st.caption("Triggered by daemon shutdown after market close (~1:05 PM PT).")
 render_mermaid("""
 sequenceDiagram
@@ -312,7 +312,7 @@ _module_card(
 _module_card(
     "📥", "Data Platform", "alpha-engine-data",
     "Centralized weekly data collection + ArcticDB universe library.",
-    "Refreshes the price cache, macro features, constituents, and the RAG corpus that backs the research agents. ArcticDB on S3 is the canonical feature store; legacy parquet remains as fallback. Producer of the Saturday SF Data Phase 1 + 2 states and the weekday SF Morning Enrich state."
+    "Refreshes the price cache, macro features, constituents, and the RAG corpus that backs the research agents. ArcticDB on S3 is the canonical feature store; legacy parquet remains as fallback. Producer of the Weekly Freshness Data Phase 1 + 2 states and the Pre-open Trading Morning Enrich state."
 )
 _module_card(
     "📈", "Dashboard", "alpha-engine-dashboard",
