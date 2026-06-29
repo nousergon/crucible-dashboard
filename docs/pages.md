@@ -47,7 +47,7 @@ Only shown when non-empty:
 
 ---
 
-## Page 1: Portfolio (`pages/1_Portfolio.py`)
+## Page 1: Portfolio (`views/1_Portfolio.py`)
 
 Answers: _how is the paper portfolio performing vs. SPY?_
 
@@ -94,7 +94,7 @@ Computed from full eod_pnl history:
 
 ---
 
-## Page 2: Signals & Research (`pages/2_Signals_and_Research.py`)
+## Page 2: Signals & Research (`views/2_Signals_and_Research.py`)
 
 Answers: _what are all the signals today and why, and what does the research say about a specific ticker?_
 
@@ -137,7 +137,7 @@ Color: OW = green, UW = red, MW = neutral.
 
 ---
 
-## Page 3: Analysis (`pages/3_Analysis.py`)
+## Page 3: Analysis (`views/3_Analysis.py`)
 
 Answers: _are signals predictive, how did the backtester do, and is the pipeline learning?_
 
@@ -192,7 +192,7 @@ Structured visualizations for Phase 2/3/4 backtester metrics. Parses sections fr
 
 ---
 
-## Page 4: System Health (`pages/4_System_Health.py`)
+## Page 4: System Health (`views/4_System_Health.py`)
 
 Answers: _is the plumbing working?_
 
@@ -220,7 +220,7 @@ Pre-computed feature snapshots for GBM inference — freshness, coverage, and dr
 
 ---
 
-## Page 6: Execution (`pages/6_Execution.py`)
+## Page 6: Execution (`views/6_Execution.py`)
 
 Trade history and slippage monitoring. Merges the former Trade Log and Slippage pages.
 
@@ -278,7 +278,7 @@ Gracefully shows an info banner when `fill_price` / `price_at_order` columns are
 
 ---
 
-## Page 7: Predictor (`pages/7_Predictor.py`)
+## Page 7: Predictor (`views/7_Predictor.py`)
 
 Answers: _is the model healthy, and what is it predicting today?_
 

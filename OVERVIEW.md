@@ -29,13 +29,15 @@ Read-only Streamlit monitoring — portfolio, signals, predictor, execution, eva
 | Signal accuracy chart | [`charts/accuracy_chart.py`](charts/accuracy_chart.py) |
 | Predictor IC + per-L1 component IC | [`charts/predictor_chart.py`](charts/predictor_chart.py) |
 | Sub-score attribution chart | [`charts/attribution_chart.py`](charts/attribution_chart.py) |
-| Portfolio page (NAV, alpha, drawdown, positions) | [`pages/1_Portfolio.py`](pages/1_Portfolio.py) |
-| Signals + research thesis timeline | [`pages/2_Signals_and_Research.py`](pages/2_Signals_and_Research.py) |
-| Signal-quality / regime / score-bucket analysis | [`pages/3_Analysis.py`](pages/3_Analysis.py) |
-| System health (pipeline status, deploys) | [`pages/4_System_Health.py`](pages/4_System_Health.py) |
-| Execution quality (fills, triggers, slippage) | [`pages/6_Execution.py`](pages/6_Execution.py) |
-| Predictor predictions + IC trend | [`pages/7_Predictor.py`](pages/7_Predictor.py) |
-| LLM-as-judge eval quality | [`pages/8_Eval_Quality.py`](pages/8_Eval_Quality.py) |
+| Console pages (full set, grouped into 8 `st.navigation` sections) | [`views/`](views/) — wired in [`app.py`](app.py) |
+| Portfolio page (NAV, alpha, drawdown, positions) | [`views/1_Portfolio.py`](views/1_Portfolio.py) |
+| Signals + research thesis timeline | [`views/2_Signals_and_Research.py`](views/2_Signals_and_Research.py) |
+| Signal-quality / regime / score-bucket analysis | [`views/3_Analysis.py`](views/3_Analysis.py) |
+| System health (pipeline status, deploys) | [`views/4_System_Health.py`](views/4_System_Health.py) |
+| Execution quality (fills, triggers, slippage) | [`views/6_Execution.py`](views/6_Execution.py) |
+| Predictor predictions + IC trend | [`views/7_Predictor.py`](views/7_Predictor.py) |
+| LLM-as-judge eval quality | [`views/8_Eval_Quality.py`](views/8_Eval_Quality.py) |
+| Shared process-archive renderer (research/predictor/backtester briefing archives) | [`components/process_archive.py`](components/process_archive.py) |
 | Number formatting helpers | [`shared/formatters.py`](shared/formatters.py) |
 | Per-position P&L computation | [`shared/position_pnl.py`](shared/position_pnl.py) |
 | Accuracy metric helpers | [`shared/accuracy_metrics.py`](shared/accuracy_metrics.py) |
