@@ -11,9 +11,11 @@ from shared.constants import get_thresholds
 
 def make_model_drift_chart(outcomes_df: pd.DataFrame) -> go.Figure:
     """
-    Rolling accuracy trend: 30-day (blue thin) and 90-day (orange thick).
+    Rolling accuracy trend: 30-day (blue thin), 90-day (orange thick), and
+    180-day / ~6-month (purple, thickest) long-term degradation trend.
     Horizontal bands: green ≥ accuracy_outperform, red < model_degraded, yellow between.
-    Requires ≥60 resolved predictions.
+    Requires ≥60 resolved predictions; the 6-month line surfaces slow degradation
+    that the shorter windows smooth over (config#955).
     """
     th = get_thresholds()
     baseline_pct = th["accuracy_baseline"] * 100
@@ -37,6 +39,7 @@ def make_model_drift_chart(outcomes_df: pd.DataFrame) -> go.Figure:
 
     resolved["roll_30d"] = resolved["_resolved"].rolling(30, min_periods=15).mean() * 100
     resolved["roll_90d"] = resolved["_resolved"].rolling(90, min_periods=30).mean() * 100
+    resolved["roll_180d"] = resolved["_resolved"].rolling(180, min_periods=60).mean() * 100
 
     fig = go.Figure()
 
@@ -68,6 +71,16 @@ def make_model_drift_chart(outcomes_df: pd.DataFrame) -> go.Figure:
         line=dict(color="#ff7f0e", width=2.5),
         hovertemplate="<b>%{x|%Y-%m-%d}</b><br>90d: %{y:.1f}%<extra></extra>",
     ))
+
+    # 180d / 6-month rolling — long-term degradation trend (config#955).
+    # Only drawn once the window has enough resolved predictions to be meaningful.
+    if resolved["roll_180d"].notna().any():
+        fig.add_trace(go.Scatter(
+            x=resolved["prediction_date"], y=resolved["roll_180d"],
+            mode="lines", name="6-month rolling",
+            line=dict(color="#6f42c1", width=3.5),
+            hovertemplate="<b>%{x|%Y-%m-%d}</b><br>6mo: %{y:.1f}%<extra></extra>",
+        ))
 
     # Current 30d annotation
     current_30d = resolved["roll_30d"].dropna().iloc[-1] if not resolved["roll_30d"].dropna().empty else None
