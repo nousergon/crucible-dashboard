@@ -57,3 +57,25 @@ thresholds:
   sharpe_min_rows: 30         # Min days required to compute Sharpe ratio
   population_target: 25       # Research target_size — population above this has 0 open slots
   entrant_conviction_bar: 60  # De-facto CIO conviction bar a fresh name clears to enter (reference line)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AI Advisor — REGULATORY KILL SWITCH (config#664 / L4574)
+#
+# Hard master switch for ALL generative-AI surfaces on the dashboard (currently
+# the Phase-2 morning brief). When `enabled: false`, NO Anthropic/Haiku call is
+# ever made and the brief card renders nothing — a single point of regulatory
+# control. Default ON (treated as enabled when the section is absent). KEEP this
+# switch even though the legacy AI Advisor page is deprecated.
+ai_advisor:
+  enabled: true
+
+# Morning Brief — Phase-2 consumer cadence knobs (all optional; defaults shown).
+# The Haiku call is time-windowed + demand-gated + throttled + materiality-gated;
+# ALL FOUR must hold to fire (see live/morning_brief_cadence.py). These tune the
+# window/throttle/materiality thresholds; gate logic itself is not configurable.
+morning_brief:
+  pre_open_lead_min: 30     # may call up to N min before 09:00 ET open
+  throttle_minutes: 60      # ≤ 1 Haiku call per rolling N min
+  material_index_pp: 0.75   # material = |Δ| ≥ N pp in larger of {SPY, QQQ} since last brief
+  material_vix_pts: 2.0     # ...OR a VIX jump ≥ N points since last brief
+  daily_cap: 8              # hard backstop: ≤ N Haiku calls per trading day

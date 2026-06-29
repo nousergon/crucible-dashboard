@@ -7,6 +7,13 @@ pyyaml>=6.0
 # (live/loaders/s3_loader.py::load_live_day_return) so it shows TODAY's % change
 # rather than the last EOD snapshot. Fail-soft to the snapshot if unavailable.
 yfinance>=0.2.40
+# anthropic: Phase-2 morning-brief consumer (config#664 / L4574) — builds the
+# rerun-driven, four-gate-throttled morning brief with Haiku (claude-haiku-4-5)
+# on the Live Portfolio page (live/morning_brief.py). The API key is read from
+# st.secrets["anthropic"]["ANTHROPIC_API_KEY"] (NOT os.environ — see
+# tests/test_no_secret_environ_reads.py); when the key or SDK is absent the
+# brief card degrades to a friendly notice (fail-soft, no hard render dependency).
+anthropic>=0.40
 # nousergon-lib (renamed from alpha-engine-lib at v0.60.0) provides
 # setup_logging used by app.py + health_checker.py
 # to attach the FlowDoctorHandler when FLOW_DOCTOR_ENABLED=1, the

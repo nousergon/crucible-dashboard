@@ -15,6 +15,7 @@ import pandas as pd
 import streamlit as st
 
 from charts.nav_chart import make_intraday_curve
+from components.morning_brief_card import render_morning_brief_card
 from loaders.s3_loader import (
     load_intraday_nav,
     load_intraday_nav_series,
@@ -138,11 +139,8 @@ else:
     )
 
 # ---------------------------------------------------------------------------
-# Current Holdings
+# Positions snapshot (parsed once; also supplies held tickers to the brief)
 # ---------------------------------------------------------------------------
-
-st.markdown("### Current Holdings")
-st.caption(f"As of {prep.perf_date}")
 
 snapshot_raw = prep.latest.get("positions_snapshot", "{}")
 if pd.isna(snapshot_raw):
@@ -152,6 +150,29 @@ try:
     positions = json.loads(snapshot_raw)
 except (TypeError, ValueError):
     positions = {}
+
+
+def _held_tickers(pos) -> set[str]:
+    """Held symbols from the positions snapshot (dict-of-ticker or list form)."""
+    if isinstance(pos, dict):
+        return {str(t) for t in pos.keys() if t and t != "CASH"}
+    if isinstance(pos, list):
+        return {str(p.get("ticker")) for p in pos if p.get("ticker")}
+    return set()
+
+
+# ---------------------------------------------------------------------------
+# Morning Brief (Phase-2 consumer, config#664) — Overview card. Rerun-driven:
+# the four-gate cadence inside decides whether to call Haiku or reuse cache.
+# ---------------------------------------------------------------------------
+render_morning_brief_card(held_tickers=_held_tickers(positions))
+
+# ---------------------------------------------------------------------------
+# Current Holdings
+# ---------------------------------------------------------------------------
+
+st.markdown("### Current Holdings")
+st.caption(f"As of {prep.perf_date}")
 
 thesis_by_ticker = load_thesis_summaries()
 # Loaded up-front so the per-ticker modal (opened from either table) can
