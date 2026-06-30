@@ -210,6 +210,56 @@ def _exclusion_str(exc: dict | None) -> str:
     return f"{rule}{bound}: {reason}".strip()
 
 
+def _render_book_status_banner(payload: dict) -> None:
+    """Top-of-page one-line "why did/didn't the book move today" status.
+
+    Reads the schema-1.3.0 ``book_status`` field (producer:
+    crucible-executor#311). Absent on pre-1.3.0 artifacts → render nothing
+    (the per-ticker ERROR banner below still covers the dropped-allocation
+    case for older artifacts), so this page is safe ahead of the producer
+    merge.
+    """
+    bs = payload.get("book_status")
+    if not isinstance(bs, dict):
+        return
+    state = bs.get("state")
+    headline = bs.get("headline") or state or "—"
+    renderer = {
+        "allocations_dropped": st.error,
+        "hold_book_safeguard": st.warning,
+        "rebalanced": st.success,
+        "no_rebalance_at_target": st.info,
+    }.get(state, st.info)
+    renderer(f"**{headline}**")
+
+    # Dispersion sub-line — what made a low-conviction day low-conviction.
+    disp = bs.get("dispersion") or {}
+    bits: list[str] = []
+    if disp.get("n_predictions"):
+        bits.append(f"{disp['n_predictions']} predictions")
+    a_std = disp.get("alpha_stdev")
+    if isinstance(a_std, (int, float)):
+        bits.append(f"α σ={a_std:.4f}")
+    nu, nd, nf = disp.get("n_up"), disp.get("n_down"), disp.get("n_flat")
+    if nu is not None and nd is not None:
+        skew = f"{nu}↑/{nd}↓"
+        if nf:
+            skew += f"/{nf}→"
+        bits.append(skew)
+    if disp.get("signal_degenerate"):
+        bits.append("⚠ tradable signal degenerate")
+    to = bs.get("turnover_one_way")
+    band = bs.get("rebalance_band_pct")
+    if isinstance(to, (int, float)):
+        seg = f"one-way turnover {to * 100:.2f}%"
+        if isinstance(band, (int, float)):
+            band_pct = band * 100 if band <= 1 else band
+            seg += f" (band {band_pct:.1f}%)"
+        bits.append(seg)
+    if bits:
+        st.caption(" · ".join(bits))
+
+
 def _render_rationale(payload: dict) -> None:
     """Render one rationale artifact. Expander-free (it is itself shown
     inside a history expander) — drill-down via a selectbox, not nested
@@ -217,6 +267,11 @@ def _render_rationale(payload: dict) -> None:
     if not isinstance(payload, dict) or not payload.get("tickers"):
         st.info("Artifact present but no tickers in the considered universe.")
         return
+
+    # Daily HOLD-vs-fault status banner (schema 1.3.0) — first thing the
+    # operator sees: did the book move today, and if not, why (benign HOLD
+    # vs hold-book safeguard vs dropped allocation).
+    _render_book_status_banner(payload)
 
     summary = payload.get("summary", {})
     # Currently-held count is the truth column the user asks for first.

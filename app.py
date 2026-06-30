@@ -426,7 +426,11 @@ def _build_navigation():
                 "views/1_Performance.py", title="Performance", icon="💼",
                 url_path="eod-report",
             ),
-            page("6_Execution.py", "Execution", "⚡"),
+            # Unified Executor-stage front page: Order Book (with the daily
+            # book_status banner) / Execution / Optimizer Decision / Optimizer
+            # Risk. The optimizer is the executor's planning stage, so its
+            # surfaces file here — not under Research & Signals / Backtester.
+            page("host_execution.py", "Execution", "⚡"),
         ],
         "🔬 Research & Signals": [
             page("host_research_signals.py", "Signals & Research", "🧭"),
@@ -453,7 +457,7 @@ def _build_navigation():
                 "views/3_Analysis.py", title="Analysis", icon="📊",
                 url_path="analysis",
             ),
-            page("host_eval_optimizer.py", "Eval & Optimizer", "⚖"),
+            page("host_eval_backtester.py", "Eval & Backtester", "⚖"),
         ],
         "🩺 System & Ops": [
             page("host_system_health.py", "System Health", "🩺"),
