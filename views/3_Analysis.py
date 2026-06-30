@@ -34,6 +34,8 @@ from charts.accuracy_chart import (
     make_regime_alpha_chart,
 )
 from charts.attribution_chart import make_attribution_chart, make_weight_history_chart
+from components import backtester_significance as bsig
+from components import sweep_distribution as sweepdist
 from loaders.db_loader import get_macro_snapshots, get_score_performance
 from loaders.s3_loader import (
     _fetch_s3_json,
@@ -224,6 +226,20 @@ with tab_backtest:
             attribution = load_backtest_file(selected_backtest_date, "attribution.json")
             report_md_bt = load_backtest_file(selected_backtest_date, "report.md")
 
+        # ---- Cross-Date Trend (config#1444 item 2) ----
+        # backtest_dates is newest-first; take the most recent N for the trend.
+        _TREND_N = 12
+        _per_date: dict[str, dict] = {}
+        for _d in backtest_dates[:_TREND_N]:
+            if _d == selected_backtest_date and isinstance(metrics, dict):
+                _per_date[_d] = metrics
+            else:
+                _m = load_backtest_file(_d, "metrics.json")
+                if isinstance(_m, dict):
+                    _per_date[_d] = _m
+        bsig.render_trend(_per_date, n_shown=len(_per_date), n_total=len(backtest_dates))
+        st.divider()
+
         # ---- Last Run Summary ----
         st.subheader("Last Run Summary")
         if not metrics:
@@ -305,6 +321,12 @@ with tab_backtest:
                     st.markdown("**Top 5 Parameter Combinations**")
                     st.dataframe(top5.reset_index(drop=True), use_container_width=True, hide_index=True)
 
+            # Sweep-score distribution (config#1444 item 3) — random search has no
+            # convergence trajectory; the trial-score distribution + where the
+            # selected combo sits is the meaningful view.
+            _sharpe_col = next((c for c in ["sharpe", "sharpe_ratio"] if c in sweep_df.columns), None)
+            sweepdist.render(sweep_df, _sharpe_col)
+
         st.divider()
 
         # ---- Signal Quality Summary (from backtester metrics) ----
@@ -375,6 +397,11 @@ with tab_backtest:
                         "Picks": detail.get("n_picks", "—"),
                     })
                 st.dataframe(pd.DataFrame(team_rows), use_container_width=True, hide_index=True)
+
+        st.divider()
+
+        # ---- Promotion-Gate Significance (observe) — config#1444 item 1 ----
+        bsig.render(metrics)
 
         st.divider()
 
