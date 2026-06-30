@@ -76,8 +76,12 @@ def test_row_keys_match_column_contract():
 
 
 def test_page_registered_in_nav():
+    # Hosted under the Observability front page (lazy view-host) post-IA-reorg
+    # rather than registered directly in app.py.
+    host_src = (REPO_ROOT / "views" / "host_observability.py").read_text()
+    assert "41_Quarantine.py" in host_src
     app_src = (REPO_ROOT / "app.py").read_text()
-    assert "41_Quarantine.py" in app_src
+    assert 'page("host_observability.py"' in app_src
     assert (REPO_ROOT / "views" / "41_Quarantine.py").exists()
 
 

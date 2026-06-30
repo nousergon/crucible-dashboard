@@ -90,8 +90,12 @@ class TestNavRegistration:
         assert (REPO_ROOT / "views" / "37_Saturday_SF_Watch.py").exists()
 
     def test_app_registers_page(self):
+        # Hosted under the System Health front page (lazy view-host) post-IA-reorg
+        # rather than registered directly in app.py.
+        host_src = (REPO_ROOT / "views" / "host_system_health.py").read_text()
+        assert '"37_Saturday_SF_Watch.py"' in host_src
         app_src = (REPO_ROOT / "app.py").read_text()
-        assert 'page("37_Saturday_SF_Watch.py"' in app_src
+        assert 'page("host_system_health.py"' in app_src
 
     def test_page_uses_watch_loaders(self):
         src = (REPO_ROOT / "views" / "37_Saturday_SF_Watch.py").read_text()

@@ -400,14 +400,18 @@ def _build_navigation():
     def page(path, title, icon):
         return st.Page(f"views/{path}", title=title, icon=icon)
 
+    # IA: one tabbed FRONT PAGE per module (lazy-hosted via shared.view_host —
+    # only the selected sub-view executes). Slug-owning pages stay standalone
+    # st.Page (url_path is a st.Page-only attribute) so their deep-link guard
+    # tests stay green: director / eod-report / model-zoo / analysis.
     return st.navigation({
-        "🎯 Overview & Report Card": [
+        "🎯 Overview": [
             home,
-            page("Report_Card.py", "Report Card", "📋"),
-            page("Report_Card_Detail.py", "Report Card — Detail", "🔎"),
-            # url_path pinned to "director" — the Director weekly-plan digest
-            # email deep-links to …/director?date=YYYY-MM-DD (the run trading-day
-            # key). Guarded by tests/test_director_page.py.
+            # Report Card front: "Report Card" + "Component Detail" (ex-#9 detail).
+            page("host_report_card.py", "Report Card", "📋"),
+            # url_path pinned to "director" — Director weekly-plan digest email
+            # deep-links to …/director?date=YYYY-MM-DD. Guarded by
+            # tests/test_director_page.py.
             st.Page(
                 "views/Director_Plan.py", title="Director — Weekly Plan", icon="🧭",
                 url_path="director",
@@ -416,9 +420,8 @@ def _build_navigation():
         "📈 Performance": [
             # Canonical portfolio-outcomes page — merges the former Portfolio,
             # EOD Report and Attribution Heatmaps pages (legacy Metrics retired).
-            # url_path pinned to "eod-report" — the EOD email deep-links to
-            # …/eod-report?date=YYYY-MM-DD. Guarded against the executor's
-            # emailer slug by tests/test_eod_report_page.py.
+            # url_path pinned to "eod-report" — guarded by
+            # tests/test_eod_report_page.py.
             st.Page(
                 "views/1_Performance.py", title="Performance", icon="💼",
                 url_path="eod-report",
@@ -426,69 +429,40 @@ def _build_navigation():
             page("6_Execution.py", "Execution", "⚡"),
         ],
         "🔬 Research & Signals": [
-            page("2_Signals_and_Research.py", "Signals & Research", "🧭"),
+            page("host_research_signals.py", "Signals & Research", "🧭"),
+            page("host_universe_scanner.py", "Universe & Scanner", "🔭"),
+            page("host_agent_reviews.py", "Agent Reviews", "🏛"),
             page("Daily_News.py", "Daily News", "📰"),
-            page("34_Scanner.py", "Scanner", "🔭"),
-            page("39_Universe_Board.py", "Universe Board", "🌌"),
-            page("40_Attractiveness_Trends.py", "Attractiveness Trends", "📈"),
-            page("29_Decision_Review.py", "Decision Review", "🔍"),
-            page("33_Sector_Team_Review.py", "Sector Team Review", "🏟"),
-            page("31_CIO_Review.py", "CIO Review", "🏛"),
-            page("5_Focus_List.py", "Focus List", "🎯"),
-            page("16_Order_Book_Rationale.py", "Order Book Rationale", "📒"),
-            page("17_Research_Briefing_Archive.py", "Research Briefing (archive)", "📰"),
-            page("22_Intraday_Surveillance.py", "Intraday Surveillance", "👁"),
         ],
         "🤖 Predictor": [
-            page("7_Predictor.py", "Predictor", "🤖"),
-            # url_path pinned to "model-zoo" — the predictor's weekly Model-Zoo
-            # Rotation digest email deep-links to …/model-zoo?date=YYYY-MM-DD
-            # (the rotation trading-day key, e.g. Friday for a Saturday run).
-            # Guarded against the producer slug by tests/test_model_zoo_page.py.
+            page("host_predictor.py", "Predictor", "🤖"),
+            # url_path pinned to "model-zoo" — Model-Zoo Rotation digest email
+            # deep-links to …/model-zoo?date=YYYY-MM-DD. Guarded by
+            # tests/test_model_zoo_page.py. (Standalone — folding it into a host
+            # would move the slug onto the host.)
             st.Page(
                 "views/35_Model_Zoo.py", title="Model Zoo", icon="🦓",
                 url_path="model-zoo",
             ),
-            page("15_Regime.py", "Regime", "🌐"),
-            page("13_Feature_Store.py", "Feature Store", "🗃"),
-            page("18_Predictor_Briefing_Archive.py", "Predictor Briefing (archive)", "📨"),
-            page("20_Predictor_Training_Archive.py", "Training Runs (archive)", "🏋"),
         ],
         "🧪 Backtester & Eval": [
-            # url_path pinned to "analysis" — the weekly backtester+eval digest
-            # email deep-links to …/analysis?date=YYYY-MM-DD (the backtest
-            # run_date). Guarded by tests/test_analysis_page.py.
+            # url_path pinned to "analysis" — weekly backtester+eval digest email
+            # deep-links to …/analysis?date=YYYY-MM-DD. Guarded by
+            # tests/test_analysis_page.py. (Standalone — already 3-tab internally.)
             st.Page(
                 "views/3_Analysis.py", title="Analysis", icon="📊",
                 url_path="analysis",
             ),
-            page("8_Eval_Quality.py", "Eval Quality", "⚖"),
-            page("12_Feedback_Loop.py", "Feedback Loop", "🔁"),
-            page("30_Optimizer_Risk.py", "Optimizer Risk", "🎚"),
-            page("32_Optimizer_Decision.py", "Optimizer Decision", "🎯"),
-            page("21_Backtester_Evaluator_Archive.py", "Backtester Report (archive)", "📑"),
+            page("host_eval_optimizer.py", "Eval & Optimizer", "⚖"),
         ],
         "🩺 System & Ops": [
-            page("4_System_Health.py", "System Health", "🩺"),
-            page("25_Pipeline_Status.py", "Pipeline Status", "🚦"),
-            page("37_Saturday_SF_Watch.py", "Saturday SF Watch", "📡"),
-            page("26_Artifact_Freshness.py", "Artifact Freshness", "⏱"),
-            page("27_Active_Observations.py", "Active Observations", "🔭"),
-            page("41_Quarantine.py", "Changelog Quarantine", "🚧"),
-            page("28_Retros.py", "Retros", "📓"),
-            page("23_LLM_Cost.py", "LLM Cost", "💰"),
-            page("36_Claude_Code_Usage.py", "Claude Code Usage", "📟"),
+            page("host_system_health.py", "System Health", "🩺"),
+            page("host_observability.py", "Observability", "⏱"),
+            page("host_cost_usage.py", "Cost & Usage", "💰"),
+            page("22_Intraday_Surveillance.py", "Intraday Surveillance", "👁"),
         ],
-        "📚 Reference & Deep-Dives": [
-            page("10_Architecture.py", "Architecture", "🏛"),
-            page("11_Signal_Lifecycle.py", "Signal Lifecycle", "🧬"),
-            page("14_RAG_Inventory.py", "RAG Inventory", "📚"),
-        ],
-        # Candidate the Report Card v2 substantially subsumes on the console
-        # (primarily backs the PUBLIC site, which is unaffected). Kept for now —
-        # confirm before removal. (Metrics retired — absorbed into Performance.)
-        "🗑 Deprecated (review)": [
-            page("24_Evidence.py", "Evidence (legacy)", "🔖"),
+        "📚 Reference": [
+            page("host_reference.py", "Reference", "📚"),
         ],
     })
 
