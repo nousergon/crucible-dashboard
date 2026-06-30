@@ -35,6 +35,7 @@ from charts.accuracy_chart import (
 )
 from charts.attribution_chart import make_attribution_chart, make_weight_history_chart
 from components import backtester_significance as bsig
+from components import sweep_distribution as sweepdist
 from loaders.db_loader import get_macro_snapshots, get_score_performance
 from loaders.s3_loader import (
     _fetch_s3_json,
@@ -319,6 +320,12 @@ with tab_backtest:
                     top5 = sweep_df.nlargest(5, sharpe_col)
                     st.markdown("**Top 5 Parameter Combinations**")
                     st.dataframe(top5.reset_index(drop=True), use_container_width=True, hide_index=True)
+
+            # Sweep-score distribution (config#1444 item 3) — random search has no
+            # convergence trajectory; the trial-score distribution + where the
+            # selected combo sits is the meaningful view.
+            _sharpe_col = next((c for c in ["sharpe", "sharpe_ratio"] if c in sweep_df.columns), None)
+            sweepdist.render(sweep_df, _sharpe_col)
 
         st.divider()
 
