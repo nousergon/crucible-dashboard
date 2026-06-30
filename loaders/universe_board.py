@@ -26,6 +26,7 @@ METRIC_LABELS = {
     "vol_20d": "Realized vol 20d", "atr_pct": "ATR %", "beta": "Beta",
     "dist_52w_hi": "Dist from 52w high", "vs_ma200": "Price vs MA200", "avg_vol": "Avg volume",
     "tech": "Tech score", "focus": "Focus score",
+    "tradeability": "Tradeability", "expected_cost_bps": "Round-trip cost (bps)",
 }
 
 # Columns that stay textual (never coerced to numeric).
@@ -57,6 +58,10 @@ def flatten_stock(stock: dict) -> dict:
     pillars = stock.get("pillars", {}) or {}
     metrics = stock.get("metrics", {}) or {}
     gate = stock.get("gate", {}) or {}
+    # Tradeability (schema_version=3): an INDEPENDENT cost-to-access score, shown
+    # alongside attractiveness but NEVER blended with it (ARCHITECTURE §43).
+    # Degrades to None on a v2/v1 artifact (no tradeability block).
+    tradeability = stock.get("tradeability") or {}
     row = {
         "ticker": stock.get("ticker"),
         "sector": stock.get("sector") or "Unknown",
@@ -64,6 +69,8 @@ def flatten_stock(stock: dict) -> dict:
         "industry": stock.get("industry"),
         "attractiveness": stock.get("attractiveness_score"),
         "attractiveness_raw": stock.get("attractiveness_raw"),  # v2; None on v1
+        "tradeability": tradeability.get("tradeability_score"),       # v3; None earlier
+        "expected_cost_bps": tradeability.get("expected_cost_bps"),   # v3; None earlier
     }
     for p in PILLARS:
         row[p] = pillars.get(p)

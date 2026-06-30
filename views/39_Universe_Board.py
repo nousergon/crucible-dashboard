@@ -182,6 +182,17 @@ col_config = {
         help="Cross-sectional percentile of the sector-neutral z-score blend of "
              "the 6 factor pillars (0–100). Higher = more attractive.",
     ),
+    "tradeability": st.column_config.ProgressColumn(
+        "Tradeab.", min_value=0, max_value=100, format="%.1f",
+        help="Cost-to-access percentile (0–100, higher = cheaper to trade). An "
+             "INDEPENDENT √-impact cost score, never blended into attractiveness "
+             "(ARCHITECTURE §43): a great-but-expensive name and a mediocre-but-"
+             "cheap name stay distinguishable. Blank = no liquidity/vol coverage.",
+    ),
+    "expected_cost_bps": st.column_config.NumberColumn(
+        "RT cost (bps)", format="%.1f",
+        help="Estimated round-trip transaction cost in bps at the reference trade "
+             "size (half-spread + √-impact + commission)."),
     "gate_stage": st.column_config.TextColumn(
         "Gate", help="Terminal scanner funnel stage (passed, or where it dropped)."),
     "price": st.column_config.NumberColumn("Price", format="$%.2f"),

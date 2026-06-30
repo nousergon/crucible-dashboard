@@ -34,12 +34,14 @@ from loaders.universe_board import (  # noqa: E402
 
 
 def _producer_board() -> dict:
-    """A schema_version=2 board as crucible-research scoring/universe_board.py emits it."""
+    """A schema_version=3 board as crucible-research scoring/universe_board.py emits it."""
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "as_of": "2026-06-28",
         "universe_count": 2,
         "attractiveness_method": "sector_neutral_zscore_percentile",
+        "tradeability_method": "sqrt_impact_almgren_chriss_round_trip",
+        "tradeability_reference_notional_usd": 100_000.0,
         "pillars": list(PILLARS),
         "pillar_weights": {p: round(1 / 6, 6) for p in PILLARS},
         "gate_config": {"min_avg_volume": 500_000, "min_price": 0.0, "tech_score_min": 60,
@@ -52,6 +54,8 @@ def _producer_board() -> dict:
                 "industry": "Consumer Electronics",
                 "attractiveness_score": 100.0,
                 "attractiveness_raw": 0.1667,
+                "tradeability": {"expected_cost_bps": 6.05, "tradeability_score": 100.0,
+                                 "adv_usd": 1.0725e10, "reference_notional_usd": 100_000.0},
                 "pillars": {"quality": 90.0, "value": 30.0, "momentum": 85.0,
                             "growth": 80.0, "stewardship": 70.0, "defensiveness": 60.0},
                 "pillar_contributions": {"quality": 0.1667, "value": -0.1667, "momentum": 0.1667,
@@ -86,6 +90,8 @@ def _producer_board() -> dict:
                 "industry": "Specialty Chemicals",
                 "attractiveness_score": 50.0,
                 "attractiveness_raw": -0.25,
+                "tradeability": {"expected_cost_bps": 12.4, "tradeability_score": 50.0,
+                                 "adv_usd": 5.52e7, "reference_notional_usd": 100_000.0},
                 "pillars": {"quality": 50.0, "value": 40.0, "momentum": 30.0,
                             "growth": None, "stewardship": None, "defensiveness": 60.0},
                 "pillar_contributions": {"quality": -0.25, "value": 0.25, "momentum": -0.25,
@@ -139,11 +145,24 @@ def test_flatten_consumes_producer_fields():
     assert aapl["country"] == "United States"
     assert aapl["gate"] == "PASS"
     assert aapl["mkt_cap"] == 3.0e12
+    # Tradeability (schema_version=3) — INDEPENDENT cost-to-access score (§43).
+    assert aapl["tradeability"] == 100.0
+    assert aapl["expected_cost_bps"] == 6.05
+    lin = df.set_index("ticker").loc["LIN"]
+    assert lin["tradeability"] == 50.0  # thinner name → lower tradeability percentile
+
+
+def test_tradeability_absent_degrades_to_nan():
+    # A v1/v2 artifact with no tradeability block must still flatten (columns NaN).
+    df = flatten_board(_v1_board())
+    aapl = df.set_index("ticker").loc["AAPL"]
+    assert pd.isna(aapl["tradeability"])
+    assert pd.isna(aapl["expected_cost_bps"])
 
 
 def test_board_meta_surfaces_weights_and_gate_config():
     meta = board_meta(_producer_board())
-    assert meta["schema_version"] == 2
+    assert meta["schema_version"] == 3
     assert meta["attractiveness_method"] == "sector_neutral_zscore_percentile"
     assert round(sum(meta["pillar_weights"].values()), 3) == 1.0
     assert meta["gate_config"]["min_avg_volume"] == 500_000
