@@ -82,9 +82,19 @@ if df.empty:
 # Tabs
 # ---------------------------------------------------------------------------
 
-tab_trend, tab_versions, tab_provenance, tab_spotcheck, tab_calibrate, tab_data = st.tabs(
-    ["Trend", "Versions", "Provenance", "Spot-check", "Calibrate", "Data"]
+(
+    tab_trend, tab_bias, tab_versions, tab_provenance,
+    tab_spotcheck, tab_calibrate, tab_data,
+) = st.tabs(
+    ["Trend", "Judge Bias", "Versions", "Provenance", "Spot-check", "Calibrate", "Data"]
 )
+
+
+# ── Judge Bias tab (config#1444 item 4) ───────────────────────────────────
+
+with tab_bias:
+    from components import judge_bias
+    judge_bias.render(df)
 
 
 # ── Trend tab ─────────────────────────────────────────────────────────────
