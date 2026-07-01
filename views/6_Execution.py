@@ -65,7 +65,19 @@ trades_df = _normalize_cols(trades_df)
 date_col = next((c for c in ["date", "trade_date", "timestamp"] if c in trades_df.columns), None)
 if date_col:
     trades_df[date_col] = pd.to_datetime(trades_df[date_col])
-    trades_df = trades_df.sort_values(date_col, ascending=False).reset_index(drop=True)
+
+# `date_col` ("date") is the NYSE trading_day the order acted on — per the
+# dual-date convention (DATE_CONVENTIONS.md) this is strictly backward-looking
+# (last_closed_trading_day(now)), so a trade filled intraday today is stamped
+# with YESTERDAY's session. That's correct for joining against session-keyed
+# artifacts (research scores below) but reads as "nothing traded today" when
+# used as the page's "what just happened" axis (config#1447 follow-up,
+# 2026-07-01). `created_at` is the actual fill timestamp, so it's what
+# "recent"/"last trade" should sort and summarize on.
+exec_date_col = "created_at" if "created_at" in trades_df.columns else date_col
+if exec_date_col:
+    trades_df[exec_date_col] = pd.to_datetime(trades_df[exec_date_col], utc=True)
+    trades_df = trades_df.sort_values(exec_date_col, ascending=False).reset_index(drop=True)
 
 action_col = next((c for c in ["action", "signal", "trade_type"] if c in trades_df.columns), None)
 ticker_col = next((c for c in ["ticker", "symbol"] if c in trades_df.columns), None)
@@ -78,12 +90,12 @@ size_col = next((c for c in ["position_size", "size", "quantity", "shares"] if c
 # Recent activity summary (shown above tabs)
 # ---------------------------------------------------------------------------
 
-if date_col is not None and not trades_df.empty:
-    latest_day = trades_df[date_col].max().date()
-    latest_rows = trades_df[trades_df[date_col].dt.date == latest_day]
+if exec_date_col is not None and not trades_df.empty:
+    latest_day = trades_df[exec_date_col].max().date()
+    latest_rows = trades_df[trades_df[exec_date_col].dt.date == latest_day]
     r1, r2, r3, r4 = st.columns(4)
     with r1:
-        st.metric("Last Session", latest_day.isoformat())
+        st.metric("Last Trade Date", latest_day.isoformat())
     with r2:
         st.metric("Trades That Day", f"{len(latest_rows):,}")
     with r3:
@@ -113,9 +125,9 @@ with tab_log:
     f_col4, f_col5 = st.columns([2, 2])
 
     with f_col1:
-        if date_col:
-            min_date = trades_df[date_col].min().date() if not trades_df.empty else date.today() - timedelta(days=365)
-            max_date = trades_df[date_col].max().date() if not trades_df.empty else date.today()
+        if exec_date_col:
+            min_date = trades_df[exec_date_col].min().date() if not trades_df.empty else date.today() - timedelta(days=365)
+            max_date = trades_df[exec_date_col].max().date() if not trades_df.empty else date.today()
             date_from = st.date_input("From Date", value=min_date, min_value=min_date, max_value=max_date)
             date_to = st.date_input("To Date", value=max_date, min_value=min_date, max_value=max_date)
         else:
@@ -148,9 +160,9 @@ with tab_log:
     # ---- Apply filters ----
     filtered = trades_df.copy()
 
-    if date_col and date_from and date_to:
+    if exec_date_col and date_from and date_to:
         filtered = filtered[
-            (filtered[date_col].dt.date >= date_from) & (filtered[date_col].dt.date <= date_to)
+            (filtered[exec_date_col].dt.date >= date_from) & (filtered[exec_date_col].dt.date <= date_to)
         ]
 
     if selected_actions and action_col:
@@ -192,8 +204,8 @@ with tab_log:
                 non_enter_rows["beat_spy_21d"] = None
                 filtered = pd.concat([enter_rows, non_enter_rows], ignore_index=True)
 
-                if date_col in filtered.columns:
-                    filtered = filtered.sort_values(date_col, ascending=False)
+                if exec_date_col in filtered.columns:
+                    filtered = filtered.sort_values(exec_date_col, ascending=False)
 
     st.caption(f"Showing {len(filtered):,} of {len(trades_df):,} trades")
 
