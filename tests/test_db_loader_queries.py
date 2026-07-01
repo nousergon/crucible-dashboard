@@ -29,9 +29,9 @@ def mock_db():
     conn.execute("""
         CREATE TABLE score_performance (
             symbol TEXT, score_date TEXT, score REAL,
-            beat_spy_10d INTEGER, beat_spy_30d INTEGER,
-            return_10d REAL, return_30d REAL,
-            spy_10d_return REAL, spy_30d_return REAL
+            beat_spy_21d INTEGER,
+            return_21d REAL,
+            spy_21d_return REAL
         )
     """)
     conn.execute("""
@@ -53,11 +53,11 @@ def mock_db():
 
     # Seed data
     conn.executemany(
-        "INSERT INTO score_performance VALUES (?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO score_performance VALUES (?,?,?,?,?,?)",
         [
-            ("AAPL", "2026-04-01", 82, 1, 1, 0.03, 0.05, 0.01, 0.02),
-            ("MSFT", "2026-04-01", 75, 0, 1, -0.01, 0.03, 0.01, 0.02),
-            ("AAPL", "2026-04-08", 85, 1, None, 0.04, None, 0.01, None),
+            ("AAPL", "2026-04-01", 82, 1, 0.03, 0.01),
+            ("MSFT", "2026-04-01", 75, 0, -0.01, 0.01),
+            ("AAPL", "2026-04-08", 85, 1, 0.04, 0.01),
         ],
     )
     conn.executemany(

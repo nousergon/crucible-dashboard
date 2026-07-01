@@ -54,8 +54,7 @@ class TestPrepareBucketData:
         scores = rng.uniform(60, 100, size=n)
         return pd.DataFrame({
             "composite_score": scores,
-            "beat_spy_10d": rng.choice([0, 1], size=n, p=[0.4, 0.6]),
-            "beat_spy_30d": rng.choice([0, 1], size=n, p=[0.45, 0.55]),
+            "beat_spy_21d": rng.choice([0, 1], size=n, p=[0.4, 0.6]),
         })
 
     def test_returns_dataframe_with_expected_columns(self):
@@ -63,8 +62,8 @@ class TestPrepareBucketData:
         result = prepare_bucket_data(df)
 
         assert result is not None
-        expected_cols = {"bucket", "acc_10d", "acc_30d", "count",
-                         "ci_10d_lower", "ci_10d_upper", "ci_30d_lower", "ci_30d_upper"}
+        expected_cols = {"bucket", "acc_21d", "count",
+                         "ci_21d_lower", "ci_21d_upper"}
         assert expected_cols.issubset(set(result.columns))
 
     def test_bucket_labels(self):
@@ -79,10 +78,8 @@ class TestPrepareBucketData:
         df = self._make_perf_df()
         result = prepare_bucket_data(df)
 
-        assert (result["acc_10d"] >= 0).all()
-        assert (result["acc_10d"] <= 100).all()
-        assert (result["acc_30d"] >= 0).all()
-        assert (result["acc_30d"] <= 100).all()
+        assert (result["acc_21d"] >= 0).all()
+        assert (result["acc_21d"] <= 100).all()
 
     def test_count_sums_to_total(self):
         """Bucket counts should sum to the number of rows with scores in [60, 101)."""
@@ -99,15 +96,14 @@ class TestPrepareBucketData:
         assert prepare_bucket_data(pd.DataFrame()) is None
 
     def test_missing_score_column_returns_none(self):
-        df = pd.DataFrame({"beat_spy_10d": [1, 0], "beat_spy_30d": [0, 1]})
+        df = pd.DataFrame({"beat_spy_21d": [1, 0]})
         assert prepare_bucket_data(df) is None
 
     def test_score_column_fallback(self):
         """Should use 'score' column when 'composite_score' is absent."""
         df = pd.DataFrame({
             "score": [65, 75, 85, 95],
-            "beat_spy_10d": [1, 1, 0, 1],
-            "beat_spy_30d": [0, 1, 1, 1],
+            "beat_spy_21d": [1, 1, 0, 1],
         })
         result = prepare_bucket_data(df)
 
@@ -118,17 +114,14 @@ class TestPrepareBucketData:
         df = self._make_perf_df(200)
         result = prepare_bucket_data(df)
 
-        assert (result["ci_10d_lower"] >= -1).all()
-        assert (result["ci_10d_upper"] >= -1).all()
-        assert (result["ci_30d_lower"] >= -1).all()
-        assert (result["ci_30d_upper"] >= -1).all()
+        assert (result["ci_21d_lower"] >= -1).all()
+        assert (result["ci_21d_upper"] >= -1).all()
 
     def test_single_bucket(self):
         """All scores in one bucket should produce a single-row result."""
         df = pd.DataFrame({
             "composite_score": [65, 66, 67, 68],
-            "beat_spy_10d": [1, 0, 1, 1],
-            "beat_spy_30d": [1, 1, 0, 0],
+            "beat_spy_21d": [1, 0, 1, 1],
         })
         result = prepare_bucket_data(df)
 

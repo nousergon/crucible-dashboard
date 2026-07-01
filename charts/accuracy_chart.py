@@ -24,11 +24,11 @@ def _threshold_pcts() -> tuple[float, float]:
 
 def make_accuracy_trend_chart(perf_df: pd.DataFrame) -> go.Figure:
     """
-    Rolling 4-week (~20 trading day) accuracy trend lines.
-    Shows accuracy_10d and accuracy_30d over time.
+    Rolling 4-week (~20 trading day) accuracy trend line.
+    Shows accuracy_21d over time (canonical horizon).
     Dashed 50% reference line. Shaded band at 55%+ (outperformance zone).
 
-    perf_df needs: score_date, beat_spy_10d (bool), beat_spy_30d (bool)
+    perf_df needs: score_date, beat_spy_21d (bool)
     """
     if perf_df is None or perf_df.empty:
         fig = go.Figure()
@@ -40,14 +40,13 @@ def make_accuracy_trend_chart(perf_df: pd.DataFrame) -> go.Figure:
     df = df.sort_values("score_date")
 
     # Convert bool columns to numeric (1/0) for rolling mean
-    for col in ["beat_spy_10d", "beat_spy_30d"]:
+    for col in ["beat_spy_21d"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
     # Rolling 20-row window (approx 4 calendar weeks of trading days)
     window = 20
-    df["acc_10d"] = df["beat_spy_10d"].rolling(window, min_periods=5).mean() * 100
-    df["acc_30d"] = df["beat_spy_30d"].rolling(window, min_periods=5).mean() * 100
+    df["acc_21d"] = df["beat_spy_21d"].rolling(window, min_periods=5).mean() * 100
 
     baseline_pct, outperform_pct = _threshold_pcts()
     fig = go.Figure()
@@ -73,27 +72,15 @@ def make_accuracy_trend_chart(perf_df: pd.DataFrame) -> go.Figure:
         annotation_font_size=10,
     )
 
-    # 10d accuracy line
+    # 21d accuracy line (canonical horizon)
     fig.add_trace(
         go.Scatter(
             x=df["score_date"],
-            y=df["acc_10d"],
+            y=df["acc_21d"],
             mode="lines",
-            name="10d Accuracy (4-wk rolling)",
+            name="21d Accuracy (4-wk rolling)",
             line=dict(color="#1f77b4", width=2.5),
-            hovertemplate="<b>%{x|%Y-%m-%d}</b><br>10d Accuracy: %{y:.1f}%<extra></extra>",
-        )
-    )
-
-    # 30d accuracy line
-    fig.add_trace(
-        go.Scatter(
-            x=df["score_date"],
-            y=df["acc_30d"],
-            mode="lines",
-            name="30d Accuracy (4-wk rolling)",
-            line=dict(color="#ff7f0e", width=2.5, dash="dot"),
-            hovertemplate="<b>%{x|%Y-%m-%d}</b><br>30d Accuracy: %{y:.1f}%<extra></extra>",
+            hovertemplate="<b>%{x|%Y-%m-%d}</b><br>21d Accuracy: %{y:.1f}%<extra></extra>",
         )
     )
 
@@ -123,8 +110,8 @@ SCORE_BUCKET_LABELS = ["60-70", "70-80", "80-90", "90+"]
 def prepare_bucket_data(perf_df: pd.DataFrame) -> pd.DataFrame | None:
     """Aggregate accuracy metrics by score bucket with Wilson CIs.
 
-    Returns a DataFrame with columns: bucket, acc_10d, acc_30d, count,
-    ci_10d_lower, ci_10d_upper, ci_30d_lower, ci_30d_upper.
+    Returns a DataFrame with columns: bucket, acc_21d, count,
+    ci_21d_lower, ci_21d_upper.
     Returns None if the input is empty or missing required columns.
     """
     if perf_df is None or perf_df.empty:
@@ -136,38 +123,29 @@ def prepare_bucket_data(perf_df: pd.DataFrame) -> pd.DataFrame | None:
         return None
 
     df[score_col] = pd.to_numeric(df[score_col], errors="coerce")
-    for col in ["beat_spy_10d", "beat_spy_30d"]:
+    for col in ["beat_spy_21d"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
     df["bucket"] = pd.cut(df[score_col], bins=SCORE_BUCKET_BINS, labels=SCORE_BUCKET_LABELS, right=False)
 
     grouped = df.groupby("bucket", observed=True).agg(
-        acc_10d=("beat_spy_10d", "mean"),
-        acc_30d=("beat_spy_30d", "mean"),
-        sum_10d=("beat_spy_10d", "sum"),
-        sum_30d=("beat_spy_30d", "sum"),
+        acc_21d=("beat_spy_21d", "mean"),
+        sum_21d=("beat_spy_21d", "sum"),
         count=(score_col, "count"),
     ).reset_index()
 
-    grouped["acc_10d"] = grouped["acc_10d"] * 100
-    grouped["acc_30d"] = grouped["acc_30d"] * 100
+    grouped["acc_21d"] = grouped["acc_21d"] * 100
 
-    ci_10d_lower, ci_10d_upper = [], []
-    ci_30d_lower, ci_30d_upper = [], []
+    ci_21d_lower, ci_21d_upper = [], []
     for _, row in grouped.iterrows():
         n = int(row["count"])
-        lo10, hi10 = _wilson_ci(int(row["sum_10d"]), n)
-        lo30, hi30 = _wilson_ci(int(row["sum_30d"]), n)
-        ci_10d_lower.append(row["acc_10d"] - lo10 * 100)
-        ci_10d_upper.append(hi10 * 100 - row["acc_10d"])
-        ci_30d_lower.append(row["acc_30d"] - lo30 * 100)
-        ci_30d_upper.append(hi30 * 100 - row["acc_30d"])
+        lo21, hi21 = _wilson_ci(int(row["sum_21d"]), n)
+        ci_21d_lower.append(row["acc_21d"] - lo21 * 100)
+        ci_21d_upper.append(hi21 * 100 - row["acc_21d"])
 
-    grouped["ci_10d_lower"] = ci_10d_lower
-    grouped["ci_10d_upper"] = ci_10d_upper
-    grouped["ci_30d_lower"] = ci_30d_lower
-    grouped["ci_30d_upper"] = ci_30d_upper
+    grouped["ci_21d_lower"] = ci_21d_lower
+    grouped["ci_21d_upper"] = ci_21d_upper
 
     return grouped
 
@@ -175,7 +153,7 @@ def prepare_bucket_data(perf_df: pd.DataFrame) -> pd.DataFrame | None:
 def make_accuracy_by_bucket_chart(perf_df: pd.DataFrame) -> go.Figure:
     """Grouped bar chart: accuracy by score bucket (60-70, 70-80, 80-90, 90+).
 
-    Two bars per bucket: accuracy_10d and accuracy_30d.
+    One bar per bucket: accuracy_21d (canonical horizon).
     Includes Wilson CI error bars and sample size annotations.
     """
     grouped = prepare_bucket_data(perf_df)
@@ -190,26 +168,13 @@ def make_accuracy_by_bucket_chart(perf_df: pd.DataFrame) -> go.Figure:
     fig.add_trace(
         go.Bar(
             x=grouped["bucket"].astype(str),
-            y=grouped["acc_10d"],
-            name="10d Accuracy",
+            y=grouped["acc_21d"],
+            name="21d Accuracy",
             marker_color="#1f77b4",
-            text=grouped["acc_10d"].round(1).astype(str) + "%",
+            text=grouped["acc_21d"].round(1).astype(str) + "%",
             textposition="outside",
-            hovertemplate="Bucket: %{x}<br>10d Accuracy: %{y:.1f}%<extra></extra>",
-            error_y=dict(type="data", symmetric=False, array=grouped["ci_10d_upper"].tolist(), arrayminus=grouped["ci_10d_lower"].tolist()),
-        )
-    )
-
-    fig.add_trace(
-        go.Bar(
-            x=grouped["bucket"].astype(str),
-            y=grouped["acc_30d"],
-            name="30d Accuracy",
-            marker_color="#ff7f0e",
-            text=grouped["acc_30d"].round(1).astype(str) + "%",
-            textposition="outside",
-            hovertemplate="Bucket: %{x}<br>30d Accuracy: %{y:.1f}%<extra></extra>",
-            error_y=dict(type="data", symmetric=False, array=grouped["ci_30d_upper"].tolist(), arrayminus=grouped["ci_30d_lower"].tolist()),
+            hovertemplate="Bucket: %{x}<br>21d Accuracy: %{y:.1f}%<extra></extra>",
+            error_y=dict(type="data", symmetric=False, array=grouped["ci_21d_upper"].tolist(), arrayminus=grouped["ci_21d_lower"].tolist()),
         )
     )
 
@@ -251,9 +216,9 @@ def make_accuracy_by_bucket_chart(perf_df: pd.DataFrame) -> go.Figure:
 def make_accuracy_by_regime_chart(perf_df: pd.DataFrame, macro_df: pd.DataFrame) -> go.Figure:
     """
     Grouped bar chart: accuracy by market regime (bull, neutral, bear, caution).
-    Joins perf_df to macro_df on date. Two bars per regime: 10d and 30d.
+    Joins perf_df to macro_df on date. One bar per regime: 21d (canonical horizon).
 
-    perf_df needs: score_date, beat_spy_10d, beat_spy_30d
+    perf_df needs: score_date, beat_spy_21d
     macro_df needs: date, regime
     """
     if perf_df is None or perf_df.empty or macro_df is None or macro_df.empty:
@@ -289,17 +254,16 @@ def make_accuracy_by_regime_chart(perf_df: pd.DataFrame, macro_df: pd.DataFrame)
         merged = merged.rename(columns={suffixed: "regime"})
     merged["regime"] = merged["regime"].fillna("unknown")
 
-    for col in ["beat_spy_10d", "beat_spy_30d"]:
+    for col in ["beat_spy_21d"]:
         if col in merged.columns:
             merged[col] = pd.to_numeric(merged[col], errors="coerce")
 
     grouped = (
         merged.groupby("regime")
-        .agg(acc_10d=("beat_spy_10d", "mean"), acc_30d=("beat_spy_30d", "mean"), count=("beat_spy_10d", "count"))
+        .agg(acc_21d=("beat_spy_21d", "mean"), count=("beat_spy_21d", "count"))
         .reset_index()
     )
-    grouped["acc_10d"] = grouped["acc_10d"] * 100
-    grouped["acc_30d"] = grouped["acc_30d"] * 100
+    grouped["acc_21d"] = grouped["acc_21d"] * 100
 
     # 3-class Ang-Bekaert macro taxonomy (v0.42.0 / 2026-05-28 —
     # caution-regime-retirement-260528.md) + grandfather for historical
@@ -314,24 +278,12 @@ def make_accuracy_by_regime_chart(perf_df: pd.DataFrame, macro_df: pd.DataFrame)
     fig.add_trace(
         go.Bar(
             x=grouped["regime"].astype(str),
-            y=grouped["acc_10d"],
-            name="10d Accuracy",
+            y=grouped["acc_21d"],
+            name="21d Accuracy",
             marker_color="#1f77b4",
-            text=grouped["acc_10d"].round(1).astype(str) + "%",
+            text=grouped["acc_21d"].round(1).astype(str) + "%",
             textposition="outside",
-            hovertemplate="Regime: %{x}<br>10d Accuracy: %{y:.1f}%<extra></extra>",
-        )
-    )
-
-    fig.add_trace(
-        go.Bar(
-            x=grouped["regime"].astype(str),
-            y=grouped["acc_30d"],
-            name="30d Accuracy",
-            marker_color="#ff7f0e",
-            text=grouped["acc_30d"].round(1).astype(str) + "%",
-            textposition="outside",
-            hovertemplate="Regime: %{x}<br>30d Accuracy: %{y:.1f}%<extra></extra>",
+            hovertemplate="Regime: %{x}<br>21d Accuracy: %{y:.1f}%<extra></extra>",
         )
     )
 
@@ -363,10 +315,10 @@ def make_accuracy_by_regime_chart(perf_df: pd.DataFrame, macro_df: pd.DataFrame)
 
 def make_alpha_distribution_chart(perf_df: pd.DataFrame) -> go.Figure:
     """
-    Histogram of per-signal alpha (return_10d - spy_10d_return).
+    Histogram of per-signal alpha (return_21d - spy_21d_return).
     Two panels: score >= 70 and all signals. Mean and median vertical lines.
 
-    perf_df needs: composite_score (or score), return_10d, spy_10d_return
+    perf_df needs: composite_score (or score), return_21d, spy_21d_return
     """
     if perf_df is None or perf_df.empty:
         fig = go.Figure()
@@ -376,16 +328,16 @@ def make_alpha_distribution_chart(perf_df: pd.DataFrame) -> go.Figure:
     df = perf_df.copy()
     score_col = "composite_score" if "composite_score" in df.columns else "score"
 
-    for col in [score_col, "return_10d", "spy_10d_return"]:
+    for col in [score_col, "return_21d", "spy_21d_return"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    df["alpha_10d"] = df["return_10d"] - df["spy_10d_return"]
-    df = df.dropna(subset=["alpha_10d"])
+    df["alpha_21d"] = df["return_21d"] - df["spy_21d_return"]
+    df = df.dropna(subset=["alpha_21d"])
 
-    all_alpha = df["alpha_10d"] * 100
+    all_alpha = df["alpha_21d"] * 100
     if score_col in df.columns:
-        high_score_alpha = df.loc[df[score_col] >= 70, "alpha_10d"] * 100
+        high_score_alpha = df.loc[df[score_col] >= 70, "alpha_21d"] * 100
     else:
         high_score_alpha = all_alpha
 
@@ -436,13 +388,13 @@ def make_alpha_distribution_chart(perf_df: pd.DataFrame) -> go.Figure:
     _add_histogram(high_score_alpha, 1, 2, "Score ≥ 70", "#1f77b4")
 
     fig.update_layout(
-        title="Alpha Distribution (10d Return vs SPY)",
+        title="Alpha Distribution (21d Return vs SPY)",
         showlegend=False,
         plot_bgcolor="white",
         paper_bgcolor="white",
         margin=dict(t=80, b=40, l=60, r=20),
     )
-    fig.update_xaxes(title_text="10d Alpha (%)", ticksuffix="%")
+    fig.update_xaxes(title_text="21d Alpha (%)", ticksuffix="%")
     fig.update_yaxes(title_text="Count")
 
     return fig

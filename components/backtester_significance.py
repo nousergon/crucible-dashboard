@@ -170,8 +170,8 @@ def trend_row(date_str: str, metrics: dict | None) -> dict:
     return {
         "date": date_str,
         "sharpe": sim.get("sharpe_ratio", sim.get("sharpe")),
-        "accuracy_10d": m.get("accuracy_10d"),
-        "avg_alpha_10d": m.get("avg_alpha_10d"),
+        "accuracy_21d": m.get("accuracy_21d"),
+        "avg_alpha_21d": m.get("avg_alpha_21d"),
         "n_undefended": undefended,
     }
 
@@ -198,8 +198,8 @@ def render_trend(per_date: dict[str, dict], *, n_shown: int, n_total: int) -> No
     df = pd.DataFrame(rows).set_index("date")
     series = [
         ("sharpe", "Sharpe"),
-        ("accuracy_10d", "Signal accuracy 10d"),
-        ("avg_alpha_10d", "Avg alpha 10d"),
+        ("accuracy_21d", "Signal accuracy 21d"),
+        ("avg_alpha_21d", "Avg alpha 21d"),
         ("n_undefended", "# undefended promotions"),
     ]
     cols = st.columns(2)

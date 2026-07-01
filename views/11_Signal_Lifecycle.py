@@ -439,13 +439,13 @@ if perf_df is not None and not perf_df.empty:
         recent = ticker_perf.head(10).copy()
         if "score_date" in recent.columns:
             recent["score_date"] = pd.to_datetime(recent["score_date"]).dt.strftime("%Y-%m-%d")
-        cols = [c for c in ["score_date", "composite_score", "signal", "beat_spy_10d", "beat_spy_30d", "fwd_return_10d", "fwd_return_30d"] if c in recent.columns]
+        cols = [c for c in ["score_date", "composite_score", "signal", "beat_spy_21d", "fwd_return_21d"] if c in recent.columns]
         if cols:
             st.dataframe(recent[cols].reset_index(drop=True), use_container_width=True, hide_index=True)
         else:
             st.dataframe(recent.head(5), use_container_width=True, hide_index=True)
     else:
-        st.info(f"No backtester accuracy rows for {selected_ticker} yet — typical for very recent signals (10d/30d windows haven't elapsed).")
+        st.info(f"No backtester accuracy rows for {selected_ticker} yet — typical for very recent signals (21d window hasn't elapsed).")
 else:
     st.caption("`score_performance` table not populated.")
 

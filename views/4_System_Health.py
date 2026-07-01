@@ -409,7 +409,7 @@ n_eod = len(eod_df) if eod_df is not None else 0
 volume_data = {
     "Dataset": [
         "Signals (investment_thesis)",
-        "Score Performance (10d/30d)",
+        "Score Performance (21d)",
         "Predictor Outcomes",
         "Trades (executed)",
         "EOD P&L (days)",
@@ -487,18 +487,13 @@ n_score_perf = table_counts.get("score_performance", 0)
 n_pred_outcomes = table_counts.get("predictor_outcomes", 0)
 
 conn = load_research_db()
-n_resolved_10d = 0
-n_resolved_30d = 0
+n_resolved_21d = 0
 if conn:
     try:
         row = conn.execute(
-            "SELECT COUNT(*) FROM score_performance WHERE return_10d IS NOT NULL"
+            "SELECT COUNT(*) FROM score_performance WHERE return_21d IS NOT NULL"
         ).fetchone()
-        n_resolved_10d = row[0] if row else 0
-        row = conn.execute(
-            "SELECT COUNT(*) FROM score_performance WHERE return_30d IS NOT NULL"
-        ).fetchone()
-        n_resolved_30d = row[0] if row else 0
+        n_resolved_21d = row[0] if row else 0
     except Exception:
         pass
 
@@ -531,17 +526,17 @@ if conn:
 maturity_data = [
     {
         "Optimizer": "Scoring weights",
-        "Metric": "10d resolved signals",
-        "Current": n_resolved_10d,
+        "Metric": "21d resolved signals",
+        "Current": n_resolved_21d,
         "Threshold": 30,
-        "Status": "Active" if n_resolved_10d >= 30 else "Blocked",
+        "Status": "Active" if n_resolved_21d >= 30 else "Blocked",
     },
     {
         "Optimizer": "Attribution analysis",
-        "Metric": "10d resolved signals",
-        "Current": n_resolved_10d,
+        "Metric": "21d resolved signals",
+        "Current": n_resolved_21d,
         "Threshold": 50,
-        "Status": "Active" if n_resolved_10d >= 50 else "Blocked",
+        "Status": "Active" if n_resolved_21d >= 50 else "Blocked",
     },
     {
         "Optimizer": "Predictor veto tuning",
@@ -665,9 +660,9 @@ for module_name, _ in health_modules:
     elif health is None:
         alerts.append(f"Module **{module_name}** has no health status (never run?)")
 
-if n_score_perf > 0 and n_resolved_10d < n_score_perf:
-    n_pending = n_score_perf - n_resolved_10d
-    alerts.append(f"{n_pending} score_performance rows awaiting 10d return resolution")
+if n_score_perf > 0 and n_resolved_21d < n_score_perf:
+    n_pending = n_score_perf - n_resolved_21d
+    alerts.append(f"{n_pending} score_performance rows awaiting 21d return resolution")
 
 if alerts:
     for alert in alerts:

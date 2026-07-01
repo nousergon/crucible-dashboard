@@ -113,18 +113,18 @@ class TestEvidenceSummary:
 class TestTrend:
     def test_trend_row(self):
         metrics = {
-            "simulation": {"sharpe_ratio": 1.4}, "accuracy_10d": 0.53,
-            "avg_alpha_10d": 0.006,
+            "simulation": {"sharpe_ratio": 1.4}, "accuracy_21d": 0.53,
+            "avg_alpha_21d": 0.006,
             "significance_observe": {"weight_result": _WEIGHT},  # 1 undefended
         }
         row = trend_row("2026-07-04", metrics)
-        assert row == {"date": "2026-07-04", "sharpe": 1.4, "accuracy_10d": 0.53,
-                       "avg_alpha_10d": 0.006, "n_undefended": 1}
+        assert row == {"date": "2026-07-04", "sharpe": 1.4, "accuracy_21d": 0.53,
+                       "avg_alpha_21d": 0.006, "n_undefended": 1}
 
     def test_build_trend_rows_sorted(self):
         per_date = {
-            "2026-07-11": {"accuracy_10d": 0.55},
-            "2026-07-04": {"accuracy_10d": 0.53},
+            "2026-07-11": {"accuracy_21d": 0.55},
+            "2026-07-04": {"accuracy_21d": 0.53},
         }
         rows = build_trend_rows(per_date)
         assert [r["date"] for r in rows] == ["2026-07-04", "2026-07-11"]  # oldest→newest

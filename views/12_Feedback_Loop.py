@@ -261,7 +261,7 @@ st.caption(
     "`scoring_weights_history/{date}.json` (producer: "
     "`alpha-engine-backtester/optimizer/weight_optimizer.py`). The quant "
     "vs qual sub-score balance is auto-tuned weekly based on which "
-    "sub-score correlates most with realized 10d/30d outperformance."
+    "sub-score correlates most with realized 21d outperformance."
 )
 
 current_weights = load_scoring_weights() or {}

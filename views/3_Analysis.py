@@ -177,12 +177,12 @@ with tab_accuracy:
             "has run and populated outcome data."
         )
     else:
-        beat_10d_col = "beat_spy_10d" if "beat_spy_10d" in perf_df.columns else None
-        populated_rows = int(perf_df[beat_10d_col].notna().sum()) if beat_10d_col else 0
+        beat_21d_col = "beat_spy_21d" if "beat_spy_21d" in perf_df.columns else None
+        populated_rows = int(perf_df[beat_21d_col].notna().sum()) if beat_21d_col else 0
 
         if populated_rows < 20:
             st.info(
-                f"Only {populated_rows} signals have 10d outcome data populated "
+                f"Only {populated_rows} signals have 21d outcome data populated "
                 f"(need ≥ 20 for meaningful accuracy stats). Charts will update as outcomes accrue."
             )
 
@@ -208,7 +208,7 @@ with tab_accuracy:
             else:
                 st.info("Portfolio P&L data not available for regime alpha analysis.")
 
-        st.markdown("**Alpha Distribution (10d Return vs SPY)**")
+        st.markdown("**Alpha Distribution (21d Return vs SPY)**")
         st.plotly_chart(make_alpha_distribution_chart(perf_df), use_container_width=True)
 
 
@@ -334,15 +334,11 @@ with tab_backtest:
         if metrics:
             sq_metrics = metrics.get("signal_quality", {})
             if sq_metrics:
-                s1, s2, s3, s4 = st.columns(4)
+                s1, s2 = st.columns(2)
                 with s1:
-                    st.metric("Accuracy 10d", format_pct(sq_metrics.get("accuracy_10d")))
+                    st.metric("Accuracy 21d", format_pct(sq_metrics.get("accuracy_21d")))
                 with s2:
-                    st.metric("Accuracy 30d", format_pct(sq_metrics.get("accuracy_30d")))
-                with s3:
-                    st.metric("Avg Alpha 10d", format_pct(sq_metrics.get("avg_alpha_10d")))
-                with s4:
-                    st.metric("Avg Alpha 30d", format_pct(sq_metrics.get("avg_alpha_30d")))
+                    st.metric("Avg Alpha 21d", format_pct(sq_metrics.get("avg_alpha_21d")))
         if signal_quality_df is not None and not signal_quality_df.empty:
             st.markdown("**Signal Quality Detail**")
             st.dataframe(signal_quality_df, use_container_width=True, hide_index=True)

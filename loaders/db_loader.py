@@ -137,8 +137,8 @@ def get_score_history(symbol: str) -> pd.DataFrame:
     Return score history rows for a single symbol from score_performance.
     """
     sql = """
-        SELECT score_date, score, beat_spy_10d, beat_spy_30d,
-               return_10d, return_30d, spy_10d_return, spy_30d_return
+        SELECT score_date, score, beat_spy_21d,
+               return_21d, spy_21d_return
         FROM score_performance
         WHERE symbol = ?
         ORDER BY score_date

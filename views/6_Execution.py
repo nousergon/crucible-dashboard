@@ -177,7 +177,7 @@ with tab_log:
             perf_df[perf_date_col] = pd.to_datetime(perf_df[perf_date_col]).dt.date.astype(str)
             if date_col:
                 filtered["_join_date"] = filtered[date_col].dt.date.astype(str)
-            perf_subset = perf_df[[perf_ticker_col, perf_date_col, "beat_spy_10d", "beat_spy_30d"]].rename(
+            perf_subset = perf_df[[perf_ticker_col, perf_date_col, "beat_spy_21d"]].rename(
                 columns={
                     perf_ticker_col: ticker_col,
                     perf_date_col: "_join_date",
@@ -189,8 +189,7 @@ with tab_log:
                     perf_subset, on=[ticker_col, "_join_date"], how="left"
                 )
                 non_enter_rows = filtered[~enter_mask].copy()
-                non_enter_rows["beat_spy_10d"] = None
-                non_enter_rows["beat_spy_30d"] = None
+                non_enter_rows["beat_spy_21d"] = None
                 filtered = pd.concat([enter_rows, non_enter_rows], ignore_index=True)
 
                 if date_col in filtered.columns:
@@ -202,7 +201,7 @@ with tab_log:
     st.subheader("Trade History")
 
     display_filtered = filtered.copy()
-    for col in ["beat_spy_10d", "beat_spy_30d"]:
+    for col in ["beat_spy_21d"]:
         if col in display_filtered.columns:
             display_filtered[col] = display_filtered[col].apply(_beat_icon)
     if "_join_date" in display_filtered.columns:
