@@ -1461,6 +1461,20 @@ def load_population_json() -> dict | None:
     return download_s3_json(_research_bucket(), _POPULATION_KEY)
 
 
+@st.cache_data(ttl=_ttl("research"))
+def load_distillation_corpus_stats() -> dict | None:
+    """Distillation SFT-corpus stats — deduped counts, teacher segregation,
+    per-task breakdown, growth history, and kill-gate trigger progress.
+
+    Written by crucible-research ``scripts/corpus_stats.py`` as a post-step of
+    each Saturday research run (config#1544). Returns None until the first
+    artifact exists (the panel graceful-degrades to an explainer).
+    """
+    return download_s3_json(
+        _research_bucket(), "decision_artifacts/distillation/corpus_stats/latest.json"
+    )
+
+
 @st.cache_data(ttl=_ttl("signals"))
 def load_order_book_summary(date_str: str) -> dict | None:
     """Load order_book_summary.json for a given date from the research bucket.

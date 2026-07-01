@@ -458,6 +458,7 @@ def _build_navigation():
                 url_path="analysis",
             ),
             page("host_eval_backtester.py", "Eval & Backtester", "⚖"),
+            page("43_Distillation_Corpus.py", "Distillation Corpus", "🔬"),
         ],
         "🩺 System & Ops": [
             page("host_system_health.py", "System Health", "🩺"),
