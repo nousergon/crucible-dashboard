@@ -594,6 +594,53 @@ def load_saturday_sf_watch(date_str: str) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
+# Backlog Groom runs (per-run artifact — config#1512 / console page follow-up)
+# ---------------------------------------------------------------------------
+
+_GROOM_RUNS_PREFIX = "groom/"
+
+
+@st.cache_data(ttl=_ttl("research"))
+def list_groom_run_keys(limit: int = 30) -> list[str]:
+    """Return the most recent groom run-artifact S3 keys, newest first.
+
+    Keys are ``groom/{date}/{run_id_or_hhmmss}.json`` — MULTIPLE per date
+    (the groom now runs 3x/day: 2 Sonnet mid/low-tier + 1 Opus high-tier).
+    Unlike the failure-driven Saturday SF Watch, an artifact is written on
+    EVERY run (success or failure) — an empty list means the artifact writer
+    hasn't shipped/run yet, not a healthy-steady-state signal.
+    """
+    bucket = _research_bucket()
+    try:
+        client = get_s3_client()
+        paginator = client.get_paginator("list_objects_v2")
+        keys: list[str] = []
+        for page in paginator.paginate(Bucket=bucket, Prefix=_GROOM_RUNS_PREFIX):
+            for obj in page.get("Contents", []):
+                k = obj.get("Key", "")
+                if k.endswith(".json"):
+                    keys.append(k)
+        keys.sort(reverse=True)  # ISO date + zero-padded HHMMSS/run-id sorts ~chronologically
+        return keys[:limit]
+    except Exception as e:
+        logger.error("Failed to list groom run keys: %s", e)
+        _record_s3_error(bucket, _GROOM_RUNS_PREFIX, type(e).__name__, str(e))
+        return []
+
+
+@st.cache_data(ttl=_ttl("research"))
+def load_groom_run(key: str) -> dict | None:
+    """Load a single groom run artifact (schema_version, run_start, model,
+    issue_filter, stop_reason, floor_fail, issues: [{repo, number, title,
+    priority, disposition, detail}], other_closed, other_prs, chunk_log).
+    Written by ``groom_driver.py::write_run_artifact`` — cross-referenced
+    against real gh state at write time, never a model self-report.
+    """
+    data = _fetch_s3_json(_research_bucket(), key)
+    return data if isinstance(data, dict) else None
+
+
+# ---------------------------------------------------------------------------
 # Saturday Integrity gate (Sat→Mon swallow safeguard — config#1227 §8 / #1244)
 # ---------------------------------------------------------------------------
 

@@ -10,6 +10,7 @@ render_host(
         ("System Health", "4_System_Health.py"),
         ("Pipeline Status", "25_Pipeline_Status.py"),
         ("Saturday SF Watch", "37_Saturday_SF_Watch.py"),
+        ("Backlog Groom", "42_Backlog_Groom.py"),
     ],
     key="host_system_health",
 )
