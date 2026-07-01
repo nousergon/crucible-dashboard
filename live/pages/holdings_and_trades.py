@@ -251,12 +251,16 @@ st.divider()
 
 st.markdown("### Recent Trades")
 
-if trades_df is None or trades_df.empty or "date" not in trades_df.columns:
+if trades_df is None or trades_df.empty or "created_at" not in trades_df.columns:
     st.info("No recent trades to display.")
     st.stop()
 
+# `date` is the NYSE trading_day the order acted on — strictly
+# backward-looking (DATE_CONVENTIONS.md), so a trade filled intraday today
+# is stamped with YESTERDAY's session. `created_at` (actual fill timestamp)
+# is what "recent" must window/sort/display on here.
 rt = trades_df.copy()
-rt["_date"] = pd.to_datetime(rt["date"]).dt.date
+rt["_date"] = pd.to_datetime(rt["created_at"], utc=True).dt.date
 recent_dates = sorted(rt["_date"].dropna().unique(), reverse=True)[:_RECENT_TRADES_WINDOW_DAYS]
 rt = rt[rt["_date"].isin(recent_dates)].sort_values("_date", ascending=False, kind="stable")
 
@@ -278,7 +282,7 @@ order_price = pd.to_numeric(rt.get("price_at_order"), errors="coerce")
 price_used = fill_price.fillna(order_price)
 value_num = shares_num * price_used
 
-date_col = pd.to_datetime(rt["date"]).dt.strftime("%Y-%m-%d")
+date_col = pd.to_datetime(rt["created_at"], utc=True).dt.strftime("%Y-%m-%d")
 
 display = pd.DataFrame({
     "Date": date_col.values,

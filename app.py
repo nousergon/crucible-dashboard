@@ -182,12 +182,16 @@ def _render_todays_activity(
             if pred.get("predicted_direction") == "DOWN" and (pred.get("prediction_confidence") or 0) >= veto_threshold:
                 vetoes += 1
 
-    # Trades executed today
+    # Trades executed today. `date` is the NYSE trading_day the order acted
+    # on — strictly backward-looking (DATE_CONVENTIONS.md), so a trade filled
+    # intraday today is stamped with YESTERDAY's session and never matches
+    # date.today() until after today's own close. `created_at` is the actual
+    # fill timestamp, so it's what "today" must compare against here.
     trades_today = 0
-    if trades_df is not None and not trades_df.empty and "date" in trades_df.columns:
+    if trades_df is not None and not trades_df.empty and "created_at" in trades_df.columns:
         trades_df = trades_df.copy()
-        trades_df["date"] = pd.to_datetime(trades_df["date"]).dt.date
-        trades_today = int((trades_df["date"] == date.today()).sum())
+        trades_df["created_at"] = pd.to_datetime(trades_df["created_at"], utc=True).dt.date
+        trades_today = int((trades_df["created_at"] == date.today()).sum())
 
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Entries Approved", approved)
