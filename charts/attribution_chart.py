@@ -8,27 +8,51 @@ import plotly.graph_objects as go
 
 def make_attribution_chart(attribution_data: dict) -> go.Figure:
     """
-    Horizontal bar chart of sub-score correlations with 10d and 30d outcomes.
+    Horizontal bar chart of sub-score correlations with the beat-SPY / return
+    21d outcomes.
 
     X: correlation coefficient (-1 to +1)
-    Y: technical, news, research
-    Two bars per sub-score: 10d and 30d correlation
+    Y: quant, qual
+    Two bars per sub-score: beat_spy_21d and return_21d correlation
 
-    attribution_data expected keys:
-        technical_10d, technical_30d,
-        news_10d, news_30d,
-        research_10d, research_30d
+    ``attribution_data`` is the raw ``analysis/attribution.py::compute_attribution``
+    output (crucible-backtester), written verbatim to ``attribution.json`` and
+    loaded as-is by this dashboard — a NESTED schema, not a flat one:
+
+        {
+            "status": "ok",
+            "correlations": {
+                "quant": {"beat_spy_21d": 0.12, "return_21d": 0.09, ...},
+                "qual": {"beat_spy_21d": ..., "return_21d": ..., ...},
+            },
+            "ranking_21d": ["qual", "quant"],
+            ...
+        }
+
+    (config#1456 / config#1481: the producer retired the 10d/30d horizons for
+    a single canonical 21d target in crucible-backtester#428; this chart was
+    previously reading a stale flat ``{technical,news,research}_{10d,30d}``
+    shape that never matched the real producer output, so every bar silently
+    defaulted to 0.0.)
     """
-    if not attribution_data:
+    if not attribution_data or attribution_data.get("status") != "ok":
         fig = go.Figure()
         fig.update_layout(title="Sub-Score Attribution — No data available")
         return fig
 
-    sub_scores = ["technical", "news", "research"]
-    labels = {"technical": "Technical", "news": "News", "research": "Research"}
+    correlations = attribution_data.get("correlations") or {}
 
-    corr_10d = [attribution_data.get(f"{s}_10d", 0.0) for s in sub_scores]
-    corr_30d = [attribution_data.get(f"{s}_30d", 0.0) for s in sub_scores]
+    sub_scores = ["quant", "qual"]
+    labels = {"quant": "Quant", "qual": "Qual"}
+
+    corr_beat_spy = [
+        (correlations.get(s) or {}).get("beat_spy_21d", 0.0) or 0.0
+        for s in sub_scores
+    ]
+    corr_return = [
+        (correlations.get(s) or {}).get("return_21d", 0.0) or 0.0
+        for s in sub_scores
+    ]
     y_labels = [labels[s] for s in sub_scores]
 
     def _bar_color(values):
@@ -39,28 +63,28 @@ def make_attribution_chart(attribution_data: dict) -> go.Figure:
     fig.add_trace(
         go.Bar(
             y=y_labels,
-            x=corr_10d,
-            name="10d Correlation",
+            x=corr_beat_spy,
+            name="beat_spy_21d Correlation",
             orientation="h",
-            marker_color=_bar_color(corr_10d),
+            marker_color=_bar_color(corr_beat_spy),
             opacity=0.85,
-            text=[f"{v:.3f}" for v in corr_10d],
+            text=[f"{v:.3f}" for v in corr_beat_spy],
             textposition="outside",
-            hovertemplate="<b>%{y}</b><br>10d Correlation: %{x:.4f}<extra></extra>",
+            hovertemplate="<b>%{y}</b><br>beat_spy_21d Correlation: %{x:.4f}<extra></extra>",
         )
     )
 
     fig.add_trace(
         go.Bar(
             y=y_labels,
-            x=corr_30d,
-            name="30d Correlation",
+            x=corr_return,
+            name="return_21d Correlation",
             orientation="h",
-            marker_color=_bar_color(corr_30d),
+            marker_color=_bar_color(corr_return),
             opacity=0.55,
-            text=[f"{v:.3f}" for v in corr_30d],
+            text=[f"{v:.3f}" for v in corr_return],
             textposition="outside",
-            hovertemplate="<b>%{y}</b><br>30d Correlation: %{x:.4f}<extra></extra>",
+            hovertemplate="<b>%{y}</b><br>return_21d Correlation: %{x:.4f}<extra></extra>",
         )
     )
 
