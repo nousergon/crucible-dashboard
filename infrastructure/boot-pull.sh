@@ -67,21 +67,21 @@ fi
 
 # Repos the micro needs at runtime. Order matters only for dependency
 # (alpha-engine-config first so other repos can reference it on pull).
-# robodashboard is the 3rd Streamlit service on this shared box; it has its own
-# merge-deploy GHA (the fast path) — boot-pull is its cross-repo safety net so a
-# failed GHA run still gets code synced (and the app restarted) within ≤1 day.
+# robodashboard (the prior 3rd Streamlit service on this box) was decommissioned
+# 2026-07-01 in favor of Metron — see nousergon/metron-ops#119. Metron has its own
+# merge-deploy GHA but is NOT yet in this safety-net loop (its pip-editable +
+# npm-build install shape doesn't fit this REPOS-array pattern) — tracked as a
+# follow-up, not silently dropped.
 REPOS=(
     /home/ec2-user/alpha-engine-config
     /home/ec2-user/alpha-engine-data
     /home/ec2-user/alpha-engine-research
     /home/ec2-user/alpha-engine-dashboard
-    /home/ec2-user/robodashboard
     /home/ec2-user/flow-doctor
 )
 
 PULL_FAILURES=0
 FAILED_REPOS=()
-ROBODASH_CHANGED=0
 
 for repo in "${REPOS[@]}"; do
     if [ ! -d "$repo/.git" ]; then
@@ -95,11 +95,6 @@ for repo in "${REPOS[@]}"; do
     if git fetch origin >> "$LOG" 2>&1 && git reset --hard origin/main >> "$LOG" 2>&1; then
         NEW_SHA=$(git rev-parse HEAD 2>/dev/null || echo "none")
         log "OK   $repo — $(git log --oneline -1)"
-        # Track robodashboard code changes so we can restart its Streamlit app
-        # below (its unit files aren't in this repo's systemd sync section).
-        if [ "$repo" = "/home/ec2-user/robodashboard" ] && [ "$PREV_SHA" != "$NEW_SHA" ]; then
-            ROBODASH_CHANGED=1
-        fi
 
         # Only run full pip install if requirements.txt actually changed — pip
         # is slow on a 1GB instance and runs every day even when no deps moved.
@@ -244,20 +239,6 @@ if [ "$CONFIGS_CHANGED" -eq 1 ]; then
     sleep 2
     sudo systemctl restart nous-ergon-live 2>> "$LOG" || log "WARN restart nous-ergon-live failed"
     log "RESTART dashboard + nous-ergon-live (config-driven)"
-fi
-
-# ── Restart robodashboard's Streamlit app if its code changed this run ──────
-# Safety net for robodashboard's own merge-deploy GHA (the fast path that
-# restarts on every merge). If that GHA failed, the reset --hard above still
-# synced robodashboard's code within ≤1 day; restart the long-running Streamlit
-# service so it actually picks it up. Its unit files are owned by robodashboard's
-# own deploy, so they are NOT in the systemd-sync section above; the
-# snapshot timer re-reads code per run, so only this service needs a restart.
-# robodashboard.service's ExecStartPre re-hydrates its secrets/config, so the
-# restart is self-contained. Best-effort (WARN-only) like the others.
-if [ "$ROBODASH_CHANGED" -eq 1 ]; then
-    sudo systemctl restart robodashboard 2>> "$LOG" || log "WARN restart robodashboard failed"
-    log "RESTART robodashboard (code-driven safety net)"
 fi
 
 # ── Report failures to flow-doctor if any occurred ──────────────────────────
