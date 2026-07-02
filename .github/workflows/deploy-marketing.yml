@@ -1,6 +1,6 @@
 name: deploy-marketing
 
-# Deploys the four Astro static sites to their Cloudflare Pages projects on
+# Deploys the six Astro static sites to their Cloudflare Pages projects on
 # push to main — the durable replacement for the CF git-integration, which was
 # observed silently NOT firing on merge (config#1317: nousergon.ai served stale
 # copy for a week after a merge because no CF build triggered). Deploy lives in
@@ -11,7 +11,7 @@ name: deploy-marketing
 #   marketing-apex   -> nousergon-marketing -> nousergon.ai
 #   marketing        -> nousergon-crucible  -> crucible.nousergon.ai
 #   marketing-metron -> nousergon-metron    -> metron.nousergon.ai
-#   marketing-vires  -> nousergon-vires     -> vires.nousergon.ai
+#   marketing-vires  -> nousergon-vires     -> fitness.nousergon.ai (vires.nousergon.ai = the live Vires APP, never attach it here)
 #   marketing-finance-> nousergon-finance   -> finance.nousergon.ai
 #   marketing-dev    -> nousergon-dev       -> dev.nousergon.ai
 #
