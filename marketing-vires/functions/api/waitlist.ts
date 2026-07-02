@@ -71,7 +71,7 @@ function confirmationBody(): { text: string; html: string } {
     "nothing else. No newsletter, no drip, no sharing your address.",
     "",
     "— The Vires team",
-    "https://vires.nousergon.ai",
+    "https://fitness.nousergon.ai",
   ].join("\n");
 
   const html = [
@@ -80,7 +80,7 @@ function confirmationBody(): { text: string; html: string } {
     "<p>Vires is opening a small private beta. We'll email you when it opens —",
     "nothing else. No newsletter, no drip, no sharing your address.</p>",
     '<p style="color:#666">— The Vires team<br>',
-    '<a href="https://vires.nousergon.ai" style="color:#059669">vires.nousergon.ai</a></p>',
+    '<a href="https://fitness.nousergon.ai" style="color:#059669">fitness.nousergon.ai</a></p>',
     "</div>",
   ].join("\n");
 

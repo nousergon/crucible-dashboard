@@ -1,6 +1,11 @@
 # marketing-vires/ — Vires product landing page
 
-Source for **`vires.nousergon.ai`** — the Vires marketing landing + **beta waitlist**.
+Source for **`fitness.nousergon.ai`** — the Vires marketing landing + **beta waitlist**
+(the fitness *category* URL serves its single product's page for now).
+**`vires.nousergon.ai` is NOT this site** — it is an A record to the EC2 box running
+the actual Vires app (Brian's installed PWA; since 2026-06-27). Do not attach
+vires.nousergon.ai to this Pages project: doing so hijacks the app URL at the edge
+(happened briefly 2026-07-02).
 Sibling of `marketing/` (Crucible), `marketing-apex/` (lab landing), and
 `marketing-metron/` (Metron) — same Astro 6 + Tailwind 4 + Biome baseline, and the
 waitlist capture mirrors `marketing-metron/` exactly (D1 + Pages Function + optional

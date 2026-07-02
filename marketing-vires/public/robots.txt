@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://vires.nousergon.ai/sitemap-index.xml
+Sitemap: https://fitness.nousergon.ai/sitemap-index.xml
