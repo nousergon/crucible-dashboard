@@ -1,38 +1,61 @@
 ---
 import Base from '../layouts/Base.astro';
 
+// Status vocabulary (keep this small): 'Live' | 'Private beta' | 'In development'
+// | 'Open source'. Every status claim must be true of the product TODAY.
+const statusStyles: Record<string, string> = {
+  Live: 'text-emerald-400 border-emerald-400/30',
+  'Private beta': 'text-sky-400 border-sky-400/30',
+  'In development': 'text-amber-400/90 border-amber-400/30',
+  'Open source': 'text-zinc-400 border-white/15',
+};
+
 const products = [
   {
     name: 'Crucible',
     tag: 'Experiment harness',
+    status: 'Live',
     href: 'https://crucible.nousergon.ai/',
     featured: true,
-    body: 'A harness for rigorous AI/ML experiments in finance. An equity research-and-trading system — multi-agent research, ML prediction, risk-gated execution, weekly training and evaluation — instrumented end-to-end from signal to P&L, with a live dashboard.',
+    body: 'A harness for rigorous AI/ML experiments in live markets — multi-agent research, ML prediction, risk-gated execution, evaluated end-to-end from signal to P&L on a public dashboard.',
     cta: 'Explore Crucible →',
   },
   {
     name: 'Metron',
     tag: 'Portfolio analytics',
+    status: 'Private beta',
     href: 'https://metron.nousergon.ai/',
     featured: false,
-    body: 'Multi-broker portfolio analytics: positions, performance, risk, attribution, and tax views across accounts and currencies.',
-    cta: 'About Metron →',
+    body: 'Your whole portfolio in one place — positions, performance, income, and tax across brokers and accounts. Read-only.',
+    cta: 'Join the Metron beta →',
+  },
+  {
+    name: 'Telos',
+    tag: 'Tax engine',
+    status: 'In development',
+    href: 'https://github.com/nousergon/telos',
+    featured: false,
+    body: 'A deterministic personal tax engine — every computed line traceable to its inputs and its primary-source citation.',
+    cta: 'Telos on GitHub →',
   },
 ];
 
 const tools = [
   {
     name: 'mnemon',
+    status: 'Open source',
     href: 'https://github.com/nousergon/mnemon',
     body: 'Persistent memory for AI assistants (MCP server).',
   },
   {
     name: 'krepis',
+    status: 'Open source',
     href: 'https://github.com/nousergon/krepis',
     body: "Foundation library — shared primitives for the lab's services.",
   },
   {
     name: 'flow-doctor',
+    status: 'Open source',
     href: 'https://github.com/nousergon/flow-doctor',
     body: 'Pipeline observability: decision traces, crash capture, data-quality alerts.',
   },
@@ -41,11 +64,13 @@ const tools = [
 const apps = [
   {
     name: 'Vires',
+    status: 'Private beta',
     href: 'https://vires.nousergon.ai/',
-    body: 'Strength training with an adaptive AI coach — log lifts, build routines, train to your goals. Private beta.',
+    body: 'Strength training with an adaptive AI coach — log lifts, build routines, train to your goals.',
   },
   {
     name: 'morning-signal',
+    status: 'Open source',
     href: 'https://github.com/nousergon/morning-signal',
     body: 'Daily news brief — researched, written, and narrated to audio.',
   },
@@ -66,7 +91,7 @@ const apps = [
 
   <section class="max-w-5xl mx-auto px-6 pb-10">
     <h2 class="text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-3">
-      Markets
+      Finance
     </h2>
     <div class="grid grid-cols-1 gap-4">
       {
@@ -81,11 +106,16 @@ const apps = [
                 : 'border-white/10 bg-white/[0.03]'
             }`}
           >
-            <div class="flex items-baseline justify-between gap-4 mb-2">
+            <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1 mb-2">
               <span class="text-base font-semibold text-zinc-100 tracking-wide uppercase">
                 {p.name}
               </span>
-              <span class="text-xs font-semibold uppercase tracking-wider text-sky-400">
+              <span
+                class={`rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${statusStyles[p.status]}`}
+              >
+                {p.status}
+              </span>
+              <span class="ml-auto text-xs font-semibold uppercase tracking-wider text-sky-400">
                 {p.tag}
               </span>
             </div>
@@ -110,7 +140,14 @@ const apps = [
             rel="noopener noreferrer"
             class="block rounded-lg border border-white/10 bg-white/[0.02] p-5 transition hover:bg-white/[0.05]"
           >
-            <div class="text-sm font-semibold text-zinc-100 mb-1.5">{t.name}</div>
+            <div class="flex flex-wrap items-baseline gap-x-2.5 gap-y-1 mb-1.5">
+              <span class="text-sm font-semibold text-zinc-100">{t.name}</span>
+              <span
+                class={`rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${statusStyles[t.status]}`}
+              >
+                {t.status}
+              </span>
+            </div>
             <p class="text-sm text-zinc-400 leading-relaxed">{t.body}</p>
           </a>
         ))
@@ -131,7 +168,14 @@ const apps = [
             rel="noopener noreferrer"
             class="block rounded-lg border border-white/10 bg-white/[0.02] p-5 transition hover:bg-white/[0.05]"
           >
-            <div class="text-sm font-semibold text-zinc-100 mb-1.5">{t.name}</div>
+            <div class="flex flex-wrap items-baseline gap-x-2.5 gap-y-1 mb-1.5">
+              <span class="text-sm font-semibold text-zinc-100">{t.name}</span>
+              <span
+                class={`rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${statusStyles[t.status]}`}
+              >
+                {t.status}
+              </span>
+            </div>
             <p class="text-sm text-zinc-400 leading-relaxed">{t.body}</p>
           </a>
         ))
