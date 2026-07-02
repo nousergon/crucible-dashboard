@@ -17,6 +17,7 @@ on:
       - marketing-metron/**
       - marketing-vires/**
       - marketing-finance/**
+      - marketing-dev/**
       - blog/**
       - .github/workflows/marketing-ci.yml
   push:
@@ -27,6 +28,7 @@ on:
       - marketing-metron/**
       - marketing-vires/**
       - marketing-finance/**
+      - marketing-dev/**
       - blog/**
       - .github/workflows/marketing-ci.yml
   workflow_dispatch:
@@ -38,7 +40,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        site: [marketing, marketing-apex, marketing-metron, marketing-vires, marketing-finance]
+        site: [marketing, marketing-apex, marketing-metron, marketing-vires, marketing-finance, marketing-dev]
     defaults:
       run:
         working-directory: ${{ matrix.site }}
