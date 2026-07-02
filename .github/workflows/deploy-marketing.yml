@@ -1,6 +1,6 @@
 name: deploy-marketing
 
-# Deploys the three Astro static sites to their Cloudflare Pages projects on
+# Deploys the four Astro static sites to their Cloudflare Pages projects on
 # push to main — the durable replacement for the CF git-integration, which was
 # observed silently NOT firing on merge (config#1317: nousergon.ai served stale
 # copy for a week after a merge because no CF build triggered). Deploy lives in
@@ -11,10 +11,21 @@ name: deploy-marketing
 #   marketing-apex   -> nousergon-marketing -> nousergon.ai
 #   marketing        -> nousergon-crucible  -> crucible.nousergon.ai
 #   marketing-metron -> nousergon-metron    -> metron.nousergon.ai
+#   marketing-vires  -> nousergon-vires     -> vires.nousergon.ai
+#
+# IMPORTANT: the deploy step runs INSIDE each site directory (workingDirectory)
+# and deploys `dist` as a relative path. `wrangler pages deploy` only bundles a
+# `functions/` directory it finds in the CURRENT WORKING DIRECTORY — the original
+# repo-root `pages deploy <site>/dist` form silently shipped the static site
+# WITHOUT the Pages Functions, which broke the Metron waitlist API (POST /api/
+# waitlist → 405) from 2026-06-28 until 2026-07-02. Sites without a functions/
+# dir are unaffected either way; never revert to the repo-root form.
 #
 # Triggers:
-#   push:main          -> deploy ONLY the sites whose paths changed (paths-filter)
-#   workflow_dispatch  -> force-deploy ALL three (use to publish a backlog of
+#   push:main          -> deploy the sites whose paths changed (paths-filter).
+#                         A change to THIS workflow file redeploys ALL sites —
+#                         deploy-logic fixes must reach every project.
+#   workflow_dispatch  -> force-deploy ALL sites (use to publish a backlog of
 #                         already-merged copy, or to validate the pipeline)
 #
 # Requires repo secret CLOUDFLARE_API_TOKEN (Cloudflare Pages: Edit) and repo
@@ -28,6 +39,7 @@ on:
       - marketing/**
       - marketing-apex/**
       - marketing-metron/**
+      - marketing-vires/**
       - blog/**
       - .github/workflows/deploy-marketing.yml
   workflow_dispatch:
@@ -47,20 +59,30 @@ jobs:
       apex: ${{ steps.decide.outputs.apex }}
       crucible: ${{ steps.decide.outputs.crucible }}
       metron: ${{ steps.decide.outputs.metron }}
+      vires: ${{ steps.decide.outputs.vires }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
         id: filter
         if: github.event_name == 'push'
         with:
+          # Every filter includes this workflow file: a deploy-logic change must
+          # redeploy every site (that's also how the 2026-07 functions-bundling
+          # fix reached the already-merged metron copy).
           filters: |
             apex:
               - 'marketing-apex/**'
               - 'blog/**'
+              - '.github/workflows/deploy-marketing.yml'
             crucible:
               - 'marketing/**'
+              - '.github/workflows/deploy-marketing.yml'
             metron:
               - 'marketing-metron/**'
+              - '.github/workflows/deploy-marketing.yml'
+            vires:
+              - 'marketing-vires/**'
+              - '.github/workflows/deploy-marketing.yml'
       - name: Decide (force-all on manual dispatch)
         id: decide
         run: |
@@ -68,10 +90,12 @@ jobs:
             echo "apex=true"     >> "$GITHUB_OUTPUT"
             echo "crucible=true" >> "$GITHUB_OUTPUT"
             echo "metron=true"   >> "$GITHUB_OUTPUT"
+            echo "vires=true"    >> "$GITHUB_OUTPUT"
           else
             echo "apex=${{ steps.filter.outputs.apex }}"         >> "$GITHUB_OUTPUT"
             echo "crucible=${{ steps.filter.outputs.crucible }}" >> "$GITHUB_OUTPUT"
             echo "metron=${{ steps.filter.outputs.metron }}"     >> "$GITHUB_OUTPUT"
+            echo "vires=${{ steps.filter.outputs.vires }}"       >> "$GITHUB_OUTPUT"
           fi
 
   deploy:
@@ -91,6 +115,9 @@ jobs:
           - site: marketing-metron
             project: nousergon-metron
             changed: ${{ needs.changes.outputs.metron }}
+          - site: marketing-vires
+            project: nousergon-vires
+            changed: ${{ needs.changes.outputs.vires }}
     steps:
       - name: Checkout
         if: matrix.changed == 'true'
@@ -117,7 +144,11 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy ${{ matrix.site }}/dist --project-name=${{ matrix.project }} --branch=main
+          # Run INSIDE the site dir: wrangler only bundles functions/ from the
+          # cwd (see header comment — the repo-root form dropped the Metron
+          # waitlist Pages Function). `dist` is relative to workingDirectory.
+          workingDirectory: ${{ matrix.site }}
+          command: pages deploy dist --project-name=${{ matrix.project }} --branch=main
 
   notify-main-failure:
     needs: [deploy]
