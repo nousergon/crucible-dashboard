@@ -67,7 +67,7 @@ function confirmationBody(): { text: string; html: string } {
   const text = [
     "You're on the Vires beta waitlist.",
     "",
-    "Vires is in a small private beta. We'll email you when there's a spot —",
+    "Vires is opening a small private beta. We'll email you when it opens —",
     "nothing else. No newsletter, no drip, no sharing your address.",
     "",
     "— The Vires team",
@@ -77,7 +77,7 @@ function confirmationBody(): { text: string; html: string } {
   const html = [
     '<div style="font-family:system-ui,-apple-system,sans-serif;font-size:15px;line-height:1.6;color:#1a1a1a">',
     "<p>You're on the <strong>Vires</strong> beta waitlist.</p>",
-    "<p>Vires is in a small private beta. We'll email you when there's a spot —",
+    "<p>Vires is opening a small private beta. We'll email you when it opens —",
     "nothing else. No newsletter, no drip, no sharing your address.</p>",
     '<p style="color:#666">— The Vires team<br>',
     '<a href="https://vires.nousergon.ai" style="color:#059669">vires.nousergon.ai</a></p>',

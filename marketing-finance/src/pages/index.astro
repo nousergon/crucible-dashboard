@@ -1,0 +1,189 @@
+---
+import '../styles/global.css';
+
+const SITE_URL = 'https://finance.nousergon.ai';
+const title = 'Finance · Nous Ergon';
+const description =
+  'Finance products from Nous Ergon, an applied AI lab: Metron portfolio analytics (beta waitlist open), the Crucible experiment harness for AI/ML research in live markets, and the Telos deterministic tax engine.';
+
+// Cloudflare Web Analytics beacon token (privacy-first, no cookies). Injected at
+// build time via PUBLIC_CF_ANALYTICS_TOKEN; the beacon is omitted when unset.
+const analyticsToken = import.meta.env.PUBLIC_CF_ANALYTICS_TOKEN;
+
+// Listed in likely release order. Status vocabulary is deliberately small and every
+// claim must be true TODAY: nothing here is monetized yet, so nothing is "Live" —
+// 'Beta waitlist open' steers to the product page that captures the email.
+const statusStyles: Record<string, string> = {
+  'Beta waitlist open': 'text-emerald-400 border-emerald-400/30',
+  'In development': 'text-amber-400/90 border-amber-400/30',
+};
+
+const products = [
+  {
+    name: 'Metron',
+    tag: 'Portfolio analytics',
+    status: 'Beta waitlist open',
+    href: 'https://metron.nousergon.ai/',
+    body: 'Your whole portfolio in one place — positions, performance, income, and tax across brokers and accounts. Read-only.',
+    cta: 'Join the Metron waitlist →',
+  },
+  {
+    name: 'Crucible',
+    tag: 'Experiment harness',
+    status: 'In development',
+    href: 'https://crucible.nousergon.ai/',
+    body: 'A harness for rigorous AI/ML experiments in live markets — multi-agent research, ML prediction, risk-gated execution, evaluated end-to-end from signal to P&L on a public dashboard.',
+    cta: 'Explore Crucible →',
+  },
+  {
+    name: 'Telos',
+    tag: 'Tax engine',
+    status: 'In development',
+    href: 'https://github.com/nousergon/telos',
+    body: 'A deterministic personal tax engine — every computed line traceable to its inputs and its primary-source citation.',
+    cta: 'Telos on GitHub →',
+  },
+];
+
+const jsonLd = {
+  '@context': 'https://schema.org',
+  '@graph': [
+    {
+      '@type': 'Organization',
+      '@id': 'https://nousergon.ai#organization',
+      name: 'Nous Ergon',
+      url: 'https://nousergon.ai',
+    },
+    {
+      '@type': 'WebSite',
+      '@id': `${SITE_URL}#website`,
+      url: SITE_URL,
+      name: 'Nous Ergon Finance',
+      description,
+      publisher: { '@id': 'https://nousergon.ai#organization' },
+      inLanguage: 'en-US',
+    },
+  ],
+};
+---
+
+<!doctype html>
+<html lang="en" class="bg-black text-zinc-200 antialiased">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/favicon-192.png" />
+    <link rel="icon" type="image/png" sizes="512x512" href="/favicon-512.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <link rel="canonical" href={SITE_URL} />
+    <meta name="generator" content={Astro.generator} />
+    <meta name="description" content={description} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Nous Ergon" />
+    <meta property="og:url" content={SITE_URL} />
+    <meta name="twitter:card" content="summary_large_image" />
+    <title>{title}</title>
+    <script is:inline type="application/ld+json" set:html={JSON.stringify(jsonLd)} />
+    {
+      analyticsToken && (
+        <script
+          is:inline
+          defer
+          src="https://static.cloudflareinsights.com/beacon.min.js"
+          data-cf-beacon={JSON.stringify({ token: analyticsToken })}
+        />
+      )
+    }
+  </head>
+  <body class="min-h-screen flex flex-col font-sans">
+    <main class="flex-1">
+      <!-- Hero -->
+      <section class="px-6 pt-16 pb-10 md:pt-20 md:pb-12">
+        <div class="max-w-2xl mx-auto flex flex-col items-center text-center">
+          <span class="text-xs font-semibold uppercase tracking-[0.22em] text-zinc-500">
+            Nous Ergon
+          </span>
+          <h1 class="mt-3 text-2xl md:text-4xl font-semibold tracking-tight text-zinc-100 text-balance">
+            Finance
+          </h1>
+          <p class="mt-5 text-sm md:text-base text-zinc-400 leading-relaxed max-w-xl text-pretty">
+            AI systems for markets, portfolios, and tax &mdash; built and run by an applied AI
+            lab, instrumented so every claim is verifiable.
+          </p>
+          <nav
+            class="mt-6 flex flex-wrap items-center justify-center gap-x-7 gap-y-2 text-[13px] tracking-[0.06em] uppercase text-zinc-400"
+            aria-label="Primary"
+          >
+            <a
+              href="https://nousergon.ai/"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="hover:text-zinc-100 transition"
+            >
+              Home
+            </a>
+          </nav>
+        </div>
+      </section>
+
+      <!-- Products, in likely release order -->
+      <section class="px-6 py-10 border-t border-white/10">
+        <div class="max-w-3xl mx-auto grid grid-cols-1 gap-4">
+          {
+            products.map((p) => (
+              <a
+                href={p.href}
+                target="_blank"
+                rel="noopener noreferrer"
+                class="block rounded-lg border border-white/10 bg-white/[0.03] p-6 transition hover:bg-white/[0.05]"
+              >
+                <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1 mb-2">
+                  <span class="text-base font-semibold text-zinc-100 tracking-wide uppercase">
+                    {p.name}
+                  </span>
+                  <span
+                    class={`rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${statusStyles[p.status]}`}
+                  >
+                    {p.status}
+                  </span>
+                  <span class="ml-auto text-xs font-semibold uppercase tracking-wider text-sky-400">
+                    {p.tag}
+                  </span>
+                </div>
+                <p class="text-sm text-zinc-300 leading-relaxed mb-3">{p.body}</p>
+                <span class="text-sm text-sky-400">{p.cta}</span>
+              </a>
+            ))
+          }
+        </div>
+      </section>
+    </main>
+
+    <footer class="border-t border-white/10">
+      <div class="max-w-5xl mx-auto px-6 py-8 text-xs text-zinc-500">
+        <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+          <div>
+            <a
+              href="https://nousergon.ai/"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="text-zinc-400 hover:text-zinc-100 transition"
+            >
+              Nous Ergon
+            </a>
+            &mdash; an applied AI lab
+            &middot;
+            <a href="mailto:nous@nousergon.ai" class="text-zinc-400 hover:text-zinc-100 transition">
+              nous@nousergon.ai
+            </a>
+          </div>
+          <div class="text-zinc-600">&nu;&omicron;&upsilon;&sigmaf; &epsilon;&rho;&gamma;&omicron;&nu;</div>
+        </div>
+        <p class="mt-4 text-zinc-600">Software and research &mdash; not investment or tax advice.</p>
+      </div>
+    </footer>
+  </body>
+</html>
