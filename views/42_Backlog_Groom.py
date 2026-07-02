@@ -94,6 +94,40 @@ with col_meta:
         f"Stop reason: {data.get('stop_reason', '—')}"
     )
 
+# ── Budget vs consumed (config#1569; schema_version >= 2 only — older runs ──
+# never captured these fields, so soft_limit_min is 0/absent for them) ───────
+if data.get("schema_version", 1) >= 2 and data.get("soft_limit_min"):
+    soft_limit = data["soft_limit_min"]
+    elapsed = data.get("elapsed_min", 0)
+    engaged = data.get("engaged", 0)
+    floor = data.get("floor", 0)
+    pct_used = (elapsed / soft_limit * 100) if soft_limit else 0.0
+    bcol1, bcol2, bcol3 = st.columns(3)
+    with bcol1:
+        st.metric("Soft budget used", f"{elapsed}/{soft_limit} min", f"{pct_used:.0f}%")
+    with bcol2:
+        st.metric(
+            "Engaged / floor", f"{engaged} / {floor}",
+            help="Issues dispositioned (closed/PR'd/commented) this run vs the fail-loud "
+                 "floor below which a budget+time-remaining stop is flagged as a "
+                 "self-taper (config#1374, engagement metric per config#1382/#1564).",
+        )
+    with bcol3:
+        st.metric("Queue coverage", f"{data.get('processed', len(issues))}/{data.get('total_issues', len(issues))}")
+    if not data.get("floor_fail") and elapsed < soft_limit:
+        st.caption(
+            f"Finished {soft_limit - elapsed} min under budget with stop reason starting "
+            f"\"{(data.get('stop_reason') or '')[:40]}...\" — **this is expected, not a bug**, "
+            "when the queue drains before the soft deadline (a small/clean backlog is cheap "
+            "to fully disposition). Only a 🟠 floor-breach below is a self-taper signal."
+        )
+else:
+    st.caption(
+        "🛈 This run predates budget-tracking (schema_version "
+        f"{data.get('schema_version', 1)}, pre-2026-07-02) — no soft-budget-vs-consumed "
+        "data was captured for it."
+    )
+
 tiles = st.columns(5)
 with tiles[0]:
     st.metric("Queued issues", len(issues))

@@ -117,3 +117,14 @@ class TestNavRegistration:
         assert "detail" in src
         assert "other_closed" in src
         assert "other_prs" in src
+
+    def test_page_surfaces_budget_vs_consumed_fields(self):
+        # config#1569: soft_limit_min/elapsed_min/engaged/floor were added to the
+        # artifact schema (schema_version 2, alpha-engine-config PR #1570) so the
+        # console can answer "why didn't this run use its full soft budget"
+        # without opening the linked GitHub groom-digest issue.
+        src = (REPO_ROOT / "views" / "42_Backlog_Groom.py").read_text()
+        assert "soft_limit_min" in src
+        assert "elapsed_min" in src
+        assert "schema_version" in src
+        assert "engaged" in src
