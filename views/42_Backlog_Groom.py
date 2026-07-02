@@ -68,6 +68,49 @@ if not keys:
     )
     st.stop()
 
+# ── Run history — one summary row per recent run (2026-07-02 operator ask:
+# see the digest + a per-run summary WITHOUT opening GitHub). Loaders are
+# @st.cache_data'd per key, so this fans out to at most _HISTORY_N cached S3
+# GETs and re-renders free within the TTL. ──────────────────────────────────
+_HISTORY_N = 12
+_DIGEST_ISSUE_URL = "https://github.com/nousergon/alpha-engine-config/issues/{n}"
+history_rows = []
+for k in keys[:_HISTORY_N]:
+    run = load_groom_run(k)
+    if not run:
+        continue
+    run_issues = run.get("issues") or []
+    counts = {d: sum(1 for i in run_issues if i.get("disposition") == d)
+              for d in ("closed", "pr_opened", "commented", "untouched")}
+    soft = run.get("soft_limit_min") or 0
+    digest_n = run.get("digest_issue") or 0
+    history_rows.append({
+        "Run": _run_label(k),
+        "Tier": run.get("issue_filter", "—"),
+        "Outcome": "🟠 floor breach" if run.get("floor_fail") else "✅ ok",
+        "Stop reason": (run.get("stop_reason") or "—")[:60],
+        "Coverage": f"{run.get('processed', len(run_issues))}/{run.get('total_issues', len(run_issues))}",
+        "✅ closed": counts["closed"],
+        "🔧 PRs": counts["pr_opened"],
+        "💬 comm.": counts["commented"],
+        "⚠️ unt.": counts["untouched"],
+        "Budget (min)": f"{run.get('elapsed_min') or 0}/{soft}" if soft else "—",
+        "Digest": _DIGEST_ISSUE_URL.format(n=digest_n) if digest_n else None,
+    })
+
+st.subheader("Run history")
+if history_rows:
+    st.dataframe(
+        pd.DataFrame(history_rows),
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Digest": st.column_config.LinkColumn("Digest", display_text=r".*/(\d+)$"),
+        },
+    )
+else:
+    st.caption("No readable run artifacts in the recent window.")
+
 col_sel, col_meta = st.columns([1, 3])
 with col_sel:
     selected_key = st.selectbox(
@@ -153,6 +196,29 @@ if n_untouched:
         "no PR, no comment) — coverage is supposed to be mandatory; an "
         "untouched issue here means it hit the re-queue attempt cap without "
         "ever being dispositioned. Worth checking why."
+    )
+
+# ── Run digest (schema_version >= 3 embeds the finalized digest verbatim, ──
+# written by groom_driver.py at the same moment it finalizes the GitHub
+# groom-digest issue — same driver-computed content, zero GitHub API
+# dependency for the console) ────────────────────────────────────────────────
+st.subheader("Run digest")
+digest_md = data.get("digest_markdown") or ""
+digest_issue = data.get("digest_issue") or 0
+if digest_issue:
+    st.caption(
+        f"Primary record: [alpha-engine-config#{digest_issue}]"
+        f"({_DIGEST_ISSUE_URL.format(n=digest_issue)})"
+    )
+if digest_md:
+    with st.expander(data.get("digest_title") or "Digest", expanded=True):
+        st.markdown(digest_md)
+else:
+    st.caption(
+        "🛈 This run predates digest embedding in the artifact (schema_version "
+        f"{data.get('schema_version', 1)}, pre-2026-07-02) — see the "
+        "`groom-digest` GitHub issues on `alpha-engine-config` for its "
+        "narrative record."
     )
 
 # ── Per-issue disposition table ─────────────────────────────────────────────
