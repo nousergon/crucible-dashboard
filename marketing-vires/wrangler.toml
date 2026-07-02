@@ -1,0 +1,13 @@
+# Cloudflare Pages config for the Vires marketing site (direct-upload project
+# `nousergon-vires`). Declares the D1 binding the waitlist Pages Function uses and
+# the Astro build output dir, so deploys are just `npx wrangler pages deploy` (no args).
+name = "nousergon-vires"
+compatibility_date = "2024-11-06"
+pages_build_output_dir = "./dist"
+
+# Waitlist store — bound as env.WAITLIST_DB in functions/api/waitlist.ts.
+# database_id is the live `vires-waitlist` D1 (region WNAM).
+[[d1_databases]]
+binding = "WAITLIST_DB"
+database_name = "vires-waitlist"
+database_id = "27de550b-f47d-4b76-89cf-c94b26aa79c6"

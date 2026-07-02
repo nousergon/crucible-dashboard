@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://vires.nousergon.ai/sitemap-index.xml
