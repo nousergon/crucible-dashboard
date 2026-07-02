@@ -106,18 +106,25 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # has_functions: sites with a functions/ dir get a post-deploy probe of
+          # the waitlist API — the guard against the silent static-only-ship bug
+          # class (metron 405 outage, 2026-06-28 → 2026-07-02).
           - site: marketing-apex
             project: nousergon-marketing
             changed: ${{ needs.changes.outputs.apex }}
+            has_functions: false
           - site: marketing
             project: nousergon-crucible
             changed: ${{ needs.changes.outputs.crucible }}
+            has_functions: false
           - site: marketing-metron
             project: nousergon-metron
             changed: ${{ needs.changes.outputs.metron }}
+            has_functions: true
           - site: marketing-vires
             project: nousergon-vires
             changed: ${{ needs.changes.outputs.vires }}
+            has_functions: true
     steps:
       - name: Checkout
         if: matrix.changed == 'true'
@@ -149,6 +156,41 @@ jobs:
           # waitlist Pages Function). `dist` is relative to workingDirectory.
           workingDirectory: ${{ matrix.site }}
           command: pages deploy dist --project-name=${{ matrix.project }} --branch=main
+
+      # Post-deploy smoke probe against the production alias (<project>.pages.dev
+      # serves the main-branch deployment; probing it works before any custom
+      # domain is attached). Two checks:
+      #   1. homepage answers 200 (static assets shipped)
+      #   2. functions sites only: POST /api/waitlist with an invalid email
+      #      answers 400 — proof the Pages Function is bundled and validating.
+      #      A static-only ship answers 405, which is exactly the failure this
+      #      guard exists to catch (metron outage 2026-06-28 → 2026-07-02).
+      # Retries cover deploy propagation lag; failure fails the workflow loudly.
+      - name: Smoke-probe deployed site
+        if: matrix.changed == 'true'
+        run: |
+          base="https://${{ matrix.project }}.pages.dev"
+          probe() {
+            local desc="$1" expected="$2"; shift 2
+            for i in $(seq 1 6); do
+              code=$(curl -s -o /dev/null -w "%{http_code}" "$@")
+              if [ "$code" = "$expected" ]; then
+                echo "OK: $desc -> $code"
+                return 0
+              fi
+              echo "attempt $i/6: $desc -> $code (want $expected); retrying in 10s"
+              sleep 10
+            done
+            echo "FAIL: $desc still $code after 6 attempts (want $expected)" >&2
+            return 1
+          }
+          probe "homepage" 200 "$base/"
+          if [ "${{ matrix.has_functions }}" = "true" ]; then
+            probe "waitlist function validates" 400 \
+              -X POST "$base/api/waitlist" \
+              -H "content-type: application/json" \
+              --data '{"email":"not-an-email"}'
+          fi
 
   notify-main-failure:
     needs: [deploy]
