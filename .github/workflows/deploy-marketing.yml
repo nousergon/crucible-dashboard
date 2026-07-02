@@ -12,6 +12,7 @@ name: deploy-marketing
 #   marketing        -> nousergon-crucible  -> crucible.nousergon.ai
 #   marketing-metron -> nousergon-metron    -> metron.nousergon.ai
 #   marketing-vires  -> nousergon-vires     -> vires.nousergon.ai
+#   marketing-finance-> nousergon-finance   -> finance.nousergon.ai
 #
 # IMPORTANT: the deploy step runs INSIDE each site directory (workingDirectory)
 # and deploys `dist` as a relative path. `wrangler pages deploy` only bundles a
@@ -40,6 +41,7 @@ on:
       - marketing-apex/**
       - marketing-metron/**
       - marketing-vires/**
+      - marketing-finance/**
       - blog/**
       - .github/workflows/deploy-marketing.yml
   workflow_dispatch:
@@ -60,6 +62,7 @@ jobs:
       crucible: ${{ steps.decide.outputs.crucible }}
       metron: ${{ steps.decide.outputs.metron }}
       vires: ${{ steps.decide.outputs.vires }}
+      finance: ${{ steps.decide.outputs.finance }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -83,6 +86,9 @@ jobs:
             vires:
               - 'marketing-vires/**'
               - '.github/workflows/deploy-marketing.yml'
+            finance:
+              - 'marketing-finance/**'
+              - '.github/workflows/deploy-marketing.yml'
       - name: Decide (force-all on manual dispatch)
         id: decide
         run: |
@@ -91,11 +97,13 @@ jobs:
             echo "crucible=true" >> "$GITHUB_OUTPUT"
             echo "metron=true"   >> "$GITHUB_OUTPUT"
             echo "vires=true"    >> "$GITHUB_OUTPUT"
+            echo "finance=true"  >> "$GITHUB_OUTPUT"
           else
             echo "apex=${{ steps.filter.outputs.apex }}"         >> "$GITHUB_OUTPUT"
             echo "crucible=${{ steps.filter.outputs.crucible }}" >> "$GITHUB_OUTPUT"
             echo "metron=${{ steps.filter.outputs.metron }}"     >> "$GITHUB_OUTPUT"
             echo "vires=${{ steps.filter.outputs.vires }}"       >> "$GITHUB_OUTPUT"
+            echo "finance=${{ steps.filter.outputs.finance }}"   >> "$GITHUB_OUTPUT"
           fi
 
   deploy:
@@ -125,6 +133,10 @@ jobs:
             project: nousergon-vires
             changed: ${{ needs.changes.outputs.vires }}
             has_functions: true
+          - site: marketing-finance
+            project: nousergon-finance
+            changed: ${{ needs.changes.outputs.finance }}
+            has_functions: false
     steps:
       - name: Checkout
         if: matrix.changed == 'true'

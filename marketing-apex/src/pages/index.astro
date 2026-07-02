@@ -1,78 +1,36 @@
 ---
 import Base from '../layouts/Base.astro';
 
-// Status vocabulary (keep this small): 'Live' | 'Private beta' | 'In development'
-// | 'Open source'. Every status claim must be true of the product TODAY.
-const statusStyles: Record<string, string> = {
-  Live: 'text-emerald-400 border-emerald-400/30',
-  'Private beta': 'text-sky-400 border-sky-400/30',
-  'In development': 'text-amber-400/90 border-amber-400/30',
-  'Open source': 'text-zinc-400 border-white/15',
-};
-
-const products = [
+// The apex is a thin category directory (Brian, 2026-07-02): one card per
+// category with a click-through to the category/product surface. Product-level
+// detail, statuses, and waitlists live on the destination pages — an interested
+// finance user gets pointed at finance.nousergon.ai directly, a fitness user at
+// vires.nousergon.ai; the apex just routes. Nothing here is labeled "Live":
+// nothing is monetized yet.
+const categories = [
   {
-    name: 'Crucible',
-    tag: 'Experiment harness',
-    status: 'Live',
-    href: 'https://crucible.nousergon.ai/',
-    featured: true,
-    body: 'A harness for rigorous AI/ML experiments in live markets — multi-agent research, ML prediction, risk-gated execution, evaluated end-to-end from signal to P&L on a public dashboard.',
-    cta: 'Explore Crucible →',
+    name: 'Finance',
+    href: 'https://finance.nousergon.ai/',
+    body: 'Portfolio analytics, an experiment harness for AI/ML research in live markets, and a deterministic tax engine.',
+    lineup: 'Metron · Crucible · Telos',
+    note: 'In development — Metron beta waitlist open',
+    cta: 'Explore finance →',
   },
   {
-    name: 'Metron',
-    tag: 'Portfolio analytics',
-    status: 'Private beta',
-    href: 'https://metron.nousergon.ai/',
-    featured: false,
-    body: 'Your whole portfolio in one place — positions, performance, income, and tax across brokers and accounts. Read-only.',
-    cta: 'Join the Metron beta →',
-  },
-  {
-    name: 'Telos',
-    tag: 'Tax engine',
-    status: 'In development',
-    href: 'https://github.com/nousergon/telos',
-    featured: false,
-    body: 'A deterministic personal tax engine — every computed line traceable to its inputs and its primary-source citation.',
-    cta: 'Telos on GitHub →',
-  },
-];
-
-const tools = [
-  {
-    name: 'mnemon',
-    status: 'Open source',
-    href: 'https://github.com/nousergon/mnemon',
-    body: 'Persistent memory for AI assistants (MCP server).',
-  },
-  {
-    name: 'krepis',
-    status: 'Open source',
-    href: 'https://github.com/nousergon/krepis',
-    body: "Foundation library — shared primitives for the lab's services.",
-  },
-  {
-    name: 'flow-doctor',
-    status: 'Open source',
-    href: 'https://github.com/nousergon/flow-doctor',
-    body: 'Pipeline observability: decision traces, crash capture, data-quality alerts.',
-  },
-];
-
-const apps = [
-  {
-    name: 'Vires',
-    status: 'Private beta',
+    name: 'Fitness',
     href: 'https://vires.nousergon.ai/',
     body: 'Strength training with an adaptive AI coach — log lifts, build routines, train to your goals.',
+    lineup: 'Vires',
+    note: 'In development — beta waitlist open',
+    cta: 'Explore Vires →',
   },
   {
-    name: 'morning-signal',
-    status: 'Open source',
-    href: 'https://github.com/nousergon/morning-signal',
-    body: 'Daily news brief — researched, written, and narrated to audio.',
+    name: 'Developer tools',
+    href: 'https://github.com/nousergon',
+    body: "Open-source infrastructure from the lab: AI-assistant memory, shared service primitives, pipeline observability, and an automated daily news brief.",
+    lineup: 'mnemon · krepis · flow-doctor · morning-signal',
+    note: 'Open source',
+    cta: 'Nous Ergon on GitHub →',
   },
 ];
 ---
@@ -89,94 +47,27 @@ const apps = [
     </p>
   </section>
 
-  <section class="max-w-5xl mx-auto px-6 pb-10">
-    <h2 class="text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-3">
-      Finance
-    </h2>
+  <section class="max-w-3xl mx-auto px-6 pb-20">
     <div class="grid grid-cols-1 gap-4">
       {
-        products.map((p) => (
+        categories.map((c) => (
           <a
-            href={p.href}
+            href={c.href}
             target="_blank"
             rel="noopener noreferrer"
-            class={`block rounded-lg border p-6 transition hover:bg-white/[0.05] ${
-              p.featured
-                ? 'border-sky-400/40 bg-white/[0.04]'
-                : 'border-white/10 bg-white/[0.03]'
-            }`}
+            class="block rounded-lg border border-white/10 bg-white/[0.03] p-6 transition hover:bg-white/[0.05] hover:border-sky-400/30"
           >
             <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1 mb-2">
               <span class="text-base font-semibold text-zinc-100 tracking-wide uppercase">
-                {p.name}
+                {c.name}
               </span>
-              <span
-                class={`rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${statusStyles[p.status]}`}
-              >
-                {p.status}
-              </span>
-              <span class="ml-auto text-xs font-semibold uppercase tracking-wider text-sky-400">
-                {p.tag}
+              <span class="text-xs text-zinc-500">{c.lineup}</span>
+              <span class="ml-auto text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                {c.note}
               </span>
             </div>
-            <p class="text-sm text-zinc-300 leading-relaxed mb-3">{p.body}</p>
-            <span class="text-sm text-sky-400">{p.cta}</span>
-          </a>
-        ))
-      }
-    </div>
-  </section>
-
-  <section class="max-w-5xl mx-auto px-6 pb-10">
-    <h2 class="text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-3">
-      Developer tools
-    </h2>
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-      {
-        tools.map((t) => (
-          <a
-            href={t.href}
-            target="_blank"
-            rel="noopener noreferrer"
-            class="block rounded-lg border border-white/10 bg-white/[0.02] p-5 transition hover:bg-white/[0.05]"
-          >
-            <div class="flex flex-wrap items-baseline gap-x-2.5 gap-y-1 mb-1.5">
-              <span class="text-sm font-semibold text-zinc-100">{t.name}</span>
-              <span
-                class={`rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${statusStyles[t.status]}`}
-              >
-                {t.status}
-              </span>
-            </div>
-            <p class="text-sm text-zinc-400 leading-relaxed">{t.body}</p>
-          </a>
-        ))
-      }
-    </div>
-  </section>
-
-  <section class="max-w-5xl mx-auto px-6 pb-20">
-    <h2 class="text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-3">
-      Apps
-    </h2>
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-      {
-        apps.map((t) => (
-          <a
-            href={t.href}
-            target="_blank"
-            rel="noopener noreferrer"
-            class="block rounded-lg border border-white/10 bg-white/[0.02] p-5 transition hover:bg-white/[0.05]"
-          >
-            <div class="flex flex-wrap items-baseline gap-x-2.5 gap-y-1 mb-1.5">
-              <span class="text-sm font-semibold text-zinc-100">{t.name}</span>
-              <span
-                class={`rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${statusStyles[t.status]}`}
-              >
-                {t.status}
-              </span>
-            </div>
-            <p class="text-sm text-zinc-400 leading-relaxed">{t.body}</p>
+            <p class="text-sm text-zinc-300 leading-relaxed mb-3">{c.body}</p>
+            <span class="text-sm text-sky-400">{c.cta}</span>
           </a>
         ))
       }

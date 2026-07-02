@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://finance.nousergon.ai/sitemap-index.xml

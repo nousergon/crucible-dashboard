@@ -67,7 +67,7 @@ function confirmationBody(): { text: string; html: string } {
   const text = [
     "You're on the Metron beta waitlist.",
     "",
-    "Metron is in a small private beta. We'll email you when there's a spot —",
+    "Metron is opening a small private beta. We'll email you when it opens —",
     "nothing else. No newsletter, no drip, no sharing your address.",
     "",
     "— The Metron team",
@@ -77,7 +77,7 @@ function confirmationBody(): { text: string; html: string } {
   const html = [
     '<div style="font-family:system-ui,-apple-system,sans-serif;font-size:15px;line-height:1.6;color:#1a1a1a">',
     "<p>You're on the <strong>Metron</strong> beta waitlist.</p>",
-    "<p>Metron is in a small private beta. We'll email you when there's a spot —",
+    "<p>Metron is opening a small private beta. We'll email you when it opens —",
     "nothing else. No newsletter, no drip, no sharing your address.</p>",
     '<p style="color:#666">— The Metron team<br>',
     '<a href="https://metron.nousergon.ai" style="color:#2563eb">metron.nousergon.ai</a></p>',
