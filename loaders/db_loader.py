@@ -10,6 +10,7 @@ import os
 import pandas as pd
 import streamlit as st
 
+from loaders.outcome_store import attach_outcomes
 from loaders.s3_loader import load_config, download_s3_binary
 
 logger = logging.getLogger(__name__)
@@ -91,11 +92,23 @@ def get_score_performance() -> pd.DataFrame:
     """
     Return rows from score_performance ordered by score_date ascending.
     Capped at _MAX_QUERY_ROWS most recent rows for memory safety.
+
+    The wide horizon-suffixed outcome columns (beat-SPY flag, stock/SPY
+    returns, and the canonical primary-horizon log-alpha, for both the
+    primary and diagnostic horizons) are re-sourced from the long-format
+    score_performance_outcomes store via loaders.outcome_store.attach_outcomes
+    (EPIC config#1483 Phase 3, config#1531) -- filtered by
+    nousergon_lib.quant.horizons.HorizonPolicy, not hardcoded horizon-suffix
+    literals. Values are unchanged (percent units preserved) so downstream
+    consumers need no changes.
     """
     sql = f"SELECT * FROM score_performance ORDER BY score_date DESC LIMIT {_MAX_QUERY_ROWS}"
     df = _normalize_score_col(query_research_db(sql))
     if not df.empty:
         df = df.sort_values("score_date", ascending=True).reset_index(drop=True)
+        conn = load_research_db()
+        if conn is not None:
+            df = attach_outcomes(df, conn)
     return df
 
 
@@ -135,15 +148,29 @@ def get_distinct_symbols() -> list[str]:
 def get_score_history(symbol: str) -> pd.DataFrame:
     """
     Return score history rows for a single symbol from score_performance.
+
+    The outcome columns for every policy horizon (beat-SPY flag, stock/SPY
+    returns, and the canonical primary-horizon log-alpha) are re-sourced
+    from the long-format score_performance_outcomes store (EPIC config#1483
+    Phase 3, config#1531) via loaders.outcome_store, filtered by
+    nousergon_lib.quant.horizons.HorizonPolicy, instead of a hardcoded wide
+    SELECT that previously fetched only the primary (21d) columns.
+    ``symbol`` is still read directly from score_performance since the long
+    store carries no non-outcome columns.
     """
     sql = """
-        SELECT score_date, score, beat_spy_21d,
-               return_21d, spy_21d_return
+        SELECT symbol, score_date, score
         FROM score_performance
         WHERE symbol = ?
         ORDER BY score_date
     """
-    return _normalize_score_col(query_research_db(sql, params=(symbol,)))
+    df = _normalize_score_col(query_research_db(sql, params=(symbol,)))
+    if not df.empty:
+        conn = load_research_db()
+        if conn is not None:
+            df = attach_outcomes(df, conn)
+        df = df.drop(columns=["symbol"])
+    return df
 
 
 def get_top_recent_symbols(n: int = 10) -> pd.DataFrame:

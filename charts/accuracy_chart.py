@@ -8,6 +8,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+from loaders.outcome_store import BEAT_SPY_PRIMARY, RETURN_PRIMARY, SPY_RETURN_PRIMARY
 from shared.accuracy_metrics import wilson_ci as _wilson_ci
 from shared.constants import get_thresholds
 
@@ -28,7 +29,7 @@ def make_accuracy_trend_chart(perf_df: pd.DataFrame) -> go.Figure:
     Shows accuracy_21d over time (canonical horizon).
     Dashed 50% reference line. Shaded band at 55%+ (outperformance zone).
 
-    perf_df needs: score_date, beat_spy_21d (bool)
+    perf_df needs: score_date, BEAT_SPY_PRIMARY (bool)
     """
     if perf_df is None or perf_df.empty:
         fig = go.Figure()
@@ -40,13 +41,13 @@ def make_accuracy_trend_chart(perf_df: pd.DataFrame) -> go.Figure:
     df = df.sort_values("score_date")
 
     # Convert bool columns to numeric (1/0) for rolling mean
-    for col in ["beat_spy_21d"]:
+    for col in [BEAT_SPY_PRIMARY]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
     # Rolling 20-row window (approx 4 calendar weeks of trading days)
     window = 20
-    df["acc_21d"] = df["beat_spy_21d"].rolling(window, min_periods=5).mean() * 100
+    df["acc_21d"] = df[BEAT_SPY_PRIMARY].rolling(window, min_periods=5).mean() * 100
 
     baseline_pct, outperform_pct = _threshold_pcts()
     fig = go.Figure()
@@ -123,15 +124,15 @@ def prepare_bucket_data(perf_df: pd.DataFrame) -> pd.DataFrame | None:
         return None
 
     df[score_col] = pd.to_numeric(df[score_col], errors="coerce")
-    for col in ["beat_spy_21d"]:
+    for col in [BEAT_SPY_PRIMARY]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
     df["bucket"] = pd.cut(df[score_col], bins=SCORE_BUCKET_BINS, labels=SCORE_BUCKET_LABELS, right=False)
 
     grouped = df.groupby("bucket", observed=True).agg(
-        acc_21d=("beat_spy_21d", "mean"),
-        sum_21d=("beat_spy_21d", "sum"),
+        acc_21d=(BEAT_SPY_PRIMARY, "mean"),
+        sum_21d=(BEAT_SPY_PRIMARY, "sum"),
         count=(score_col, "count"),
     ).reset_index()
 
@@ -218,7 +219,7 @@ def make_accuracy_by_regime_chart(perf_df: pd.DataFrame, macro_df: pd.DataFrame)
     Grouped bar chart: accuracy by market regime (bull, neutral, bear, caution).
     Joins perf_df to macro_df on date. One bar per regime: 21d (canonical horizon).
 
-    perf_df needs: score_date, beat_spy_21d
+    perf_df needs: score_date, BEAT_SPY_PRIMARY
     macro_df needs: date, regime
     """
     if perf_df is None or perf_df.empty or macro_df is None or macro_df.empty:
@@ -254,13 +255,13 @@ def make_accuracy_by_regime_chart(perf_df: pd.DataFrame, macro_df: pd.DataFrame)
         merged = merged.rename(columns={suffixed: "regime"})
     merged["regime"] = merged["regime"].fillna("unknown")
 
-    for col in ["beat_spy_21d"]:
+    for col in [BEAT_SPY_PRIMARY]:
         if col in merged.columns:
             merged[col] = pd.to_numeric(merged[col], errors="coerce")
 
     grouped = (
         merged.groupby("regime")
-        .agg(acc_21d=("beat_spy_21d", "mean"), count=("beat_spy_21d", "count"))
+        .agg(acc_21d=(BEAT_SPY_PRIMARY, "mean"), count=(BEAT_SPY_PRIMARY, "count"))
         .reset_index()
     )
     grouped["acc_21d"] = grouped["acc_21d"] * 100
@@ -315,10 +316,10 @@ def make_accuracy_by_regime_chart(perf_df: pd.DataFrame, macro_df: pd.DataFrame)
 
 def make_alpha_distribution_chart(perf_df: pd.DataFrame) -> go.Figure:
     """
-    Histogram of per-signal alpha (return_21d - spy_21d_return).
+    Histogram of per-signal alpha (RETURN_PRIMARY - SPY_RETURN_PRIMARY).
     Two panels: score >= 70 and all signals. Mean and median vertical lines.
 
-    perf_df needs: composite_score (or score), return_21d, spy_21d_return
+    perf_df needs: composite_score (or score), RETURN_PRIMARY, SPY_RETURN_PRIMARY
     """
     if perf_df is None or perf_df.empty:
         fig = go.Figure()
@@ -328,11 +329,11 @@ def make_alpha_distribution_chart(perf_df: pd.DataFrame) -> go.Figure:
     df = perf_df.copy()
     score_col = "composite_score" if "composite_score" in df.columns else "score"
 
-    for col in [score_col, "return_21d", "spy_21d_return"]:
+    for col in [score_col, RETURN_PRIMARY, SPY_RETURN_PRIMARY]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    df["alpha_21d"] = df["return_21d"] - df["spy_21d_return"]
+    df["alpha_21d"] = df[RETURN_PRIMARY] - df[SPY_RETURN_PRIMARY]
     df = df.dropna(subset=["alpha_21d"])
 
     all_alpha = df["alpha_21d"] * 100

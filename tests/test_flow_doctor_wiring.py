@@ -268,8 +268,16 @@ class TestLibVersionPin:
             "nousergon_lib import alias still works via the shim)"
         )
         assert "@main" not in text, "nousergon-lib must be pinned to a tag, not @main"
-        assert "@v0.73.0" in text, (
-            "nousergon-lib should pin to v0.73.0 (config#647 step 3 fleet "
+        assert "@v0.79.0" in text, (
+            "nousergon-lib should pin to v0.79.0 (EPIC config#1483 consumer "
+            "cutover, config#1531: loaders/outcome_store.py reads the "
+            "long-format score_performance_outcomes store via "
+            "nousergon_lib.quant.horizons.HorizonPolicy instead of hardcoded "
+            "wide horizon-suffixed score_performance column literals; the "
+            "burn-down guard test imports the shared "
+            "nousergon_lib.quant.horizon_guard ratchet primitive lifted to "
+            "the lib on the second adoption, nousergon-lib#149 / 0.78.0). "
+            "Earlier: v0.73.0 (config#647 step 3 fleet "
             "re-pin off the flow-doctor release candidate: lib <= v0.67.0 "
             "hard-pinned the flow_doctor extra to "
             "`flow-doctor[diagnosis,s3]==0.6.0rc6`; v0.68.0 delegated the extra "

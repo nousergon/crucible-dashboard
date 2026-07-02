@@ -31,7 +31,14 @@ from loaders.db_loader import (
     get_macro_snapshots,
     get_score_history,
     get_investment_thesis,
+    load_research_db,
     query_research_db,
+)
+from loaders.outcome_store import (
+    BEAT_SPY_PRIMARY,
+    RETURN_PRIMARY,
+    SPY_RETURN_PRIMARY,
+    attach_outcomes,
 )
 from loaders.s3_loader import load_predictions_json, load_predictor_params
 from shared.constants import SIGNAL_COLORS, VETO_COLOR, get_thresholds
@@ -600,6 +607,19 @@ if selected_ticker:
         )
         if full_score_df.empty:
             full_score_df = get_score_history(selected_ticker)
+        else:
+            # Re-source the outcome columns from the long-format
+            # score_performance_outcomes store instead of the wide columns
+            # just read above (EPIC config#1483 Phase 3, config#1531). If the
+            # (cached) connection has since gone away, fall back to
+            # get_score_history rather than silently rendering the stale
+            # wide-sourced columns still sitting on full_score_df.
+            conn = load_research_db()
+            full_score_df = (
+                attach_outcomes(full_score_df, conn)
+                if conn is not None
+                else get_score_history(selected_ticker)
+            )
         thesis_df = get_investment_thesis(selected_ticker)
 
     if full_score_df is not None and not full_score_df.empty:
@@ -616,17 +636,17 @@ if selected_ticker:
         outcome_cols = [
             c for c in [
                 "score_date", "composite_score",
-                "beat_spy_21d",
-                "return_21d", "spy_21d_return"
+                BEAT_SPY_PRIMARY,
+                RETURN_PRIMARY, SPY_RETURN_PRIMARY,
             ]
             if c in full_score_df.columns
         ]
         if outcome_cols:
             outcome_df = full_score_df[outcome_cols].copy().sort_values("score_date", ascending=False)
-            for col in ["beat_spy_21d"]:
+            for col in [BEAT_SPY_PRIMARY]:
                 if col in outcome_df.columns:
                     outcome_df[col] = outcome_df[col].apply(_beat_icon)
-            for col in ["return_21d", "spy_21d_return"]:
+            for col in [RETURN_PRIMARY, SPY_RETURN_PRIMARY]:
                 if col in outcome_df.columns:
                     outcome_df[col] = pd.to_numeric(outcome_df[col], errors="coerce").apply(
                         lambda x: f"{x*100:+.2f}%" if pd.notna(x) else "⏳"

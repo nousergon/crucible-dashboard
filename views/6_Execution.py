@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from loaders.s3_loader import list_backtest_dates, load_backtest_file, load_trades_full
 from loaders.db_loader import get_score_performance
+from loaders.outcome_store import BEAT_SPY_PRIMARY
 
 
 # ---------------------------------------------------------------------------
@@ -189,7 +190,7 @@ with tab_log:
             perf_df[perf_date_col] = pd.to_datetime(perf_df[perf_date_col]).dt.date.astype(str)
             if date_col:
                 filtered["_join_date"] = filtered[date_col].dt.date.astype(str)
-            perf_subset = perf_df[[perf_ticker_col, perf_date_col, "beat_spy_21d"]].rename(
+            perf_subset = perf_df[[perf_ticker_col, perf_date_col, BEAT_SPY_PRIMARY]].rename(
                 columns={
                     perf_ticker_col: ticker_col,
                     perf_date_col: "_join_date",
@@ -201,7 +202,7 @@ with tab_log:
                     perf_subset, on=[ticker_col, "_join_date"], how="left"
                 )
                 non_enter_rows = filtered[~enter_mask].copy()
-                non_enter_rows["beat_spy_21d"] = None
+                non_enter_rows[BEAT_SPY_PRIMARY] = None
                 filtered = pd.concat([enter_rows, non_enter_rows], ignore_index=True)
 
                 if exec_date_col in filtered.columns:
@@ -213,7 +214,7 @@ with tab_log:
     st.subheader("Trade History")
 
     display_filtered = filtered.copy()
-    for col in ["beat_spy_21d"]:
+    for col in [BEAT_SPY_PRIMARY]:
         if col in display_filtered.columns:
             display_filtered[col] = display_filtered[col].apply(_beat_icon)
     if "_join_date" in display_filtered.columns:
