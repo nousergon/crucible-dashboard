@@ -1,36 +1,33 @@
 ---
 import Base from '../layouts/Base.astro';
 
-// The apex is a thin category directory (Brian, 2026-07-02): one card per
-// category with a click-through to the category/product surface. Product-level
-// detail, statuses, and waitlists live on the destination pages — an interested
-// finance user gets pointed at finance.nousergon.ai directly, a fitness user at
-// vires.nousergon.ai; the apex just routes. Nothing here is labeled "Live":
-// nothing is monetized yet.
+// The apex is a thin category router (Brian, 2026-07-02): three buttons side by
+// side, each with a short category summary up top and just the product names —
+// all detail, statuses, and waitlists live on the destination pages. An
+// interested finance user gets pointed at finance.nousergon.ai directly, a
+// fitness user at vires.nousergon.ai; the apex just routes. Nothing here is
+// labeled "Live": nothing is monetized yet.
 const categories = [
   {
     name: 'Finance',
     href: 'https://finance.nousergon.ai/',
-    body: 'Portfolio analytics, an experiment harness for AI/ML research in live markets, and a deterministic tax engine.',
-    lineup: 'Metron · Crucible · Telos',
-    note: 'In development — Metron beta waitlist open',
+    summary: 'Portfolio analytics, market research systems, and tax software.',
+    products: ['Metron', 'Crucible', 'Telos'],
     cta: 'Explore finance →',
   },
   {
     name: 'Fitness',
     href: 'https://vires.nousergon.ai/',
-    body: 'Strength training with an adaptive AI coach — log lifts, build routines, train to your goals.',
-    lineup: 'Vires',
-    note: 'In development — beta waitlist open',
-    cta: 'Explore Vires →',
+    summary: 'Strength training with an adaptive AI coach.',
+    products: ['Vires'],
+    cta: 'Explore fitness →',
   },
   {
     name: 'Developer tools',
     href: 'https://github.com/nousergon',
-    body: "Open-source infrastructure from the lab: AI-assistant memory, shared service primitives, pipeline observability, and an automated daily news brief.",
-    lineup: 'mnemon · krepis · flow-doctor · morning-signal',
-    note: 'Open source',
-    cta: 'Nous Ergon on GitHub →',
+    summary: 'Open-source infrastructure from the lab.',
+    products: ['mnemon', 'krepis', 'flow-doctor', 'morning-signal'],
+    cta: 'View on GitHub →',
   },
 ];
 ---
@@ -47,27 +44,26 @@ const categories = [
     </p>
   </section>
 
-  <section class="max-w-3xl mx-auto px-6 pb-20">
-    <div class="grid grid-cols-1 gap-4">
+  <section class="max-w-5xl mx-auto px-6 pb-20">
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
       {
         categories.map((c) => (
           <a
             href={c.href}
             target="_blank"
             rel="noopener noreferrer"
-            class="block rounded-lg border border-white/10 bg-white/[0.03] p-6 transition hover:bg-white/[0.05] hover:border-sky-400/30"
+            class="flex flex-col rounded-lg border border-white/10 bg-white/[0.03] p-6 text-center transition hover:bg-white/[0.05] hover:border-sky-400/30"
           >
-            <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1 mb-2">
-              <span class="text-base font-semibold text-zinc-100 tracking-wide uppercase">
-                {c.name}
-              </span>
-              <span class="text-xs text-zinc-500">{c.lineup}</span>
-              <span class="ml-auto text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
-                {c.note}
-              </span>
-            </div>
-            <p class="text-sm text-zinc-300 leading-relaxed mb-3">{c.body}</p>
-            <span class="text-sm text-sky-400">{c.cta}</span>
+            <span class="text-base font-semibold text-zinc-100 tracking-wide uppercase">
+              {c.name}
+            </span>
+            <p class="mt-2 text-xs text-zinc-400 leading-relaxed">{c.summary}</p>
+            <ul class="mt-4 mb-5 space-y-1.5">
+              {c.products.map((p) => (
+                <li class="text-sm text-zinc-200">{p}</li>
+              ))}
+            </ul>
+            <span class="mt-auto text-sm text-sky-400">{c.cta}</span>
           </a>
         ))
       }
