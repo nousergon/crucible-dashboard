@@ -128,3 +128,17 @@ class TestNavRegistration:
         assert "elapsed_min" in src
         assert "schema_version" in src
         assert "engaged" in src
+
+    def test_page_surfaces_run_digest_and_history(self):
+        # schema_version 3 (alpha-engine-config, 2026-07-02): the finalized
+        # groom-digest is embedded in the run artifact so the console shows
+        # (a) a per-run "Run history" summary table and (b) the digest
+        # narrative itself — without a GitHub API dependency (the dashboard
+        # is a pure S3 reader by contract). Pre-v3 artifacts must degrade to
+        # a pointer at the GitHub groom-digest issues, not error.
+        src = (REPO_ROOT / "views" / "42_Backlog_Groom.py").read_text()
+        assert "Run history" in src
+        assert "digest_markdown" in src
+        assert "digest_title" in src
+        assert "digest_issue" in src
+        assert "predates digest embedding" in src  # graceful pre-v3 fallback

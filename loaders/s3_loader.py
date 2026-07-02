@@ -632,7 +632,10 @@ def list_groom_run_keys(limit: int = 30) -> list[str]:
 def load_groom_run(key: str) -> dict | None:
     """Load a single groom run artifact (schema_version, run_start, model,
     issue_filter, stop_reason, floor_fail, issues: [{repo, number, title,
-    priority, disposition, detail}], other_closed, other_prs, chunk_log).
+    priority, disposition, detail}], other_closed, other_prs, chunk_log;
+    schema_version >= 3 adds digest_title/digest_markdown/digest_issue — the
+    finalized GitHub groom-digest embedded verbatim so the console renders the
+    run narrative with no GitHub API dependency).
     Written by ``groom_driver.py::write_run_artifact`` — cross-referenced
     against real gh state at write time, never a model self-report.
     """
