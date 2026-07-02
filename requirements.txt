@@ -55,4 +55,12 @@ anthropic>=0.40
 # So this bump moves the dashboard's flow-doctor off rc6 onto the 0.6.0 final
 # that shipped via flow-doctor#34 (tag v0.6.0, on PyPI). v0.73.0 is a strict
 # superset of the pipeline_status/transparency APIs referenced above.
-nousergon-lib[flow-doctor] @ git+https://github.com/nousergon/nousergon-lib@v0.73.0
+# v0.79.0 (2026-07-01): EPIC config#1483 consumer cutover (config#1531) --
+# loaders/outcome_store.py imports nousergon_lib.quant.horizons
+# (HorizonPolicy / DEFAULT_POLICY, pure stdlib, no extra needed) to read the
+# long-format score_performance_outcomes store instead of hardcoding wide
+# horizon-suffixed score_performance column literals; the burn-down guard
+# test imports nousergon_lib.quant.horizon_guard (the shared ratchet
+# primitive lifted to the lib on the second adoption, nousergon-lib#149,
+# 0.78.0). v0.79.0 is a strict superset of both (and of everything below).
+nousergon-lib[flow-doctor] @ git+https://github.com/nousergon/nousergon-lib@v0.79.0

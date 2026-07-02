@@ -37,6 +37,7 @@ from charts.attribution_chart import make_attribution_chart, make_weight_history
 from components import backtester_significance as bsig
 from components import sweep_distribution as sweepdist
 from loaders.db_loader import get_macro_snapshots, get_score_performance
+from loaders.outcome_store import BEAT_SPY_PRIMARY
 from loaders.s3_loader import (
     _fetch_s3_json,
     _research_bucket,
@@ -177,7 +178,7 @@ with tab_accuracy:
             "has run and populated outcome data."
         )
     else:
-        beat_21d_col = "beat_spy_21d" if "beat_spy_21d" in perf_df.columns else None
+        beat_21d_col = BEAT_SPY_PRIMARY if BEAT_SPY_PRIMARY in perf_df.columns else None
         populated_rows = int(perf_df[beat_21d_col].notna().sum()) if beat_21d_col else 0
 
         if populated_rows < 20:

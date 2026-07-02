@@ -19,6 +19,7 @@ import streamlit as st
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from loaders.db_loader import load_research_db
+from loaders.outcome_store import load_outcomes
 from loaders.s3_loader import (
     _fetch_s3_json,
     _research_bucket,
@@ -490,10 +491,12 @@ conn = load_research_db()
 n_resolved_21d = 0
 if conn:
     try:
-        row = conn.execute(
-            "SELECT COUNT(*) FROM score_performance WHERE return_21d IS NOT NULL"
-        ).fetchone()
-        n_resolved_21d = row[0] if row else 0
+        # Resolved-21d count now comes from the long-format
+        # score_performance_outcomes store, filtered to the canonical
+        # primary horizon (EPIC config#1483 Phase 3, config#1531) instead of
+        # counting non-null wide return_21d rows.
+        outcomes_21d = load_outcomes(conn, horizons=(21,))
+        n_resolved_21d = len(outcomes_21d)
     except Exception:
         pass
 

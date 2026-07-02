@@ -24,7 +24,12 @@ from loaders.db_loader import (
 
 @pytest.fixture
 def mock_db():
-    """Create an in-memory SQLite DB with test tables."""
+    """Create an in-memory SQLite DB with test tables.
+
+    score_performance keeps its legacy wide outcome columns (NULL here --
+    config#1531 re-sources them from score_performance_outcomes instead, see
+    below) so schema-shape assertions (`SELECT *`) still resemble production.
+    """
     conn = sqlite3.connect(":memory:")
     conn.execute("""
         CREATE TABLE score_performance (
@@ -32,6 +37,17 @@ def mock_db():
             beat_spy_21d INTEGER,
             return_21d REAL,
             spy_21d_return REAL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE score_performance_outcomes (
+            id INTEGER PRIMARY KEY, signal_id TEXT NOT NULL,
+            symbol TEXT NOT NULL, score_date TEXT NOT NULL,
+            horizon_days INTEGER NOT NULL, beat_spy INTEGER,
+            stock_return REAL, spy_return REAL, log_alpha REAL,
+            is_primary INTEGER NOT NULL, resolved_at TEXT NOT NULL,
+            schema_version INTEGER NOT NULL DEFAULT 1,
+            UNIQUE(signal_id, horizon_days)
         )
     """)
     conn.execute("""
@@ -51,13 +67,30 @@ def mock_db():
         )
     """)
 
-    # Seed data
+    # Seed data. score_performance's legacy outcome columns stay NULL --
+    # get_score_performance / get_score_history re-source them from
+    # score_performance_outcomes (below) via loaders.outcome_store.
     conn.executemany(
         "INSERT INTO score_performance VALUES (?,?,?,?,?,?)",
         [
-            ("AAPL", "2026-04-01", 82, 1, 0.03, 0.01),
-            ("MSFT", "2026-04-01", 75, 0, -0.01, 0.01),
-            ("AAPL", "2026-04-08", 85, 1, 0.04, 0.01),
+            ("AAPL", "2026-04-01", 82, None, None, None),
+            ("MSFT", "2026-04-01", 75, None, None, None),
+            ("AAPL", "2026-04-08", 85, None, None, None),
+        ],
+    )
+    # Long-format outcomes: decimal units, primary(21d) carries log_alpha.
+    # AAPL 2026-04-01: beat=1, stock=0.03, spy=0.01 -> wide 3.0 / 1.0 / beat_spy_21d=1
+    # MSFT 2026-04-01: beat=0, stock=-0.01, spy=0.01 -> wide -1.0 / 1.0 / beat_spy_21d=0
+    # AAPL 2026-04-08: beat=1, stock=0.04, spy=0.01 -> wide 4.0 / 1.0 / beat_spy_21d=1
+    conn.executemany(
+        "INSERT INTO score_performance_outcomes "
+        "(signal_id, symbol, score_date, horizon_days, beat_spy, "
+        " stock_return, spy_return, log_alpha, is_primary, resolved_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+        [
+            ("AAPL:2026-04-01", "AAPL", "2026-04-01", 21, 1, 0.03, 0.01, 0.0198, 1, "2026-04-15T00:00:00+00:00"),
+            ("MSFT:2026-04-01", "MSFT", "2026-04-01", 21, 0, -0.01, 0.01, -0.0201, 1, "2026-04-15T00:00:00+00:00"),
+            ("AAPL:2026-04-08", "AAPL", "2026-04-08", 21, 1, 0.04, 0.01, 0.0296, 1, "2026-04-22T00:00:00+00:00"),
         ],
     )
     conn.executemany(
