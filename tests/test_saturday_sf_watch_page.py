@@ -177,3 +177,75 @@ class TestPageIntegrationFields:
         assert "pr_urls" in src
         assert "diagnosis" in src
         assert "recommended_command" in src
+
+
+# ── Fleet CI Watch (main-branch CI/deploy red events — config#1593/#1596) ────
+
+
+class TestLoadCiWatch:
+    def test_returns_dict_on_valid_json(self):
+        payload = {"schema_version": 2, "events": []}
+        with patch.object(s3_loader, "_research_bucket", return_value="b"), \
+                patch.object(s3_loader, "_s3_get_object",
+                             return_value=json.dumps(payload).encode()):
+            assert s3_loader.load_ci_watch("2026-07-02") == payload
+
+    def test_returns_none_on_missing(self):
+        with patch.object(s3_loader, "_research_bucket", return_value="b"), \
+                patch.object(s3_loader, "_s3_get_object", return_value=None):
+            assert s3_loader.load_ci_watch("2026-07-02") is None
+
+    def test_returns_none_on_non_dict_json(self):
+        with patch.object(s3_loader, "_research_bucket", return_value="b"), \
+                patch.object(s3_loader, "_s3_get_object", return_value=b"[1, 2, 3]"):
+            assert s3_loader.load_ci_watch("2026-07-02") is None
+
+
+class TestListCiWatchDates:
+    def _client(self, keys):
+        page = {"Contents": [{"Key": k} for k in keys]}
+        paginator = MagicMock()
+        paginator.paginate.return_value = [page]
+        client = MagicMock()
+        client.get_paginator.return_value = paginator
+        return client
+
+    def test_lists_and_sorts_newest_first(self):
+        keys = [
+            "consolidated/ci_watch/2026-07-01.json",
+            "consolidated/ci_watch/2026-07-02.json",
+            "consolidated/ci_watch/latest.json",   # ignored (not ISO date)
+            "consolidated/ci_watch/2026-07-02.txt",  # ignored (not .json)
+            "consolidated/ci_watch/",                # ignored (prefix marker)
+        ]
+        with patch.object(s3_loader, "_research_bucket", return_value="b"), \
+                patch.object(s3_loader, "get_s3_client",
+                             return_value=self._client(keys)):
+            assert s3_loader.list_ci_watch_dates() == ["2026-07-02", "2026-07-01"]
+
+    def test_empty_when_no_events(self):
+        with patch.object(s3_loader, "_research_bucket", return_value="b"), \
+                patch.object(s3_loader, "get_s3_client",
+                             return_value=self._client([])):
+            assert s3_loader.list_ci_watch_dates() == []
+
+    def test_empty_on_error(self):
+        client = MagicMock()
+        client.get_paginator.side_effect = RuntimeError("boom")
+        with patch.object(s3_loader, "_research_bucket", return_value="b"), \
+                patch.object(s3_loader, "get_s3_client", return_value=client):
+            assert s3_loader.list_ci_watch_dates() == []
+
+
+class TestPageWiresCiWatch:
+    def test_page_uses_ci_watch_loaders(self):
+        src = (REPO_ROOT / "views" / "37_Saturday_SF_Watch.py").read_text()
+        assert "list_ci_watch_dates" in src
+        assert "load_ci_watch" in src
+
+    def test_page_surfaces_ci_watch_schema_fields(self):
+        src = (REPO_ROOT / "views" / "37_Saturday_SF_Watch.py").read_text()
+        for field in ("repo", "run_id", "run_url", "sha", "workflow",
+                      "agent_attempt", "lane", "action", "pr_urls",
+                      "diagnosis", "rerun_conclusion", "followup_issues"):
+            assert field in src, f"missing {field}"
