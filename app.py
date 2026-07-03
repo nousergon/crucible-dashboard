@@ -467,6 +467,12 @@ def _build_navigation():
             page("host_eval_backtester.py", "Eval & Backtester", "⚖"),
             page("43_Distillation_Corpus.py", "Distillation Corpus", "🔬"),
         ],
+        "⚗️ Experiments": [
+            # Champion/challenger ablation ledgers (ARCH §37, config#1685):
+            # producer ablation (agentic vs no_agent/single_agent) + scanner
+            # ablation (live vs momentum_sleeve). Observe-only leaderboards.
+            page("46_Experiments.py", "Ablations", "⚗"),
+        ],
         "🩺 System & Ops": [
             page("host_system_health.py", "System Health", "🩺"),
             page("host_observability.py", "Observability", "⏱"),
