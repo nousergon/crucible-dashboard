@@ -336,11 +336,27 @@ class TestNavRegistration:
         assert "dateClick" in src
         assert "upsert_entry" in src and "delete_entry" in src
         assert "load_applied_markers" in src
-        # Component re-render + replayed-callback quirks stay encoded.
+        # Component re-render + replayed-callback quirks stay encoded:
+        # remount via nonce key after every processed click, month pinned
+        # via initialDate so the remount doesn't jump back to today.
         assert "ms_cal_nonce" in src
-        assert "ms_cal_last_payload" in src
+        assert "initialDate" in src
         # Conflict handling (conditional-write 412) surfaces, not clobbers.
         assert '"conflict"' in src or "'conflict'" in src
+
+    def test_page_click_opens_modal_editor_with_regular_default(self):
+        """Click-to-edit contract: a day click opens the st.dialog editor,
+        whose mode choice includes 'regular' as the no-entry default (saving
+        regular over an existing entry deletes it)."""
+        src = (
+            REPO_ROOT / "views" / "45_Morning_Signal_Schedule.py"
+        ).read_text()
+        assert "@st.dialog" in src
+        assert "_edit_day_dialog" in src
+        assert '"regular"' in src
+        assert '"skip"' in src and '"override"' in src and '"extend"' in src
+        # Regular-over-existing removes the entry via delete_entry.
+        assert "delete_entry(date_str)" in src
 
     def test_page_guards_missing_component_import(self):
         src = (
