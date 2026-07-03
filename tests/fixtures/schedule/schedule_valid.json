@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "updated_at_utc": "2026-07-03T20:00:00+00:00",
+  "entries": {
+    "2026-07-04": {
+      "mode": "override",
+      "topic": "State of the art in financial machine-learning research",
+      "guidance": "Survey the current research frontier and what it means for practitioners.",
+      "editions": ["am"],
+      "keywords": ["financial machine learning", "quant", "machine learning"],
+      "min_searches": 3,
+      "created_at_utc": "2026-07-03T20:00:00+00:00",
+      "updated_at_utc": "2026-07-03T20:00:00+00:00"
+    },
+    "2026-07-06": {
+      "mode": "extend",
+      "topic": "A notable earnings report",
+      "guidance": "",
+      "created_at_utc": "2026-07-03T20:00:00+00:00",
+      "updated_at_utc": "2026-07-03T20:00:00+00:00"
+    },
+    "2026-07-09": {
+      "mode": "skip",
+      "guidance": "Travel day",
+      "created_at_utc": "2026-07-03T20:00:00+00:00",
+      "updated_at_utc": "2026-07-03T20:00:00+00:00"
+    },
+    "2026-07-10": {
+      "mode": "skip",
+      "topic": "",
+      "editions": ["am", "pm"],
+      "future_unknown_field": "ignored (additive-forward)"
+    }
+  }
+}
