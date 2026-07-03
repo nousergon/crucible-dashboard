@@ -1949,3 +1949,52 @@ def load_thinktank_month_costs(month: str) -> dict | None:
     """Load the month cost ledger (``thinktank/costs/{YYYY-MM}.json``) —
     spent_usd vs the SSM budget cap, one row per run."""
     return download_s3_json(_research_bucket(), f"thinktank/costs/{month}.json")
+
+
+# ── Ablation-experiment leaderboards (config#1221 / #1223 / #1685) ───────────
+#
+# Champion/challenger OBSERVE substrates write one leaderboard JSON per build:
+#   research/producer_leaderboard/{date}.json  (agentic vs no_agent/single_agent)
+#   scanner/leaderboard/{date}.json            (tech_score vs momentum_sleeve)
+# Cohorts (the raw picks each leaderboard scores) live under
+#   signals_shadow/{producer}/{date}/signals.json  and
+#   candidates_shadow/{spec}/{date}/candidates.json
+# Producer: crucible-research scoring/leaderboard_producers.py. Metrics are an
+# honest ``None`` until a cohort's 21-trading-day horizon matures.
+
+def _list_dated_json_keys(prefix: str) -> list[str]:
+    """Sorted YYYY-MM-DD dates for flat ``{prefix}{date}.json`` keys."""
+    bucket = _research_bucket()
+    try:
+        client = get_s3_client()
+        paginator = client.get_paginator("list_objects_v2")
+        dates: set[str] = set()
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+            for obj in page.get("Contents", []):
+                stem = obj.get("Key", "")[len(prefix):]
+                if stem.endswith(".json") and ISO_DATE_PATTERN.match(stem[:-5]):
+                    dates.add(stem[:-5])
+        return sorted(dates)
+    except Exception as e:
+        logger.error("Failed to list leaderboard dates %s: %s", prefix, e)
+        _record_s3_error(bucket, prefix, type(e).__name__, str(e))
+        return []
+
+
+@st.cache_data(ttl=_ttl("research"))
+def list_leaderboard_dates(prefix: str) -> list[str]:
+    """Sorted build dates for a leaderboard family (see module comment)."""
+    return _list_dated_json_keys(prefix)
+
+
+@st.cache_data(ttl=_ttl("research"))
+def load_leaderboard(prefix: str, date: str) -> dict | None:
+    """One leaderboard build: ``{prefix}{date}.json``."""
+    return download_s3_json(_research_bucket(), f"{prefix}{date}.json")
+
+
+@st.cache_data(ttl=_ttl("research"))
+def list_shadow_cohort_dates(prefix: str) -> list[str]:
+    """Sorted cohort dates under a shadow prefix (date-named sub-prefixes),
+    e.g. ``signals_shadow/no_agent_quant/`` → ['2026-07-02', ...]."""
+    return list_s3_prefixes(_research_bucket(), prefix)
