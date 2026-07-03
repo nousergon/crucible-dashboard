@@ -594,6 +594,54 @@ def load_saturday_sf_watch(date_str: str) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
+# Fleet CI Watch (main-branch CI/deploy red events — config#1593 / config#1596)
+# ---------------------------------------------------------------------------
+
+_CI_WATCH_PREFIX = "consolidated/ci_watch/"
+
+
+@st.cache_data(ttl=_ttl("research"))
+def list_ci_watch_dates() -> list[str]:
+    """Return Fleet CI Watch log dates, newest first.
+
+    Lists flat ``consolidated/ci_watch/{date}.json`` objects in the research
+    bucket. Mirrors :func:`list_saturday_sf_watch_dates` — a date is present
+    only when the watch agent actually dispatched (main-branch CI/deploy red),
+    so an empty list is the healthy steady state, not an error.
+    """
+    bucket = _research_bucket()
+    try:
+        client = get_s3_client()
+        paginator = client.get_paginator("list_objects_v2")
+        dates: set[str] = set()
+        for page in paginator.paginate(Bucket=bucket, Prefix=_CI_WATCH_PREFIX):
+            for obj in page.get("Contents", []):
+                k = obj.get("Key", "")
+                stem = k[len(_CI_WATCH_PREFIX):]
+                if stem.endswith(".json"):
+                    seg = stem[: -len(".json")]
+                    if ISO_DATE_PATTERN.match(seg):
+                        dates.add(seg)
+        return sorted(dates, reverse=True)
+    except Exception as e:
+        logger.error("Failed to list ci_watch dates: %s", e)
+        _record_s3_error(bucket, _CI_WATCH_PREFIX, type(e).__name__, str(e))
+        return []
+
+
+@st.cache_data(ttl=_ttl("research"))
+def load_ci_watch(date_str: str) -> dict | None:
+    """Load ``consolidated/ci_watch/{date}.json`` from the research bucket —
+    the watch-log written by the Fleet CI Watch dispatch (schema_version 2,
+    events: [{repo, run_id, run_url, sha, workflow, agent_attempt, lane,
+    action, pr_urls, diagnosis, rerun_conclusion, followup_issues}]).
+    None on missing key / parse error. Mirrors :func:`load_saturday_sf_watch`.
+    """
+    data = _fetch_s3_json(_research_bucket(), f"{_CI_WATCH_PREFIX}{date_str}.json")
+    return data if isinstance(data, dict) else None
+
+
+# ---------------------------------------------------------------------------
 # Backlog Groom runs (per-run artifact — config#1512 / console page follow-up)
 # ---------------------------------------------------------------------------
 

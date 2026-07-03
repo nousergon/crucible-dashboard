@@ -37,8 +37,10 @@ import streamlit as st
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from loaders.s3_loader import (  # noqa: E402
+    list_ci_watch_dates,
     list_saturday_integrity_dates,
     list_saturday_sf_watch_dates,
+    load_ci_watch,
     load_saturday_integrity,
     load_saturday_sf_watch,
 )
@@ -261,3 +263,90 @@ if _enriched:
 
 with st.expander("Raw watch-log JSON"):
     st.json(data)
+
+
+# ── Fleet CI Watch (main-branch CI/deploy red events — config#1593/#1596) ────
+# Distinct schema from the Saturday SF watch-log above: repo/run_id-keyed CI
+# runs, not a pipeline execution_arn — rendered with its own row shape rather
+# than reusing the SF event table.
+def _render_fleet_ci_watch() -> None:
+    st.divider()
+    st.subheader("📡 Fleet CI Watch")
+    st.caption(
+        "Main-branch CI/deploy red events across the fleet — dispatched to the "
+        "watch agent, which diagnoses + (where possible) fixes. Failure-driven: "
+        "a date exists only where a dispatch actually fired. (config#1593)"
+    )
+
+    ci_dates = list_ci_watch_dates()
+    if not ci_dates:
+        st.info(
+            "🛈 No Fleet CI Watch events recorded yet. A date lands here on the "
+            "first main-branch CI/deploy red dispatch."
+        )
+        return
+
+    ci_selected = st.selectbox("CI Watch date", ci_dates, index=0, key="ci_watch_date")
+    ci_data = load_ci_watch(ci_selected)
+    if ci_data is None or not ci_data.get("events"):
+        st.warning(f"CI Watch log for {ci_selected} could not be read or has no events.")
+        return
+
+    ci_events = ci_data["events"]
+    ci_df = pd.DataFrame(ci_events)
+
+    ci_tiles = st.columns(3)
+    with ci_tiles[0]:
+        st.metric("CI events", len(ci_events))
+    with ci_tiles[1]:
+        st.metric("Distinct repos", ci_df["repo"].nunique() if "repo" in ci_df else 0)
+    with ci_tiles[2]:
+        n_followup = sum(1 for e in ci_events if e.get("followup_issues"))
+        st.metric("With followup issues", n_followup)
+
+    ci_display = pd.DataFrame({
+        "Repo": ci_df.get("repo"),
+        "Workflow": ci_df.get("workflow"),
+        "SHA": ci_df.get("sha", pd.Series(dtype=str)).map(
+            lambda s: (s or "")[:8] if isinstance(s, str) else s
+        ),
+        "Lane": ci_df.get("lane"),
+        "Action": ci_df.get("action", pd.Series(["observe"] * len(ci_df))).map(
+            lambda a: _ACTION_LABEL.get(a, a or "—")
+        ),
+        "Attempt": ci_df.get("agent_attempt"),
+        "Diagnosis": ci_df.get("diagnosis"),
+        "PRs": (ci_df["pr_urls"].map(_count_prs) if "pr_urls" in ci_df else "—"),
+    })
+    st.dataframe(ci_display, use_container_width=True, hide_index=True)
+
+    for e in ci_events:
+        label = e.get("workflow") or e.get("repo") or "event"
+        run_url = e.get("run_url")
+        with st.expander(f"🔧 {e.get('repo', '—')} · {label}"):
+            if run_url:
+                st.markdown(f"**Run:** [{run_url}]({run_url}) (run_id `{e.get('run_id', '—')}`)")
+            elif e.get("run_id"):
+                st.caption(f"Run ID: `{e['run_id']}`")
+            if e.get("sha"):
+                st.caption(f"SHA: `{e['sha']}`")
+            if e.get("diagnosis"):
+                st.markdown(f"**Diagnosis:** {e['diagnosis']}")
+            if e.get("rerun_conclusion"):
+                st.markdown(f"**Rerun conclusion:** {e['rerun_conclusion']}")
+            pr_urls = e.get("pr_urls") or []
+            if pr_urls:
+                st.markdown("**PRs:**")
+                for url in pr_urls:
+                    st.markdown(f"- [{url}]({url})")
+            followups = e.get("followup_issues") or []
+            if followups:
+                st.markdown("**Followup issues:**")
+                for fu in followups:
+                    st.markdown(f"- {fu}")
+
+    with st.expander("Raw CI Watch JSON"):
+        st.json(ci_data)
+
+
+_render_fleet_ci_watch()
