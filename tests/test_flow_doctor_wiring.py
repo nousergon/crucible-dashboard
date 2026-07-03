@@ -268,12 +268,17 @@ class TestLibVersionPin:
             "nousergon_lib import alias still works via the shim)"
         )
         assert "@main" not in text, "nousergon-lib must be pinned to a tag, not @main"
-        assert "@v0.80.0" in text, (
-            "nousergon-lib should pin to v0.80.0 (config#1587: registers the "
+        assert "@v0.81.0" in text, (
+            "nousergon-lib should pin to v0.81.0 (nousergon-lib#154: registers "
+            "the EOD SF's RefreshExecutorDeploy top-of-pipeline executor-"
+            "checkout refresh chokepoint (config#1549) + its "
+            "WaitForRefreshExecutorDeploy companion in "
+            "nousergon_lib.pipeline_status.registry — clears the local "
+            "cross-repo drift guard test_pipeline_status_registry_drift). "
+            "Earlier: v0.80.0 (config#1587: registers the "
             "EOD SF's StartTradingInstance re-runnability guard state "
-            "(nousergon-data#576) in nousergon_lib.pipeline_status.registry — "
-            "clears the local cross-repo drift guard "
-            "test_pipeline_status_registry_drift, nousergon-lib#151). "
+            "(nousergon-data#576) in nousergon_lib.pipeline_status.registry, "
+            "nousergon-lib#151). "
             "Earlier: v0.79.0 (EPIC config#1483 consumer "
             "cutover, config#1531: loaders/outcome_store.py reads the "
             "long-format score_performance_outcomes store via "
