@@ -268,8 +268,8 @@ class TestLibVersionPin:
             "nousergon_lib import alias still works via the shim)"
         )
         assert "@main" not in text, "nousergon-lib must be pinned to a tag, not @main"
-        assert "@v0.81.0" in text, (
-            "nousergon-lib should pin to v0.81.0 (nousergon-lib#154: registers "
+        assert "@v0.81.1" in text, (
+            "nousergon-lib should pin to v0.81.1 (nousergon-lib#155: __main__ delegation in CLI re-export shims, config#1646; supersedes #154: registers "
             "the EOD SF's RefreshExecutorDeploy top-of-pipeline executor-"
             "checkout refresh chokepoint (config#1549) + its "
             "WaitForRefreshExecutorDeploy companion in "
