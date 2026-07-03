@@ -126,10 +126,16 @@ def mock_s3():
     paginator.paginate.reset_mock(side_effect=True)
 
 
-def _setup_paginator_responses(paginator, *, dates: list[str], keys_by_date: dict[str, list[str]]):
+def _setup_paginator_responses(
+    paginator, *, dates: list[str], keys_by_date: dict[str, list[str]],
+    flat_keys: list[str] | None = None,
+):
     """Configure paginator.paginate to return:
        - first call (Delimiter='/') → CommonPrefixes for each date
-       - subsequent calls (per-date list_keys) → Contents for that date.
+       - per-date list_keys calls (Prefix='.../{date}/') → Contents for that date
+       - the flat top-level scan (Prefix='decision_artifacts/_eval/', no
+         Delimiter) → Contents for ``flat_keys`` (config#793 canonical
+         layout keys living directly under the prefix).
     """
     date_page = {
         "CommonPrefixes": [
@@ -140,14 +146,17 @@ def _setup_paginator_responses(paginator, *, dates: list[str], keys_by_date: dic
         d: [{"Contents": [{"Key": k} for k in keys_by_date[d]]}]
         for d in dates
     }
-
-    call_count = {"n": 0}
+    flat_page = [{"Contents": [{"Key": k} for k in (flat_keys or [])]}]
 
     def fake_paginate(**kwargs):
         delimiter = kwargs.get("Delimiter")
         if delimiter == "/":
             return iter([date_page])
         prefix = kwargs.get("Prefix", "")
+        if prefix == "decision_artifacts/_eval/":
+            # Bare top-level scan (no per-date subprefix) — the flat-layout
+            # branch (_list_flat_eval_keys).
+            return iter(flat_page)
         # Extract date from the prefix
         date_str = prefix.replace("decision_artifacts/_eval/", "").rstrip("/")
         return iter(per_date_pages.get(date_str, [{"Contents": []}]))
@@ -273,6 +282,210 @@ class TestLoadEvalArtifacts:
         )
         assert len(df) == 1
         assert df.iloc[0]["run_id"] == "2026-05-09"
+
+
+# ── Dual-layout (config#793) coverage ──────────────────────────────────────
+#
+# config#793 swapped the judge's write path to the canonical FLAT layout
+# (``_eval/{judge_run_id}_{judged_agent_id}.{run_id}.{judge_model}.json``)
+# while months of historical evals remain at the LEGACY NESTED layout
+# (``_eval/{date}/{judged_agent_id}/{run_id}.{judge_model}.json``).
+# alpha-engine-config#1605: the loader only read the legacy layout and was
+# silently missing every eval written since the cutover.
+
+
+class TestLoadEvalArtifactsFlatLayout:
+    def test_flat_layout_keys_are_found_and_parsed(self, mock_s3):
+        """A canonical flat-layout key with no date subprefix must
+        surface in the DataFrame, with eval_date derived from the
+        artifact's own `timestamp` field (the flat layout carries no
+        date directory)."""
+        flat_key = (
+            "decision_artifacts/_eval/2605092230_ic_cio.r1.claude-haiku-4-5.json"
+        )
+        _setup_paginator_responses(
+            mock_s3["paginator"], dates=[], keys_by_date={}, flat_keys=[flat_key],
+        )
+        mock_s3["fetch_json"].side_effect = lambda b, k: _eval_artifact_payload(
+            scores=[("d1", 4), ("d2", 5)],
+        )
+
+        df = load_eval_artifacts(
+            start_date=date(2026, 5, 1),
+            end_date=date(2026, 5, 31),
+            bucket="test-bucket",
+        )
+        assert len(df) == 2
+        assert set(df["judged_agent_id"]) == {"ic_cio"}
+        assert df["eval_date"].dt.strftime("%Y-%m-%d").unique().tolist() == [
+            "2026-05-09"
+        ]
+
+    def test_latest_json_sidecar_excluded_from_flat_scan(self, mock_s3):
+        """The `latest.json` operator-UX pointer under the flat prefix
+        is not an eval artifact and must not be fetched/parsed."""
+        flat_key = (
+            "decision_artifacts/_eval/2605092230_ic_cio.r1.claude-haiku-4-5.json"
+        )
+        sidecar_key = "decision_artifacts/_eval/latest.json"
+        _setup_paginator_responses(
+            mock_s3["paginator"], dates=[], keys_by_date={},
+            flat_keys=[flat_key, sidecar_key],
+        )
+        mock_s3["fetch_json"].side_effect = lambda b, k: _eval_artifact_payload(
+            scores=[("d1", 4)],
+        )
+
+        load_eval_artifacts(
+            start_date=date(2026, 5, 1),
+            end_date=date(2026, 5, 31),
+            bucket="test-bucket",
+        )
+        fetched_keys = [c.args[1] for c in mock_s3["fetch_json"].call_args_list]
+        assert sidecar_key not in fetched_keys
+        assert flat_key in fetched_keys
+
+    def test_legacy_nested_keys_still_found_alongside_flat(self, mock_s3):
+        """Both layouts contribute rows in the same call — the
+        config#793 cutover must not strand the historical nested
+        corpus."""
+        legacy_date = "2026-04-15"
+        legacy_key = (
+            f"decision_artifacts/_eval/{legacy_date}/ic_cio/"
+            "r0.claude-haiku-4-5.json"
+        )
+        flat_key = (
+            "decision_artifacts/_eval/2605092230_ic_cio.r1.claude-haiku-4-5.json"
+        )
+        _setup_paginator_responses(
+            mock_s3["paginator"],
+            dates=[legacy_date],
+            keys_by_date={legacy_date: [legacy_key]},
+            flat_keys=[flat_key],
+        )
+
+        def fetch(_b, key):
+            if key == legacy_key:
+                return _eval_artifact_payload(
+                    scores=[("d1", 2)], run_id="legacy-run",
+                )
+            return _eval_artifact_payload(scores=[("d1", 4)], run_id="flat-run")
+
+        mock_s3["fetch_json"].side_effect = fetch
+
+        df = load_eval_artifacts(
+            start_date=date(2026, 4, 1),
+            end_date=date(2026, 5, 31),
+            bucket="test-bucket",
+        )
+        assert set(df["run_id"]) == {"legacy-run", "flat-run"}
+        assert set(df["eval_date"].dt.strftime("%Y-%m-%d")) == {
+            "2026-04-15", "2026-05-09",
+        }
+
+    def test_same_key_not_double_counted_if_listed_both_ways(self, mock_s3):
+        """Defensive de-dup: if a key somehow surfaces from both the
+        date-scoped legacy scan and the flat top-level scan (e.g. an
+        operator-migrated file), the loader must not double-count it."""
+        shared_date = "2026-05-09"
+        # A key that lives at a `.../{date}/...` nested path AND happens
+        # to also be returned by the (broad) top-level flat listing —
+        # simulate by placing an otherwise-flat-shaped key one level
+        # under the date prefix so both branches could plausibly see it
+        # if the dedup guard were missing. We assert the loader's `seen`
+        # set collapses it to a single row-set regardless.
+        dup_key = f"decision_artifacts/_eval/{shared_date}/ic_cio/r1.claude-haiku-4-5.json"
+        _setup_paginator_responses(
+            mock_s3["paginator"],
+            dates=[shared_date],
+            keys_by_date={shared_date: [dup_key]},
+            flat_keys=[],  # flat scan yields nothing extra here
+        )
+        mock_s3["fetch_json"].side_effect = lambda b, k: _eval_artifact_payload(
+            scores=[("d1", 4)],
+        )
+
+        df = load_eval_artifacts(
+            start_date=date(2026, 5, 9),
+            end_date=date(2026, 5, 9),
+            bucket="test-bucket",
+        )
+        # One dimension score, one artifact → exactly one row, not two.
+        assert len(df) == 1
+
+    def test_thinktank_agent_id_renders_from_flat_layout(self, mock_s3):
+        """thinktank_thesis / thinktank_theme scores (new since the
+        config#793 cutover) must surface via the flat-layout scan —
+        this is the concrete gap alpha-engine-config#1605 called out."""
+        flat_key = (
+            "decision_artifacts/_eval/2607041000_thinktank_thesis."
+            "r9.claude-sonnet-4-6.json"
+        )
+        _setup_paginator_responses(
+            mock_s3["paginator"], dates=[], keys_by_date={}, flat_keys=[flat_key],
+        )
+
+        def _fetch(b, k):
+            artifact = _eval_artifact_payload(
+                judged_agent_id="thinktank_thesis",
+                judge_model="claude-sonnet-4-6",
+                scores=[("thesis_coherence", 4)],
+            )
+            # First Saturday judge pass producing thinktank flat-layout
+            # evals (config#1605 re-exam date) — override the default
+            # fixture timestamp to fall inside this test's query window.
+            artifact["timestamp"] = "2026-07-04T10:00:00.000Z"
+            return artifact
+
+        mock_s3["fetch_json"].side_effect = _fetch
+
+        df = load_eval_artifacts(
+            start_date=date(2026, 7, 1),
+            end_date=date(2026, 7, 31),
+            bucket="test-bucket",
+        )
+        assert len(df) == 1
+        assert df.iloc[0]["judged_agent_id"] == "thinktank_thesis"
+        assert df.iloc[0]["judge_model"] == "claude-sonnet-4-6"
+
+    def test_flat_key_outside_date_window_excluded(self, mock_s3):
+        """Flat keys carry no date directory, so window filtering
+        happens post-fetch on the artifact's `timestamp` — an artifact
+        whose timestamp falls outside [start, end] must be excluded."""
+        flat_key = (
+            "decision_artifacts/_eval/2601010000_ic_cio.r1.claude-haiku-4-5.json"
+        )
+        _setup_paginator_responses(
+            mock_s3["paginator"], dates=[], keys_by_date={}, flat_keys=[flat_key],
+        )
+        mock_s3["fetch_json"].side_effect = lambda b, k: _eval_artifact_payload(
+            scores=[("d1", 4)],
+        )
+        # _eval_artifact_payload's default timestamp is 2026-05-09,
+        # well outside this window.
+        df = load_eval_artifacts(
+            start_date=date(2026, 6, 1),
+            end_date=date(2026, 6, 30),
+            bucket="test-bucket",
+        )
+        assert df.empty
+
+    def test_non_conforming_flat_key_skipped(self, mock_s3):
+        """A key directly under the prefix that doesn't match the
+        canonical `{10-digit-run_id}_{basename}.json` shape (e.g. a
+        stray/malformed file) must not be treated as an eval artifact."""
+        malformed_key = "decision_artifacts/_eval/not_a_valid_key.json"
+        _setup_paginator_responses(
+            mock_s3["paginator"], dates=[], keys_by_date={},
+            flat_keys=[malformed_key],
+        )
+        df = load_eval_artifacts(
+            start_date=date(2026, 5, 1),
+            end_date=date(2026, 5, 31),
+            bucket="test-bucket",
+        )
+        assert df.empty
+        mock_s3["fetch_json"].assert_not_called()
 
 
 # ── Judge calibration review (ROADMAP L480 SOTA reframe) ──────────────────
