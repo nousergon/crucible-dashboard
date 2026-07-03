@@ -1,5 +1,6 @@
 ---
 import '../styles/global.css';
+import nousErgonViresLogo from '../assets/nous-ergon-vires-logo.webp';
 
 const SITE_URL = 'https://fitness.nousergon.ai';
 const title = 'Vires — strength training that adapts · Nous Ergon';
@@ -99,9 +100,19 @@ const jsonLd = {
       <section class="px-6 pt-16 pb-12 md:pt-24 md:pb-16">
         <div class="max-w-2xl mx-auto flex flex-col items-center text-center">
           <div class="flex flex-col items-center gap-2">
-            <span class="text-4xl md:text-5xl font-semibold tracking-[0.22em] text-zinc-100 uppercase">
-              Vires
-            </span>
+            <!-- Plain <img> on the lossless asset: Astro's <Image> lossy re-encode
+                 shifts the logo's near-black halo off true #000 against the
+                 bg-black page (same fix as the apex site's masthead). -->
+            <img
+              src={nousErgonViresLogo.src}
+              width={nousErgonViresLogo.width}
+              height={nousErgonViresLogo.height}
+              alt="Nous Ergon Vires"
+              class="w-full max-w-[320px] h-auto"
+              loading="eager"
+              decoding="sync"
+              fetchpriority="high"
+            />
             <span class="text-[12px] tracking-[0.14em] text-zinc-500 italic">
               vires acquirit eundo &mdash; it gathers strength as it goes
             </span>
