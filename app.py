@@ -473,6 +473,13 @@ def _build_navigation():
             page("host_cost_usage.py", "Cost & Usage", "💰"),
             page("22_Intraday_Surveillance.py", "Intraday Surveillance", "👁"),
         ],
+        "🎙 Morning Signal": [
+            # Per-date content schedule for the morning-signal podcast:
+            # deep-dive overrides / extra segments / skip days, written to
+            # the schedule manifest the generator consumes (morning-signal
+            # PR #92; contract in loaders/morning_signal_schedule.py).
+            page("45_Morning_Signal_Schedule.py", "Content Schedule", "🗓"),
+        ],
         "📚 Reference": [
             page("host_reference.py", "Reference", "📚"),
         ],

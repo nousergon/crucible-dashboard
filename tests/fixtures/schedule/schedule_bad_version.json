@@ -1,0 +1,9 @@
+{
+  "schema_version": 2,
+  "entries": {
+    "2026-07-04": {
+      "mode": "override",
+      "topic": "Future schema version — consumer must treat as unreadable"
+    }
+  }
+}

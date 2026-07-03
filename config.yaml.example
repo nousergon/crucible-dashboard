@@ -79,3 +79,10 @@ morning_brief:
   material_index_pp: 0.75   # material = |Δ| ≥ N pp in larger of {SPY, QQQ} since last brief
   material_vix_pts: 2.0     # ...OR a VIX jump ≥ N points since last brief
   daily_cap: 8              # hard backstop: ≤ N Haiku calls per trading day
+
+# Morning Signal podcast — Content Schedule editor (views/45). Optional; the
+# loader defaults to the podcast bucket below when the block is absent, so the
+# live per-instance config.yaml needs no edit. The bucket is us-west-2 and the
+# dashboard role's access is scoped to schedule/* only (no episodes/feed).
+morning_signal:
+  bucket: morning-signal-podcast
