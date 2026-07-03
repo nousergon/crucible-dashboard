@@ -440,6 +440,9 @@ def _build_navigation():
             page("host_research_signals.py", "Signals & Research", "🧭"),
             page("host_universe_scanner.py", "Universe & Scanner", "🔭"),
             page("host_agent_reviews.py", "Agent Reviews", "🏛"),
+            # Daily think-tank desk (config#1579): independent 0-100 ratings
+            # vs the scanner composite, thesis browser, themes, run costs.
+            page("44_Think_Tank.py", "Think Tank", "🧠"),
             page("Daily_News.py", "Daily News", "📰"),
         ],
         "🤖 Predictor": [
