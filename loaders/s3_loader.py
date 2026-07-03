@@ -1877,3 +1877,75 @@ def load_claude_code_usage(n_days: int = 35):
                 "cost_usd": sum(r.get("cost_usd", 0.0) for r in models.values()),
             })
     return pd.DataFrame(model_rows), pd.DataFrame(hour_rows)
+
+
+# ---------------------------------------------------------------------------
+# Research Think Tank (data++) — config#1579
+# ---------------------------------------------------------------------------
+
+_THINKTANK_RUNS_PREFIX = "thinktank/runs/"
+
+
+@st.cache_data(ttl=_ttl("research"))
+def load_thinktank_ratings() -> dict | None:
+    """Load the think-tank ratings board (``thinktank/ratings/latest.json``) —
+    one row per covered name: the analyst's independent 0-100 ``rating`` (the
+    model is deliberately never shown the scanner composite), stance,
+    conviction, thesis version/date, plus the scanner ``attractiveness_score``
+    at thesis-write time and the ``rating_minus_attractiveness`` divergence.
+    Producer: crucible-research ``thinktank/ratings.py`` (upserted every daily
+    run). None until the first post-rating run lands."""
+    return download_s3_json(_research_bucket(), "thinktank/ratings/latest.json")
+
+
+@st.cache_data(ttl=_ttl("research"))
+def load_thinktank_thesis(ticker: str, version: int | None = None) -> dict | None:
+    """Load one covered name's thesis — ``latest.json`` or a specific
+    ``v{N}.json``. The ``thesis`` sub-dict carries the narrative sections
+    (business_summary, moat, filings_review, news_sentiment, valuation,
+    market_dynamics, risks, catalysts) + rating/stance/conviction."""
+    key = (
+        f"thinktank/theses/{ticker}/v{version}.json"
+        if version else f"thinktank/theses/{ticker}/latest.json"
+    )
+    return download_s3_json(_research_bucket(), key)
+
+
+@st.cache_data(ttl=_ttl("research"))
+def load_thinktank_theme(kind: str, key: str) -> dict | None:
+    """Load a theme thesis latest (kind='macro', key='macro' — or
+    kind='sector', key=<sector name>). Seed → churn-gated daily update →
+    weekly reconcile lifecycle (crucible-research ``thinktank/themes.py``)."""
+    return download_s3_json(
+        _research_bucket(), f"thinktank/themes/{kind}/{key}/latest.json"
+    )
+
+
+@st.cache_data(ttl=_ttl("research"))
+def list_thinktank_manifest_keys(limit: int = 30) -> list[str]:
+    """Most recent think-tank run-manifest keys, newest first
+    (``thinktank/runs/{trading_day}/manifest_{run_id}.json`` — weekend runs
+    accrue into the last trading day's partition by design)."""
+    bucket = _research_bucket()
+    try:
+        client = get_s3_client()
+        paginator = client.get_paginator("list_objects_v2")
+        keys: list[str] = []
+        for page in paginator.paginate(Bucket=bucket, Prefix=_THINKTANK_RUNS_PREFIX):
+            for obj in page.get("Contents", []):
+                k = obj.get("Key", "")
+                if k.endswith(".json"):
+                    keys.append(k)
+        keys.sort(reverse=True)
+        return keys[:limit]
+    except Exception as e:
+        logger.error("Failed to list thinktank manifest keys: %s", e)
+        _record_s3_error(bucket, _THINKTANK_RUNS_PREFIX, type(e).__name__, str(e))
+        return []
+
+
+@st.cache_data(ttl=_ttl("research"))
+def load_thinktank_month_costs(month: str) -> dict | None:
+    """Load the month cost ledger (``thinktank/costs/{YYYY-MM}.json``) —
+    spent_usd vs the SSM budget cap, one row per run."""
+    return download_s3_json(_research_bucket(), f"thinktank/costs/{month}.json")
