@@ -1,11 +1,26 @@
 """LLM-as-judge eval artifact loader (PR 4d, ROADMAP §1632-1633).
 
-Loads ``decision_artifacts/_eval/{YYYY-MM-DD}/{judged_agent_id}/
-{run_id}.{judge_model}.json`` artifacts from S3 and shapes them into
-a long-format DataFrame the quality-trend page can pivot:
+Loads eval artifacts from S3 and shapes them into a long-format
+DataFrame the quality-trend page can pivot:
 
   | eval_date | judged_agent_id | criterion | score | judge_model |
   | rubric_id | rubric_version  | run_id    | overall_reasoning   |
+
+Eval artifacts live under ``decision_artifacts/_eval/`` in one of two
+layouts (config#793 dual-layout tolerance — mirrors
+``crucible-research/evals/eval_manifest.py::_list_eval_keys``):
+
+* **Canonical flat** (current writes, since config#793) —
+  ``_eval/{judge_run_id}_{judged_agent_id}.{run_id}.{judge_model}.json``
+  directly under the ``_eval/`` prefix, built by
+  ``nousergon_lib.eval_artifacts.eval_artifact_key`` /
+  ``evals/judge.py::build_eval_s3_key``. No date sub-partition — the
+  eval date is read from the artifact payload's own ``timestamp``
+  field instead of the path.
+* **Legacy nested** (pre-config#793, NOT backfilled) —
+  ``_eval/{YYYY-MM-DD}/{judged_agent_id}/{run_id}.{judge_model}.json``.
+  Months of historical forensic artifacts live here; the loader keeps
+  reading them so the config#793 cutover doesn't strand the corpus.
 
 The dashboard page reads the DataFrame directly. Per-page caching
 (``@st.cache_data``) sits on this loader's public function rather
@@ -17,7 +32,8 @@ flipping ticker filters in the UI doesn't re-fetch S3.
 from __future__ import annotations
 
 import logging
-from datetime import date, timedelta
+import re
+from datetime import date, datetime, timedelta
 from typing import Any
 
 import pandas as pd
@@ -33,15 +49,27 @@ logger = logging.getLogger(__name__)
 
 
 _EVAL_PREFIX = "decision_artifacts/_eval/"
+_EVAL_LATEST_FILENAME = "latest.json"
+
+
+_CANONICAL_FLAT_RE = re.compile(r"^(\d{10})_.+\.json$")
+"""Match the canonical flat eval_artifacts basename (config#793), i.e.
+the key tail AFTER the ``_eval/`` prefix:
+``{judge_run_id}_{judged_agent_id}.{run_id}.{judge_model}.json`` where
+``judge_run_id`` is the lib's 10-digit ``YYMMDDHHMM`` run identifier.
+Mirrors ``crucible-research/evals/eval_manifest.py::_CANONICAL_FLAT_RE``
+— matched against the prefix-stripped relative key (must contain no
+further ``/``)."""
 
 
 def _list_eval_dates(bucket: str, *, max_days: int = 180) -> list[str]:
     """Return YYYY-MM-DD subprefix names under decision_artifacts/_eval/.
 
-    Each subprefix corresponds to one eval-pipeline run date. Capped
-    at ``max_days`` so the dashboard never fetches an unbounded
-    history (CloudWatch metric retention is 15 months; the line-chart
-    page rarely needs more than ~6 months of trailing data).
+    Each subprefix corresponds to one LEGACY nested eval-pipeline run
+    date (pre-config#793). Capped at ``max_days`` so the dashboard
+    never fetches an unbounded history (CloudWatch metric retention is
+    15 months; the line-chart page rarely needs more than ~6 months of
+    trailing data).
     """
     client = get_s3_client()
     paginator = client.get_paginator("list_objects_v2")
@@ -62,7 +90,8 @@ def _list_eval_dates(bucket: str, *, max_days: int = 180) -> list[str]:
 
 
 def _list_eval_keys_for_date(bucket: str, eval_date: str) -> list[str]:
-    """Return every eval-artifact JSON key under one date partition."""
+    """Return every LEGACY nested eval-artifact JSON key under one date
+    partition (``_eval/{eval_date}/...``)."""
     client = get_s3_client()
     prefix = f"{_EVAL_PREFIX}{eval_date}/"
     paginator = client.get_paginator("list_objects_v2")
@@ -78,6 +107,69 @@ def _list_eval_keys_for_date(bucket: str, eval_date: str) -> list[str]:
             "[eval_loader] list keys failed for date=%s", eval_date,
         )
     return keys
+
+
+def _list_flat_eval_keys(bucket: str) -> list[str]:
+    """Return every CANONICAL FLAT eval-artifact JSON key directly under
+    ``decision_artifacts/_eval/`` (config#793 layout, no date
+    sub-partition).
+
+    Single top-level LIST of the ``_eval/`` prefix, filtered to keys
+    with no further ``/`` (flat) that match the judge's multi-file
+    basename shape ``{judge_run_id}_{...}.json``. The ``latest.json``
+    operator-UX sidecar is excluded — it's a pointer, not an eval
+    artifact. Mirrors
+    ``crucible-research/evals/eval_manifest.py::_list_eval_keys``'s flat
+    branch (this loader has no date-window-driven S3 LIST scoping for
+    the flat layout, since the flat layout carries no date directory —
+    date filtering happens after fetch, on the artifact payload's own
+    ``timestamp`` field).
+    """
+    client = get_s3_client()
+    paginator = client.get_paginator("list_objects_v2")
+    keys: list[str] = []
+    try:
+        for page in paginator.paginate(Bucket=bucket, Prefix=_EVAL_PREFIX):
+            for obj in page.get("Contents", []):
+                key = obj["Key"]
+                if not key.endswith(".json"):
+                    continue
+                rel = key[len(_EVAL_PREFIX):]
+                # Flat keys live directly under the prefix (no further
+                # "/"). Anything with a "/" is the legacy nested layout
+                # (collected separately via _list_eval_keys_for_date).
+                if "/" in rel:
+                    continue
+                if rel == _EVAL_LATEST_FILENAME:
+                    continue
+                if _CANONICAL_FLAT_RE.match(rel) is None:
+                    continue
+                keys.append(key)
+    except Exception:  # noqa: BLE001
+        logger.exception("[eval_loader] list flat eval keys failed")
+    return keys
+
+
+def _eval_date_from_artifact(artifact: dict[str, Any] | None) -> str | None:
+    """Best-effort ``YYYY-MM-DD`` for a flat-layout eval artifact.
+
+    Flat-layout keys carry no date directory (the date lives inside the
+    ``judge_run_id`` timestamp, not the path), so the eval date is read
+    from the artifact payload's own ``timestamp`` field (judge
+    wall-clock, always present per ``evals/judge.py``'s
+    ``RubricEvalArtifact`` construction). Returns None on any parse
+    failure — callers fall back to skipping the date-window filter for
+    that entry rather than crashing.
+    """
+    if not artifact:
+        return None
+    ts = artifact.get("timestamp")
+    if not ts:
+        return None
+    try:
+        return datetime.fromisoformat(str(ts).replace("Z", "+00:00")).date().isoformat()
+    except (ValueError, TypeError):
+        return None
 
 
 def _explode_eval_artifact(artifact: dict[str, Any], eval_date: str) -> list[dict]:
@@ -105,6 +197,53 @@ def _explode_eval_artifact(artifact: dict[str, Any], eval_date: str) -> list[dic
     return rows
 
 
+def _iter_eval_artifacts_in_window(
+    bkt: str, start: date, end: date,
+) -> list[tuple[str, str, dict]]:
+    """Load every eval artifact in ``[start, end]`` from BOTH layouts.
+
+    Returns a de-duplicated (by S3 key) list of
+    ``(eval_date, s3_key, artifact)`` tuples, tolerant of fetch
+    failures (skipped, not raised — same fail-graceful contract as the
+    individual list/fetch helpers). Legacy nested keys are date-scoped
+    at LIST time (the date IS the path partition); flat keys are
+    listed in full and then filtered post-fetch by the artifact
+    payload's own ``timestamp`` field, since the flat layout carries no
+    date directory.
+    """
+    start_s, end_s = start.isoformat(), end.isoformat()
+    seen: set[str] = set()
+    out: list[tuple[str, str, dict]] = []
+
+    # ── Legacy nested layout — scoped per date subprefix ──────────────
+    for d in _list_eval_dates(bkt):
+        if not (start_s <= d <= end_s):
+            continue
+        for key in _list_eval_keys_for_date(bkt, d):
+            if key in seen:
+                continue
+            seen.add(key)
+            artifact = _fetch_s3_json(bkt, key)
+            if not artifact:
+                continue
+            out.append((d, key, artifact))
+
+    # ── Canonical flat layout — top-level scan, date-filtered post-fetch
+    for key in _list_flat_eval_keys(bkt):
+        if key in seen:
+            continue
+        seen.add(key)
+        artifact = _fetch_s3_json(bkt, key)
+        if not artifact:
+            continue
+        eval_date = _eval_date_from_artifact(artifact)
+        if eval_date is None or not (start_s <= eval_date <= end_s):
+            continue
+        out.append((eval_date, key, artifact))
+
+    return out
+
+
 @st.cache_data(ttl=900)
 def load_eval_artifacts(
     start_date: date | None = None,
@@ -115,6 +254,10 @@ def load_eval_artifacts(
     """Load eval artifacts within ``[start_date, end_date]`` and return
     a long-format DataFrame.
 
+    Reads BOTH the legacy nested layout (date-partitioned,
+    pre-config#793) and the canonical flat layout (current writes,
+    config#793+) — see module docstring.
+
     Defaults: ``end_date`` = today, ``start_date`` = end - 180 days.
     Returns an empty DataFrame with the expected schema when no eval
     artifacts have been written yet (first-run case during PR 4 deploy).
@@ -123,19 +266,9 @@ def load_eval_artifacts(
     end = end_date or date.today()
     start = start_date or (end - timedelta(days=180))
 
-    all_dates = _list_eval_dates(bkt)
-    in_window = [
-        d for d in all_dates
-        if start.isoformat() <= d <= end.isoformat()
-    ]
-
     rows: list[dict] = []
-    for d in in_window:
-        for key in _list_eval_keys_for_date(bkt, d):
-            artifact = _fetch_s3_json(bkt, key)
-            if not artifact:
-                continue
-            rows.extend(_explode_eval_artifact(artifact, d))
+    for eval_date, _key, artifact in _iter_eval_artifacts_in_window(bkt, start, end):
+        rows.extend(_explode_eval_artifact(artifact, eval_date))
 
     columns = [
         "eval_date", "judged_agent_id", "criterion", "score",
@@ -211,38 +344,38 @@ def load_recent_eval_artifacts_for_review(
     Loads the FULL artifact payload (not the long-format DataFrame
     used elsewhere) so the calibration UI can render per-dimension
     reasoning + overall_reasoning verbatim from what the judge saw.
+
+    Reads BOTH the legacy nested layout and the canonical flat layout
+    (config#793) — see module docstring.
     """
     bkt = bucket or _research_bucket()
-    cutoff = (date.today() - timedelta(days=lookback_days)).isoformat()
+    cutoff = date.today() - timedelta(days=lookback_days)
+
     reviewed = set(reviewed_ids or ())
 
     candidates: list[dict] = []
-    for d in _list_eval_dates(bkt):
-        if d < cutoff:
+    for d, key, artifact in _iter_eval_artifacts_in_window(bkt, cutoff, date.today()):
+        if not isinstance(artifact, dict):
             continue
-        for key in _list_eval_keys_for_date(bkt, d):
-            artifact = _fetch_s3_json(bkt, key)
-            if not artifact or not isinstance(artifact, dict):
-                continue
-            # Judge-skipped artifacts (Layer-1 structural skip in
-            # `evals/judge.py`) carry no dimension scores — skip them.
-            if artifact.get("judge_skip_reason"):
-                continue
-            rid = _review_id(
-                d,
-                artifact.get("judged_agent_id", ""),
-                artifact.get("run_id", ""),
-                artifact.get("judge_model", ""),
-            )
-            if rid in reviewed:
-                continue
-            artifact["_review_id"] = rid
-            artifact["_eval_date"] = d
-            artifact["_s3_key"] = key
-            artifact["_uncertainty"] = _score_uncertainty(
-                artifact.get("dimension_scores") or []
-            )
-            candidates.append(artifact)
+        # Judge-skipped artifacts (Layer-1 structural skip in
+        # `evals/judge.py`) carry no dimension scores — skip them.
+        if artifact.get("judge_skip_reason"):
+            continue
+        rid = _review_id(
+            d,
+            artifact.get("judged_agent_id", ""),
+            artifact.get("run_id", ""),
+            artifact.get("judge_model", ""),
+        )
+        if rid in reviewed:
+            continue
+        artifact["_review_id"] = rid
+        artifact["_eval_date"] = d
+        artifact["_s3_key"] = key
+        artifact["_uncertainty"] = _score_uncertainty(
+            artifact.get("dimension_scores") or []
+        )
+        candidates.append(artifact)
 
     # Stratified pick: top-1 per (rubric_id, judged_agent_id) first,
     # then fill remaining slots by global uncertainty rank.
@@ -391,33 +524,35 @@ def load_recent_evals_for_spotcheck(
     set — spot-check is a re-skimmable transparency pass, not a one-shot
     annotation. Judge-skipped artifacts (no dimension scores) are still
     excluded since there is no judge verdict to inspect.
+
+    Reads BOTH the legacy nested layout and the canonical flat layout
+    (config#793) — see module docstring.
     """
     bkt = bucket or _research_bucket()
-    cutoff = (date.today() - timedelta(days=lookback_days)).isoformat()
-    out: list[dict] = []
-    for d in sorted(_list_eval_dates(bkt), reverse=True):
-        if d < cutoff:
+    cutoff = date.today() - timedelta(days=lookback_days)
+
+    by_date: dict[str, list[dict]] = {}
+    for d, key, artifact in _iter_eval_artifacts_in_window(bkt, cutoff, date.today()):
+        if not isinstance(artifact, dict):
             continue
-        day_arts: list[dict] = []
-        for key in _list_eval_keys_for_date(bkt, d):
-            artifact = _fetch_s3_json(bkt, key)
-            if not artifact or not isinstance(artifact, dict):
-                continue
-            if artifact.get("judge_skip_reason"):
-                continue
-            artifact["_review_id"] = _review_id(
-                d,
-                artifact.get("judged_agent_id", ""),
-                artifact.get("run_id", ""),
-                artifact.get("judge_model", ""),
-            )
-            artifact["_eval_date"] = d
-            artifact["_s3_key"] = key
-            artifact["_uncertainty"] = _score_uncertainty(
-                artifact.get("dimension_scores") or []
-            )
-            day_arts.append(artifact)
-        day_arts.sort(key=lambda a: a["_uncertainty"])
+        if artifact.get("judge_skip_reason"):
+            continue
+        artifact["_review_id"] = _review_id(
+            d,
+            artifact.get("judged_agent_id", ""),
+            artifact.get("run_id", ""),
+            artifact.get("judge_model", ""),
+        )
+        artifact["_eval_date"] = d
+        artifact["_s3_key"] = key
+        artifact["_uncertainty"] = _score_uncertainty(
+            artifact.get("dimension_scores") or []
+        )
+        by_date.setdefault(d, []).append(artifact)
+
+    out: list[dict] = []
+    for d in sorted(by_date.keys(), reverse=True):
+        day_arts = sorted(by_date[d], key=lambda a: a["_uncertainty"])
         out.extend(day_arts)
         if len(out) >= n:
             break
