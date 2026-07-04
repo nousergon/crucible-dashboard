@@ -1310,6 +1310,38 @@ def load_predictions_json(date_str: str | None = None) -> dict:
     return {p["ticker"]: p for p in pred_list if "ticker" in p}
 
 
+@st.cache_data(ttl=_ttl("signals"), show_spinner=False)
+def list_predictions_dates() -> list[str]:
+    """Return available predictor predictions dates, newest first.
+
+    Lists flat ``predictor/predictions/{date}.json`` objects in the research
+    bucket (producer: alpha-engine-predictor ``inference/stages/write_output.py``
+    ``write_predictions`` — unchanged by config#856; only the predictor
+    EMAIL was slimmed, this artifact still carries the full payload). Used
+    by the console Predictor page's ``?date=`` deep-link picker; excludes
+    the ``latest.json`` sidecar. Returns [] on any failure.
+    """
+    bucket = _research_bucket()
+    prefix = f"{_PREDICTOR_PREDICTIONS_PREFIX}/"
+    try:
+        client = get_s3_client()
+        paginator = client.get_paginator("list_objects_v2")
+        dates: set[str] = set()
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+            for obj in page.get("Contents", []):
+                k = obj.get("Key", "")
+                stem = k[len(prefix):]
+                if stem.endswith(".json") and stem != "latest.json":
+                    seg = stem[: -len(".json")]
+                    if ISO_DATE_PATTERN.match(seg):
+                        dates.add(seg)
+        return sorted(dates, reverse=True)
+    except Exception as e:
+        logger.error("Failed to list predictor predictions dates: %s", e)
+        _record_s3_error(bucket, prefix, type(e).__name__, str(e))
+        return []
+
+
 def load_predictor_metrics() -> dict:
     """Load predictor metrics from S3. Returns {} on any failure."""
     data = _fetch_s3_json(_research_bucket(), f"{_PREDICTOR_METRICS_PREFIX}/latest.json")
