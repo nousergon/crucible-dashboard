@@ -1,6 +1,6 @@
 name: deploy-marketing
 
-# Deploys the six Astro static sites to their Cloudflare Pages projects on
+# Deploys the seven Astro static sites to their Cloudflare Pages projects on
 # push to main — the durable replacement for the CF git-integration, which was
 # observed silently NOT firing on merge (config#1317: nousergon.ai served stale
 # copy for a week after a merge because no CF build triggered). Deploy lives in
@@ -180,6 +180,25 @@ jobs:
         run: |
           npm ci
           npm run build
+
+      # wrangler pages deploy requires the CF Pages project to ALREADY exist —
+      # it does NOT auto-create. Adding a site to the matrix must be sufficient
+      # to ship it; provisioning was an undocumented manual dashboard click, so
+      # telos first-deploy went red 'Project not found [8000007]' (2026-07-05).
+      - name: Ensure Cloudflare Pages project exists (idempotent self-provision)
+        if: matrix.changed == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          proj="${{ matrix.project }}"
+          if npx --yes wrangler@3.90.0 pages project list 2>/dev/null \
+              | grep -qE "(^|[[:space:]])${proj}([[:space:]]|$)"; then
+            echo "Cloudflare Pages project ${proj} already exists — nothing to do."
+          else
+            echo "Creating Cloudflare Pages project ${proj} (Direct Upload, prod branch main)."
+            npx --yes wrangler@3.90.0 pages project create "${proj}" --production-branch=main
+          fi
 
       - name: Deploy to Cloudflare Pages (production)
         if: matrix.changed == 'true'
