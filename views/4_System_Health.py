@@ -153,7 +153,8 @@ if _freshness_heartbeat is not None:
     )
     st.caption(
         f"Last run: `{_last_run}` — full per-artifact detail at "
-        "[/Artifact_Freshness](/Artifact_Freshness)."
+        "[/Artifact_Freshness](/Artifact_Freshness). "
+        "Only **critical** misses page; **warning** rows are console-only."
     )
     st.divider()
 
