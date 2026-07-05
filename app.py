@@ -87,16 +87,11 @@ st.set_page_config(
 # ---------------------------------------------------------------------------
 
 
-# (module, bucket, stale_after_hrs) — weekly Saturday-pipeline modules are
-# legitimately up to ~7 days old by Friday; daily modules span weekends
-# (Fri EOD → Mon run ≈ 67h, +24h on holiday Mondays).
-HEALTH_MODULES = [
-    ("research", "research", 8 * 24),
-    ("predictor_training", "research", 8 * 24),
-    ("predictor_inference", "research", 4 * 24),
-    ("executor", "research", 4 * 24),
-    ("eod_reconcile", "trades", 4 * 24),
-]
+from nousergon_lib.health import DASHBOARD_HEALTH_MODULES
+
+
+# (module, bucket, stale_after_hrs) — derived from lib (config#1728).
+HEALTH_MODULES = list(DASHBOARD_HEALTH_MODULES)
 
 
 @st.cache_data(ttl=900)
