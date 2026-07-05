@@ -83,4 +83,4 @@ krepis>=0.10.0
 # test imports nousergon_lib.quant.horizon_guard (the shared ratchet
 # primitive lifted to the lib on the second adoption, nousergon-lib#149,
 # 0.78.0). v0.79.0 is a strict superset of both (and of everything below).
-nousergon-lib[flow-doctor] @ git+https://github.com/nousergon/nousergon-lib@v0.81.1
+nousergon-lib[flow-doctor] @ git+https://github.com/nousergon/nousergon-lib@v0.82.0
