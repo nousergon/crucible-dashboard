@@ -475,6 +475,18 @@ def _build_navigation():
         ],
         "🩺 System & Ops": [
             page("host_system_health.py", "System Health", "🩺"),
+            # url_path pinned to "pipeline-status" — the Step Function
+            # failure/complete notifications (nousergon-data) deep-link to
+            # …/pipeline-status?run=<execution-name> ($$.Execution.Name). So
+            # app.py MUST register this standalone st.Page with
+            # url_path="pipeline-status" and the page MUST honor ?run=.
+            # Guarded by tests/test_pipeline_status_page.py. Standalone (not a
+            # host tab) so the slug lives on the page, like director /
+            # eod-report / model-zoo / analysis.
+            st.Page(
+                "views/25_Pipeline_Status.py", title="Pipeline Status", icon="🚦",
+                url_path="pipeline-status",
+            ),
             page("host_observability.py", "Observability", "⏱"),
             page("host_cost_usage.py", "Cost & Usage", "💰"),
             page("22_Intraday_Surveillance.py", "Intraday Surveillance", "👁"),
