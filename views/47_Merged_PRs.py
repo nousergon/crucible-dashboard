@@ -106,6 +106,6 @@ st.markdown(
     "- **Recorded** — S3 entry written by ``record_agent_merge.py`` at merge time "
     "(authoritative).  \n"
     "- **labeled** — PR carries the ``agent-merged`` label.  \n"
-    "- **heuristic-groom** — groom title prefix ``[P0``–``[P3]`` (may mis-classify).  \n"
-    "- **default** — treated as human when no agent signal exists."
+    "- **default** — human unless S3/label says agent (groom-style ``[P2/high]`` "
+    "titles are NOT inferred as agent)."
 )
