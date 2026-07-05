@@ -276,8 +276,8 @@ class TestLibVersionPin:
             "nousergon_lib import alias still works via the shim)"
         )
         assert "@main" not in text, "nousergon-lib must be pinned to a tag, not @main"
-        assert "@v0.82.0" in text, (
-            "nousergon-lib should pin to v0.82.0 (flow-doctor>=0.8.0 notify_on_category "
+        assert "@v0.83.0" in text, (
+            "nousergon-lib should pin to v0.83.0 (flow-doctor>=0.8.0 notify_on_category "
             "for config#1695 GitHub category-gate; supersedes v0.81.1). "
             "the EOD SF's RefreshExecutorDeploy top-of-pipeline executor-"
             "checkout refresh chokepoint (config#1549) + its "
