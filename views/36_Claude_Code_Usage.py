@@ -29,6 +29,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+from krepis.usage_pacing import reset_window
 
 from loaders.s3_loader import load_claude_code_usage
 
@@ -46,18 +47,12 @@ WEEKLY_WET_CEILING = 1_140_000_000
 # instant from /usage (2026-06-28 8:59pm America/Los_Angeles); the current window
 # is [most recent reset <= now, next reset). Buckets are PT, so we work in PT.
 # If Anthropic ever shifts the reset cadence, update this anchor from /usage.
+# Window math itself is the shared krepis.usage_pacing.reset_window primitive
+# (config#1351 / config#1722) — also consumed by alpha-engine-config's
+# scripts/groom_budget.py, so the two stay bit-for-bit in sync.
 _PT = ZoneInfo("America/Los_Angeles")
 WEEKLY_RESET_ANCHOR = datetime(2026, 6, 28, 20, 59)   # PT, naive
 WEEKLY_PERIOD = timedelta(days=7)
-
-
-def _current_week_window(now_pt: datetime) -> tuple[datetime, datetime]:
-    """Return (window_start, next_reset) for the reset cycle containing now_pt."""
-    k = (now_pt - WEEKLY_RESET_ANCHOR) // WEEKLY_PERIOD
-    start = WEEKLY_RESET_ANCHOR + k * WEEKLY_PERIOD
-    if start > now_pt:
-        start -= WEEKLY_PERIOD
-    return start, start + WEEKLY_PERIOD
 
 
 def _wet_since(df_hour: pd.DataFrame, df_model: pd.DataFrame, start: datetime) -> float:
@@ -88,7 +83,7 @@ if df_model.empty:
     st.stop()
 
 now_pt = datetime.now(_PT).replace(tzinfo=None)
-win_start, next_reset = _current_week_window(now_pt)
+win_start, next_reset = reset_window(now_pt, WEEKLY_RESET_ANCHOR, WEEKLY_PERIOD)
 week_wet = _wet_since(df_hour, df_model, win_start)
 roll = df_model[df_model["date"] >= (now_pt.date() - timedelta(days=6)).isoformat()]["wet"].sum()
 pct = (week_wet / WEEKLY_WET_CEILING) if WEEKLY_WET_CEILING else 0.0
