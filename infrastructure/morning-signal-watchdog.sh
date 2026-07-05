@@ -12,7 +12,7 @@
 #
 # This wrapper runs `morning-signal watchdog` (which checks the *deliverable* —
 # is today's episode present + fresh in S3). On ANY non-zero exit, including a
-# bootstrap failure, it alerts via nousergon_lib.alerts from THIS box's own
+# bootstrap failure, it alerts via krepis.alerts from THIS box's own
 # identity (instance role), which is INDEPENDENT of morning-signal-runner-role —
 # so a runner-role break (the silent class) still pages. Mirrors box_health.sh.
 #
@@ -33,7 +33,7 @@ export AWS_REGION="${AWS_REGION:-us-east-1}"
 # user is NOT a principal in morning-signal-runner-role's trust policy — only
 # this box's instance role (alpha-engine-dashboard-role) is. Drop the user creds
 # so boto3 falls back to the instance role: the watchdog's AssumeRole then
-# succeeds, and nousergon_lib.alerts' SNS publish still works (the instance
+# succeeds, and krepis.alerts' SNS publish still works (the instance
 # role holds alpha-engine-sns-publish). Telegram uses its bot token, not AWS.
 unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
 
@@ -61,7 +61,10 @@ echo "morning-signal-watchdog: FAIL ($day, rc=$rc)" >&2
 echo "$out" >&2
 
 # Per-day dedup key → a persistent miss pages once for the day, not per run.
-"$DASH_PY" -m nousergon_lib.alerts publish \
+# krepis.alerts is the canonical CLI (config#1649): nousergon_lib.alerts is a
+# re-export shim since lib v0.66.0 — guard-less under `python -m` on 0.81.0
+# (silent exit-0 no-op, the config#1646 class). Invoke the real module.
+"$DASH_PY" -m krepis.alerts publish \
     --message "🚨 Morning Signal: today's episode ($day) did NOT publish (watchdog exit=$rc). Detail: $out" \
     --severity warning \
     --source morning-signal-watchdog \
