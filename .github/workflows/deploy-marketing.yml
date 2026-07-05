@@ -14,6 +14,7 @@ name: deploy-marketing
 #   marketing-vires  -> nousergon-vires     -> fitness.nousergon.ai (vires.nousergon.ai = the live Vires APP, never attach it here)
 #   marketing-finance-> nousergon-finance   -> finance.nousergon.ai
 #   marketing-dev    -> nousergon-dev       -> dev.nousergon.ai
+#   marketing-telos  -> nousergon-telos     -> telos.nousergon.ai (/dash via Worker)
 #
 # IMPORTANT: the deploy step runs INSIDE each site directory (workingDirectory)
 # and deploys `dist` as a relative path. `wrangler pages deploy` only bundles a
@@ -44,6 +45,7 @@ on:
       - marketing-vires/**
       - marketing-finance/**
       - marketing-dev/**
+      - marketing-telos/**
       - blog/**
       - .github/workflows/deploy-marketing.yml
   workflow_dispatch:
@@ -66,6 +68,7 @@ jobs:
       vires: ${{ steps.decide.outputs.vires }}
       finance: ${{ steps.decide.outputs.finance }}
       dev: ${{ steps.decide.outputs.dev }}
+      telos: ${{ steps.decide.outputs.telos }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -95,6 +98,9 @@ jobs:
             dev:
               - 'marketing-dev/**'
               - '.github/workflows/deploy-marketing.yml'
+            telos:
+              - 'marketing-telos/**'
+              - '.github/workflows/deploy-marketing.yml'
       - name: Decide (force-all on manual dispatch)
         id: decide
         run: |
@@ -105,6 +111,7 @@ jobs:
             echo "vires=true"    >> "$GITHUB_OUTPUT"
             echo "finance=true"  >> "$GITHUB_OUTPUT"
             echo "dev=true"      >> "$GITHUB_OUTPUT"
+            echo "telos=true"    >> "$GITHUB_OUTPUT"
           else
             echo "apex=${{ steps.filter.outputs.apex }}"         >> "$GITHUB_OUTPUT"
             echo "crucible=${{ steps.filter.outputs.crucible }}" >> "$GITHUB_OUTPUT"
@@ -112,6 +119,7 @@ jobs:
             echo "vires=${{ steps.filter.outputs.vires }}"       >> "$GITHUB_OUTPUT"
             echo "finance=${{ steps.filter.outputs.finance }}"   >> "$GITHUB_OUTPUT"
             echo "dev=${{ steps.filter.outputs.dev }}"           >> "$GITHUB_OUTPUT"
+            echo "telos=${{ steps.filter.outputs.telos }}"       >> "$GITHUB_OUTPUT"
           fi
 
   deploy:
@@ -148,6 +156,10 @@ jobs:
           - site: marketing-dev
             project: nousergon-dev
             changed: ${{ needs.changes.outputs.dev }}
+            has_functions: false
+          - site: marketing-telos
+            project: nousergon-telos
+            changed: ${{ needs.changes.outputs.telos }}
             has_functions: false
     steps:
       - name: Checkout

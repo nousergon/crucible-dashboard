@@ -1,0 +1,59 @@
+---
+import '../styles/global.css';
+
+const SITE_URL = 'https://telos.nousergon.ai';
+const title = 'Telos — deterministic personal tax engine · Nous Ergon';
+const description =
+  'Telos is a deterministic personal tax engine from Nous Ergon — year-round federal projection, every computed line traceable to its inputs.';
+---
+
+<!doctype html>
+<html lang="en" class="bg-black text-zinc-200 antialiased">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="canonical" href={SITE_URL} />
+    <meta name="description" content={description} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content={SITE_URL} />
+    <title>{title}</title>
+  </head>
+  <body class="min-h-screen flex flex-col font-sans">
+    <main class="flex-1 px-6 py-20">
+      <div class="max-w-2xl mx-auto text-center">
+        <p class="text-[11px] uppercase tracking-[0.22em] text-sky-400">Nous Ergon</p>
+        <h1 class="mt-4 text-4xl font-semibold tracking-tight">Telos</h1>
+        <p class="mt-4 text-lg text-zinc-400 leading-relaxed">
+          A deterministic personal tax engine — year-round federal projection, safe-harbor installments,
+          and investment gains from Metron. Every line traceable; descriptive, not advice.
+        </p>
+        <div class="mt-10 flex flex-col sm:flex-row items-center justify-center gap-4">
+          <a
+            href="/dash"
+            class="inline-flex items-center justify-center rounded-md bg-sky-600 px-6 py-3 text-sm font-medium text-white hover:bg-sky-500"
+          >
+            Open dashboard →
+          </a>
+          <a
+            href="https://github.com/nousergon/telos"
+            class="inline-flex items-center justify-center rounded-md border border-zinc-700 px-6 py-3 text-sm text-zinc-300 hover:border-zinc-500"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            GitHub
+          </a>
+        </div>
+        <p class="mt-12 text-xs text-zinc-500">
+          In development — not part of the Metron beta. The dashboard is operator-only (Cloudflare Access).
+        </p>
+      </div>
+    </main>
+    <footer class="px-6 py-8 text-center text-xs text-zinc-500 border-t border-zinc-900">
+      <a href="https://nousergon.ai/" class="hover:text-zinc-300">Nous Ergon</a>
+      ·
+      <a href="https://finance.nousergon.ai/" class="hover:text-zinc-300">Finance</a>
+    </footer>
+  </body>
+</html>
