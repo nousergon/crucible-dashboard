@@ -36,12 +36,14 @@ class TestClassifyMergeSource:
         }
         assert pr_merge_loader.classify_merge_source(row, {}) == ("agent", "labeled")
 
-    def test_groom_title_heuristic(self):
+    def test_groom_title_prefix_defaults_human_without_record(self):
+        # Groom PRs often carry [P0–P3]/tier titles — humans merge these too.
         row = {
-            "repo": "nousergon/alpha-engine-config", "number": 4,
-            "title": "[P1/mid] fix groom latch", "author": "cipher813", "labels": [],
+            "repo": "nousergon/telos", "number": 19,
+            "title": "[P2/high] feat(engine): Form 2210 penalty",
+            "author": "cipher813", "labels": [],
         }
-        assert pr_merge_loader.classify_merge_source(row, {}) == ("agent", "heuristic-groom")
+        assert pr_merge_loader.classify_merge_source(row, {}) == ("human", "default")
 
     def test_default_human(self):
         row = {

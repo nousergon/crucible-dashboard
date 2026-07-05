@@ -7,7 +7,8 @@ Authoritative agent-vs-human overrides live in S3 at
 (because ``mergedBy`` is always ``cipher813`` when using the operator PAT).
 
 Heuristic fallbacks (lower confidence): ``agent-merged`` label, Dependabot
-author, groom title prefix ``[P0``–``[P3``.
+author. Agent merges MUST be recorded in S3 (or labeled) — groom-style title
+prefixes like ``[P2/high]`` are NOT used as agent signals (humans merge those too).
 """
 
 from __future__ import annotations
@@ -15,7 +16,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import subprocess
 import urllib.error
 import urllib.parse
@@ -30,7 +30,6 @@ from loaders.s3_loader import _fetch_s3_json, _research_bucket
 logger = logging.getLogger(__name__)
 
 _ATTRIBUTION_KEY = "ops/pr_merge_attribution/latest.json"
-_GROOM_TITLE = re.compile(r"^\[P[0-3]")
 
 
 def _github_token() -> str | None:
@@ -110,10 +109,6 @@ def classify_merge_source(
         return "bot", "inferred"
     if "agent-merged" in labels:
         return "agent", "labeled"
-
-    title = row.get("title") or ""
-    if _GROOM_TITLE.match(title):
-        return "agent", "heuristic-groom"
 
     return "human", "default"
 
