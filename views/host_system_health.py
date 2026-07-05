@@ -16,6 +16,7 @@ render_host(
         # would move the slug onto the host and break the deep-link guard.
         ("Saturday SF Watch", "37_Saturday_SF_Watch.py"),
         ("Backlog Groom", "42_Backlog_Groom.py"),
+        ("Merged PRs", "47_Merged_PRs.py"),
     ],
     key="host_system_health",
 )
