@@ -11,6 +11,7 @@ render_host(
         ("Pipeline Status", "25_Pipeline_Status.py"),
         ("Saturday SF Watch", "37_Saturday_SF_Watch.py"),
         ("Backlog Groom", "42_Backlog_Groom.py"),
+        ("Merged PRs", "47_Merged_PRs.py"),
     ],
     key="host_system_health",
 )
