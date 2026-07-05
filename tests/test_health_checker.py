@@ -111,7 +111,7 @@ class TestCheckAll:
         assert "daily_closes" in check_names
 
         # Module health markers
-        assert "health/data_phase1" in check_names
+        assert "health/data" in check_names
         assert "health/executor" in check_names
 
     @patch("health_checker.boto3")
@@ -323,7 +323,7 @@ class TestPerModuleHealthCandidates:
             if Key == "health/predictor_health_check.json":
                 # older — should NOT win
                 return {"LastModified": datetime.now(timezone.utc) - timedelta(days=3)}
-            if Key == "health/data_phase1.json":
+            if Key == "health/daily_data.json":
                 return {"LastModified": datetime.now(timezone.utc) - timedelta(hours=1)}
             if Key == "health/executor.json":
                 return {"LastModified": datetime.now(timezone.utc) - timedelta(days=1)}
