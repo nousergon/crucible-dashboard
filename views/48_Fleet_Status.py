@@ -37,12 +37,27 @@ st.caption(
 )
 
 
+# Deep-link slugs → console URL paths. st.page_link is NOT usable here:
+# it only accepts pages registered in st.navigation, and post nav-collapse
+# (dashboard#273) Artifact Freshness / Backlog Groom are view-host TABS
+# (shared/view_host.py, ?tab=<label> round-trip), not registered pages —
+# page_link raised StreamlitPageNotFoundError in production (2026-07-06).
+# Markdown page links navigate fine for both registered slugs and
+# host-page?tab= URLs. Targets guarded by
+# tests/test_fleet_status_page.py::TestDeepLinkTargets.
+_URL_BY_SLUG = {
+    "pipeline-status": "pipeline-status",  # standalone st.Page, pinned slug
+    "artifact-freshness": "host_observability?tab=Artifact+Freshness",
+    "backlog-groom": "host_system_health?tab=Backlog+Groom",
+}
+
+
 def _render_row(s: ComponentStatus) -> None:
     c_dot, c_reason, c_when = st.columns([3, 5, 2])
     with c_dot:
-        if s.deep_link:
-            st.page_link(f"views/{_PAGE_BY_SLUG[s.deep_link]}",
-                         label=f"{s.icon} **{s.label}**")
+        url = _URL_BY_SLUG.get(s.deep_link) if s.deep_link else None
+        if url:
+            st.markdown(f"[{s.icon} **{s.label}**](/{url})")
         else:
             st.markdown(f"{s.icon} **{s.label}**")
     with c_reason:
@@ -56,15 +71,6 @@ def _render_row(s: ComponentStatus) -> None:
                 pd.DataFrame(list(s.detail)),
                 use_container_width=True, hide_index=True,
             )
-
-
-# Deep-link slugs → view scripts (st.page_link wants the script path; slugs
-# here are the pinned url_paths of the standalone pages plus host-tab pages).
-_PAGE_BY_SLUG = {
-    "pipeline-status": "25_Pipeline_Status.py",
-    "artifact-freshness": "26_Artifact_Freshness.py",
-    "backlog-groom": "42_Backlog_Groom.py",
-}
 
 
 @st.fragment(run_every="30s")
