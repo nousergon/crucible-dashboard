@@ -131,6 +131,19 @@ if sudo -u ec2-user git diff "${CURRENT_SHA}~1" "$CURRENT_SHA" -- $MS_UNIT_PATHS
     log "re-installed morning-signal core units"
 fi
 
+# ── 2d. Re-install morning-signal OSS bakeoff units if they changed ────────
+# The weekly Phase B shadow-bakeoff (config#1659) timer/service, same
+# conditional-on-diff auto-deploy as 2b/2c above -- including on FIRST
+# introduction, since a brand-new file counts as a diff (`+` lines), so this
+# also handles the initial rollout without a manual on-box step.
+BAKEOFF_UNIT_PATHS="infrastructure/systemd/morning-signal-bakeoff.service infrastructure/systemd/morning-signal-bakeoff.timer infrastructure/install-morning-signal-bakeoff.sh"
+if sudo -u ec2-user git diff "${CURRENT_SHA}~1" "$CURRENT_SHA" -- $BAKEOFF_UNIT_PATHS 2>/dev/null | grep -q '^[+-]'; then
+    log "morning-signal bakeoff units changed — re-installing"
+    bash "$REPO_DIR/infrastructure/install-morning-signal-bakeoff.sh" >>"$LOG" 2>&1 \
+        || fail "install-morning-signal-bakeoff.sh"
+    log "re-installed morning-signal bakeoff units"
+fi
+
 # ── 3. Restart both streamlit services (we are root) ───────────────────────
 # Both services run from this same repo. Two-second stagger avoids a
 # simultaneous blip on console + live site.
