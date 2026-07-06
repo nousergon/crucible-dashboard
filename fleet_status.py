@@ -455,12 +455,12 @@ def resolve_groomer(inp: FleetInputs) -> ComponentStatus:
     if idle <= GROOM_IDLE_WARN:
         return ComponentStatus(
             cid, label, GROUP_JOBS, YELLOW,
-            f"no groom run in {_ago(inp.now, g.last_run_start)} (cadence is 3×/day)",
+            f"last run {_ago(inp.now, g.last_run_start)} (cadence is 3×/day)",
             g.last_run_start, deep_link="backlog-groom",
         )
     return ComponentStatus(
         cid, label, GROUP_JOBS, RED,
-        f"no groom run in {_ago(inp.now, g.last_run_start)} (cadence is 3×/day)",
+        f"last run {_ago(inp.now, g.last_run_start)} (cadence is 3×/day)",
         g.last_run_start, deep_link="backlog-groom",
     )
 
