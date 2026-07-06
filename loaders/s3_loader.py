@@ -700,6 +700,46 @@ def load_groom_run(key: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+_GROOM_USAGE_PREFIX = "claude_code_usage/groom/"
+
+
+@st.cache_data(ttl=_ttl("research"))
+def list_groom_usage_records(days: int = 21) -> list[dict]:
+    """Lightweight index of groom usage files for run-efficiency joins.
+
+    Returns dicts with key, wet, total, cache_read, cache_read_pct, ts — see
+    ``loaders.groom_efficiency.usage_record_from_doc``. Skips manual-reset
+    offset files.
+    """
+    import datetime as _dt
+    from loaders.groom_efficiency import usage_record_from_doc
+
+    bucket = _research_bucket()
+    cutoff = (_dt.date.today() - _dt.timedelta(days=days)).isoformat()
+    out: list[dict] = []
+    try:
+        client = get_s3_client()
+        paginator = client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=bucket, Prefix=_GROOM_USAGE_PREFIX):
+            for obj in page.get("Contents", []):
+                key = obj.get("Key", "")
+                parts = key[len(_GROOM_USAGE_PREFIX):].split("/")
+                if len(parts) != 2 or not key.endswith(".json"):
+                    continue
+                if parts[0] < cutoff:
+                    continue
+                doc = _fetch_s3_json(bucket, key)
+                if not isinstance(doc, dict):
+                    continue
+                rec = usage_record_from_doc(key, doc)
+                if rec:
+                    out.append(rec)
+    except Exception as e:
+        logger.error("list_groom_usage_records failed: %s", e)
+        _record_s3_error(bucket, _GROOM_USAGE_PREFIX, type(e).__name__, str(e))
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Saturday Integrity gate (Sat→Mon swallow safeguard — config#1227 §8 / #1244)
 # ---------------------------------------------------------------------------

@@ -29,7 +29,16 @@ import streamlit as st
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from loaders.s3_loader import list_groom_run_keys, load_groom_run  # noqa: E402
+from loaders.groom_efficiency import (  # noqa: E402
+    compute_efficiency,
+    format_efficiency_row,
+    match_usage_for_run,
+)
+from loaders.s3_loader import (  # noqa: E402
+    list_groom_run_keys,
+    list_groom_usage_records,
+    load_groom_run,
+)
 
 _DISPOSITION_LABEL: dict[str, str] = {
     "closed": "✅ closed",
@@ -74,7 +83,10 @@ if not keys:
 # GETs and re-renders free within the TTL. ──────────────────────────────────
 _HISTORY_N = 12
 _DIGEST_ISSUE_URL = "https://github.com/nousergon/alpha-engine-config/issues/{n}"
+usage_index = list_groom_usage_records()
+assigned_usage: set[str] = set()
 history_rows = []
+run_efficiency: dict[str, dict] = {}
 for k in keys[:_HISTORY_N]:
     run = load_groom_run(k)
     if not run:
@@ -84,6 +96,12 @@ for k in keys[:_HISTORY_N]:
               for d in ("closed", "pr_opened", "commented", "untouched")}
     soft = run.get("soft_limit_min") or 0
     digest_n = run.get("digest_issue") or 0
+    usage = match_usage_for_run(k, run, usage_index, assigned=assigned_usage)
+    if usage:
+        assigned_usage.add(usage["key"])
+    eff = compute_efficiency(run, run_issues, usage)
+    run_efficiency[k] = eff
+    eff_cols = format_efficiency_row(eff)
     history_rows.append({
         "Run": _run_label(k),
         "Tier": run.get("issue_filter", "—"),
@@ -95,11 +113,18 @@ for k in keys[:_HISTORY_N]:
         "💬 comm.": counts["commented"],
         "⚠️ unt.": counts["untouched"],
         "Budget (min)": f"{run.get('elapsed_min') or 0}/{soft}" if soft else "—",
+        **eff_cols,
         "Digest": _DIGEST_ISSUE_URL.format(n=digest_n) if digest_n else None,
     })
 
 st.subheader("Run history")
 if history_rows:
+    st.caption(
+        "**WET** / **WET/eng** / **iss/min** join run artifacts to "
+        "`claude_code_usage/groom/` by date + nearest end-time (spot runs use "
+        "different IDs than the artifact key). **Efficiency** flags high "
+        "untouched %, WET/issue, or slow throughput vs tier baselines."
+    )
     st.dataframe(
         pd.DataFrame(history_rows),
         use_container_width=True,
@@ -131,11 +156,62 @@ n_pr = sum(1 for i in issues if i.get("disposition") == "pr_opened")
 n_commented = sum(1 for i in issues if i.get("disposition") == "commented")
 n_untouched = sum(1 for i in issues if i.get("disposition") == "untouched")
 
+# Efficiency for selected run (reuse history cache when present)
+if selected_key in run_efficiency:
+    sel_eff = run_efficiency[selected_key]
+else:
+    sel_usage = match_usage_for_run(selected_key, data, usage_index)
+    sel_eff = compute_efficiency(data, issues, sel_usage)
+
 with col_meta:
     st.caption(
         f"Model: **{data.get('model', '—')}** · Filter: **{data.get('issue_filter', '—')}** · "
         f"Stop reason: {data.get('stop_reason', '—')}"
     )
+
+st.subheader("Token efficiency")
+if sel_eff.get("usage_matched"):
+    e1, e2, e3, e4, e5, e6 = st.columns(6)
+    wet = sel_eff.get("wet")
+    e1.metric("Run WET", f"{wet/1e6:.1f}M" if wet is not None else "—",
+              help="Weighted effective tokens for this groom run (from usage capture).")
+    wpe = sel_eff.get("wet_per_engaged")
+    e2.metric("WET / engaged", f"{wpe/1e3:.0f}K" if wpe is not None else "—",
+              help="Token cost per dispositioned issue — primary efficiency ratio.")
+    wph = sel_eff.get("wet_per_hard")
+    e3.metric("WET / hard outcome", f"{wph/1e3:.0f}K" if wph is not None else "—",
+              help="WET per close or PR opened (undefined when none).")
+    thr = sel_eff.get("throughput")
+    e4.metric("Throughput", f"{thr:.2f}/min" if thr is not None else "—",
+              help="Engaged issues per elapsed minute.")
+    cr = sel_eff.get("cache_read_pct")
+    e5.metric("Cache-read %", f"{cr:.0f}%" if cr is not None else "—",
+              help="Share of raw tokens that were cache reads (high = good).")
+    hr = sel_eff.get("hard_rate")
+    e6.metric("Hard-outcome rate", f"{hr*100:.0f}%" if hr is not None else "—",
+              help="(closes + PRs) / engaged — comment-only runs skew low on Opus.")
+    r1, r2, r3 = st.columns(3)
+    dr = sel_eff.get("disposition_rate")
+    r1.metric("Disposition rate", f"{dr*100:.0f}%" if dr is not None else "—",
+              help="Engaged / queued — coverage quality.")
+    cr2 = sel_eff.get("comment_rate")
+    r2.metric("Comment-only rate", f"{cr2*100:.0f}%" if cr2 is not None else "—",
+              help="Commented / engaged — high on verify-heavy Opus runs.")
+    uf = sel_eff.get("untouched_frac")
+    r3.metric("Untouched rate", f"{uf*100:.0f}%" if uf is not None else "—",
+              help="Untouched / queued — should stay near 0.")
+    if sel_eff.get("alerts"):
+        st.warning("Efficiency flags: " + "; ".join(sel_eff["alerts"]))
+    else:
+        st.caption(f"Usage matched: `{sel_eff.get('usage_key', '—')}`")
+else:
+    st.caption(
+        "🛈 No groom usage file matched this run (pre-2026-07-02 capture gap, or "
+        "usage capture failed). Token efficiency metrics need "
+        "`claude_code_usage/groom/{date}/*.json` from the spot bootstrap step."
+    )
+    if sel_eff.get("alerts"):
+        st.warning("Outcome flags (no usage join): " + "; ".join(sel_eff["alerts"]))
 
 # ── Budget vs consumed (config#1569; schema_version >= 2 only — older runs ──
 # never captured these fields, so soft_limit_min is 0/absent for them) ───────
