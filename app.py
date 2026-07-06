@@ -147,6 +147,25 @@ def _status_icon(status: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _render_fleet_strip() -> None:
+    """Compact fleet dot-strip (views/48_Fleet_Status.py's resolver over the
+    same 25s-cached loader snapshot) + link to the full live grid. Any
+    gathering failure renders in-line by name — visible degrade, never a
+    silently absent strip (feedback_no_silent_fails)."""
+    try:
+        from fleet_status import resolve_fleet
+        from loaders.fleet_status_loader import gather_fleet_inputs
+
+        statuses = resolve_fleet(gather_fleet_inputs())
+    except Exception as exc:  # noqa: BLE001 — degraded strip must not take
+        # down the console home; the failure is rendered, not swallowed.
+        st.caption(f"⚠️ Fleet status unavailable — {type(exc).__name__}: {exc}")
+        return
+    parts = [f"{s.icon} {s.label.split(' (')[0]}" for s in statuses]
+    st.markdown(" &nbsp;·&nbsp; ".join(parts))
+    st.page_link("views/48_Fleet_Status.py", label="Open Fleet Status (live) →", icon="🛰")
+
+
 def _render_status_banner(health_rows: list[dict]) -> None:
     """One compact row with colored badges for each module."""
     cols = st.columns(len(health_rows))
@@ -360,6 +379,10 @@ def main() -> None:
         predictor_metrics = load_predictor_metrics()
         health_rows = _load_module_health()
 
+    st.subheader("Fleet Status")
+    _render_fleet_strip()
+
+    st.divider()
     st.subheader("Pipeline Status")
     _render_status_banner(health_rows)
 
@@ -469,6 +492,16 @@ def _build_navigation():
             page("46_Experiments.py", "Ablations", "⚗"),
         ],
         "🩺 System & Ops": [
+            # Real-time fleet grid (30s st.fragment auto-refresh): every
+            # weekly/daily process with a schedule-aware 🟢🟡🔴⚪ dot.
+            # url_path pinned to "fleet-status" (slug guard:
+            # tests/test_fleet_status_page.py) — standalone st.Page like
+            # pipeline-status below, so home-strip page_links + future
+            # notification deep-links stay stable.
+            st.Page(
+                "views/48_Fleet_Status.py", title="Fleet Status", icon="🛰",
+                url_path="fleet-status",
+            ),
             page("host_system_health.py", "System Health", "🩺"),
             # url_path pinned to "pipeline-status" — the Step Function
             # failure/complete notifications (nousergon-data) deep-link to

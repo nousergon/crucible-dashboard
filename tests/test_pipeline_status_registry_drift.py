@@ -100,6 +100,14 @@ def test_every_substantive_state_has_registry_entry(label, json_path):
         )
 
     substantive = _all_substantive_states(json_path)
+    # Wait companions roll up into their parent row per WAIT_GROUPING (the
+    # docstring's "NOT a Wait companion" rule). Historically they were
+    # excluded implicitly because they polled via getCommandInvocation (not
+    # a substantive Resource); the ssm-liveness-poller rewiring (config#1811,
+    # 2026-07-06) made poll iterations lambda:invoke Tasks, so the exclusion
+    # must be explicit — a WAIT_GROUPING member never needs its own
+    # registry entry (read._absorb_wait_companion folds it before lookup).
+    substantive -= set(WAIT_GROUPING.keys())
     missing = substantive - set(STATE_TO_ARCHIVE_PAGE.keys())
 
     assert not missing, (

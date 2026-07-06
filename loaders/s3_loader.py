@@ -646,6 +646,8 @@ def load_ci_watch(date_str: str) -> dict | None:
 # ---------------------------------------------------------------------------
 
 _GROOM_RUNS_PREFIX = "groom/"
+# Run-artifact key shape — excludes groom/_control/* and groom/in_progress.json.
+_GROOM_RUN_KEY_RE = re.compile(r"^groom/\d{4}-\d{2}-\d{2}/[^/]+\.json$")
 
 
 @st.cache_data(ttl=_ttl("research"))
@@ -666,7 +668,14 @@ def list_groom_run_keys(limit: int = 30) -> list[str]:
         for page in paginator.paginate(Bucket=bucket, Prefix=_GROOM_RUNS_PREFIX):
             for obj in page.get("Contents", []):
                 k = obj.get("Key", "")
-                if k.endswith(".json"):
+                # Run artifacts ONLY: groom/{YYYY-MM-DD}/{run}.json. The
+                # prefix also hosts non-run subtrees — groom/_control/*
+                # (dispatcher control plane, nousergon-data#658) and the
+                # groom/in_progress.json marker — and "_" sorts after
+                # digits, so without this shape filter the control files
+                # displace every real run at the head of the reverse sort
+                # (bit the Fleet Status + Backlog Groom pages 2026-07-06).
+                if _GROOM_RUN_KEY_RE.match(k):
                     keys.append(k)
         keys.sort(reverse=True)  # ISO date + zero-padded HHMMSS/run-id sorts ~chronologically
         return keys[:limit]
