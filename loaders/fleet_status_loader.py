@@ -64,6 +64,8 @@ _TTL_SECONDS = 25
 # Instance IDs: env-overridable with the fleet's live defaults (same
 # pattern as alpha-engine-data/infrastructure/lambdas/eod-backstop).
 TRADING_INSTANCE_ID = os.environ.get("TRADING_INSTANCE_ID", "i-018eb3307a21329bf")
+# Name tag the groom EC2 spot launches under (config groom_run infra).
+GROOM_SPOT_NAME = os.environ.get("GROOM_SPOT_NAME", "alpha-engine-groom-spot")
 
 _HEARTBEAT_KEY = "_freshness_monitor/heartbeat.json"
 _CHECK_RESULTS_KEY = "_freshness_monitor/check_results.json"
@@ -113,7 +115,8 @@ def _ec2_snapshot() -> dict:
     import boto3
     from botocore.exceptions import BotoCoreError, ClientError
 
-    out: dict = {"available": True, "error": None, "state": None, "ping": None}
+    out: dict = {"available": True, "error": None, "state": None, "ping": None,
+                 "groom_spot_running": False, "groom_spot_launched_at": None}
     try:
         ec2 = boto3.client("ec2", region_name=_REGION)
         resp = ec2.describe_instances(InstanceIds=[TRADING_INSTANCE_ID])
@@ -123,7 +126,27 @@ def _ec2_snapshot() -> dict:
     except (ClientError, BotoCoreError) as exc:
         logger.warning("fleet_status ec2 describe failed: %s", exc)
         return {"available": False, "error": f"{type(exc).__name__}: {exc}",
-                "state": None, "ping": None}
+                "state": None, "ping": None,
+                "groom_spot_running": False, "groom_spot_launched_at": None}
+
+    try:
+        # Independent "groomer running now" signal: a live groom spot box.
+        # Covers runs the S3 in-progress marker can't (a run launched on
+        # pre-marker driver code, or a driver that died before finalizing).
+        resp = ec2.describe_instances(Filters=[
+            {"Name": "tag:Name", "Values": [GROOM_SPOT_NAME]},
+            {"Name": "instance-state-name", "Values": ["running"]},
+        ])
+        for res in resp.get("Reservations", []):
+            for inst in res.get("Instances", []):
+                out["groom_spot_running"] = True
+                lt = inst.get("LaunchTime")
+                if lt is not None:
+                    out["groom_spot_launched_at"] = lt.isoformat()
+    except (ClientError, BotoCoreError) as exc:
+        # Secondary signal — WARN + carry on; the groomer row falls back to
+        # the marker/recency tiers and the trading-instance read stands.
+        logger.warning("fleet_status groom-spot describe failed: %s", exc)
 
     try:
         ssm = boto3.client("ssm", region_name=_REGION)
@@ -231,7 +254,7 @@ def _groom_snapshot_raw() -> dict:
     return out
 
 
-def _groom_snapshot() -> GroomSnapshot:
+def _groom_snapshot(ec2: dict) -> GroomSnapshot:
     raw = _groom_snapshot_raw()
     return GroomSnapshot(
         marker_started_at=_parse_iso(raw["marker_started_at"]),
@@ -240,6 +263,8 @@ def _groom_snapshot() -> GroomSnapshot:
         last_run_start=_parse_iso(raw["last_run_start"]),
         last_stop_reason=raw["last_stop_reason"],
         last_model=raw["last_model"],
+        spot_running=bool(ec2.get("groom_spot_running")),
+        spot_launched_at=_parse_iso(ec2.get("groom_spot_launched_at")),
     )
 
 
@@ -312,6 +337,6 @@ def gather_fleet_inputs() -> FleetInputs:
         pipelines=_pipeline_snapshots(),
         heartbeat=hb,
         check_results=cr,
-        groom=_groom_snapshot(),
+        groom=_groom_snapshot(ec2),
         module_health=tuple(ModuleHealthRow(**r) for r in _module_health_rows()),
     )

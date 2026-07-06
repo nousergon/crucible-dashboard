@@ -56,6 +56,69 @@ class TestSlugContract:
         assert app_src.count("_render_fleet_strip()") >= 1
 
 
+class TestDeepLinkTargets:
+    """Every deep-link URL on the page must resolve to something real.
+
+    st.page_link is FORBIDDEN for host-tab views: post nav-collapse
+    (dashboard#273) most former pages are view-host TABS, not st.Page
+    registrations, and page_link raises StreamlitPageNotFoundError in
+    production for them (bit live 2026-07-06). Deep links are markdown
+    page URLs instead; this guard pins each target's existence:
+    - registered slugs must appear as a pinned url_path in app.py;
+    - host?tab= targets must name a (label, view-file) pair that exists
+      verbatim in the host page's subviews list.
+    """
+
+    def _url_map(self):
+        import re
+
+        src = PAGE.read_text()
+        block = src[src.index("_URL_BY_SLUG") :]
+        block = block[: block.index("}") + 1]
+        return dict(re.findall(r'"([a-z-]+)":\s*"([^"]+)"', block))
+
+    def test_page_uses_no_page_link(self):
+        assert "st.page_link(" not in PAGE.read_text()
+
+    def test_every_deep_link_slug_has_a_url(self):
+        from fleet_status import FleetInputs, resolve_fleet
+
+        urls = self._url_map()
+        now = datetime(2026, 7, 7, 15, 0, tzinfo=timezone.utc)
+        statuses = resolve_fleet(FleetInputs(now=now, is_trading_day=True))
+        for s in statuses:
+            if s.deep_link:
+                assert s.deep_link in urls, (
+                    f"{s.component_id} deep_link {s.deep_link!r} missing from "
+                    f"_URL_BY_SLUG"
+                )
+
+    def test_registered_slug_targets_exist_in_app_nav(self):
+        app_src = (REPO_ROOT / "app.py").read_text()
+        for slug, url in self._url_map().items():
+            if "?" not in url:
+                assert f'url_path="{url}"' in app_src, (
+                    f"deep link /{url} expects a registered st.Page with that "
+                    f"pinned url_path in app.py"
+                )
+
+    def test_host_tab_targets_exist_in_host_source(self):
+        from urllib.parse import parse_qs, unquote_plus, urlsplit
+
+        for slug, url in self._url_map().items():
+            if "?" not in url:
+                continue
+            parts = urlsplit(url)
+            host_file = REPO_ROOT / "views" / f"{parts.path}.py"
+            assert host_file.exists(), f"deep link /{url}: no {host_file.name}"
+            tab = parse_qs(parts.query)["tab"][0]
+            tab = unquote_plus(tab)
+            assert f'"{tab}"' in host_file.read_text(), (
+                f"deep link /{url}: tab label {tab!r} not found in "
+                f"{host_file.name}'s subviews"
+            )
+
+
 # ── Render smoke (exec-load with mocked streamlit + stubbed loader) ─────────
 
 

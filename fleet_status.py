@@ -121,6 +121,11 @@ class GroomSnapshot:
     last_run_start: Optional[datetime] = None
     last_stop_reason: Optional[str] = None
     last_model: Optional[str] = None
+    # Independent control-plane signal: a running alpha-engine-groom-spot
+    # EC2 instance. Covers runs the marker can't — a run launched on
+    # pre-marker driver code, or a driver that died before finalizing.
+    spot_running: bool = False
+    spot_launched_at: Optional[datetime] = None
 
 
 @dataclass(frozen=True)
@@ -433,11 +438,22 @@ def resolve_groomer(inp: FleetInputs) -> ComponentStatus:
                 f"running — {tier} tier ({model}), started {_ago(inp.now, g.marker_started_at)}",
                 g.marker_started_at, deep_link="backlog-groom",
             )
+        if not g.spot_running:
+            return ComponentStatus(
+                cid, label, GROUP_JOBS, YELLOW,
+                f"in-progress marker stale ({_ago(inp.now, g.marker_started_at)}) — "
+                "run may have died without finalizing",
+                g.marker_started_at, deep_link="backlog-groom",
+            )
+        # Stale marker but a groom spot is live: the marker is a leftover
+        # from an earlier run; the running spot is the fresher truth.
+    if g.spot_running:
         return ComponentStatus(
-            cid, label, GROUP_JOBS, YELLOW,
-            f"in-progress marker stale ({_ago(inp.now, g.marker_started_at)}) — "
-            "run may have died without finalizing",
-            g.marker_started_at, deep_link="backlog-groom",
+            cid, label, GROUP_JOBS, GREEN,
+            "running — groom spot online since "
+            f"{_ago(inp.now, g.spot_launched_at)} (no in-progress marker: "
+            "pre-marker driver or marker write failed)",
+            g.spot_launched_at, deep_link="backlog-groom",
         )
     if g.last_run_start is None:
         return ComponentStatus(

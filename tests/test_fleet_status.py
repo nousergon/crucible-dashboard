@@ -311,6 +311,36 @@ class TestGroomer:
     def test_gray_no_artifacts(self):
         assert resolve_groomer(_inputs()).dot == GRAY
 
+    def test_green_spot_running_without_marker(self):
+        # A run launched on pre-marker driver code (or whose marker write
+        # failed): the live groom spot is the independent control-plane
+        # signal — bit live 2026-07-06 (Opus run invisible to the page).
+        s = resolve_groomer(_inputs(groom=GroomSnapshot(
+            last_run_start=TRADING_MID - timedelta(hours=12),
+            spot_running=True,
+            spot_launched_at=TRADING_MID - timedelta(minutes=25))))
+        assert s.dot == GREEN
+        assert "groom spot online" in s.reason
+
+    def test_green_spot_running_overrides_stale_marker(self):
+        # Leftover active marker from a crashed earlier run + a live spot:
+        # the running spot is the fresher truth.
+        s = resolve_groomer(_inputs(groom=GroomSnapshot(
+            marker_started_at=TRADING_MID - timedelta(hours=6),
+            spot_running=True,
+            spot_launched_at=TRADING_MID - timedelta(minutes=10))))
+        assert s.dot == GREEN
+
+    def test_fresh_marker_wins_over_spot(self):
+        # Marker carries tier/model detail — preferred when fresh.
+        s = resolve_groomer(_inputs(groom=GroomSnapshot(
+            marker_started_at=TRADING_MID - timedelta(minutes=20),
+            marker_tier="high", marker_model="claude-opus-4-8",
+            spot_running=True,
+            spot_launched_at=TRADING_MID - timedelta(minutes=25))))
+        assert s.dot == GREEN
+        assert "high" in s.reason
+
 
 # ── Freshness monitor + artifact rollup ─────────────────────────────────────
 
