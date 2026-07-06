@@ -37,6 +37,7 @@ import sys
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
+import pandas as pd
 import streamlit as st
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -45,6 +46,7 @@ from loaders.morning_signal_schedule import (  # noqa: E402
     VALID_EDITIONS,
     delete_entry,
     load_applied_markers,
+    load_llm_decisions,
     load_schedule,
     upsert_entry,
 )
@@ -92,6 +94,66 @@ def _clicked_date(state: object) -> str | None:
     if isinstance(raw, str) and len(raw) >= 10:
         return raw[:10]
     return None
+
+
+# Short display names for the models config#1659's Kimi-primary/Anthropic-
+# fallback cascade can report (morning-signal#106) — unrecognized model ids
+# fall back to showing the raw string, so a new candidate never goes blank.
+_MODEL_SHORT_NAMES = {
+    "moonshotai/kimi-k2.6": "Kimi K2.6",
+    "xiaomi/mimo-v2.5-pro": "MiMo V2.5",
+    "claude-haiku-4-5": "Haiku",
+    "claude-sonnet-4-6": "Sonnet",
+}
+
+
+def _model_short_name(model: str | None) -> str:
+    if not model:
+        return "?"
+    return _MODEL_SHORT_NAMES.get(model, model)
+
+
+def _llm_badge_text(record: dict) -> str:
+    """'🤖 Kimi K2.6' normally, '🤖 Kimi K2.6→Haiku' when the fallback fired
+    (config#1659) — the fallback arrow is the signal worth a glance."""
+    used = _model_short_name(record.get("used_model"))
+    if record.get("fell_back"):
+        primary = _model_short_name(record.get("primary_model"))
+        return f"🤖 {primary}→{used}"
+    return f"🤖 {used}"
+
+
+def _llm_events(decisions: dict) -> list[dict]:
+    """One compact calendar event per date showing which model aired that
+    day's episode — independent of (and additive to) the scheduled-entry
+    events above, since most days have NO schedule entry (regular
+    programming) but DO have an llm_decision record. Prefers the 'am'
+    edition (the only one the cipher813 deployment actually runs) when a
+    date has more than one.
+    """
+    by_date: dict[str, dict] = {}
+    for key, record in decisions.items():
+        date_str = record.get("date") or key.rsplit("-", 1)[0]
+        if date_str not in by_date or record.get("edition") == "am":
+            by_date[date_str] = record
+
+    events = []
+    for date_str, record in by_date.items():
+        fell_back = bool(record.get("fell_back"))
+        color = "#dc2626" if fell_back else "#6b7280"  # red if fallback fired
+        events.append(
+            {
+                "id": f"llm-{date_str}",
+                "title": _llm_badge_text(record)[:40],
+                "start": date_str,
+                "allDay": True,
+                "display": "list-item",  # compact dot+text, distinct from the block-style schedule events
+                "backgroundColor": color,
+                "borderColor": color,
+                "textColor": "#ffffff",
+            }
+        )
+    return events
 
 
 def _entry_events(entries: dict, applied: dict) -> list[dict]:
@@ -273,7 +335,9 @@ st.caption(
     "Click any day to set its programming: regular (default), a deep-dive "
     "override, an extra segment, or a skip. The generator reads this "
     "manifest at 05:00 PT; ✅ marks entries it actually applied. Weekend "
-    "deep dives ride the weekend edition (AM)."
+    "deep dives ride the weekend edition (AM). 🤖 marks which model "
+    "generated that day's episode (config#1659) — red means the Anthropic "
+    "fallback had to step in."
 )
 
 flash = st.session_state.pop("ms_flash", None)
@@ -288,6 +352,7 @@ if error:
         f"until this is fixed: {error}"
     )
 applied_markers = load_applied_markers()
+llm_decisions = load_llm_decisions()
 entries: dict = manifest.get("entries", {})
 
 # ── calendar ─────────────────────────────────────────────────────────────────
@@ -306,7 +371,7 @@ st.session_state.setdefault("ms_cal_nonce", 0)
 st.session_state.setdefault("ms_cal_initial", _today_pacific().isoformat())
 
 cal_state = calendar(
-    events=_entry_events(entries, applied_markers),
+    events=_entry_events(entries, applied_markers) + _llm_events(llm_decisions),
     options={
         "initialView": "dayGridMonth",
         "initialDate": st.session_state["ms_cal_initial"],
@@ -357,8 +422,6 @@ st.subheader("Scheduled entries")
 if not entries:
     st.caption("Nothing scheduled — every day is regular programming.")
 else:
-    import pandas as pd
-
     rows = []
     for date_str, entry in sorted(entries.items()):
         aired_keys = sorted(
@@ -381,6 +444,37 @@ else:
         use_container_width=True,
         hide_index=True,
     )
+
+# ── recent model usage (config#1659) ────────────────────────────────────────
+# Independent of the schedule table above: most days have NO schedule entry
+# (regular programming) but DO have an llm_decision record, so this covers
+# the days the "Scheduled entries" table above intentionally skips.
+
+st.divider()
+st.subheader("🤖 Recent model usage")
+if not llm_decisions:
+    st.caption(
+        "No LLM decision records yet — populated once morning-signal#107 "
+        "is live and an episode has run."
+    )
+else:
+    llm_rows = []
+    for key, record in sorted(llm_decisions.items(), reverse=True)[:14]:
+        llm_rows.append(
+            {
+                "Date": record.get("date", key),
+                "Edition": record.get("edition", "—"),
+                "Primary": _model_short_name(record.get("primary_model")),
+                "Used": _model_short_name(record.get("used_model")),
+                "Fell back?": "⚠️ yes" if record.get("fell_back") else "no",
+            }
+        )
+    st.dataframe(
+        pd.DataFrame(llm_rows),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.caption("Last 14 records, most recent first.")
 
 st.caption(
     "Contract: schedule/schedule.json (schema v1) in the morning-signal "

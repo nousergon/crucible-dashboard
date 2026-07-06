@@ -7,6 +7,10 @@ generation time (``morning_signal.schedule_override``):
     s3://morning-signal-podcast/schedule/schedule.json      (the manifest)
     s3://morning-signal-podcast/schedule/applied/…          (generator-written
                                                              "aired" markers)
+    s3://morning-signal-podcast/ops/llm_decisions/…         (generator-written
+                                                             "which model aired
+                                                             this" records,
+                                                             config#1659)
 
 This is a cross-repo PRODUCT CONTRACT (schema v1): the dependency-free
 :func:`validate_schedule_manifest` and the fixtures under
@@ -47,6 +51,7 @@ MS_BUCKET_DEFAULT = "morning-signal-podcast"
 MS_REGION = "us-west-2"
 SCHEDULE_KEY = "schedule/schedule.json"
 APPLIED_PREFIX = "schedule/applied/"
+LLM_DECISIONS_PREFIX = "ops/llm_decisions/"
 SCHEMA_VERSION = 1
 
 VALID_MODES = ("override", "extend", "skip")
@@ -228,6 +233,43 @@ def load_applied_markers() -> dict[str, dict]:
         logger.warning("[ms_schedule] applied-marker list failed: %s", exc)
         return {}
     return markers
+
+
+@st.cache_data(ttl=300)
+def load_llm_decisions() -> dict[str, dict]:
+    """Which model actually generated each aired episode, keyed
+    ``{date}-{edition}`` — mirrors :func:`load_applied_markers` exactly
+    (same list+fetch-all+cache shape, same fail-soft ``{}``).
+
+    Written by ``morning_signal.claude._record_llm_decision`` (config#1659
+    Kimi-primary/Anthropic-fallback cascade, morning-signal#106/#107).
+    IAM: read-only ``s3:GetObject``/prefix-scoped ``ListBucket`` on
+    ``ops/llm_decisions/*`` (alpha-engine-config
+    ``iam/alpha-engine-dashboard-role/alpha-engine-dashboard-morning-signal-schedule.json``,
+    applied 2026-07-06) — the console never writes decision logs, only the
+    generator does.
+    """
+    decisions: dict[str, dict] = {}
+    try:
+        client = _ms_client()
+        paginator = client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=_ms_bucket(), Prefix=LLM_DECISIONS_PREFIX):
+            for obj in page.get("Contents", []):
+                key = obj["Key"]
+                stem = key[len(LLM_DECISIONS_PREFIX):].removesuffix(".llm_decision.json")
+                if not stem:
+                    continue
+                try:
+                    body = client.get_object(Bucket=_ms_bucket(), Key=key)[
+                        "Body"
+                    ].read()
+                    decisions[stem] = json.loads(body)
+                except Exception:  # noqa: BLE001 — skip one bad record
+                    logger.warning("[ms_schedule] unreadable llm decision %s", key)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[ms_schedule] llm-decision list failed: %s", exc)
+        return {}
+    return decisions
 
 
 # ── write path ───────────────────────────────────────────────────────────────
