@@ -78,7 +78,12 @@ def _render_component_expander(module: dict) -> None:
             color = _grade_color(letter)
             label = _pretty_label(comp_key)
             if letter == "N/A":
-                reason = comp.get("reason") or "insufficient data"
+                # An N/A here is a producer-INPUT gap (the upstream analysis
+                # wasn't produced/persisted this cycle), not a sample-size
+                # story — the grader now names which artifact is missing.
+                # Only fall back to the generic phrasing for pre-fix artifacts
+                # that predate the specific reasons (config#859 Problem 1b).
+                reason = comp.get("reason") or "upstream analysis not produced this cycle"
                 st.markdown(
                     f'<div style="color:#888; padding:4px 0;">'
                     f'{label} — <span style="color:{color};">N/A</span> '
@@ -127,8 +132,9 @@ def render_report_card(grading: dict | None) -> None:
     st.markdown("### System Report Card — Phase 2 Baseline")
     st.caption(
         "Structural-quality grading from the weekly evaluator. "
-        "Most sub-components show N/A while Phase 2 data accumulates — "
-        "typically 4–8 weeks of signals before letter grades firm up."
+        "An N/A sub-component means the upstream analysis for that component "
+        "wasn't produced this cycle (each N/A names the missing input) — not "
+        "that grades need more data to accumulate."
     )
 
     if not grading:
