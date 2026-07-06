@@ -158,3 +158,10 @@ class TestNavRegistration:
         assert "digest_title" in src
         assert "digest_issue" in src
         assert "predates digest embedding" in src  # graceful pre-v3 fallback
+
+    def test_page_surfaces_token_efficiency_metrics(self):
+        src = (REPO_ROOT / "views" / "42_Backlog_Groom.py").read_text()
+        assert "Token efficiency" in src
+        assert "list_groom_usage_records" in src
+        assert "compute_efficiency" in src
+        assert "WET/eng" in src or "wet_per_engaged" in src
