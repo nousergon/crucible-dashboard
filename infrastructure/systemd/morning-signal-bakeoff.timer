@@ -1,0 +1,15 @@
+[Unit]
+Description=Morning Signal OSS Phase B shadow bakeoff — weekly, Wednesdays (config#1659)
+Requires=morning-signal-bakeoff.service
+
+[Timer]
+Unit=morning-signal-bakeoff.service
+# Wednesday, 1 hour after the daily 04:00 PT production generate (mid-week,
+# avoids Monday catch-up noise and Friday pre-weekend) -- gives the real
+# episode's own run priority on the shared box before the comparison starts.
+OnCalendar=Wed *-*-* 05:00:00 America/Los_Angeles
+Persistent=true
+RandomizedDelaySec=0
+
+[Install]
+WantedBy=timers.target
