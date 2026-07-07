@@ -10,7 +10,8 @@ re-pricings. Raw tokens are the lossless truth (cache-read-dominated, so a poor
 headline); the $ figure is a notional snapshot. Source: the per-(source,date)
 JSON at ``claude_code_usage/{source}/{date}.json``, produced by
 alpha-engine-config ``scripts/collect_usage.py`` (hourly launchd on the laptop;
-fast-follow ``source='groom'`` from the GHA groom).
+run-scoped ``source='groom'`` from the GHA groom; run-scoped ``source='watch'``
+from the Fleet-SF/CI Watch agent runs — config#1899).
 
 Anthropic publishes **no exact Max 20x weekly limit** (it's demand-variable; the
 in-app ``/usage`` % is the only ground truth). So the "% of ceiling" gauge below
@@ -173,7 +174,9 @@ if not df_hour.empty:
     fig_h.update_layout(height=380, margin=dict(t=10, b=0, l=0, r=0))
     st.plotly_chart(fig_h, use_container_width=True)
     st.caption("Daytime band = interactive (laptop) work; the overnight/8-hourly "
-               "band is the backlog groom's `source='groom'` usage.")
+               "band is the backlog groom's `source='groom'` usage. Irregular "
+               "spikes are `source='watch'` — Fleet-SF/CI Watch resilience-agent "
+               "runs, which fire only on pipeline/CI failures (config#1899).")
 
 # ---- secondary: raw tokens + notional $ ------------------------------------
 with st.expander("Raw tokens + notional $ (secondary)"):
