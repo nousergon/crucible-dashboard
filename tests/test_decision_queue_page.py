@@ -115,3 +115,26 @@ class TestWriteHelpers:
         assert "Operator decision 2026-07-07: Option B" in c
         assert "use the forum supergroup" in c
         assert "config#1926" in c  # provenance for the executing groom
+
+
+class TestNewestCommentOrdering:
+    def test_scans_ascending_pages_newest_first(self, monkeypatch):
+        import loaders.decision_queue_loader as dq
+        # Ascending API order (as GitHub actually returns): old -> new.
+        comments = [
+            {"body": "old status note", "created_at": "2026-06-01T00:00:00Z"},
+            {"body": "**Ask:** stale old ask\n**Options:** A) x (recommended)",
+             "created_at": "2026-06-10T00:00:00Z"},
+            {"body": "**Ask:** the CURRENT ask\n**Options:** A) y (recommended)",
+             "created_at": "2026-07-07T00:00:00Z"},
+        ]
+        monkeypatch.setattr(dq, "_request", lambda m, u: comments)
+        out = dq._newest_gate_comment("nousergon/alpha-engine-config", 1)
+        assert "CURRENT ask" in out  # newest Ask wins, not the June one
+
+    def test_no_ask_falls_back_to_newest_comment(self, monkeypatch):
+        import loaders.decision_queue_loader as dq
+        comments = [{"body": "first", "created_at": "2026-06-01T00:00:00Z"},
+                    {"body": "latest status", "created_at": "2026-07-07T00:00:00Z"}]
+        monkeypatch.setattr(dq, "_request", lambda m, u: comments)
+        assert dq._newest_gate_comment("r/r", 1) == "latest status"

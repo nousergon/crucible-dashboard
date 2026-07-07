@@ -175,13 +175,25 @@ def ruling_comment(option: str, detail: str, when: str) -> str:
 
 
 def _newest_gate_comment(repo: str, number: int) -> str:
-    comments = _request(
-        "GET", f"{_API}/repos/{repo}/issues/{number}/comments?per_page={_COMMENT_TAIL}&sort=created&direction=desc",
-    ) or []
-    for c in comments:  # newest-first; first Ask block wins
+    # The PER-ISSUE comments endpoint ignores sort/direction (those params
+    # exist only on the repo-level endpoint) and always returns ASCENDING —
+    # relying on them silently yields the OLDEST comments (bit 2026-07-07:
+    # the page would have rendered stale June comments as the Ask). Fetch
+    # ascending pages to the end, then scan newest-first.
+    comments: list = []
+    page = 1
+    while True:
+        batch = _request(
+            "GET", f"{_API}/repos/{repo}/issues/{number}/comments?per_page=100&page={page}",
+        ) or []
+        comments.extend(batch)
+        if len(batch) < 100:
+            break
+        page += 1
+    for c in reversed(comments[-_COMMENT_TAIL:]):  # newest-first; first Ask wins
         if _ASK_RE.search(c.get("body") or ""):
             return c["body"]
-    return comments[0]["body"] if comments else ""
+    return comments[-1]["body"] if comments else ""
 
 
 @st.cache_data(ttl=_CACHE_TTL_S, show_spinner="Loading decision queue…")
