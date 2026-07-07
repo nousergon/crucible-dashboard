@@ -156,6 +156,14 @@ def compute_efficiency(
 
     wet = float(usage["wet"]) if usage else None
     cache_pct = usage.get("cache_read_pct") if usage else None
+    # config#1894: schema_version >= 5 artifacts carry the run's OWN measured
+    # WET (driver-computed from its local transcripts at artifact-write time) —
+    # exact per-run attribution, so it takes precedence over the date +
+    # nearest-end-time usage-record join above (which stays as the fallback for
+    # pre-schema-5 runs and as the source of cache_read_pct either way).
+    artifact_wet = run.get("run_wet")
+    if artifact_wet is not None:
+        wet = float(artifact_wet)
 
     wet_per_engaged = (wet / engaged) if (wet is not None and engaged > 0) else None
     wet_per_hard = (wet / hard) if (wet is not None and hard > 0) else None
