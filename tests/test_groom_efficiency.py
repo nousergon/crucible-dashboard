@@ -91,3 +91,27 @@ def test_compute_efficiency_alerts_high_untouched():
 def test_usage_record_skips_manual_reset():
     key = "claude_code_usage/groom/2026-07-04/zz-manual-reset-260704.json"
     assert usage_record_from_doc(key, {"day_total": {"wet": -1}}) is None
+
+
+def test_compute_efficiency_prefers_artifact_run_wet_over_usage_join():
+    # config#1894: a schema_version>=5 artifact's own run_wet (exact, driver-
+    # measured) beats the heuristic date+end-time usage join.
+    from loaders.groom_efficiency import compute_efficiency
+    run = {"engaged": 10, "total_issues": 10, "elapsed_min": 30,
+           "soft_limit_min": 60, "issue_filter": "low-only",
+           "schema_version": 5, "run_wet": 2_000_000.0}
+    usage = {"key": "u1", "wet": 9_999_999.0, "cache_read_pct": 96.0}
+    eff = compute_efficiency(run, [], usage)
+    assert eff["wet"] == 2_000_000.0
+    assert eff["wet_per_engaged"] == 200_000.0
+    assert eff["cache_read_pct"] == 96.0  # still from the usage record
+
+
+def test_compute_efficiency_falls_back_to_usage_join_pre_schema5():
+    from loaders.groom_efficiency import compute_efficiency
+    run = {"engaged": 4, "total_issues": 4, "elapsed_min": 10,
+           "soft_limit_min": 60, "issue_filter": "low-only", "schema_version": 4}
+    usage = {"key": "u1", "wet": 400_000.0, "cache_read_pct": 95.0}
+    eff = compute_efficiency(run, [], usage)
+    assert eff["wet"] == 400_000.0
+    assert eff["wet_per_engaged"] == 100_000.0
