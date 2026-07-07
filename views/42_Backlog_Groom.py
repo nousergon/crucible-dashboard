@@ -44,12 +44,16 @@ _DISPOSITION_LABEL: dict[str, str] = {
     "closed": "✅ closed",
     "pr_opened": "🔧 PR opened",
     "commented": "💬 commented",
+    # config#1928: label-only work (gate labels, complexity escalations) —
+    # the norm for blocked dispositions since the config#1890 comment-skip.
+    "labeled": "🏷 labeled",
     "untouched": "⚠️ untouched",
 }
 _DISPOSITION_COLOR_HEX: dict[str, str] = {
     "closed": "#1a7f37",
     "pr_opened": "#0969da",
     "commented": "#9a6700",
+    "labeled": "#8250df",
     "untouched": "#cf222e",
 }
 
