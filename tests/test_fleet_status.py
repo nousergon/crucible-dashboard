@@ -201,12 +201,16 @@ class TestPipelines:
         assert s.dot == GREEN
         assert "RunMorningPlanner" in s.reason
 
-    def test_green_idle_complete(self):
+    def test_gray_idle_complete(self):
+        # Idle between scheduled runs is the pipeline's normal state — a
+        # completed cycle with nothing due reads ⚪, not 🟢 (🟢 means an
+        # execution is actually in flight right now).
         s = _pipe("preopen", PipelineSnapshot(
             status="SUCCEEDED", verdict="COMPLETE",
             started_at=TRADING_MID - timedelta(hours=2),
             stopped_at=TRADING_MID - timedelta(hours=1)))
-        assert s.dot == GREEN
+        assert s.dot == GRAY
+        assert "runs weekdays" in s.reason
 
     def test_yellow_partial(self):
         s = _pipe("preopen", PipelineSnapshot(
@@ -228,11 +232,11 @@ class TestPipelines:
         assert s.dot == YELLOW
         assert "overdue" in s.reason
 
-    def test_green_preopen_before_cron(self):
+    def test_gray_preopen_before_cron(self):
         s = _pipe("preopen", PipelineSnapshot(
             status="SUCCEEDED", verdict="COMPLETE",
             started_at=TRADING_EARLY - timedelta(days=1)), now=TRADING_EARLY)
-        assert s.dot == GREEN
+        assert s.dot == GRAY
 
     def test_yellow_weekly_overdue_saturday(self):
         s = _pipe("weekly", PipelineSnapshot(
@@ -241,11 +245,12 @@ class TestPipelines:
             now=SATURDAY, trading=False)
         assert s.dot == YELLOW
 
-    def test_green_weekly_idle_midweek(self):
+    def test_gray_weekly_idle_midweek(self):
         s = _pipe("weekly", PipelineSnapshot(
             status="SUCCEEDED", verdict="COMPLETE",
             started_at=TRADING_MID - timedelta(days=3)))
-        assert s.dot == GREEN
+        assert s.dot == GRAY
+        assert "runs weekly" in s.reason
 
     def test_yellow_postclose_overdue(self):
         late = datetime(2026, 7, 7, 22, 30, tzinfo=timezone.utc)  # close+2h = 22:00
@@ -254,11 +259,11 @@ class TestPipelines:
             started_at=late - timedelta(days=1)), now=late)
         assert s.dot == YELLOW
 
-    def test_green_postclose_not_yet_due(self):
+    def test_gray_postclose_not_yet_due(self):
         s = _pipe("postclose", PipelineSnapshot(
             status="SUCCEEDED", verdict="COMPLETE",
             started_at=TRADING_MID - timedelta(days=1)))
-        assert s.dot == GREEN
+        assert s.dot == GRAY
 
     def test_yellow_unavailable(self):
         s = _pipe("preopen", PipelineSnapshot(status="UNAVAILABLE", error="throttled"))
@@ -425,6 +430,22 @@ class TestModuleSelfReports:
         s = resolve_module_self_reports(_inputs(module_health=(
             ModuleHealthRow("research", "failed"),)))
         assert s.dot == RED
+
+    def test_yellow_stale_despite_ok_status(self):
+        # A writer that died silently leaves its last "ok" stamp in place
+        # forever — the independent age check must catch this even though
+        # self-reported status never flagged anything (config#1724).
+        s = resolve_module_self_reports(_inputs(module_health=(
+            ModuleHealthRow("executor", "ok", age_hrs=200.0, stale_after_hrs=96.0),
+        )))
+        assert s.dot == YELLOW
+        assert "executor" in s.reason
+
+    def test_green_within_sla_despite_long_cadence(self):
+        s = resolve_module_self_reports(_inputs(module_health=(
+            ModuleHealthRow("research", "ok", age_hrs=50.0, stale_after_hrs=192.0),
+        )))
+        assert s.dot == GREEN
 
     def test_gray_empty(self):
         assert resolve_module_self_reports(_inputs()).dot == GRAY

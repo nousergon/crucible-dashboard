@@ -3,12 +3,20 @@ fleet_status.py — pure status-resolution logic for the Fleet Status console pa
 
 Composes the fleet's existing status planes into per-component dots:
 
-  🟢 green  — online / running / last cycle complete within SLA
+  🟢 green  — actively running right now (continuous service online, or a
+              scheduled pipeline mid-execution)
   🟡 yellow — should be live/fresh right now but is stalled (grace-period,
               stale heartbeat, SSM ping lost, overdue scheduled start)
   🔴 red    — expected and offline / failed / missing past SLA
-  ⚪ gray   — not expected right now (off-hours, weekend, holiday) or no
-              signal available; shows last-known state
+  ⚪ gray   — not currently active: off-hours/weekend/holiday, a scheduled
+              pipeline idle between runs (last cycle complete, not due yet),
+              or no signal available; shows last-known state
+
+Scheduled pipelines are event-driven, not continuous services — idle is
+their normal 99%-of-the-time state, so a completed-and-idle pipeline reads
+⚪ (like an off-hours continuous service), not 🟢. 🟢 is reserved for an
+actual live execution. Only a genuine SLA disruption (overdue start,
+partial/failed cycle) escalates to 🟡/🔴 — never idle-after-success.
 
 The status planes composed here (independent-freshness-as-authority,
 config#1724 — self-reported health is enrichment, never the authority):
@@ -130,12 +138,22 @@ class GroomSnapshot:
 
 @dataclass(frozen=True)
 class ModuleHealthRow:
-    """One health/{module}.json self-report (enrichment plane)."""
+    """One health/{module}.json self-report (enrichment plane).
+
+    ``stale_after_hrs`` is the module's own expected cadence/SLA (from
+    ``nousergon_lib.health.DASHBOARD_HEALTH_MODULES``) — the resolver
+    checks ``age_hrs`` against it independently of the self-reported
+    ``status``, per config#1724 (self-report is enrichment, never
+    authority): a writer that died silently still has its last "ok" stamp
+    sitting in S3 forever, so staleness must be caught even when the
+    module never told us anything was wrong.
+    """
 
     module: str
     status: str  # ok | degraded | failed | unknown
     age_hrs: Optional[float] = None
     error: Optional[str] = None
+    stale_after_hrs: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -367,10 +385,19 @@ _PIPELINE_LABELS = {
     "postclose": "Post-close pipeline (ne-postclose-trading)",
 }
 
+# Human-readable cadence, surfaced in the idle reason string so a ⚪ dot
+# reads as "on schedule" rather than "unexplained inactivity".
+_PIPELINE_CADENCE = {
+    "weekly": "runs weekly, Sat 09:00 UTC",
+    "preopen": "runs weekdays, 12:45 UTC",
+    "postclose": "runs weekdays, ~market close + 2h",
+}
+
 
 def resolve_pipeline(key: str, inp: FleetInputs) -> ComponentStatus:
     cid = f"pipeline_{key}"
     label = _PIPELINE_LABELS[key]
+    cadence = _PIPELINE_CADENCE[key]
     snap: Optional[PipelineSnapshot] = inp.pipelines.get(key)
 
     if snap is None or snap.status == "UNAVAILABLE":
@@ -381,7 +408,7 @@ def resolve_pipeline(key: str, inp: FleetInputs) -> ComponentStatus:
         )
     if snap.status == "NO_EXECUTIONS":
         return ComponentStatus(
-            cid, label, GROUP_PIPELINES, GRAY, "no executions yet",
+            cid, label, GROUP_PIPELINES, GRAY, f"no executions yet ({cadence})",
             deep_link="pipeline-status",
         )
     if snap.status == "RUNNING":
@@ -400,7 +427,7 @@ def resolve_pipeline(key: str, inp: FleetInputs) -> ComponentStatus:
         return ComponentStatus(
             cid, label, GROUP_PIPELINES, YELLOW,
             f"overdue — expected by {due.strftime('%H:%M')} UTC today; "
-            f"last run {_ago(inp.now, snap.started_at)}",
+            f"last run {_ago(inp.now, snap.started_at)} ({cadence})",
             snap.started_at, deep_link="pipeline-status",
         )
 
@@ -408,8 +435,8 @@ def resolve_pipeline(key: str, inp: FleetInputs) -> ComponentStatus:
     when = _ago(inp.now, snap.stopped_at or snap.started_at)
     if verdict == "COMPLETE":
         return ComponentStatus(
-            cid, label, GROUP_PIPELINES, GREEN,
-            f"idle — last cycle COMPLETE ({when})",
+            cid, label, GROUP_PIPELINES, GRAY,
+            f"idle — last cycle COMPLETE ({when}); {cadence}",
             snap.stopped_at or snap.started_at, deep_link="pipeline-status",
         )
     if verdict == "PARTIAL":
@@ -572,10 +599,24 @@ def resolve_module_self_reports(inp: FleetInputs) -> ComponentStatus:
     if not rows:
         return ComponentStatus(cid, label, GROUP_DATA, GRAY, "no health artifacts")
     failed = [r for r in rows if r.status == "failed"]
-    warn = [r for r in rows if r.status in ("degraded", "unknown")]
+    # Independent staleness check (config#1724: self-report is enrichment,
+    # never authority) — a module that stopped running keeps its last "ok"
+    # stamp forever; flag it as stale even though status still says fine.
+    stale = [
+        r for r in rows
+        if r not in failed
+        and r.stale_after_hrs is not None
+        and r.age_hrs is not None
+        and r.age_hrs > r.stale_after_hrs
+    ]
+    warn = [
+        r for r in rows
+        if r not in failed and r not in stale and r.status in ("degraded", "unknown")
+    ]
     detail = tuple(
         {"module": r.module, "status": r.status,
          "age_hrs": None if r.age_hrs is None else round(r.age_hrs, 1),
+         "stale_after_hrs": r.stale_after_hrs,
          "error": (r.error or "")[:120]}
         for r in rows
     )
@@ -583,6 +624,15 @@ def resolve_module_self_reports(inp: FleetInputs) -> ComponentStatus:
         names = ", ".join(r.module for r in failed)
         return ComponentStatus(
             cid, label, GROUP_DATA, RED, f"failed: {names}", None, detail,
+        )
+    if stale:
+        names = ", ".join(
+            f"{r.module} ({r.age_hrs:.0f}h, SLA {r.stale_after_hrs:.0f}h)"
+            for r in stale
+        )
+        return ComponentStatus(
+            cid, label, GROUP_DATA, YELLOW,
+            f"stale past SLA despite self-reported status: {names}", None, detail,
         )
     if warn:
         names = ", ".join(r.module for r in warn)

@@ -276,12 +276,13 @@ def _module_health_rows() -> list[dict]:
 
     now = datetime.now(timezone.utc)
     rows: list[dict] = []
-    for module_name, bucket_key, _stale_after in DASHBOARD_HEALTH_MODULES:
+    for module_name, bucket_key, stale_after in DASHBOARD_HEALTH_MODULES:
         bucket = _research_bucket() if bucket_key == "research" else _trades_bucket()
         health = download_s3_json(bucket, f"health/{module_name}.json")
         if not isinstance(health, dict):
             rows.append({"module": module_name, "status": "unknown",
-                         "age_hrs": None, "error": None})
+                         "age_hrs": None, "error": None,
+                         "stale_after_hrs": float(stale_after)})
             continue
         age_hrs = None
         last_dt = _parse_iso(health.get("last_success"))
@@ -292,6 +293,7 @@ def _module_health_rows() -> list[dict]:
             "status": health.get("status", "unknown"),
             "age_hrs": age_hrs,
             "error": health.get("error"),
+            "stale_after_hrs": float(stale_after),
         })
     return rows
 
