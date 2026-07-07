@@ -123,7 +123,7 @@ for item in pending:
                 st.session_state[f"show-alt-{key}"] = True
         if cols[2].button("⏸ Defer 2w", key=f"def-{key}"):
             _act(key, "deferred 2w", defer_issue, item["repo"], item["number"],
-                 (date.today() + timedelta(days=14)).isoformat())
+                 (date.today() + timedelta(days=14)).isoformat(), item["body"])
             st.rerun()
         if cols[3].button("💬 Session", key=f"ses-{key}", help="Needs discussion — park for /backlog-triage"):
             _act(key, "sent to session", send_to_session, item["repo"], item["number"])
