@@ -166,6 +166,24 @@ def _render_fleet_strip() -> None:
     st.page_link("views/48_Fleet_Status.py", label="Open Fleet Status (live) →", icon="🛰")
 
 
+def _render_decision_queue_chip() -> None:
+    """Home chip for the human-gated backlog pool (config#1926): pending
+    count + oldest age, linking to the Decision Queue page. Degrades to a
+    named caption — never silently absent (feedback_no_silent_fails)."""
+    try:
+        from loaders.decision_queue_loader import load_decision_queue
+
+        queue = load_decision_queue()
+    except Exception as exc:  # noqa: BLE001 — home must render; failure shown
+        st.caption(f"⚠️ Decision queue unavailable — {type(exc).__name__}: {exc}")
+        return
+    if not queue:
+        st.caption("🗳 Decision Queue: clear — nothing gated on you.")
+        return
+    st.markdown(f"🗳 **{len(queue)} decision(s) pending** — oldest {queue[0]['age_days']}d")
+    st.page_link("views/49_Decision_Queue.py", label="Open Decision Queue →", icon="🗳")
+
+
 def _render_status_banner(health_rows: list[dict]) -> None:
     """One compact row with colored badges for each module."""
     cols = st.columns(len(health_rows))
@@ -381,6 +399,7 @@ def main() -> None:
 
     st.subheader("Fleet Status")
     _render_fleet_strip()
+    _render_decision_queue_chip()
 
     st.divider()
     st.subheader("Pipeline Status")
@@ -501,6 +520,15 @@ def _build_navigation():
             st.Page(
                 "views/48_Fleet_Status.py", title="Fleet Status", icon="🛰",
                 url_path="fleet-status",
+            ),
+            # Human-gated backlog ruling surface (config#1926). url_path
+            # pinned to "decision-queue" — the weekly Telegram digest
+            # (config#1922) deep-links to it and the home chip page_links to
+            # it. Guarded by tests/test_decision_queue_page.py. Standalone
+            # st.Page (slug lives on the page, like fleet-status above).
+            st.Page(
+                "views/49_Decision_Queue.py", title="Decision Queue", icon="🗳",
+                url_path="decision-queue",
             ),
             page("host_system_health.py", "System Health", "🩺"),
             # url_path pinned to "pipeline-status" — the Step Function
