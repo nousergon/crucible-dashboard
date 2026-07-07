@@ -26,6 +26,7 @@ import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -196,45 +197,77 @@ def _newest_gate_comment(repo: str, number: int) -> str:
     return comments[-1]["body"] if comments else ""
 
 
+def _list_gated_issues(repo: str, label: str) -> list[dict]:
+    """Paginate one repo/label's open, non-PR, non-parked issues."""
+    out: list[dict] = []
+    page = 1
+    while True:
+        batch = _request(
+            "GET",
+            f"{_API}/repos/{repo}/issues?state=open&labels={urllib.parse.quote(label)}"
+            f"&per_page=100&page={page}&sort=created&direction=asc",
+        ) or []
+        for it in batch:
+            if "pull_request" in it:
+                continue
+            label_names = {l["name"] for l in it["labels"]}
+            if SESSION_LABEL in label_names:
+                continue  # parked for the /backlog-triage session (config#1924)
+            out.append(it)
+        if len(batch) < 100:
+            break
+        page += 1
+    return out
+
+
+def _build_decision_item(repo: str, label: str, it: dict, now: datetime) -> DecisionItem:
+    created = datetime.fromisoformat(it["created_at"].replace("Z", "+00:00"))
+    comment_body = _newest_gate_comment(repo, it["number"])
+    ask, options, recommended = parse_ask_block(comment_body)
+    return DecisionItem(
+        repo=repo, number=it["number"], title=it["title"],
+        gate=label, age_days=(now - created).days,
+        url=it["html_url"], ask=ask, options=options,
+        recommended=recommended,
+        excerpt=None if ask else (comment_body or it.get("body") or "")[:600],
+        body=it.get("body") or "",
+    )
+
+
 @st.cache_data(ttl=_CACHE_TTL_S, show_spinner="Loading decision queue…")
 def load_decision_queue() -> list[dict]:
-    """All open human-gated issues, oldest-first, as plain dicts (cacheable)."""
+    """All open human-gated issues, oldest-first, as plain dicts (cacheable).
+
+    The issue-list fetch (repo x label, 8 calls) is cheap; the per-issue
+    gate-comment lookup is not — one blocking GET per pending issue, serially
+    that's O(N) round trips on a page load (~10s+ once the pool has 20-30
+    items). Comment lookups are independent per issue, so they're fanned out
+    across a thread pool rather than looped.
+    """
     now = datetime.now(timezone.utc)
-    items: list[DecisionItem] = []
+    # An issue carrying BOTH human gates would otherwise get its comment
+    # thread fetched twice — dedupe by (repo, number) BEFORE the network
+    # fan-out, not after, so we never double-pay for a shared issue.
+    seen: set[tuple[str, int]] = set()
+    to_build: list[tuple[str, str, dict]] = []
     for repo in BACKLOG_REPOS:
         for label in HUMAN_GATE_LABELS:
-            page = 1
-            while True:
-                batch = _request(
-                    "GET",
-                    f"{_API}/repos/{repo}/issues?state=open&labels={urllib.parse.quote(label)}"
-                    f"&per_page=100&page={page}&sort=created&direction=asc",
-                ) or []
-                for it in batch:
-                    if "pull_request" in it:
-                        continue
-                    label_names = {l["name"] for l in it["labels"]}
-                    if SESSION_LABEL in label_names:
-                        continue  # parked for the /backlog-triage session (config#1924)
-                    created = datetime.fromisoformat(it["created_at"].replace("Z", "+00:00"))
-                    comment_body = _newest_gate_comment(repo, it["number"])
-                    ask, options, recommended = parse_ask_block(comment_body)
-                    items.append(DecisionItem(
-                        repo=repo, number=it["number"], title=it["title"],
-                        gate=label, age_days=(now - created).days,
-                        url=it["html_url"], ask=ask, options=options,
-                        recommended=recommended,
-                        excerpt=None if ask else (comment_body or it.get("body") or "")[:600],
-                        body=it.get("body") or "",
-                    ))
-                if len(batch) < 100:
-                    break
-                page += 1
-    # An issue carrying BOTH human gates appears once per label — dedupe.
-    seen: set[str] = set()
-    deduped = [i for i in items if not (i.key in seen or seen.add(i.key))]
-    deduped.sort(key=lambda i: -i.age_days)
-    return [i.__dict__ | {"key": i.key} for i in deduped]
+            for it in _list_gated_issues(repo, label):
+                key = (repo, it["number"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                to_build.append((repo, label, it))
+
+    items: list[DecisionItem] = []
+    if to_build:
+        with ThreadPoolExecutor(max_workers=min(8, len(to_build))) as pool:
+            futures = [pool.submit(_build_decision_item, repo, label, it, now)
+                       for repo, label, it in to_build]
+            items = [f.result() for f in futures]
+
+    items.sort(key=lambda i: -i.age_days)
+    return [i.__dict__ | {"key": i.key} for i in items]
 
 
 def clear_queue_cache() -> None:
@@ -253,13 +286,21 @@ def _remove_gate_labels(repo: str, number: int) -> None:
                 raise
 
 
+# Write actions deliberately do NOT clear_queue_cache()/force a reload: the
+# view's `dq_done` session-state guard already hides the acted-on item
+# instantly on the immediate st.rerun(), so a synchronous full re-fetch of
+# every other pending issue on every single click bought nothing but a ~10s
+# stall (the very serial fan-out load_decision_queue() pays for on a cache
+# miss). Cache invalidation is explicit (the "Refresh queue" button) or via
+# the 300s TTL — bounding, not eliminating, cross-session staleness.
+
+
 def post_ruling(repo: str, number: int, option: str, detail: str = "") -> None:
     """Ruling → comment + de-gate. The next tier groom executes."""
     when = datetime.now(timezone.utc).date().isoformat()
     _request("POST", f"{_API}/repos/{repo}/issues/{number}/comments",
              {"body": ruling_comment(option, detail, when)})
     _remove_gate_labels(repo, number)
-    clear_queue_cache()
 
 
 def kill_issue(repo: str, number: int, detail: str = "") -> None:
@@ -268,16 +309,18 @@ def kill_issue(repo: str, number: int, detail: str = "") -> None:
              {"body": f"**Operator decision {when}: KILL** — {detail or 'not pursuing'}\n\n_Ruled via console Decision Queue (config#1926)._"})
     _request("PATCH", f"{_API}/repos/{repo}/issues/{number}",
              {"state": "closed", "state_reason": "not_planned"})
-    clear_queue_cache()
 
 
-def defer_issue(repo: str, number: int, new_date: str) -> None:
-    issue = _request("GET", f"{_API}/repos/{repo}/issues/{number}")
+def defer_issue(repo: str, number: int, new_date: str, body: str = "") -> None:
+    """``body`` is the issue body already loaded by the queue — passing it
+    avoids a redundant GET (the view has it on hand from `load_decision_queue`)."""
+    if not body:
+        issue = _request("GET", f"{_API}/repos/{repo}/issues/{number}")
+        body = issue.get("body") or ""
     _request("PATCH", f"{_API}/repos/{repo}/issues/{number}",
-             {"body": bump_reexam_line(issue.get("body") or "", new_date)})
+             {"body": bump_reexam_line(body, new_date)})
     _request("POST", f"{_API}/repos/{repo}/issues/{number}/comments",
              {"body": f"**Operator: deferred to {new_date}** — via console Decision Queue (config#1926). Gate stands; Re-exam line bumped."})
-    clear_queue_cache()
 
 
 def send_to_session(repo: str, number: int) -> None:
@@ -286,4 +329,3 @@ def send_to_session(repo: str, number: int) -> None:
              {"labels": [SESSION_LABEL]})
     _request("POST", f"{_API}/repos/{repo}/issues/{number}/comments",
              {"body": "**Operator: needs discussion** — parked for the interactive `/backlog-triage` session (config#1924) via console Decision Queue."})
-    clear_queue_cache()

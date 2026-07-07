@@ -28,8 +28,12 @@ from loaders.decision_queue_loader import (  # noqa: E402
     BACKLOG_REPOS,
     HUMAN_GATE_LABELS,
     bump_reexam_line,
+    defer_issue,
+    kill_issue,
     parse_ask_block,
+    post_ruling,
     ruling_comment,
+    send_to_session,
 )
 
 EXPECTED_SLUG = "decision-queue"
@@ -138,3 +142,96 @@ class TestNewestCommentOrdering:
                     {"body": "latest status", "created_at": "2026-07-07T00:00:00Z"}]
         monkeypatch.setattr(dq, "_request", lambda m, u: comments)
         assert dq._newest_gate_comment("r/r", 1) == "latest status"
+
+
+class TestSubmitLatencyFix:
+    """Perf fix: a ruling used to clear_queue_cache() then the view's
+    st.rerun() forced a full serial re-fetch of every OTHER pending issue —
+    the reported ~10s "sits there" stall on every single submit. The view's
+    ``dq_done`` session-state guard already hides the acted-on item on that
+    same rerun with no network round trip, so write actions must not
+    invalidate the cache themselves; only the explicit Refresh button (and
+    the 300s TTL) should."""
+
+    @staticmethod
+    def _patch_request(monkeypatch):
+        import loaders.decision_queue_loader as dq
+        calls: list[tuple] = []
+
+        def fake(method, url, payload=None):
+            calls.append((method, url, payload))
+            return {"body": "existing body"} if method == "GET" else {}
+
+        monkeypatch.setattr(dq, "_request", fake)
+        return calls
+
+    def test_post_ruling_does_not_clear_cache(self, monkeypatch):
+        import loaders.decision_queue_loader as dq
+        self._patch_request(monkeypatch)
+        cleared = []
+        monkeypatch.setattr(dq, "clear_queue_cache", lambda: cleared.append(True))
+        post_ruling("nousergon/alpha-engine-config", 1, "Option A")
+        assert cleared == []
+
+    def test_kill_issue_does_not_clear_cache(self, monkeypatch):
+        import loaders.decision_queue_loader as dq
+        self._patch_request(monkeypatch)
+        cleared = []
+        monkeypatch.setattr(dq, "clear_queue_cache", lambda: cleared.append(True))
+        kill_issue("nousergon/alpha-engine-config", 1)
+        assert cleared == []
+
+    def test_send_to_session_does_not_clear_cache(self, monkeypatch):
+        import loaders.decision_queue_loader as dq
+        self._patch_request(monkeypatch)
+        cleared = []
+        monkeypatch.setattr(dq, "clear_queue_cache", lambda: cleared.append(True))
+        send_to_session("nousergon/alpha-engine-config", 1)
+        assert cleared == []
+
+    def test_defer_issue_skips_redundant_get_when_body_supplied(self, monkeypatch):
+        import loaders.decision_queue_loader as dq
+        calls = self._patch_request(monkeypatch)
+        cleared = []
+        monkeypatch.setattr(dq, "clear_queue_cache", lambda: cleared.append(True))
+        defer_issue("nousergon/alpha-engine-config", 1, "2026-08-01", body="already-loaded body")
+        assert cleared == []
+        assert not any(m == "GET" for m, _u, _p in calls)
+
+    def test_defer_issue_falls_back_to_get_when_body_missing(self, monkeypatch):
+        import loaders.decision_queue_loader as dq
+        calls = self._patch_request(monkeypatch)
+        monkeypatch.setattr(dq, "clear_queue_cache", lambda: None)
+        defer_issue("nousergon/alpha-engine-config", 1, "2026-08-01")
+        assert any(m == "GET" for m, _u, _p in calls)
+
+
+class TestLoadQueueFanout:
+    """load_decision_queue() used to fetch the per-issue gate comment
+    SERIALLY, one blocking GET per pending issue across 4 repos x 2 labels —
+    the O(N) round trips that made the page (and post-ruling reload) slow.
+    Comment lookups must be fanned out concurrently, and an issue carrying
+    BOTH human-gate labels must be deduped BEFORE the fetch, not after."""
+
+    def test_uses_thread_pool_for_comment_fanout(self):
+        src = (REPO_ROOT / "loaders" / "decision_queue_loader.py").read_text()
+        assert "ThreadPoolExecutor" in src
+
+    def test_shared_issue_across_both_gates_fetches_comment_once(self, monkeypatch):
+        import loaders.decision_queue_loader as dq
+        shared_issue = {
+            "number": 42, "title": "shared",
+            "created_at": "2026-07-01T00:00:00Z", "html_url": "http://x", "body": "b",
+        }
+        monkeypatch.setattr(dq, "BACKLOG_REPOS", ["nousergon/alpha-engine-config"])
+        monkeypatch.setattr(dq, "_list_gated_issues", lambda repo, label: [shared_issue])
+        comment_calls: list[tuple] = []
+
+        def fake_newest(repo, number):
+            comment_calls.append((repo, number))
+            return "no ask here"
+
+        monkeypatch.setattr(dq, "_newest_gate_comment", fake_newest)
+        out = dq.load_decision_queue()
+        assert len(comment_calls) == 1  # deduped before the network fan-out
+        assert len(out) == 1
