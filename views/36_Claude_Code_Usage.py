@@ -36,24 +36,25 @@ from loaders.s3_loader import load_claude_code_usage
 
 # Empirically calibrated against /usage (all-models) every few days:
 #   ceiling = reset_aligned_week_wet / usage_fraction
-# 2026-07-08: ~708M WET @ /usage 83% -> 853M (console was 105% @ 674M anchor).
+# 2026-07-08: ~706M WET @ /usage 83% -> 850M (console was ~83% @ 853M anchor).
+# 2026-07-08 earlier: ~708M WET @ /usage 83% -> 853M (console was 105% @ 674M anchor).
 # 2026-07-06: 175.2M WET @ /usage 26% -> 674M (was 1.14B from 2026-06-28 anchor).
 # WET is our price-independent proxy, NOT Anthropic's actual meter — the ceiling
 # is a scale factor so the console % tracks /usage, not a published limit.
-WEEKLY_WET_CEILING = 853_000_000
+WEEKLY_WET_CEILING = 850_000_000
 
 # Anthropic's Max weekly limit resets every 7 days. The gauge MUST measure WET
 # over the same reset-aligned window the limit uses — a trailing-7d window would
 # read ~78% moments after a reset drops /usage to ~0%, giving false headroom
 # (the number #1348's dynamic allocation depends on). Anchor = one observed reset
-# instant from /usage (2026-06-28 8:59pm America/Los_Angeles); the current window
+# instant from /usage (2026-07-05 9:00pm America/Los_Angeles); the current window
 # is [most recent reset <= now, next reset). Buckets are PT, so we work in PT.
 # If Anthropic ever shifts the reset cadence, update this anchor from /usage.
 # Window math itself is the shared krepis.usage_pacing.reset_window primitive
 # (config#1351 / config#1722) — also consumed by alpha-engine-config's
-# scripts/groom_budget.py, so the two stay bit-for-bit in sync.
+# scripts/groom_budget.py and the dispatcher Lambda, so all three stay bit-for-bit in sync.
 _PT = ZoneInfo("America/Los_Angeles")
-WEEKLY_RESET_ANCHOR = datetime(2026, 6, 28, 20, 59)   # PT, naive
+WEEKLY_RESET_ANCHOR = datetime(2026, 7, 5, 21, 0)   # PT, naive — Sunday 9pm PT
 WEEKLY_PERIOD = timedelta(days=7)
 
 
@@ -103,7 +104,7 @@ c1.metric("This week's WET (since reset)", f"{week_wet/1e6:,.0f}M",
                f"Rolling-7d (informational): {roll/1e6:,.0f}M.")
 c2.metric("% of weekly ceiling", f"{pct*100:,.0f}%",
           help=f"This week's WET / {WEEKLY_WET_CEILING/1e6:,.0f}M (calibrated "
-               f"2026-07-08 @ /usage 83%; re-calibrate every few days).")
+               f"2026-07-08 @ /usage 83%, reset Sun 9pm PT; re-calibrate every few days).")
 c3.metric("Resets in", f"{hrs_to_reset:,.0f}h",
           help=f"Next weekly reset {next_reset:%Y-%m-%d %H:%M} PT (every 7 days).")
 st.progress(min(pct, 1.0),
