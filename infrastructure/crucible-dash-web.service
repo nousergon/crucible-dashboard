@@ -1,0 +1,16 @@
+[Unit]
+Description=Crucible Dash Web (Next.js :3002 — config#1973 9-C)
+After=network.target crucible-dash-api.service
+
+[Service]
+Type=simple
+User=ec2-user
+WorkingDirectory=/home/ec2-user/alpha-engine-dashboard/dash-web
+Environment=DASH_API_URL=http://127.0.0.1:8506
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/npm run start
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
