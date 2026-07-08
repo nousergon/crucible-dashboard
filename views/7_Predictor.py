@@ -14,7 +14,7 @@ import streamlit as st
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from loaders.s3_loader import load_predictions_json, load_predictor_metrics, load_predictor_training_state, load_production_health, load_signals_json, load_mode_history, load_feature_importance, load_hold_book_flag, load_model_zoo_leaderboard, list_model_zoo_leaderboard_dates
+from loaders.s3_loader import load_predictions_json, list_predictions_dates, load_predictor_metrics, load_predictor_training_state, load_production_health, load_signals_json, load_mode_history, load_feature_importance, load_hold_book_flag, load_model_zoo_leaderboard, list_model_zoo_leaderboard_dates
 from loaders.db_loader import get_predictor_outcomes, canonicalize_predictor_outcomes, get_model_version_scorecard
 from loaders.signal_loader import get_available_signal_dates
 from charts.predictor_chart import make_model_drift_chart, make_feature_importance_chart
@@ -698,17 +698,36 @@ else:
 st.divider()
 
 # ---------------------------------------------------------------------------
-# Today's predictions table
+# Predictions table — honors the ?date= deep-link from the predictor's slim
+# morning-briefing email (config#856: …/predictor?date=YYYY-MM-DD), falling
+# back to today's/latest predictions when no param is given (unchanged
+# default behavior). Mirrors the EOD Report / Model Zoo pages' pattern.
 # ---------------------------------------------------------------------------
 
-st.subheader("Today's Predictions")
-
 today_str = datetime.now(ZoneInfo("America/Los_Angeles")).strftime("%Y-%m-%d")
-predictions = load_predictions_json()
-signals_data = load_signals_json(today_str) if get_available_signal_dates() else None
+
+_pred_dates = list_predictions_dates()
+qp_date = st.query_params.get("date")
+if qp_date and qp_date in _pred_dates:
+    # Explicit, recognized deep-link date — load that day's predictions and
+    # keep the URL param round-tripped (bookmarkable), same as EOD Report /
+    # Model Zoo.
+    selected_date = qp_date
+    predictions = load_predictions_json(selected_date)
+    st.query_params["date"] = selected_date
+    st.subheader(f"Predictions — {selected_date}")
+else:
+    # Default (no ?date=, or an unrecognized date): today's/latest — unchanged
+    # from pre-config#856 behavior. Query params are left untouched here so
+    # a plain page load doesn't grow a ?date= it wasn't given.
+    selected_date = today_str
+    predictions = load_predictions_json()
+    st.subheader("Today's Predictions")
+
+signals_data = load_signals_json(selected_date) if get_available_signal_dates() else None
 
 if not predictions:
-    st.info("No predictions available for today. Run the predictor to populate.")
+    st.info(f"No predictions available for {selected_date}. Run the predictor to populate.")
 else:
     show_all = st.toggle("Show all predictions (including low confidence)", value=False)
 
