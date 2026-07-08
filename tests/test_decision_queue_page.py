@@ -32,6 +32,7 @@ from loaders.decision_queue_loader import (  # noqa: E402
     kill_issue,
     parse_ask_block,
     post_ruling,
+    reexam_snoozed_until,
     ruling_comment,
     send_to_session,
 )
@@ -232,6 +233,69 @@ class TestLoadQueueFanout:
             return "no ask here"
 
         monkeypatch.setattr(dq, "_newest_gate_comment", fake_newest)
+        getattr(dq.load_decision_queue, "clear", lambda: None)()  # real st caches; conftest mock doesn't
         out = dq.load_decision_queue()
         assert len(comment_calls) == 1  # deduped before the network fan-out
-        assert len(out) == 1
+        assert len(out["items"]) == 1
+
+
+class TestDeferSnooze:
+    """The Defer-2w contract (the 2026-07-08 repopulation bug): ``defer_issue``
+    bumps the ``Re-exam:`` line and leaves the gate label standing, so the
+    loader — not the session-local ``dq_done`` guard, which dies with the
+    browser session — must exclude issues whose Re-exam date is in the
+    future. A deferred issue re-entering the queue on every reload made the
+    button a no-op across sessions."""
+
+    from datetime import date as _date
+
+    TODAY = _date(2026, 7, 8)
+
+    def test_future_reexam_is_snoozed(self):
+        assert reexam_snoozed_until("x\n\nRe-exam: 2026-07-22\n", self.TODAY) == "2026-07-22"
+
+    def test_due_today_is_not_snoozed(self):
+        assert reexam_snoozed_until("Re-exam: 2026-07-08\n", self.TODAY) is None
+
+    def test_past_reexam_is_not_snoozed(self):
+        assert reexam_snoozed_until("Re-exam: 2026-06-01\n", self.TODAY) is None
+
+    def test_absent_line_is_not_snoozed(self):
+        assert reexam_snoozed_until("no date here", self.TODAY) is None
+        assert reexam_snoozed_until("", self.TODAY) is None
+
+    def test_malformed_date_fails_open(self):
+        # Shape-valid but impossible date: the issue must stay VISIBLE —
+        # silently hiding an item behind a typo is the worse failure mode.
+        assert reexam_snoozed_until("Re-exam: 2026-02-31\n", self.TODAY) is None
+
+    def test_defer_roundtrip_survives_reload(self):
+        # The exact reported bug path: what the Defer button writes must be
+        # what the loader recognizes as snoozed on the next (re)load.
+        body = bump_reexam_line("original body", "2026-07-22")
+        assert reexam_snoozed_until(body, self.TODAY) == "2026-07-22"
+
+    def test_loader_splits_due_vs_snoozed_before_comment_fanout(self, monkeypatch):
+        import loaders.decision_queue_loader as dq
+        issues = [
+            {"number": 1, "title": "deferred", "created_at": "2026-06-01T00:00:00Z",
+             "html_url": "http://a", "body": "Re-exam: 2099-01-01\n"},
+            {"number": 2, "title": "due", "created_at": "2026-06-01T00:00:00Z",
+             "html_url": "http://b", "body": "Re-exam: 2020-01-01\n"},
+        ]
+        monkeypatch.setattr(dq, "BACKLOG_REPOS", ["nousergon/alpha-engine-config"])
+        monkeypatch.setattr(dq, "HUMAN_GATE_LABELS", ("gate:decision",))
+        monkeypatch.setattr(dq, "_list_gated_issues", lambda repo, label: issues)
+        comment_calls: list[int] = []
+
+        def fake_newest(repo, number):
+            comment_calls.append(number)
+            return "no ask"
+
+        monkeypatch.setattr(dq, "_newest_gate_comment", fake_newest)
+        getattr(dq.load_decision_queue, "clear", lambda: None)()  # real st caches; conftest mock doesn't
+        out = dq.load_decision_queue()
+        assert [i["number"] for i in out["items"]] == [2]
+        assert [s["key"] for s in out["snoozed"]] == ["nousergon/alpha-engine-config#1"]
+        assert out["snoozed"][0]["until"] == "2099-01-01"
+        assert comment_calls == [2]  # no network spent on the snoozed item
