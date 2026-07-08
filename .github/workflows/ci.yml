@@ -7,6 +7,30 @@ on:
     branches: [main]
 
 jobs:
+  dash-web:
+    # Crucible /dash Next.js frontend (config#1973 9-C): vitest + typecheck +
+    # production build so a TS or build break can't reach the merge deploy.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: dash-web/package-lock.json
+      - name: Install
+        working-directory: dash-web
+        run: npm ci --no-audit --no-fund
+      - name: Unit tests
+        working-directory: dash-web
+        run: npm test
+      - name: Typecheck
+        working-directory: dash-web
+        run: npm run typecheck
+      - name: Production build
+        working-directory: dash-web
+        run: npm run build
+
   test:
     runs-on: ubuntu-latest
 

@@ -31,6 +31,7 @@ CONSOLE_URL="http://localhost:8501/_stcore/health"
 LIVE_URL="http://localhost:8502/live/_stcore/health"
 DASH_URL="http://localhost:8504/dash/_stcore/health"
 DASH_API_URL="http://localhost:8506/api/health"
+DASH_WEB_URL="http://localhost:3002/dash"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$LOG"; }
 fail() { log "FAIL $*"; exit 1; }
@@ -186,6 +187,29 @@ sleep 1
 systemctl restart crucible-dash-api 2>>"$LOG" || fail "restart crucible-dash-api"
 log "restarted crucible-dash-api.service"
 
+# ── 3d. Crucible dash-web (Next.js, config#1973 9-C) ───────────────────────
+# Build only when dash-web/ changed (or no build exists yet) — npm ci +
+# next build are the expensive steps; unit self-provision mirrors 3b/3c.
+WEB_DIR="$REPO_DIR/dash-web"
+if [ -d "$WEB_DIR" ]; then
+    if sudo -u ec2-user git diff "${CURRENT_SHA}~1" "$CURRENT_SHA" -- dash-web/ 2>/dev/null | grep -q '^[+-]'         || [ ! -d "$WEB_DIR/.next" ]; then
+        log "dash-web changed (or unbuilt) — npm ci + next build"
+        sudo -u ec2-user bash -c "cd '$WEB_DIR' && npm ci --no-audit --no-fund && npm run build" >>"$LOG" 2>&1             || fail "dash-web npm build"
+        log "dash-web built"
+    fi
+    WEB_UNIT_SRC="$REPO_DIR/infrastructure/crucible-dash-web.service"
+    WEB_UNIT_DST="/etc/systemd/system/crucible-dash-web.service"
+    if [ ! -f "$WEB_UNIT_DST" ] || ! cmp -s "$WEB_UNIT_SRC" "$WEB_UNIT_DST"; then
+        cp "$WEB_UNIT_SRC" "$WEB_UNIT_DST" 2>>"$LOG" || fail "install crucible-dash-web unit"
+        systemctl daemon-reload 2>>"$LOG" || fail "daemon-reload for crucible-dash-web"
+        systemctl enable crucible-dash-web 2>>"$LOG" || fail "enable crucible-dash-web"
+        log "installed/refreshed crucible-dash-web.service unit"
+    fi
+    sleep 1
+    systemctl restart crucible-dash-web 2>>"$LOG" || fail "restart crucible-dash-web"
+    log "restarted crucible-dash-web.service"
+fi
+
 # ── 4. Health check ─────────────────────────────────────────────────────────
 # Streamlit's /_stcore/health returns 200 OK with body "ok" once the
 # server is ready. Give it up to 30s per service to bind the port.
@@ -209,6 +233,9 @@ wait_for_health "$CONSOLE_URL" "dashboard (console)" || fail "console health"
 wait_for_health "$LIVE_URL" "nous-ergon-live" || fail "live health"
 wait_for_health "$DASH_URL" "crucible-dash" || fail "crucible-dash health"
 wait_for_health "$DASH_API_URL" "crucible-dash-api" || fail "crucible-dash-api health"
+if [ -d "$REPO_DIR/dash-web" ]; then
+    wait_for_health "$DASH_WEB_URL" "crucible-dash-web" || fail "crucible-dash-web health"
+fi
 
 log "=== deploy-on-merge completed successfully — sha=$CURRENT_SHA ==="
 exit 0
