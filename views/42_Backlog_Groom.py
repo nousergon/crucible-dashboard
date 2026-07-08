@@ -6,6 +6,10 @@ Operator audit surface for the complexity-tier backlog groom (config#1495,
 high-tier) writes a per-run artifact to
 ``s3://alpha-engine-research/groom/{date}/{run_id_or_hhmmss}.json``
 (``groom_driver.py::write_run_artifact``) — this page is its consumer.
+Standalone PR-sweep runs (``groom_run.sh --mode sweep``) write here too as of
+config#1986, via ``scripts/write_sweep_artifact.py`` — same schema,
+``run_kind="sweep"``, no issue queue — replacing the `groom-digest` GitHub
+issue they used to file as their only reporting surface.
 
 The point of this page: answer "did the model actually think about each
 issue?" from VERIFIABLE artifacts, never a self-report. Each queued issue's
@@ -229,6 +233,12 @@ for k in keys[:_HISTORY_N]:
     run = load_groom_run(k)
     if not run:
         continue
+    # config#1986: schema_version 6 adds run_kind ("coverage" | "sweep") —
+    # older artifacts and coverage runs default to "coverage". A standalone
+    # PR-sweep run has no issue queue, so its Coverage/disposition columns
+    # are not meaningful the way a coverage run's are — render "—" rather
+    # than a misleading "0/0".
+    run_kind = run.get("run_kind", "coverage")
     run_issues = run.get("issues") or []
     counts = {d: sum(1 for i in run_issues if i.get("disposition") == d)
               for d in ("closed", "pr_opened", "commented", "untouched")}
@@ -242,10 +252,12 @@ for k in keys[:_HISTORY_N]:
     eff_cols = format_efficiency_row(eff)
     history_rows.append({
         "Run": _run_label(k),
+        "Kind": "🔧 sweep" if run_kind == "sweep" else "🧹 coverage",
         "Tier": run.get("issue_filter", "—"),
         "Outcome": "🟠 floor breach" if run.get("floor_fail") else "✅ ok",
         "Stop reason": (run.get("stop_reason") or "—")[:60],
-        "Coverage": f"{run.get('processed', len(run_issues))}/{run.get('total_issues', len(run_issues))}",
+        "Coverage": ("—" if run_kind == "sweep" else
+                     f"{run.get('processed', len(run_issues))}/{run.get('total_issues', len(run_issues))}"),
         "✅ closed": counts["closed"],
         "🔧 PRs": counts["pr_opened"],
         "💬 comm.": counts["commented"],
@@ -288,6 +300,7 @@ if data is None:
 issues = data.get("issues") or []
 other_closed = data.get("other_closed") or []
 other_prs = data.get("other_prs") or []
+sel_run_kind = data.get("run_kind", "coverage")
 
 n_closed = sum(1 for i in issues if i.get("disposition") == "closed")
 n_pr = sum(1 for i in issues if i.get("disposition") == "pr_opened")
@@ -351,66 +364,78 @@ else:
     if sel_eff.get("alerts"):
         st.warning("Outcome flags (no usage join): " + "; ".join(sel_eff["alerts"]))
 
-# ── Budget vs consumed (config#1569; schema_version >= 2 only — older runs ──
-# never captured these fields, so soft_limit_min is 0/absent for them) ───────
-if data.get("schema_version", 1) >= 2 and data.get("soft_limit_min"):
-    soft_limit = data["soft_limit_min"]
-    elapsed = data.get("elapsed_min", 0)
-    engaged = data.get("engaged", 0)
-    floor = data.get("floor", 0)
-    pct_used = (elapsed / soft_limit * 100) if soft_limit else 0.0
-    bcol1, bcol2, bcol3 = st.columns(3)
-    with bcol1:
-        st.metric("Soft budget used", f"{elapsed}/{soft_limit} min", f"{pct_used:.0f}%")
-    with bcol2:
-        st.metric(
-            "Engaged / floor", f"{engaged} / {floor}",
-            help="Issues dispositioned (closed/PR'd/commented) this run vs the fail-loud "
-                 "floor below which a budget+time-remaining stop is flagged as a "
-                 "self-taper (config#1374, engagement metric per config#1382/#1564).",
-        )
-    with bcol3:
-        st.metric("Queue coverage", f"{data.get('processed', len(issues))}/{data.get('total_issues', len(issues))}")
-    if not data.get("floor_fail") and elapsed < soft_limit:
-        st.caption(
-            f"Finished {soft_limit - elapsed} min under budget with stop reason starting "
-            f"\"{(data.get('stop_reason') or '')[:40]}...\" — **this is expected, not a bug**, "
-            "when the queue drains before the soft deadline (a small/clean backlog is cheap "
-            "to fully disposition). Only a 🟠 floor-breach below is a self-taper signal."
-        )
-else:
+if sel_run_kind == "sweep":
+    # config#1986: a standalone PR-sweep run has no issue queue, so the
+    # coverage-loop's Engaged/floor + Queue coverage framing doesn't apply —
+    # just show elapsed vs soft budget. PRs-swept detail lives in the report
+    # below (Run digest), which IS this run's disposition record.
     st.caption(
-        "🛈 This run predates budget-tracking (schema_version "
-        f"{data.get('schema_version', 1)}, pre-2026-07-02) — no soft-budget-vs-consumed "
-        "data was captured for it."
+        f"🔧 Standalone PR-sweep run — elapsed **{data.get('elapsed_min', 0)}** / "
+        f"**{data.get('soft_limit_min', 0)}** min soft budget. No issue queue "
+        "(sweep runs bring existing PRs to merge-ready, they don't triage "
+        "issues) — see the report below for what was swept."
     )
+else:
+    # ── Budget vs consumed (config#1569; schema_version >= 2 only — older ──
+    # runs never captured these fields, so soft_limit_min is 0/absent). ─────
+    if data.get("schema_version", 1) >= 2 and data.get("soft_limit_min"):
+        soft_limit = data["soft_limit_min"]
+        elapsed = data.get("elapsed_min", 0)
+        engaged = data.get("engaged", 0)
+        floor = data.get("floor", 0)
+        pct_used = (elapsed / soft_limit * 100) if soft_limit else 0.0
+        bcol1, bcol2, bcol3 = st.columns(3)
+        with bcol1:
+            st.metric("Soft budget used", f"{elapsed}/{soft_limit} min", f"{pct_used:.0f}%")
+        with bcol2:
+            st.metric(
+                "Engaged / floor", f"{engaged} / {floor}",
+                help="Issues dispositioned (closed/PR'd/commented) this run vs the fail-loud "
+                     "floor below which a budget+time-remaining stop is flagged as a "
+                     "self-taper (config#1374, engagement metric per config#1382/#1564).",
+            )
+        with bcol3:
+            st.metric("Queue coverage", f"{data.get('processed', len(issues))}/{data.get('total_issues', len(issues))}")
+        if not data.get("floor_fail") and elapsed < soft_limit:
+            st.caption(
+                f"Finished {soft_limit - elapsed} min under budget with stop reason starting "
+                f"\"{(data.get('stop_reason') or '')[:40]}...\" — **this is expected, not a bug**, "
+                "when the queue drains before the soft deadline (a small/clean backlog is cheap "
+                "to fully disposition). Only a 🟠 floor-breach below is a self-taper signal."
+            )
+    else:
+        st.caption(
+            "🛈 This run predates budget-tracking (schema_version "
+            f"{data.get('schema_version', 1)}, pre-2026-07-02) — no soft-budget-vs-consumed "
+            "data was captured for it."
+        )
 
-tiles = st.columns(5)
-with tiles[0]:
-    st.metric("Queued issues", len(issues))
-with tiles[1]:
-    st.metric("✅ Closed", n_closed)
-with tiles[2]:
-    st.metric("🔧 PR opened", n_pr)
-with tiles[3]:
-    st.metric("💬 Commented", n_commented)
-with tiles[4]:
-    st.metric("⚠️ Untouched", n_untouched, delta=None if n_untouched == 0 else "check below",
-             delta_color="inverse")
+    tiles = st.columns(5)
+    with tiles[0]:
+        st.metric("Queued issues", len(issues))
+    with tiles[1]:
+        st.metric("✅ Closed", n_closed)
+    with tiles[2]:
+        st.metric("🔧 PR opened", n_pr)
+    with tiles[3]:
+        st.metric("💬 Commented", n_commented)
+    with tiles[4]:
+        st.metric("⚠️ Untouched", n_untouched, delta=None if n_untouched == 0 else "check below",
+                 delta_color="inverse")
 
-if data.get("floor_fail"):
-    st.error(
-        "⚠️ FAIL-LOUD FLOOR BREACHED — this run stopped with budget+time "
-        "remaining but delivered fewer than the minimum work-items. Treated "
-        "as a self-taper failure; see the `groom-digest` GitHub issue."
-    )
-if n_untouched:
-    st.warning(
-        f"{n_untouched} queued issue(s) got NO action this run (not closed, "
-        "no PR, no comment) — coverage is supposed to be mandatory; an "
-        "untouched issue here means it hit the re-queue attempt cap without "
-        "ever being dispositioned. Worth checking why."
-    )
+    if data.get("floor_fail"):
+        st.error(
+            "⚠️ FAIL-LOUD FLOOR BREACHED — this run stopped with budget+time "
+            "remaining but delivered fewer than the minimum work-items. Treated "
+            "as a self-taper failure; see the run digest below."
+        )
+    if n_untouched:
+        st.warning(
+            f"{n_untouched} queued issue(s) got NO action this run (not closed, "
+            "no PR, no comment) — coverage is supposed to be mandatory; an "
+            "untouched issue here means it hit the re-queue attempt cap without "
+            "ever being dispositioned. Worth checking why."
+        )
 
 # ── Run digest (schema_version >= 3 embeds the finalized digest verbatim, ──
 # written by groom_driver.py at the same moment it finalizes the GitHub
@@ -463,6 +488,8 @@ if len(display):
         use_container_width=True,
         hide_index=True,
     )
+elif sel_run_kind == "sweep":
+    st.caption("This is a standalone PR-sweep run — it has no issue queue by design (see the report above for PRs swept).")
 else:
     st.caption("No issues in this run's queue (e.g. a clean empty-queue shutdown).")
 
