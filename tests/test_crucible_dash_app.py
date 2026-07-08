@@ -38,13 +38,16 @@ class TestInfraWiring:
         assert "WorkingDirectory=/home/ec2-user/alpha-engine-dashboard/dash" in unit
         assert "--server.port=8504" in unit
 
-    def test_nginx_routes_dash_to_8504(self):
+    def test_nginx_routes_dash_to_web(self):
+        # 9-D cutover (config#1973): /dash serves the Next.js surface on
+        # :3002; the Streamlit skin (:8504) stays running as rollback but is
+        # no longer the route target.
         conf = (REPO_ROOT / "infrastructure" / "nginx.conf").read_text()
         assert "location /dash" in conf
         assert conf.index("location /dash") < conf.index("location / {"), \
             "the /dash location must precede the catch-all live proxy"
         dash_block = conf[conf.index("location /dash"):conf.index("location / {")]
-        assert "http://127.0.0.1:8504" in dash_block
+        assert "http://127.0.0.1:3002" in dash_block
 
     def test_deploy_script_provisions_restarts_and_health_checks(self):
         script = (REPO_ROOT / "infrastructure" / "deploy-on-merge.sh").read_text()
