@@ -19,15 +19,22 @@ class TestNavRegistration:
         assert 'page("host_crucible_results.py", "Crucible Results"' in src
 
     def test_host_lists_all_subviews(self):
+        # Console mount carries only the tabs NOT covered by console-native
+        # pages (console-IA phase 1, config#1990): Overview/Evaluation/
+        # Execution duplicated Report Card / Report Card Detail / the
+        # Execution page's backtest sections. All six views remain mounted
+        # by the /dash Streamlit rollback (dash/app.py) — see
+        # test_crucible_dash_app.py.
         src = (REPO_ROOT / "views" / "host_crucible_results.py").read_text()
         for label, filename in [
-            ("Overview", "Crucible_Overview.py"),
             ("Validation", "Crucible_Validation.py"),
-            ("Evaluation", "Crucible_Evaluation.py"),
-            ("Execution", "Crucible_Execution.py"),
             ("Feedback loop", "Crucible_Feedback.py"),
+            ("Trust", "Crucible_Trust.py"),
         ]:
             assert f'("{label}", "{filename}")' in src
+        for retired in ("Crucible_Overview.py", "Crucible_Evaluation.py",
+                        "Crucible_Execution.py"):
+            assert retired not in src, f"{retired} back on the console mount"
 
     def test_subview_files_exist(self):
         for filename in (

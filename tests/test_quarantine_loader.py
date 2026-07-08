@@ -84,10 +84,12 @@ def test_row_keys_match_column_contract():
 
 
 def test_page_registered_in_nav():
-    # Hosted under the Observability front page (lazy view-host) post-IA-reorg
-    # rather than registered directly in app.py.
+    # Quarantine is a lens of the consolidated Incidents tab (console-IA
+    # phase 1, config#1990), which the Observability front page hosts.
+    incidents_src = (REPO_ROOT / "views" / "Incidents.py").read_text()
+    assert "41_Quarantine.py" in incidents_src
     host_src = (REPO_ROOT / "views" / "host_observability.py").read_text()
-    assert "41_Quarantine.py" in host_src
+    assert "Incidents.py" in host_src
     app_src = (REPO_ROOT / "app.py").read_text()
     assert 'page("host_observability.py"' in app_src
     assert (REPO_ROOT / "views" / "41_Quarantine.py").exists()

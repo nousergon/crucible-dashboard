@@ -452,8 +452,9 @@ def _build_navigation():
     return st.navigation({
         "🎯 Overview": [
             home,
-            # Report Card front: "Report Card" + "Component Detail" (ex-#9 detail).
-            page("host_report_card.py", "Report Card", "📋"),
+            # Report Card: one page, Overview + Component Detail views over the
+            # same cached artifact (host retired — console-IA phase 1, config#1990).
+            page("Report_Card.py", "Report Card", "📋"),
             # url_path pinned to "director" — Director weekly-plan digest email
             # deep-links to …/director?date=YYYY-MM-DD. Guarded by
             # tests/test_director_page.py.
