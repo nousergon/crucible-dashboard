@@ -516,6 +516,13 @@ def _build_navigation():
             page("43_Distillation_Corpus.py", "Distillation Corpus", "🔬"),
         ],
         "⚗️ Experiments": [
+            # Crucible product surface v1 (config#1957): experiment-scoped
+            # results for the Reference Rate experiment — Overview /
+            # Validation / Evaluation tabs over the shared results.view_model
+            # layer. Console-mounted for dogfooding; the public
+            # crucible.nousergon.ai/dash route flip is gated on the trust
+            # battery (config#1958).
+            page("host_crucible_results.py", "Crucible Results", "🏛"),
             # Champion/challenger ablation ledgers (ARCH §37, config#1685):
             # producer ablation (agentic vs no_agent/single_agent) + scanner
             # ablation (live vs momentum_sleeve). Observe-only leaderboards.
