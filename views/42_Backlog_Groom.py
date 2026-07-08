@@ -17,6 +17,15 @@ same ground-truth-over-self-report principle the run-attribution fix
 
 Complementary to **Saturday SF Watch** (failure-event timeline for the trading
 pipelines) — this page is the per-run activity log for the groom pipeline.
+
+**Slot decisions strip (config#1933 demand-driven dispatch / config#1935):**
+above the run history, a per-slot/per-day chip strip sourced from
+``s3://alpha-engine-research/groom/decisions/{date}/{slot}.json`` — the
+dispatcher's enumerate-then-decide record, written BEFORE any spot spend.
+Distinct from the run artifacts above: a decision record exists even when
+the dispatcher decides NOT to launch (a light backlog), and a missing
+record for a scheduled slot is a broken-scheduler signal in its own right —
+rendered as an explicit ⚠️, never blank.
 """
 
 from __future__ import annotations
@@ -35,9 +44,14 @@ from loaders.groom_efficiency import (  # noqa: E402
     match_usage_for_run,
 )
 from loaders.s3_loader import (  # noqa: E402
+    KNOWN_GROOM_SLOTS,
+    known_slots_from_records,
+    list_groom_decision_keys,
     list_groom_run_keys,
     list_groom_usage_records,
+    load_groom_decision,
     load_groom_run,
+    normalize_groom_decision_record,
 )
 
 _DISPOSITION_LABEL: dict[str, str] = {
@@ -64,12 +78,132 @@ def _run_label(key: str) -> str:
     return stem.replace("/", " ")
 
 
+_DECISIONS_HISTORY_DAYS = 3
+
+
+def _render_slot_decisions_strip() -> None:
+    """"Slot decisions" strip (config#1935) — one chip per scheduled slot
+    per day for the last ``_DECISIONS_HISTORY_DAYS`` days, sourced from the
+    dispatcher's enumerate-then-decide records
+    (``groom/decisions/{date}/{slot}.json``, written BEFORE any spot spend —
+    distinct from the post-hoc run artifacts the rest of this page reads).
+
+    Chips: 🟢 launched (filter + model), ⚪ skipped (reason on hover/expander),
+    ⚠️ missing record. A day with no record for an otherwise-known slot is
+    the broken-scheduler signal these records exist to expose, so it is
+    ALWAYS rendered loud — never silently blanked, even with zero records
+    anywhere (the pre-bootstrap cold-start state).
+    """
+    import datetime as _dt
+
+    st.subheader("Slot decisions")
+    st.caption(
+        "Dispatcher enumerate-then-decide records, per scheduled slot — "
+        "written BEFORE any spot spend, so a light backlog shows ⚪ skipped "
+        "with zero cost. A slot with NO record for a day it should have run "
+        "renders ⚠️ — that gap is the broken-scheduler signal these records "
+        "exist to expose. (config#1933, config#1935)"
+    )
+
+    decision_keys = list_groom_decision_keys(days=_DECISIONS_HISTORY_DAYS)
+
+    # Known-slots set: the hardcoded daily trigger trio, unioned with any
+    # slot name actually observed in the window — so a schedule change
+    # (new/renamed slot) surfaces as a new column instead of being silently
+    # invisible (config#1935 step 3 fallback, documented in the PR body).
+    known_slots = sorted(set(KNOWN_GROOM_SLOTS) | set(known_slots_from_records(decision_keys)))
+
+    today = _dt.date.today()
+    days = [(today - _dt.timedelta(days=i)).isoformat() for i in range(_DECISIONS_HISTORY_DAYS)]
+
+    if not known_slots:
+        # Nothing in KNOWN_GROOM_SLOTS AND nothing observed live — the
+        # pre-bootstrap cold-start state (nousergon-data-PR684 not yet
+        # produced a single record). Render an explicit notice, not a blank
+        # section.
+        st.warning(
+            "⚠️ No slot decision records found in the last "
+            f"{_DECISIONS_HISTORY_DAYS} days and no known schedule configured — "
+            "either the dispatcher hasn't written its first record yet "
+            "(cold start) or the scheduler is down. Expected slots: "
+            + ", ".join(KNOWN_GROOM_SLOTS)
+        )
+        return
+
+    records_by_key: dict[str, dict | None] = {k: load_groom_decision(k) for k in decision_keys}
+    keys_by_date_slot: dict[tuple[str, str], str] = {}
+    for k in decision_keys:
+        parts = k.removeprefix("groom/decisions/").removesuffix(".json").split("/", 1)
+        if len(parts) == 2:
+            keys_by_date_slot[(parts[0], parts[1])] = k
+
+    any_missing = False
+    # Newest day first (matches Run history's newest-first convention);
+    # within a day, slots in canonical schedule order.
+    for date_str in days:
+        st.markdown(f"**{date_str}**")
+        cols = st.columns(len(known_slots))
+        for col, slot in zip(cols, known_slots):
+            key = keys_by_date_slot.get((date_str, slot))
+            with col:
+                if key is None:
+                    any_missing = True
+                    st.markdown(f"⚠️ **{slot}**")
+                    st.caption("no decision record")
+                    continue
+                raw = records_by_key.get(key)
+                if raw is None:
+                    any_missing = True
+                    st.markdown(f"⚠️ **{slot}**")
+                    st.caption("record unreadable")
+                    continue
+                boxes = normalize_groom_decision_record(raw)
+                if not boxes:
+                    # Zero-length decisions list == a real, deliberate
+                    # full-slot skip (light backlog) — distinct from a
+                    # missing record. Never conflate the two.
+                    st.markdown(f"⚪ **{slot}**")
+                    with st.expander("skipped", expanded=False):
+                        st.caption(
+                            "0 tier boxes launched this slot (light backlog "
+                            "across all tiers, or a skip below the floor)."
+                        )
+                        st.json(raw)
+                else:
+                    launched = [b for b in boxes if b.get("launch")]
+                    skipped = [b for b in boxes if not b.get("launch")]
+                    if launched:
+                        st.markdown(f"🟢 **{slot}**")
+                        with st.expander(f"{len(launched)} launched", expanded=False):
+                            for b in launched:
+                                st.caption(
+                                    f"`{b.get('issue_filter', '—')}` → "
+                                    f"**{b.get('model', '—')}** — {b.get('reason', '—')}"
+                                )
+                            for b in skipped:
+                                st.caption(f"⚪ skipped: {b.get('reason', '—')}")
+                    else:
+                        st.markdown(f"⚪ **{slot}**")
+                        with st.expander("skipped", expanded=False):
+                            for b in skipped:
+                                st.caption(f"{b.get('reason', '—')}")
+    if any_missing:
+        st.caption(
+            "⚠️ above = no decision record for that slot/day — verify the "
+            "dispatcher Lambda actually invoked (scheduler outage is the "
+            "primary suspect; check CloudWatch for the "
+            "`scheduled-groom-dispatcher` function)."
+        )
+
+
 st.title("🧹 Backlog Groom")
 st.caption(
     "Per-run audit trail for the complexity-tier backlog groom — every "
     "issue's disposition cross-referenced against real GitHub state, not a "
     "self-report. (config#1495, #1512)"
 )
+
+_render_slot_decisions_strip()
 
 keys = list_groom_run_keys()
 if not keys:

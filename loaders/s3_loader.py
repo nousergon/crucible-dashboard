@@ -700,6 +700,139 @@ def load_groom_run(key: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+# ---------------------------------------------------------------------------
+# Groom slot decisions (demand-driven dispatch — config#1933 / config#1935)
+# ---------------------------------------------------------------------------
+#
+# Written by the ``nousergon-data`` scheduled-groom-dispatcher Lambda's
+# enumerate-then-decide step, BEFORE any spot spend — the ground-truth record
+# of "did the dispatcher actually evaluate the backlog at this slot, and what
+# did it decide" (as distinct from ``load_groom_run`` above, which only
+# exists once a box actually launched and finished). A day with no record for
+# a scheduled slot is the broken-scheduler signal these records exist to
+# expose, so the console must render a loud gap warning rather than silently
+# omitting the slot (config#1935).
+#
+# Key shape observed live (nousergon-data-PR685 same-day symmetric
+# correction, schema_version 2): ``groom/decisions/{date}/trigger-{HHMM}.json``
+# with a top-level ``decisions: [...]`` list (0-3 entries, one per
+# tier-box the dispatcher decided to launch that slot; an empty list is a
+# full-slot skip). The original config#1935 issue text describes the
+# pre-correction schema_version 1 shape (singular slot_tier/launch/tiers/
+# issue_filter/model/reason fields, one decision per file, key
+# ``{slot}.json``) — ``_normalize_decision_record`` below accepts both so a
+# still-in-flight v1 record (if any survive) degrades gracefully rather than
+# rendering blank.
+_GROOM_DECISIONS_PREFIX = "groom/decisions/"
+_GROOM_DECISIONS_KEY_RE = re.compile(
+    r"^groom/decisions/(?P<date>\d{4}-\d{2}-\d{2})/(?P<slot>[^/]+)\.json$"
+)
+
+#: The three daily dispatcher triggers (UTC), per nousergon-data-PR685 —
+#: "all three daily triggers carry IDENTICAL {run_mode:full,
+#: trigger:demand-all, pr_budget:100}". Used as the known-slots set for the
+#: missing-record warning; kept as a soft default (not enforced elsewhere)
+#: so a schedule change doesn't require a code change to avoid false
+#: positives — see ``known_slots_from_records`` fallback below.
+KNOWN_GROOM_SLOTS: tuple[str, ...] = ("trigger-0100", "trigger-0700", "trigger-1900")
+
+
+@st.cache_data(ttl=_ttl("groom_decisions"))
+def list_groom_decision_keys(days: int = 3) -> list[str]:
+    """Return ``groom/decisions/{date}/{slot}.json`` keys for the last *days*
+    calendar dates (including today), newest first.
+
+    Mirrors :func:`list_groom_run_keys` — lists via the date-prefixed S3
+    layout rather than assuming a fixed slot count, since a light backlog
+    triggers a decision write with zero launches, and a scheduler outage
+    means NO write at all (the gap this loader exists to expose, per
+    config#1935). Returns ``[]`` on any listing error (page renders the
+    "no records" state, never a stack trace).
+    """
+    import datetime as _dt
+
+    bucket = _research_bucket()
+    today = _dt.date.today()
+    wanted_dates = {(today - _dt.timedelta(days=i)).isoformat() for i in range(days)}
+    try:
+        client = get_s3_client()
+        paginator = client.get_paginator("list_objects_v2")
+        keys: list[str] = []
+        for page in paginator.paginate(Bucket=bucket, Prefix=_GROOM_DECISIONS_PREFIX):
+            for obj in page.get("Contents", []):
+                k = obj.get("Key", "")
+                m = _GROOM_DECISIONS_KEY_RE.match(k)
+                if m and m.group("date") in wanted_dates:
+                    keys.append(k)
+        keys.sort(reverse=True)
+        return keys
+    except Exception as e:
+        logger.error("Failed to list groom decision keys: %s", e)
+        _record_s3_error(bucket, _GROOM_DECISIONS_PREFIX, type(e).__name__, str(e))
+        return []
+
+
+@st.cache_data(ttl=_ttl("groom_decisions"))
+def load_groom_decision(key: str) -> dict | None:
+    """Load a single slot-decision record (schema_version 1 or 2 — see
+    module docstring above ``_GROOM_DECISIONS_PREFIX``). Returns the raw
+    parsed dict (un-normalized); use :func:`normalize_groom_decision_record`
+    to get a uniform ``decisions: [...]`` list regardless of schema version.
+    None on missing key / parse error / non-dict payload.
+    """
+    data = _fetch_s3_json(_research_bucket(), key)
+    return data if isinstance(data, dict) else None
+
+
+def normalize_groom_decision_record(raw: dict) -> list[dict]:
+    """Flatten a raw decision record (either schema version) into a list of
+    per-box decision dicts, each with ``launch``, ``tiers``, ``issue_filter``,
+    ``model``, ``reason`` — the shape the console strip renders per chip.
+
+    schema_version 2 (live, nousergon-data-PR685): top-level ``decisions``
+    is already this list (possibly empty — a full-slot skip with zero
+    boxes launched).
+    schema_version 1 (original config#1933 plan / config#1935 issue text):
+    the record IS a single decision — ``slot_tier``/``launch``/``tiers``/
+    ``issue_filter``/``model``/``reason`` live at the top level. Wrapped
+    into a one-element list for a uniform caller-side shape.
+    """
+    if not isinstance(raw, dict):
+        return []
+    decisions = raw.get("decisions")
+    if isinstance(decisions, list):
+        return [d for d in decisions if isinstance(d, dict)]
+    # schema_version 1 fallback: single decision at the top level.
+    if "launch" in raw:
+        return [{
+            "launch": raw.get("launch"),
+            "tiers": raw.get("tiers") or [],
+            "issue_filter": raw.get("issue_filter"),
+            "model": raw.get("model"),
+            "reason": raw.get("reason"),
+            "slot_tier": raw.get("slot_tier"),
+        }]
+    return []
+
+
+def known_slots_from_records(decision_keys: list[str]) -> list[str]:
+    """Fallback known-slots set: every distinct slot name seen across
+    *decision_keys* (usually the last-N-days window from
+    :func:`list_groom_decision_keys`), sorted.
+
+    Used only when :data:`KNOWN_GROOM_SLOTS` needs a live cross-check (e.g.
+    a slot name that doesn't match the hardcoded trio — schedule drift) —
+    the console unions both sets so a schedule change surfaces new slots
+    instead of hiding them, per config#1935 step 3's documented fallback.
+    """
+    slots: set[str] = set()
+    for k in decision_keys:
+        m = _GROOM_DECISIONS_KEY_RE.match(k)
+        if m:
+            slots.add(m.group("slot"))
+    return sorted(slots)
+
+
 _GROOM_USAGE_PREFIX = "claude_code_usage/groom/"
 
 
