@@ -1,10 +1,11 @@
-"""Crucible Results — §A Overview (config#1957, plan §4.2).
+"""Crucible Results — §A Overview (config#1957; prosumer reframe plan §9.2/9-A).
 
-Experiment-scoped front page for the Reference Rate experiment: identity
-block (what ran, exactly) → headline stat strip → Report Card v2 tiles →
-equity curve vs SPY. Reads versioned artifacts only; renders via the
-skin-agnostic ``results.view_model`` so the future public /dash skin
-consumes the identical layer.
+Tear-sheet-first front page for the Reference Rate experiment: identity
+block → performance headline (numbers with CIs, never letter grades) →
+measurement-integrity strip (the green-able honesty layer) → grader
+verdicts scoped to the EXPERIMENT tiles → equity curve vs SPY. Ops tiles
+(substrate/agent/backtester-self/director_quality) render on the console
+Report Card only — an outside strategy-tester never sees our plumbing.
 """
 import os
 import sys
@@ -14,13 +15,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import plotly.graph_objects as go  # noqa: E402
 import streamlit as st  # noqa: E402
 
-from components.report_card_v2 import render_overview  # noqa: E402
 from loaders.s3_loader import (  # noqa: E402
     list_backtest_dates,
+    load_backtest_file,
     load_eod_pnl,
     load_report_card,
 )
+from loaders.trust_battery_loader import load_ci_verdicts  # noqa: E402
 from results import view_model as vm  # noqa: E402
+from results.battery_registry import BATTERY_LEGS  # noqa: E402
 
 st.title("⚗ Crucible — Reference Rate")
 st.caption(
@@ -46,14 +49,16 @@ with st.container(border=True):
         for slot, impl in identity["slots"]:
             st.markdown(f"`{slot}` — {impl}")
 
+def _bt_json(filename: str) -> dict | None:
+    if not backtest_date:
+        return None
+    loaded = load_backtest_file(backtest_date, filename)
+    return loaded if isinstance(loaded, dict) else None
+
+
 eod = load_eod_pnl()
-signal_metrics = portfolio_stats = None
-if backtest_date:
-    from loaders.s3_loader import load_backtest_file
-    loaded = load_backtest_file(backtest_date, "metrics.json")
-    signal_metrics = loaded if isinstance(loaded, dict) else None
-    loaded = load_backtest_file(backtest_date, "portfolio_stats.json")
-    portfolio_stats = loaded if isinstance(loaded, dict) else None
+signal_metrics = _bt_json("metrics.json")
+portfolio_stats = _bt_json("portfolio_stats.json")
 
 stats = vm.build_headline(eod, signal_metrics, portfolio_stats)
 cols = st.columns(len(stats))
@@ -61,8 +66,57 @@ for col, stat in zip(cols, stats):
     col.metric(stat["label"], stat["value"], help=stat["help"])
     col.caption(stat["sub"])
 
-st.subheader("Report Card")
-render_overview(card)
+st.subheader("Measurement integrity")
+st.caption(
+    "Whether these numbers can be trusted — the part that must always be green. "
+    "Full detail on the Trust and Validation tabs."
+)
+_repos = tuple(sorted({leg["repo"] for leg in BATTERY_LEGS}))
+_ci = load_ci_verdicts(_repos)
+_battery_ok = all(v.get("conclusion") == "success" for v in _ci.values()) if _ci else False
+integrity = vm.integrity_rows(
+    _bt_json("pit_parity.json"),
+    _bt_json("sample_size.json"),
+    _bt_json("walk_forward_stability.json"),
+    _bt_json("optimizer_churn.json"),
+)
+_lookahead = next((r for r in integrity if "Lookahead" in r["check"]), None)
+_sample = next((r for r in integrity if "Sample" in r["check"]), None)
+i1, i2, i3 = st.columns(3)
+i1.metric(
+    "Validation battery",
+    "passing" if _battery_ok else "check Trust tab",
+    help="Named engine + grader validation suites, vouched for by each repo's live main-branch CI — see the Trust tab.",
+)
+i2.metric(
+    "Lookahead audit",
+    (_lookahead["detail"].split(": ")[-1] if _lookahead and _lookahead["status"] != "ABSENT" else "—"),
+    help=vm.HELP["pit_parity"],
+)
+i3.metric(
+    "Sample adequacy",
+    (_sample["status"] if _sample else "—"),
+    help="Finalized-signal count vs the minimum-N floor on the weakest measurement leg.",
+)
+
+st.subheader("Grader verdicts — this strategy")
+st.caption(
+    "What the evaluation layer concludes about the experiment's components, reasons included. "
+    "Honest negatives stay visible — performance itself is reported as numbers above, never as a grade."
+)
+verdicts = vm.experiment_tile_verdicts(card)
+if not verdicts:
+    st.info("No graded card published yet.")
+else:
+    chip = {"GREEN": "🟢", "WATCH": "🟡", "RED": "🔴"}
+    vcols = st.columns(len(verdicts))
+    for col, row in zip(vcols, verdicts):
+        icon = chip.get(row["status"], "⚪")
+        with col:
+            with st.container(border=True):
+                st.markdown(f"**{icon} {row['tile'].replace('_', ' ').title()}**")
+                st.caption(f"{row['graded']}/{row['total']} components graded")
+                st.caption(row["reason"][:140] or "—")
 
 st.subheader("Cumulative return vs SPY")
 eq = vm.equity_frame(eod)

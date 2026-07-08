@@ -418,6 +418,63 @@ def config_snapshot_rows(meta: dict | None) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Report-card audience split (plan §9.2 — config#1973)
+# ---------------------------------------------------------------------------
+
+# The grader's verdicts ON THE EXPERIMENT — what an outside strategy-tester
+# sees. portfolio_outcome is deliberately absent: performance is a NUMBER on
+# the headline strip (with CI), never a letter grade (§9.2).
+EXPERIMENT_TILES: tuple[str, ...] = ("research", "predictor", "executor", "behavioral")
+
+# Machine-health tiles — console audience only; never rendered on /dash.
+OPS_TILES: tuple[str, ...] = (
+    "portfolio_outcome", "substrate", "agent", "backtester", "director_quality",
+)
+
+
+def experiment_tile_verdicts(card: dict | None) -> list[dict]:
+    """Grader verdicts scoped to the experiment tiles, phrased as verdicts.
+
+    Each row: tile, status, graded/total component counts, and the leading
+    reason — the status_reason of the worst critical component (RED before
+    WATCH), so the chip explains itself instead of just glowing.
+    """
+    tiles = (card or {}).get("tiles") or {}
+    rank = {"RED": 0, "WATCH": 1}
+    rows: list[dict] = []
+    for key in EXPERIMENT_TILES:
+        tile = tiles.get(key)
+        if not isinstance(tile, dict):
+            continue
+        comps = [c for c in tile.get("components") or [] if isinstance(c, dict)]
+        graded = [c for c in comps if not str(c.get("status", "")).startswith("N/A")]
+        flagged = sorted(
+            (c for c in comps if c.get("criticality") == "critical"
+             and c.get("status") in rank),
+            key=lambda c: rank[c["status"]],
+        )
+        if flagged:
+            reason = (flagged[0].get("status_reason") or "").strip()
+        else:
+            na_criticals = [
+                c for c in comps if c.get("criticality") == "critical"
+                and str(c.get("status", "")).startswith("N/A")
+            ]
+            reason = (
+                f"{len(na_criticals)} critical component(s) not yet gradeable this cycle"
+                if na_criticals else "all graded components within bands"
+            )
+        rows.append({
+            "tile": key,
+            "status": tile.get("status", "N/A"),
+            "graded": len(graded),
+            "total": len(comps),
+            "reason": reason,
+        })
+    return rows
+
+
+# ---------------------------------------------------------------------------
 # Trust battery (config#1958 — the /dash trust surface)
 # ---------------------------------------------------------------------------
 

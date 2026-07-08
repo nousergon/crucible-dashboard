@@ -48,6 +48,14 @@ class TestPageWiring:
             src = (REPO_ROOT / "views" / filename).read_text()
             assert "from results import view_model" in src, filename
 
+    def test_overview_never_renders_ops_tiles(self):
+        # Plan §9.2: the 8-tile ops report card is console-only; the prosumer
+        # Overview renders experiment verdicts + the integrity strip instead.
+        src = (REPO_ROOT / "views" / "Crucible_Overview.py").read_text()
+        assert "render_overview" not in src
+        assert "experiment_tile_verdicts" in src
+        assert "Measurement integrity" in src
+
     def test_overview_carries_disclaimer(self):
         # Plan §8.3: illustrative-only framing is mandatory on the surface.
         src = (REPO_ROOT / "views" / "Crucible_Overview.py").read_text()
