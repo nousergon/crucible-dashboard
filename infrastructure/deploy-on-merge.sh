@@ -29,7 +29,7 @@ TARGET_SHA="${1:-HEAD}"
 # cutover), which moves ALL its routes — including health — under /live.
 CONSOLE_URL="http://localhost:8501/_stcore/health"
 LIVE_URL="http://localhost:8502/live/_stcore/health"
-DASH_URL="http://localhost:8503/dash/_stcore/health"
+DASH_URL="http://localhost:8504/dash/_stcore/health"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$LOG"; }
 fail() { log "FAIL $*"; exit 1; }
