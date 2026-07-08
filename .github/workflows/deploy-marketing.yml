@@ -145,18 +145,22 @@ jobs:
             project: nousergon-metron
             changed: ${{ needs.changes.outputs.metron }}
             has_functions: true
+            analytics_token: ${{ vars.CF_ANALYTICS_TOKEN_METRON }}
           - site: marketing-vires
             project: nousergon-vires
             changed: ${{ needs.changes.outputs.vires }}
             has_functions: true
+            analytics_token: ${{ vars.CF_ANALYTICS_TOKEN_VIRES }}
           - site: marketing-finance
             project: nousergon-finance
             changed: ${{ needs.changes.outputs.finance }}
             has_functions: false
+            analytics_token: ${{ vars.CF_ANALYTICS_TOKEN_FINANCE }}
           - site: marketing-dev
             project: nousergon-dev
             changed: ${{ needs.changes.outputs.dev }}
             has_functions: false
+            analytics_token: ${{ vars.CF_ANALYTICS_TOKEN_DEV }}
           - site: marketing-telos
             project: nousergon-telos
             changed: ${{ needs.changes.outputs.telos }}
@@ -177,6 +181,11 @@ jobs:
       - name: Install + build (astro check && astro build)
         if: matrix.changed == 'true'
         working-directory: ${{ matrix.site }}
+        env:
+          # Web Analytics beacon token, per-site (astro reads PUBLIC_* at build
+          # time — see marketing-{metron,vires,finance,dev}/src/pages/index.astro).
+          # Unset repo var -> empty string -> astro omits the beacon (safe no-op).
+          PUBLIC_CF_ANALYTICS_TOKEN: ${{ matrix.analytics_token }}
         run: |
           npm ci
           npm run build
