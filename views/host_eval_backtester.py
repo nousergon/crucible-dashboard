@@ -5,15 +5,16 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from shared.view_host import render_host
 
-# Eval + backtester front page. The optimizer surfaces (Risk / Decision) that
-# used to live here moved to the Execution front page (host_execution) — they
-# are live-executor concerns, not backtest analysis. The Backtester Archive
-# tab was retired (console-IA phase 1, config#1990): the Analysis page already
-# renders backtest/{date}/report.md with a date selector over all runs.
+# Eval + backtester front page. The optimizer surfaces (Risk / Decision)
+# moved to the Execution front page; the Backtester Archive tab was retired
+# in phase 1 (Analysis renders report.md for all runs); Feedback Loop was
+# absorbed into Analysis' Self-Tuning tab in phase 2b (config#1988). The
+# host survives with one tab because the pipeline-status registry deep-link
+# `host_eval_backtester?tab=Eval+Quality` (nousergon-lib v0.96.0) points
+# here — guarded by tests/test_registry_page_targets.py.
 render_host(
     [
         ("Eval Quality", "8_Eval_Quality.py"),
-        ("Feedback Loop", "12_Feedback_Loop.py"),
     ],
     key="host_eval_backtester",
 )

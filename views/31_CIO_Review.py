@@ -24,7 +24,17 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
+
+from loaders.signal_loader import (  # noqa: E402
+    compute_entrant_flow,
+    get_available_signal_dates,
+    get_entrant_detail_df,
+)
+from shared.constants import get_thresholds  # noqa: E402
+
+_TH = get_thresholds()
 
 from loaders.db_loader import (
     _ADVANCE_DECISIONS,
@@ -51,7 +61,7 @@ if not eval_dates:
     )
     st.stop()
 
-eval_date = st.selectbox("Cycle (eval_date)", eval_dates, index=0)
+eval_date = st.selectbox("Cycle (eval_date)", eval_dates, index=0, key="agent_reviews_cycle")  # shared across the Agent Reviews tabs (config#1988) — pick the cycle once
 
 funnel = get_cycle_funnel(eval_date)
 inputs = get_cio_inputs(eval_date)
@@ -158,3 +168,167 @@ st.caption(
     "fallback `python -m scripts.decision_review ask <TICKER> \"<question>\"` "
     "in alpha-engine-research."
 )
+
+
+# ---------------------------------------------------------------------------
+# Population Flow & New Entrants — moved here from Signals & Research
+# (console-IA phase 2b, config#1988): these are CIO advance/reject events,
+# so they belong on the CIO lens. Flow is keyed by signal date; the page's
+# eval_date is resolved against the signal-date list (same Saturday cycle).
+# ---------------------------------------------------------------------------
+st.divider()
+
+available_dates = get_available_signal_dates()
+selected_date = None
+if available_dates:
+    if eval_date in available_dates:
+        selected_date = eval_date
+    else:
+        _older = [d for d in available_dates if d <= eval_date]
+        selected_date = _older[0] if _older else available_dates[0]
+
+if selected_date is None:
+    st.info("No signal dates available — population flow unavailable.")
+else:
+    if selected_date != eval_date:
+        st.caption(
+            f"No signals.json for cycle {eval_date} — showing the nearest "
+            f"signal date {selected_date}."
+        )
+    st.subheader("Population Flow & New Entrants")
+    st.caption(
+        "Net-new entrant = a candidate not held the prior week that the CIO "
+        "advanced (including floor-forced). A zero-add week is defensible when "
+        "the fresh slate is genuinely weak; watch the trend for a saturation streak."
+    )
+
+    _pop_target = _TH.get("population_target", 25)
+    _conv_bar = _TH.get("entrant_conviction_bar", 60)
+
+    # Prior signal date (next entry in the descending list) = new-vs-held baseline.
+    try:
+        _sel_idx = available_dates.index(selected_date)
+        _prior_date = (
+            available_dates[_sel_idx + 1]
+            if _sel_idx + 1 < len(available_dates)
+            else None
+        )
+    except ValueError:
+        _prior_date = None
+
+    _flow_df = compute_entrant_flow(available_dates, weeks=12)
+    _this_row = None
+    if not _flow_df.empty:
+        _match = _flow_df[_flow_df["date"] == selected_date]
+        if not _match.empty:
+            _this_row = _match.iloc[-1]
+
+    if _this_row is None:
+        st.info(
+            f"No CIO decision archive (archive/agent_runs/{selected_date}/cio.json) "
+            "— new-entrant stats unavailable for this date."
+        )
+    else:
+        _nne = _this_row["net_new_entrants"]
+        _nc = _this_row["new_candidates"]
+        _cm = _this_row["new_conv_max"]
+        _ps = _this_row["population_size"]
+        fm1, fm2, fm3, fm4 = st.columns(4)
+        with fm1:
+            st.metric(
+                "Net-new entrants",
+                "—" if pd.isna(_nne) else int(_nne),
+                help="Fresh names (not held last week) the CIO advanced this week.",
+            )
+        with fm2:
+            st.metric(
+                "Fresh candidates surfaced",
+                "—" if pd.isna(_nc) else int(_nc),
+                help="Candidates not in last week's population that the CIO evaluated.",
+            )
+        with fm3:
+            st.metric(
+                "Fresh-slate max conviction",
+                "—" if pd.isna(_cm) else f"{_cm:.0f}",
+                delta=None if pd.isna(_cm) else f"{_cm - _conv_bar:+.0f} vs ~{_conv_bar} bar",
+                delta_color="normal",
+                help=f"Highest conviction among fresh candidates. Entrants typically clear ~{_conv_bar}.",
+            )
+        with fm4:
+            st.metric(
+                "Population size",
+                "—" if pd.isna(_ps) else int(_ps),
+                delta=None if pd.isna(_ps) else f"{int(_ps) - _pop_target:+d} vs target {_pop_target}",
+                delta_color="off",
+                help=f"Held names vs target_size {_pop_target}. Above target → 0 open slots (saturation).",
+            )
+
+        if not pd.isna(_nne) and _nne == 0:
+            _why = (
+                f" Best fresh candidate scored {_cm:.0f} (bar ~{_conv_bar})."
+                if not pd.isna(_cm)
+                else ""
+            )
+            st.warning(
+                f"**0 net-new entrants this week.**{_why} Defensible if the slate is "
+                "genuinely weak — confirm via the detail table below; watch the trend "
+                "for a saturation streak."
+            )
+
+    # Weekly trend: net-new entrants (bars) + fresh-slate max conviction (line).
+    _disp = (
+        _flow_df.dropna(subset=["net_new_entrants"])
+        if not _flow_df.empty
+        else _flow_df
+    )
+    if not _disp.empty:
+        flow_fig = go.Figure()
+        flow_fig.add_trace(
+            go.Bar(
+                x=_disp["date"],
+                y=_disp["net_new_entrants"],
+                name="Net-new entrants",
+                marker_color="#2ca02c",
+            )
+        )
+        flow_fig.add_trace(
+            go.Scatter(
+                x=_disp["date"],
+                y=_disp["new_conv_max"],
+                name="Fresh-slate max conviction",
+                yaxis="y2",
+                mode="lines+markers",
+                line=dict(color="#1f77b4"),
+            )
+        )
+        flow_fig.add_trace(
+            go.Scatter(
+                x=_disp["date"],
+                y=[_conv_bar] * len(_disp),
+                name=f"~{_conv_bar} entrant bar",
+                yaxis="y2",
+                mode="lines",
+                line=dict(color="gray", dash="dot"),
+            )
+        )
+        flow_fig.update_layout(
+            height=320,
+            margin=dict(t=30, b=0, l=0, r=0),
+            yaxis=dict(title="Net-new entrants"),
+            yaxis2=dict(
+                title="Max conviction", overlaying="y", side="right", range=[0, 100]
+            ),
+            legend=dict(orientation="h", y=1.18),
+        )
+        st.plotly_chart(flow_fig, use_container_width=True)
+
+    # This-week fresh-candidate detail (advanced + rejected new names).
+    _detail = get_entrant_detail_df(selected_date, _prior_date)
+    if not _detail.empty:
+        st.markdown("**This week's fresh candidates** (not held last week)")
+        st.dataframe(_detail, use_container_width=True, hide_index=True)
+    elif _this_row is not None:
+        st.caption(
+            "No fresh candidates surfaced this week — all CIO candidates were incumbents."
+        )
+
