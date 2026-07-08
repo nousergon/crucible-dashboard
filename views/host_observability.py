@@ -13,6 +13,10 @@ render_host(
         # (three lenses on the same changelog corpus) — console-IA phase 1,
         # config#1990. Sub-lens selection lives inside views/Incidents.py.
         ("Incidents", "Incidents.py"),
+        # The surviving remainder of the retired System Health page (data
+        # volume + feedback-loop maturity + manifests) — console-IA phase 2a,
+        # config#1987.
+        ("Data & Maturity", "Data_and_Maturity.py"),
     ],
     key="host_observability",
 )
