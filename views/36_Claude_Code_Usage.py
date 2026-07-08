@@ -54,7 +54,7 @@ WEEKLY_WET_CEILING = 850_000_000
 # (config#1351 / config#1722) — also consumed by alpha-engine-config's
 # scripts/groom_budget.py and the dispatcher Lambda, so all three stay bit-for-bit in sync.
 _PT = ZoneInfo("America/Los_Angeles")
-WEEKLY_RESET_ANCHOR = datetime(2026, 7, 5, 21, 0)   # PT, naive — Sunday 9pm PT
+WEEKLY_RESET_ANCHOR = datetime(2026, 7, 12, 21, 0)   # PT, naive — Sunday 9pm PT
 WEEKLY_PERIOD = timedelta(days=7)
 
 
