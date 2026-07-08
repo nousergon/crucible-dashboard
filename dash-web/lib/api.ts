@@ -54,6 +54,25 @@ export interface Experiment {
   backtest_date: string;
 }
 
+export interface IntradayPoint {
+  time: string;
+  Portfolio: number;
+  SPY: number | null;
+}
+
+export interface MetricRow {
+  metric: string;
+  value: string;
+  ci: string;
+  n: number | string;
+  target: number | string;
+  red_line: number | string;
+  trend: string;
+  criticality: string;
+  status: string;
+  reason: string;
+}
+
 export interface Verdict {
   tile: string;
   status: string;
@@ -91,6 +110,8 @@ export interface Finding {
 
 export const api = {
   experiment: () => get<Experiment>("/api/experiment"),
+  intraday: () => get<IntradayPoint[]>("/api/intraday"),
+  tile: (key: string) => get<{ tile: string; metrics: MetricRow[] }>(`/api/tiles/${key}`),
   headline: () => get<Stat[]>("/api/headline"),
   equity: () => get<EquityPoint[]>("/api/equity"),
   alphaPeriods: (period: "D" | "W" | "M") =>

@@ -2,7 +2,7 @@
   "name": "crucible-dash-web",
   "version": "0.1.0",
   "private": true,
-  "description": "Crucible /dash \u2014 the experiment-results surface (config#1973, plan \u00a79.4). Next.js frontend over crucible-dash-api; mirrors metron/web conventions.",
+  "description": "Crucible /dash — the experiment-results surface (config#1973, plan §9.4). Next.js frontend over crucible-dash-api; mirrors metron/web conventions.",
   "scripts": {
     "dev": "next dev -p 3002",
     "build": "next build",
@@ -20,6 +20,7 @@
   "devDependencies": {
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.1.0",
+    "@testing-library/user-event": "^14.6.1",
     "@types/node": "^22.10.2",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
