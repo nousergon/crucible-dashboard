@@ -19,13 +19,16 @@ schema lag worth migrating into ``entries/``.
 from __future__ import annotations
 
 import json
+import logging
 from datetime import date, timedelta
 
 import pandas as pd
 import streamlit as st
 
-from loaders.changelog_loader import _entry_to_row
+from loaders.changelog_loader import _ENTRY_PREFIX, _entry_to_row
 from loaders.s3_loader import _research_bucket, get_s3_client
+
+logger = logging.getLogger(__name__)
 
 _QUARANTINE_PREFIX = "changelog/quarantine"
 
@@ -121,3 +124,71 @@ def load_quarantine_entries(days: int = 30) -> pd.DataFrame:
         df["day"] = df["ts"].dt.date
         df = df.sort_values("ts", ascending=False).reset_index(drop=True)
     return df
+
+
+# ── write path — "Approve & migrate to entries/" (config#868) ──────────────
+#
+# Requires the dashboard role to hold s3:PutObject/DeleteObject on both
+# `changelog/entries/*` and `changelog/quarantine/*` — codified in
+# alpha-engine-config `iam/alpha-engine-dashboard-role/
+# alpha-engine-dashboard-changelog-quarantine-writeback.json`, NOT yet
+# applied live as of this change. Until an operator runs the `aws iam
+# put-role-policy` in that file's README, calls here 403 — expected, and
+# surfaced to the operator as a clear error rather than a page crash.
+
+
+def migrate_quarantine_entry(day: str, event_id: str) -> tuple[bool, str]:
+    """Copy a quarantined entry to `changelog/entries/` then delete the
+    quarantine copy. Returns ``(ok, message)``; never raises.
+
+    Low-volume, operator-triggered admin action — a plain read → PutObject
+    → DeleteObject sequence (copy+delete) is sufficient; no transactional
+    guarantees beyond "the entries/ write is confirmed before the
+    quarantine object is removed" (so a mid-sequence failure leaves the
+    quarantine copy in place rather than silently dropping the entry).
+    """
+    bucket = _research_bucket()
+    client = get_s3_client()
+    src_key = f"{_QUARANTINE_PREFIX}/{day}/{event_id}.json"
+    dst_key = f"{_ENTRY_PREFIX}/{day}/{event_id}.json"
+
+    try:
+        body = client.get_object(Bucket=bucket, Key=src_key)["Body"].read()
+    except Exception as exc:  # noqa: BLE001 — classified into a clear message below
+        logger.warning("[quarantine] read failed for %s: %s", src_key, exc)
+        return False, f"could not read quarantine entry {src_key}: {exc}"
+
+    try:
+        entry = json.loads(body)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[quarantine] unparseable entry %s: %s", src_key, exc)
+        return False, f"quarantine entry {src_key} is not valid JSON: {exc}"
+
+    try:
+        client.put_object(
+            Bucket=bucket,
+            Key=dst_key,
+            Body=json.dumps(entry, indent=2, sort_keys=True).encode("utf-8"),
+            ContentType="application/json",
+        )
+    except Exception as exc:  # noqa: BLE001 — surfaced to operator, not raised
+        logger.warning("[quarantine] migrate write failed for %s: %s", dst_key, exc)
+        return False, (
+            f"write to {dst_key} failed ({exc}). The IAM grant for this "
+            "action may not be applied live yet — see "
+            "alpha-engine-config iam/alpha-engine-dashboard-role/"
+            "alpha-engine-dashboard-changelog-quarantine-writeback.json. "
+            "The quarantine entry was left in place."
+        )
+
+    try:
+        client.delete_object(Bucket=bucket, Key=src_key)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[quarantine] cleanup delete failed for %s: %s", src_key, exc)
+        return False, (
+            f"migrated to {dst_key} but failed to delete {src_key} ({exc}) — "
+            "the entry now exists in both places; delete the quarantine "
+            "copy manually."
+        )
+
+    return True, f"migrated to {dst_key}"
