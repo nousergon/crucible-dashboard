@@ -110,37 +110,45 @@ for item in pending:
             with st.expander("Newest gate comment / body excerpt"):
                 st.markdown(item["excerpt"] or "_no comment found_")
 
-        cols = st.columns(5)
         rec = item["recommended"]
         letters = [l for l, _ in item["options"]]
-        # Approve = the recommended option when framed, else a free ruling below.
-        if rec:
-            if cols[0].button(f"✅ Approve ({rec})", key=f"app-{key}"):
-                _act(key, f"approved {rec}", post_ruling, item["repo"], item["number"], f"Option {rec}")
-                st.rerun()
-            alt = [l for l in letters if l != rec]
-            if alt and cols[1].button(f"↔️ {'/'.join(alt)}", key=f"alt-{key}", help="Pick a non-recommended option below"):
-                st.session_state[f"show-alt-{key}"] = True
-        if cols[2].button("⏸ Defer 2w", key=f"def-{key}"):
+
+        if letters:
+            # One-tap per lettered option — every option posts its ruling
+            # directly on click. Previously the non-recommended option(s)
+            # were a reveal-toggle button that only unhid a form whose
+            # selectbox defaulted back to letters[0] (the recommended
+            # option) — clicking "B" silently re-armed a form that would
+            # still rule "A" unless the dropdown was manually changed, so
+            # a repeated B click never posted anything.
+            opt_cols = st.columns(len(letters))
+            for i, (letter, text) in enumerate(item["options"]):
+                prefix = "✅ " if letter == rec else ""
+                suffix = " (recommended)" if letter == rec else ""
+                label = f"{prefix}{letter}) {text[:50]}{suffix}"
+                if opt_cols[i].button(label, key=f"opt-{key}-{letter}"):
+                    _act(key, f"ruled {letter}", post_ruling,
+                         item["repo"], item["number"], f"Option {letter}")
+                    st.rerun()
+
+        action_cols = st.columns(3)
+        if action_cols[0].button("⏸ Defer 2w", key=f"def-{key}"):
             _act(key, "deferred 2w", defer_issue, item["repo"], item["number"],
                  (date.today() + timedelta(days=14)).isoformat(), item["body"])
             st.rerun()
-        if cols[3].button("💬 Session", key=f"ses-{key}", help="Needs discussion — park for /backlog-triage"):
+        if action_cols[1].button("💬 Session", key=f"ses-{key}", help="Needs discussion — park for /backlog-triage"):
             _act(key, "sent to session", send_to_session, item["repo"], item["number"])
             st.rerun()
-        if cols[4].button("🗑 Kill", key=f"kill-{key}"):
+        if action_cols[2].button("🗑 Kill", key=f"kill-{key}"):
             _act(key, "killed", kill_issue, item["repo"], item["number"])
             st.rerun()
 
-        # Non-recommended option pick, or free-form ruling for unframed items.
-        if st.session_state.get(f"show-alt-{key}") or not item["ask"]:
+        # Free-form ruling — only for unframed items (no lettered options
+        # exist to render as one-tap buttons above).
+        if not item["ask"]:
             with st.form(key=f"form-{key}", border=False):
-                choice = st.selectbox(
-                    "Option", letters or ["free-form"], key=f"opt-{key}",
-                ) if letters else "ruling"
                 detail = st.text_input("Ruling / rationale (one line)", key=f"txt-{key}")
                 if st.form_submit_button("Post ruling → de-gate"):
-                    label = f"Option {choice}" if letters else "Ruling"
-                    _act(key, f"ruled {choice}", post_ruling,
-                         item["repo"], item["number"], label, detail)
+                    _act(key, "ruled free-form", post_ruling,
+                         item["repo"], item["number"], "Ruling", detail)
                     st.rerun()
