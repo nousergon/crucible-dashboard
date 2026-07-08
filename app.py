@@ -483,7 +483,18 @@ def _build_navigation():
             page("Daily_News.py", "Daily News", "📰"),
         ],
         "🤖 Predictor": [
-            page("host_predictor.py", "Predictor", "🤖"),
+            # url_path pinned to "predictor" — the predictor's slim morning-
+            # briefing email (config#856) deep-links to
+            # …/predictor?date=YYYY-MM-DD. Guarded by
+            # tests/test_predictor_page.py. (Standalone — folding it into a
+            # host would move the slug onto the host; pulled out of
+            # host_predictor.py's tab list for the same reason model-zoo/
+            # analysis/eod-report are standalone.)
+            st.Page(
+                "views/7_Predictor.py", title="Predictor", icon="🤖",
+                url_path="predictor",
+            ),
+            page("host_predictor.py", "Predictor Detail", "🔍"),
             # url_path pinned to "model-zoo" — Model-Zoo Rotation digest email
             # deep-links to …/model-zoo?date=YYYY-MM-DD. Guarded by
             # tests/test_model_zoo_page.py. (Standalone — folding it into a host
