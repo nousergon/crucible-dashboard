@@ -183,3 +183,67 @@ class TestRollingAlpha:
     def test_short_history_is_empty_not_partial(self):
         eod = pd.DataFrame({"date": ["2026-03-09"], "daily_alpha_pct": [1.0]})
         assert vm.rolling_alpha_frame(eod, window=20).empty
+
+
+class TestExecutionBuilders:
+    def test_headline_from_live_shapes(self):
+        # Key names verified against live backtest/2026-07-02 artifacts.
+        stats = vm.execution_headline(
+            {"summary": {"total_entries": 145}},
+            {"summary": {"n_roundtrips": 217, "win_rate": 0.668, "winsorized_capture_ratio": 0.24}},
+            {"guard_lift": -0.002, "assessment": "neutral"},
+        )
+        by_label = {s["label"]: s for s in stats}
+        assert by_label["Entries (window)"]["value"] == "145"
+        assert by_label["Win rate"]["value"] == "66.8%"
+        assert by_label["Risk-guard lift"]["value"] == "-0.002"
+        assert by_label["Risk-guard lift"]["sub"] == "neutral"
+
+    def test_headline_absent_everywhere(self):
+        assert all(s["value"] == vm.ABSENT for s in vm.execution_headline(None, None, None))
+
+    def test_trigger_and_exit_rows_tolerate_nulls(self):
+        trig = vm.trigger_rows({"triggers": [
+            {"trigger": "other", "n_trades": 48, "avg_slippage_vs_signal": 0.0845,
+             "avg_slippage_vs_open": 0.0158, "win_rate_vs_spy": None},
+        ]})
+        assert trig[0]["slippage_vs_signal"] == "+0.08%"
+        assert trig[0]["win_rate_vs_spy"] == vm.ABSENT
+        exits = vm.exit_type_rows({"by_exit_type": [
+            {"exit_type": "atr_trailing_stop", "n": 8, "avg_mfe": 3.71,
+             "avg_mae": -3.34, "avg_realized": -1.18, "avg_capture": -1.44},
+        ]})
+        assert exits[0]["avg_mae"] == "-3.34%"
+
+    def test_shadow_classification(self):
+        rows = vm.shadow_classification_rows({"classification": {
+            "precision": 0.6321, "recall": 0.9165, "f1": 0.7482, "accuracy": 0.6148, "n": 1342,
+        }})
+        by = {r["measure"]: r["value"] for r in rows}
+        assert by["Precision (traded → beat SPY)"] == "63.2%"
+        assert by["N classified"] == "1342"
+        assert vm.shadow_classification_rows(None) == []
+
+
+class TestFeedbackBuilders:
+    def test_apply_audit_rows_schema_v1(self):
+        rows = vm.apply_audit_rows({"schema_version": 1, "as_of": "2026-07-11", "loops": {
+            "scoring_weights": {"outcome": "blocked", "blocked_by": ["significance_floor"],
+                                "consecutive_blocked_weeks": 3},
+            "executor_params": {"outcome": "promoted", "blocked_by": None,
+                                "consecutive_blocked_weeks": 0},
+        }})
+        assert [r["loop"] for r in rows] == ["executor_params", "scoring_weights"]
+        assert rows[1]["blocked_by"] == "significance_floor"
+        assert rows[0]["outcome"] == "promoted"
+        assert vm.apply_audit_rows(None) == []
+
+    def test_config_snapshot_states_never_written_honestly(self):
+        rows = vm.config_snapshot_rows({
+            "executor_params": {"present": True, "last_modified": "2026-07-03", "keys": ["a", "b"]},
+            "scoring_weights": {"present": False},
+        })
+        by = {r["config"]: r for r in rows}
+        assert by["executor_params"]["state"] == "LIVE"
+        assert by["scoring_weights"]["state"] == "NEVER WRITTEN"
+        assert by["scoring_weights"]["last_written"] == vm.ABSENT

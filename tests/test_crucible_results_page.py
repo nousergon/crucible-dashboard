@@ -24,12 +24,15 @@ class TestNavRegistration:
             ("Overview", "Crucible_Overview.py"),
             ("Validation", "Crucible_Validation.py"),
             ("Evaluation", "Crucible_Evaluation.py"),
+            ("Execution", "Crucible_Execution.py"),
+            ("Feedback loop", "Crucible_Feedback.py"),
         ]:
             assert f'("{label}", "{filename}")' in src
 
     def test_subview_files_exist(self):
         for filename in (
             "Crucible_Overview.py", "Crucible_Validation.py", "Crucible_Evaluation.py",
+            "Crucible_Execution.py", "Crucible_Feedback.py",
         ):
             assert (REPO_ROOT / "views" / filename).exists(), filename
 
@@ -40,6 +43,7 @@ class TestPageWiring:
         # through results.view_model, never compute display values inline.
         for filename in (
             "Crucible_Overview.py", "Crucible_Validation.py", "Crucible_Evaluation.py",
+            "Crucible_Execution.py", "Crucible_Feedback.py",
         ):
             src = (REPO_ROOT / "views" / filename).read_text()
             assert "from results import view_model" in src, filename
