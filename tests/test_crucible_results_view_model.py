@@ -142,3 +142,44 @@ class TestMetricRows:
         labels = dict(vm.tile_labels(_card()))
         assert labels["predictor"] == "Predictor"
         assert vm.tile_labels(None) == []
+
+
+class TestAlphaByPeriod:
+    def _eod(self):
+        return pd.DataFrame({
+            # two trading weeks: Mar 9-13 and Mar 16-20 (2026)
+            "date": ["2026-03-09", "2026-03-13", "2026-03-16", "2026-03-20"],
+            "daily_alpha_pct": [0.5, -0.2, 1.0, 0.5],
+        })
+
+    def test_weekly_buckets_to_week_ending_friday(self):
+        out = vm.alpha_by_period(self._eod(), "W")
+        assert list(out["alpha_pct"].round(2)) == [0.3, 1.5]
+        assert list(out["n_days"]) == [2, 2]
+        assert out["label"].iloc[0].strftime("%Y-%m-%d") == "2026-03-13"
+
+    def test_daily_passthrough(self):
+        out = vm.alpha_by_period(self._eod(), "D")
+        assert len(out) == 4
+        assert (out["n_days"] == 1).all()
+
+    def test_monthly_and_bad_period(self):
+        out = vm.alpha_by_period(self._eod(), "M")
+        assert len(out) == 1 and round(out["alpha_pct"].iloc[0], 2) == 1.8
+        assert vm.alpha_by_period(self._eod(), "Q").empty
+        assert vm.alpha_by_period(None, "W").empty
+
+
+class TestRollingAlpha:
+    def test_window_smoothing(self):
+        eod = pd.DataFrame({
+            "date": pd.date_range("2026-03-09", periods=5, freq="B").astype(str),
+            "daily_alpha_pct": [1.0, 0.0, 1.0, 0.0, 1.0],
+        })
+        out = vm.rolling_alpha_frame(eod, window=2)
+        assert len(out) == 4
+        assert list(out["rolling_mean"]) == [0.5, 0.5, 0.5, 0.5]
+
+    def test_short_history_is_empty_not_partial(self):
+        eod = pd.DataFrame({"date": ["2026-03-09"], "daily_alpha_pct": [1.0]})
+        assert vm.rolling_alpha_frame(eod, window=20).empty

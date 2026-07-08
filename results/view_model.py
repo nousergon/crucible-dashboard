@@ -165,6 +165,56 @@ def equity_frame(eod_pnl: pd.DataFrame | None) -> pd.DataFrame:
     return df[["date", "Portfolio", "SPY"]]
 
 
+def alpha_by_period(eod_pnl: pd.DataFrame | None, period: str) -> pd.DataFrame:
+    """Ledger daily alpha aggregated to a display period since inception.
+
+    ``period`` ∈ {"D", "W", "M"}: daily rows pass through; weekly buckets to
+    the trading week (W-FRI label = week-ending Friday); monthly to month
+    end. Returns columns ``[label, alpha_pct, n_days]`` — a pure display
+    aggregation (sums of the recorded ``daily_alpha_pct`` column, matching
+    the headline's cumulative convention), never a new statistic.
+    """
+    if eod_pnl is None or eod_pnl.empty or not {"date", "daily_alpha_pct"}.issubset(eod_pnl.columns):
+        return pd.DataFrame()
+    df = eod_pnl[["date", "daily_alpha_pct"]].copy()
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df["daily_alpha_pct"] = pd.to_numeric(df["daily_alpha_pct"], errors="coerce")
+    df = df.dropna().sort_values("date")
+    if df.empty:
+        return pd.DataFrame()
+    if period == "D":
+        out = df.rename(columns={"date": "label", "daily_alpha_pct": "alpha_pct"})
+        out["n_days"] = 1
+        return out[["label", "alpha_pct", "n_days"]]
+    rule = {"W": "W-FRI", "M": "ME"}.get(period)
+    if rule is None:
+        return pd.DataFrame()
+    grouped = df.set_index("date")["daily_alpha_pct"].resample(rule).agg(["sum", "count"])
+    grouped = grouped[grouped["count"] > 0].reset_index()
+    grouped.columns = ["label", "alpha_pct", "n_days"]
+    return grouped
+
+
+def rolling_alpha_frame(eod_pnl: pd.DataFrame | None, window: int = 20) -> pd.DataFrame:
+    """Rolling mean of ledger daily alpha (default ≈1 trading month).
+
+    The descriptive "is it improving" overlay: columns ``[date,
+    rolling_mean]``, empty until ``window`` sessions exist. A display
+    smoothing of recorded values — trend ADJUDICATION (slope, significance)
+    belongs to the evaluator, not this layer.
+    """
+    if eod_pnl is None or eod_pnl.empty or not {"date", "daily_alpha_pct"}.issubset(eod_pnl.columns):
+        return pd.DataFrame()
+    df = eod_pnl[["date", "daily_alpha_pct"]].copy()
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df["daily_alpha_pct"] = pd.to_numeric(df["daily_alpha_pct"], errors="coerce")
+    df = df.dropna().sort_values("date")
+    roll = df.set_index("date")["daily_alpha_pct"].rolling(window).mean().dropna()
+    if roll.empty:
+        return pd.DataFrame()
+    return roll.rename("rolling_mean").reset_index()
+
+
 # ---------------------------------------------------------------------------
 # §B Validation (backtester detail)
 # ---------------------------------------------------------------------------

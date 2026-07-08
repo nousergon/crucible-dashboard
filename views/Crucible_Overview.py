@@ -85,3 +85,44 @@ else:
     )
     st.plotly_chart(fig, use_container_width=True)
 st.caption(vm.HELP["alpha"])
+
+st.subheader("Alpha over time")
+period = st.segmented_control(
+    "Period", ["Daily", "Weekly", "Monthly"], default="Weekly",
+    key="crucible_alpha_period",
+    help="Ledger daily alpha aggregated per period since inception — the dissection view for 'has it been improving?'",
+)
+period_code = {"Daily": "D", "Weekly": "W", "Monthly": "M"}[period or "Weekly"]
+alpha_df = vm.alpha_by_period(eod, period_code)
+if alpha_df.empty:
+    st.info("No daily-alpha history in the EOD ledger yet.")
+else:
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=alpha_df["label"], y=alpha_df["alpha_pct"],
+        name=f"{period} alpha",
+        marker_color=["#2ca02c" if v >= 0 else "#d62728" for v in alpha_df["alpha_pct"]],
+        customdata=alpha_df["n_days"],
+        hovertemplate="%{x} · %{y:+.2f}% (%{customdata}d)<extra></extra>",
+    ))
+    if period_code == "D":
+        roll = vm.rolling_alpha_frame(eod)
+        if not roll.empty:
+            fig.add_trace(go.Scatter(
+                x=roll["date"], y=roll["rolling_mean"], name="20-session rolling mean",
+                line=dict(color="#2a78d6", width=2),
+                hovertemplate="%{x} · 20d mean %{y:+.3f}%<extra></extra>",
+            ))
+    fig.add_hline(y=0, line=dict(color="rgba(128,128,128,0.5)", width=1, dash="dot"))
+    fig.update_layout(
+        height=320, margin=dict(l=10, r=10, t=10, b=10),
+        yaxis_title=f"{period} alpha (%)", hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        showlegend=(period_code == "D"),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+    st.caption(
+        "Per-period sums of the recorded daily alpha ledger (matches the headline's cumulative "
+        "convention). The rolling mean is descriptive — statistical trend adjudication (slope, "
+        "significance) is the evaluator's job, not this chart's."
+    )
