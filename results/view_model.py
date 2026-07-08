@@ -289,6 +289,135 @@ def integrity_rows(
 
 
 # ---------------------------------------------------------------------------
+# §D Execution (execution-sim detail)
+# ---------------------------------------------------------------------------
+
+def execution_headline(
+    trigger_scorecard: dict | None,
+    exit_timing: dict | None,
+    shadow_book: dict | None,
+) -> list[dict]:
+    """Headline strip for the execution tab — recorded values only."""
+    ts = (trigger_scorecard or {}).get("summary") or {}
+    et = (exit_timing or {}).get("summary") or {}
+    sb = shadow_book or {}
+    n_rt = _num(et.get("n_roundtrips"))
+    win = _num(et.get("win_rate"))
+    cap = _num(et.get("winsorized_capture_ratio"))
+    lift = _num(sb.get("guard_lift"))
+    return [
+        {"label": "Entries (window)", "value": ABSENT if _num(ts.get("total_entries")) is None else f"{int(ts['total_entries'])}",
+         "sub": "trigger-timed fills", "help": "Entries executed by the intraday daemon's technical triggers in the analysis window."},
+        {"label": "Roundtrips", "value": ABSENT if n_rt is None else f"{int(n_rt)}",
+         "sub": "closed positions", "help": "Fully closed positions with entry and exit fills recorded."},
+        {"label": "Win rate", "value": ABSENT if win is None else f"{win:.1%}",
+         "sub": "roundtrips > 0", "help": "Share of closed roundtrips with positive realized return."},
+        {"label": "Capture ratio (wins.)", "value": ABSENT if cap is None else f"{cap:.2f}",
+         "sub": "realized / max favorable", "help": "Winsorized share of the maximum favorable excursion the exit rules actually captured — exit-timing quality."},
+        {"label": "Risk-guard lift", "value": ABSENT if lift is None else f"{lift:+.3f}",
+         "sub": str(sb.get("assessment", "")) or "blocked vs traded", "help": "Return difference between what the risk guard traded and what it blocked (shadow book counterfactual). Near zero = the guard is neither adding nor destroying value."},
+    ]
+
+
+def trigger_rows(trigger_scorecard: dict | None) -> list[dict]:
+    """Per-trigger execution quality (slippage vs signal/open)."""
+    rows = []
+    for t in (trigger_scorecard or {}).get("triggers") or []:
+        if not isinstance(t, dict):
+            continue
+        rows.append({
+            "trigger": t.get("trigger", ABSENT),
+            "n_trades": t.get("n_trades", ABSENT),
+            "slippage_vs_signal": ABSENT if _num(t.get("avg_slippage_vs_signal")) is None else f"{t['avg_slippage_vs_signal']:+.2f}%",
+            "slippage_vs_open": ABSENT if _num(t.get("avg_slippage_vs_open")) is None else f"{t['avg_slippage_vs_open']:+.2f}%",
+            "win_rate_vs_spy": ABSENT if _num(t.get("win_rate_vs_spy")) is None else f"{t['win_rate_vs_spy']:.1%}",
+        })
+    return rows
+
+
+def exit_type_rows(exit_timing: dict | None) -> list[dict]:
+    """Per-exit-rule timing quality (MFE/MAE/capture)."""
+    rows = []
+    for e in (exit_timing or {}).get("by_exit_type") or []:
+        if not isinstance(e, dict):
+            continue
+        rows.append({
+            "exit_type": e.get("exit_type", ABSENT),
+            "n": e.get("n", ABSENT),
+            "avg_mfe": ABSENT if _num(e.get("avg_mfe")) is None else f"{e['avg_mfe']:+.2f}%",
+            "avg_mae": ABSENT if _num(e.get("avg_mae")) is None else f"{e['avg_mae']:+.2f}%",
+            "avg_realized": ABSENT if _num(e.get("avg_realized")) is None else f"{e['avg_realized']:+.2f}%",
+            "avg_capture": ABSENT if _num(e.get("avg_capture")) is None else f"{e['avg_capture']:.2f}",
+        })
+    return rows
+
+
+def shadow_classification_rows(shadow_book: dict | None) -> list[dict]:
+    """Risk-guard confusion summary from the shadow book counterfactual."""
+    cls = (shadow_book or {}).get("classification") or {}
+    if not cls:
+        return []
+    return [
+        {"measure": name, "value": ABSENT if _num(cls.get(key)) is None else
+            (f"{cls[key]:.1%}" if key in ("precision", "recall", "f1", "accuracy") else f"{int(cls[key])}")}
+        for name, key in [
+            ("Precision (traded → beat SPY)", "precision"), ("Recall", "recall"),
+            ("F1", "f1"), ("Accuracy", "accuracy"), ("N classified", "n"),
+        ]
+    ]
+
+
+# ---------------------------------------------------------------------------
+# §E Feedback loop (governed auto-apply)
+# ---------------------------------------------------------------------------
+
+def apply_audit_rows(audit: dict | None) -> list[dict]:
+    """Per-loop auto-apply outcome from ``config/apply_audit/latest.json``
+    (schema v1). Empty list when the artifact has not been emitted yet —
+    the view states the first-emission date rather than rendering blank.
+    """
+    loops = (audit or {}).get("loops") or {}
+    rows = []
+    for loop, rec in loops.items():
+        if not isinstance(rec, dict):
+            continue
+        blocked_by = rec.get("blocked_by")
+        rows.append({
+            "loop": loop,
+            "outcome": rec.get("outcome", ABSENT),
+            "blocked_by": ", ".join(blocked_by) if isinstance(blocked_by, list) else (blocked_by or ABSENT),
+            "consecutive_blocked_weeks": rec.get("consecutive_blocked_weeks", ABSENT),
+        })
+    return sorted(rows, key=lambda r: r["loop"])
+
+
+def config_snapshot_rows(meta: dict | None) -> list[dict]:
+    """Live auto-apply config artifacts: present/absent + last write.
+
+    An absent artifact means that optimizer has NEVER promoted to live —
+    a true statement about the governed loop, displayed as such.
+    """
+    rows = []
+    for name, info in (meta or {}).items():
+        if not isinstance(info, dict):
+            continue
+        if info.get("present"):
+            keys = info.get("keys") or []
+            rows.append({
+                "config": name, "state": "LIVE",
+                "last_written": info.get("last_modified", ABSENT),
+                "detail": f"{len(keys)} keys" + (f" · {', '.join(keys[:5])}…" if len(keys) > 5 else f" · {', '.join(keys)}"),
+            })
+        else:
+            rows.append({
+                "config": name, "state": "NEVER WRITTEN",
+                "last_written": ABSENT,
+                "detail": "no live promotion has ever cleared this loop's gates",
+            })
+    return sorted(rows, key=lambda r: r["config"])
+
+
+# ---------------------------------------------------------------------------
 # §C Evaluation (evaluator detail)
 # ---------------------------------------------------------------------------
 

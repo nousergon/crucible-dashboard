@@ -2212,3 +2212,51 @@ def list_shadow_cohort_dates(prefix: str) -> list[str]:
     """Sorted cohort dates under a shadow prefix (date-named sub-prefixes),
     e.g. ``signals_shadow/no_agent_quant/`` → ['2026-07-02', ...]."""
     return list_s3_prefixes(_research_bucket(), prefix)
+
+
+# --- Crucible results surface: feedback-loop artifacts (config#1957) -------
+
+_AUTOAPPLY_CONFIG_KEYS = {
+    "executor_params": "config/executor_params.json",
+    "scoring_weights": "config/scoring_weights.json",
+    "research_params": "config/research_params.json",
+    "portfolio_optimizer": "config/portfolio_optimizer.json",
+}
+
+
+@st.cache_data(ttl=_ttl("signals"))
+def load_apply_audit() -> dict | None:
+    """Load the auto-apply outcome audit (backtester config#1848).
+
+    Reads ``config/apply_audit/latest.json`` — schema v1: per-loop
+    ``outcome`` (promoted/blocked/insufficient_data/error/disabled),
+    ``blocked_by`` slugs and the ``consecutive_blocked_weeks`` carry-forward
+    counter. First emission is the 2026-07-11 Saturday run; None until then
+    (the Crucible Feedback tab renders that absence honestly).
+    """
+    return download_s3_json(_research_bucket(), "config/apply_audit/latest.json")
+
+
+@st.cache_data(ttl=_ttl("signals"))
+def load_autoapply_config_meta() -> dict:
+    """Presence + last-modified + top-level keys of the four auto-apply
+    config artifacts the backtester may write. A missing artifact is an
+    honest ``{"present": False}`` entry — as of 2026-07-06 only
+    ``executor_params`` has EVER been written live (config#1841 diagnosis),
+    and surfacing that state is the Crucible Feedback tab's job.
+    """
+    client = get_s3_client()
+    bucket = _research_bucket()
+    out: dict[str, dict] = {}
+    for name, key in _AUTOAPPLY_CONFIG_KEYS.items():
+        try:
+            obj = client.get_object(Bucket=bucket, Key=key)
+            body = json.loads(obj["Body"].read())
+            out[name] = {
+                "present": True,
+                "last_modified": obj["LastModified"].isoformat()[:10],
+                "keys": sorted(body) if isinstance(body, dict) else [],
+            }
+        except Exception:
+            out[name] = {"present": False}
+    return out
