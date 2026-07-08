@@ -36,18 +36,18 @@ class TestInfraWiring:
     def test_unit_file_matches_app_layout(self):
         unit = (REPO_ROOT / "infrastructure" / "crucible-dash.service").read_text()
         assert "WorkingDirectory=/home/ec2-user/alpha-engine-dashboard/dash" in unit
-        assert "--server.port=8503" in unit
+        assert "--server.port=8504" in unit
 
-    def test_nginx_routes_dash_to_8503(self):
+    def test_nginx_routes_dash_to_8504(self):
         conf = (REPO_ROOT / "infrastructure" / "nginx.conf").read_text()
         assert "location /dash" in conf
         assert conf.index("location /dash") < conf.index("location / {"), \
             "the /dash location must precede the catch-all live proxy"
         dash_block = conf[conf.index("location /dash"):conf.index("location / {")]
-        assert "http://127.0.0.1:8503" in dash_block
+        assert "http://127.0.0.1:8504" in dash_block
 
     def test_deploy_script_provisions_restarts_and_health_checks(self):
         script = (REPO_ROOT / "infrastructure" / "deploy-on-merge.sh").read_text()
         assert "crucible-dash.service" in script          # idempotent self-provision
         assert "systemctl restart crucible-dash" in script
-        assert "8503/dash/_stcore/health" in script       # health gate
+        assert "8504/dash/_stcore/health" in script       # health gate
