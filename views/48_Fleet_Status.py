@@ -28,6 +28,7 @@ import streamlit as st
 
 from fleet_status import GROUP_ORDER, ComponentStatus, resolve_fleet
 from loaders.fleet_status_loader import gather_fleet_inputs
+from loaders.s3_loader import load_intraday_heartbeat, load_intraday_latest_prices
 
 st.title("🛰 Fleet Status")
 st.caption(
@@ -121,3 +122,32 @@ def _live_grid() -> None:
 
 
 _live_grid()
+
+# ── Raw daemon snapshots ────────────────────────────────────────────────────
+# Rehomed from the retired Intraday Surveillance page (console-IA phase 2a,
+# config#1987): the raw surveillance snapshots the every-30-min alerts Lambda
+# consumes each run. The alerts process itself persists no per-run artifact
+# (Telegram-only); the live NAV strip/curve lives on the public live page.
+st.divider()
+with st.expander("Raw daemon snapshots — heartbeat + latest IB prices", expanded=False):
+    _heartbeat = load_intraday_heartbeat()
+    _prices = load_intraday_latest_prices()
+
+    st.markdown("**Daemon heartbeat** — `intraday/heartbeat.json`")
+    if _heartbeat:
+        st.json(_heartbeat)
+    else:
+        st.info(
+            "No heartbeat snapshot available — the daemon publishes this "
+            "during market hours; expected empty outside the trading window "
+            "or pre-deploy."
+        )
+
+    st.markdown("**Latest IB snapshot prices** — `intraday/latest_prices.json`")
+    if _prices:
+        st.json(_prices)
+    else:
+        st.info(
+            "No latest-prices snapshot available — daemon-published during "
+            "market hours."
+        )

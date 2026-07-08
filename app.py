@@ -553,7 +553,12 @@ def _build_navigation():
                 "views/49_Decision_Queue.py", title="Decision Queue", icon="🗳",
                 url_path="decision-queue",
             ),
-            page("host_system_health.py", "System Health", "🩺"),
+            # Renamed from "System Health" (page retired — console-IA phase
+            # 2a, config#1987): this host now carries the agent-fleet
+            # surfaces (SF/CI Watch, Backlog Groom, Merged PRs). Filename
+            # stays host_system_health.py — the Fleet Status deep-link
+            # `/host_system_health?tab=Backlog+Groom` is pinned by tests.
+            page("host_system_health.py", "Agent Fleet", "🦾"),
             # url_path pinned to "pipeline-status" — the Step Function
             # failure/complete notifications (nousergon-data) deep-link to
             # …/pipeline-status?run=<execution-name> ($$.Execution.Name). So
@@ -568,7 +573,10 @@ def _build_navigation():
             ),
             page("host_observability.py", "Observability", "⏱"),
             page("host_cost_usage.py", "Cost & Usage", "💰"),
-            page("22_Intraday_Surveillance.py", "Intraday Surveillance", "👁"),
+            # Intraday Surveillance retired (console-IA phase 2a, config#1987):
+            # the live NAV strip/curve duplicated the public live page (same
+            # shared intraday_live module); its raw daemon-snapshot expanders
+            # moved to Fleet Status.
         ],
         "🎙 Morning Signal": [
             # Per-date content schedule for the morning-signal podcast:
