@@ -453,6 +453,21 @@ def resolve_pipeline(key: str, inp: FleetInputs) -> ComponentStatus:
 
 
 def resolve_groomer(inp: FleetInputs) -> ComponentStatus:
+    """GREEN is reserved for ACTIVELY RUNNING only (Brian's call, 2026-07-08 —
+    the prior scheme reused GREEN for both "running now" and "last run recent
+    enough," which read as "it's running" when it was actually just idle-but-
+    healthy — bit live when a last-run-7.8h-ago tile showed green during an
+    unrelated manual test run). Four distinct states:
+      GREEN  — a run is executing right now (fresh marker, or a live groom-spot
+               instance the marker can't see, e.g. pre-marker driver code).
+      GRAY   — idle, but the last run was recent enough to be unremarkable
+               (within GROOM_IDLE_OK) — "nothing running, and that's fine."
+      YELLOW — idle longer than expected for the 3×/day cadence, but not yet
+               alarming (within GROOM_IDLE_WARN).
+      RED    — busted: either a dangling in-progress marker with NO live spot
+               to explain it (the run almost certainly died without
+               finalizing), or idle well past the cadence (> GROOM_IDLE_WARN).
+    """
     cid, label = "backlog_groomer", "Backlog groomer"
     g = inp.groom
     if g.marker_started_at is not None:
@@ -467,7 +482,7 @@ def resolve_groomer(inp: FleetInputs) -> ComponentStatus:
             )
         if not g.spot_running:
             return ComponentStatus(
-                cid, label, GROUP_JOBS, YELLOW,
+                cid, label, GROUP_JOBS, RED,
                 f"in-progress marker stale ({_ago(inp.now, g.marker_started_at)}) — "
                 "run may have died without finalizing",
                 g.marker_started_at, deep_link="backlog-groom",
@@ -491,7 +506,7 @@ def resolve_groomer(inp: FleetInputs) -> ComponentStatus:
     stop = f" ({g.last_stop_reason})" if g.last_stop_reason else ""
     if idle <= GROOM_IDLE_OK:
         return ComponentStatus(
-            cid, label, GROUP_JOBS, GREEN,
+            cid, label, GROUP_JOBS, GRAY,
             f"idle — last run {_ago(inp.now, g.last_run_start)}{stop}",
             g.last_run_start, deep_link="backlog-groom",
         )
