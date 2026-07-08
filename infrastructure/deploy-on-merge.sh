@@ -23,13 +23,17 @@ REPO_DIR="/home/ec2-user/alpha-engine-dashboard"
 LOG="/var/log/dashboard-deploy.log"
 TARGET_SHA="${1:-HEAD}"
 
-# Streamlit /_stcore/health endpoints. Console = 8501, live = 8502.
+# Streamlit /_stcore/health endpoints. Console = 8501, live = 8502, dash = 8504.
 # Ports sourced from the systemd unit files in this repo. The live app
 # sets baseUrlPath = "live" (live/.streamlit/config.toml, 2026-06-12 site
 # cutover), which moves ALL its routes — including health — under /live.
+# NB: dash is 8504 (NOT 8503 — 8503 is mnemon/memory.nousergon.ai on this
+# shared box; see the port map in box_health.sh). config#1957 originally
+# picked 8503, which collided with mnemon's *:8503 bind and crash-looped the
+# service; moved to the free 8504 (ex-robodashboard, decommissioned 2026-06-10).
 CONSOLE_URL="http://localhost:8501/_stcore/health"
 LIVE_URL="http://localhost:8502/live/_stcore/health"
-DASH_URL="http://localhost:8503/dash/_stcore/health"
+DASH_URL="http://localhost:8504/dash/_stcore/health"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$LOG"; }
 fail() { log "FAIL $*"; exit 1; }

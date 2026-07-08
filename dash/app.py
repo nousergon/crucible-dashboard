@@ -3,7 +3,7 @@
 The link-gated product skin of the Crucible Results pages: the SAME six
 views the console hosts (shared ``results.view_model`` layer — one renderer,
 two skins), served as their own Streamlit app under ``baseUrlPath=/dash`` on
-port 8503 and exposed at https://crucible.nousergon.ai/dash via the
+port 8504 and exposed at https://crucible.nousergon.ai/dash via the
 ``crucible-live-proxy`` Worker, behind a Cloudflare Access email gate
 (link-gated first; fully public only after a clean trust-battery month —
 plan §8.5 / config#1958).

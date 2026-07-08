@@ -5,15 +5,19 @@
 # binding constraint is RAM, not CPU. This alerts (deduped) when memory
 # runs low or an expected service/port is down. Quiet on success.
 #
-# Co-resident services it guards (port -> service):
+# Co-resident services it guards (port -> service). This map is the source of
+# truth for port allocation on the shared box — pick a NEW service's port from a
+# free slot here (config#1957 shipped crucible-dash on :8503, which mnemon
+# already binds, and it crash-looped every deploy until moved to :8504).
 #   8501 dashboard.service        (alpha-engine console)
 #   8502 nous-ergon-live.service  (live.nousergon.ai)
 #   8503 mnemon (bun)             (memory.nousergon.ai)
+#   8504 crucible-dash.service    (crucible.nousergon.ai/dash — config#1957)
 #   8505 signal.service           (signal.thecyphering.com)
 #   8000 metron-api.service       (Metron FastAPI backend, internal)
 #   3000 metron-web.service       (Metron Next.js, behind portfolio.nousergon.ai)
-# (robodashboard.service / :8504 decommissioned 2026-06-10 — Metron succeeds it at
-#  portfolio.nousergon.ai; robodashboard is now local-only.)
+# (:8504 was robodashboard.service, decommissioned 2026-06-10 — Metron succeeds
+#  it at portfolio.nousergon.ai; the freed port is now crucible-dash's.)
 #
 # Confirm-on-retry (2026-06-04): every check is sampled up to RETRY_ATTEMPTS
 # times RETRY_DELAY apart, and only problems present in EVERY sample are
@@ -58,8 +62,8 @@ INSTANCE_ID=$(curl -s --max-time 2 -H "X-aws-ec2-metadata-token: ${_imds_tok}" h
 
 # ── thresholds ──────────────────────────────────────────────────────────
 MEM_MIN_MB=150                       # alert if MemAvailable drops below this
-SERVICES=(dashboard.service nous-ergon-live.service signal.service metron-api.service metron-web.service)
-PORTS=(8501 8502 8503 8505 8000 3000)
+SERVICES=(dashboard.service nous-ergon-live.service crucible-dash.service signal.service metron-api.service metron-web.service)
+PORTS=(8501 8502 8503 8504 8505 8000 3000)
 RETRY_ATTEMPTS=4                     # samples before a problem is confirmed
 RETRY_DELAY=4                        # seconds between confirmation samples (4x4s ~12s window > metron-api ~5s cold-start)
 
