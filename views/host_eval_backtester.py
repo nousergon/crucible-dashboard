@@ -7,12 +7,13 @@ from shared.view_host import render_host
 
 # Eval + backtester front page. The optimizer surfaces (Risk / Decision) that
 # used to live here moved to the Execution front page (host_execution) — they
-# are live-executor concerns, not backtest analysis.
+# are live-executor concerns, not backtest analysis. The Backtester Archive
+# tab was retired (console-IA phase 1, config#1990): the Analysis page already
+# renders backtest/{date}/report.md with a date selector over all runs.
 render_host(
     [
         ("Eval Quality", "8_Eval_Quality.py"),
         ("Feedback Loop", "12_Feedback_Loop.py"),
-        ("Backtester Archive", "21_Backtester_Evaluator_Archive.py"),
     ],
     key="host_eval_backtester",
 )

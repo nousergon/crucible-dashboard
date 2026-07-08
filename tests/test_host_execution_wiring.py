@@ -20,11 +20,12 @@ REPO_ROOT = Path(__file__).parent.parent
 VIEWS = REPO_ROOT / "views"
 
 # (label, filename) tabs expected on the Execution front page, in order.
+# Optimizer Decision + Risk merged into one Optimizer tab (two lenses on the
+# same optimizer_shadow artifact) — console-IA phase 1, config#1990.
 EXPECTED_EXECUTION_TABS = [
     ("Order Book", "16_Order_Book_Rationale.py"),
     ("Execution", "6_Execution.py"),
-    ("Optimizer Decision", "32_Optimizer_Decision.py"),
-    ("Optimizer Risk", "30_Optimizer_Risk.py"),
+    ("Optimizer", "Optimizer.py"),
 ]
 
 
