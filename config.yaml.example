@@ -37,6 +37,7 @@ cache_ttl:
   trades: 900       # 15 min
   research: 3600    # 1 hour
   backtest: 3600    # 1 hour
+  groom_decisions: 120  # 2 min (config#1935 — 60s-5min band per dispatcher cadence)
 
 drawdown_circuit_breaker: -0.08  # -8%
 
