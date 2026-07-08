@@ -1,0 +1,15 @@
+[Unit]
+Description=Crucible Dash API (FastAPI, internal 127.0.0.1:8506 — config#1973)
+After=network.target
+
+[Service]
+Type=simple
+User=ec2-user
+WorkingDirectory=/home/ec2-user/alpha-engine-dashboard
+ExecStart=/home/ec2-user/alpha-engine-dashboard/.venv/bin/uvicorn dash_api.main:app \
+          --host 127.0.0.1 --port 8506 --workers 1
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
