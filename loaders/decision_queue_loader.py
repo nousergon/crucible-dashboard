@@ -28,7 +28,7 @@ import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
 import streamlit as st
@@ -51,7 +51,7 @@ _COMMENT_TAIL = 10  # newest comments scanned for the gating Ask block
 
 _ASK_RE = re.compile(r"^\*\*Ask:\*\*\s*(.+)$", re.MULTILINE)
 _OPTION_RE = re.compile(r"(?:^|\s)([A-D])\)\s*(.+?)(?=\s+[B-D]\)|$)", re.MULTILINE)
-_REEXAM_RE = re.compile(r"^Re-exam:\s*\d{4}-\d{2}-\d{2}\s*$", re.MULTILINE)
+_REEXAM_RE = re.compile(r"^Re-exam:\s*(\d{4}-\d{2}-\d{2})\s*$", re.MULTILINE)
 
 
 @dataclass
@@ -163,6 +163,28 @@ def bump_reexam_line(body: str, new_date: str) -> str:
     return (body or "").rstrip() + f"\n\nRe-exam: {new_date}\n"
 
 
+def reexam_snoozed_until(body: str, today: date) -> str | None:
+    """A FUTURE ``Re-exam: YYYY-MM-DD`` body line means operator-snoozed.
+
+    This is the read side of the Defer button: ``defer_issue`` bumps the line
+    and leaves the gate label standing (``gate_due_sweep.py`` re-arms via
+    ``gate-due`` when the date arrives), so the queue MUST exclude the issue
+    until then — the gate label alone cannot distinguish deferred from due.
+    Returns the ISO date while snoozed, ``None`` when due today or absent.
+    A malformed date fails OPEN (issue stays visible) with a WARN — an issue
+    silently hidden by a typo is the worse failure mode.
+    """
+    m = _REEXAM_RE.search(body or "")
+    if not m:
+        return None
+    try:
+        parsed = date.fromisoformat(m.group(1))
+    except ValueError:
+        logger.warning("decision_queue: unparseable Re-exam date %r — showing item", m.group(1))
+        return None
+    return parsed.isoformat() if parsed > today else None
+
+
 def ruling_comment(option: str, detail: str, when: str) -> str:
     """The exact comment a console ruling posts — parsed by no one, read by
     the next tier groom's executor, so it must be self-contained."""
@@ -235,8 +257,15 @@ def _build_decision_item(repo: str, label: str, it: dict, now: datetime) -> Deci
 
 
 @st.cache_data(ttl=_CACHE_TTL_S, show_spinner="Loading decision queue…")
-def load_decision_queue() -> list[dict]:
-    """All open human-gated issues, oldest-first, as plain dicts (cacheable).
+def load_decision_queue() -> dict:
+    """Open human-gated issues split into due vs snoozed, as plain dicts.
+
+    Returns ``{"items": [...oldest-first, DUE...], "snoozed": [...]}`` —
+    an issue whose ``Re-exam:`` date is in the future was deferred by the
+    operator and MUST NOT re-enter the queue until due (the Defer button's
+    whole contract); it's returned in ``snoozed`` so the page can show it's
+    parked, not lost. Snoozed issues are filtered BEFORE the comment
+    fan-out — no network spent on items that won't render.
 
     The issue-list fetch (repo x label, 8 calls) is cheap; the per-issue
     gate-comment lookup is not — one blocking GET per pending issue, serially
@@ -245,11 +274,13 @@ def load_decision_queue() -> list[dict]:
     across a thread pool rather than looped.
     """
     now = datetime.now(timezone.utc)
+    today = now.date()
     # An issue carrying BOTH human gates would otherwise get its comment
     # thread fetched twice — dedupe by (repo, number) BEFORE the network
     # fan-out, not after, so we never double-pay for a shared issue.
     seen: set[tuple[str, int]] = set()
     to_build: list[tuple[str, str, dict]] = []
+    snoozed: list[dict] = []
     for repo in BACKLOG_REPOS:
         for label in HUMAN_GATE_LABELS:
             for it in _list_gated_issues(repo, label):
@@ -257,6 +288,13 @@ def load_decision_queue() -> list[dict]:
                 if key in seen:
                     continue
                 seen.add(key)
+                until = reexam_snoozed_until(it.get("body") or "", today)
+                if until:
+                    snoozed.append({
+                        "key": f"{repo}#{it['number']}", "until": until,
+                        "title": it["title"], "url": it["html_url"],
+                    })
+                    continue
                 to_build.append((repo, label, it))
 
     items: list[DecisionItem] = []
@@ -267,7 +305,8 @@ def load_decision_queue() -> list[dict]:
             items = [f.result() for f in futures]
 
     items.sort(key=lambda i: -i.age_days)
-    return [i.__dict__ | {"key": i.key} for i in items]
+    snoozed.sort(key=lambda s: s["until"])
+    return {"items": [i.__dict__ | {"key": i.key} for i in items], "snoozed": snoozed}
 
 
 def clear_queue_cache() -> None:
@@ -320,7 +359,7 @@ def defer_issue(repo: str, number: int, new_date: str, body: str = "") -> None:
     _request("PATCH", f"{_API}/repos/{repo}/issues/{number}",
              {"body": bump_reexam_line(body, new_date)})
     _request("POST", f"{_API}/repos/{repo}/issues/{number}/comments",
-             {"body": f"**Operator: deferred to {new_date}** — via console Decision Queue (config#1926). Gate stands; Re-exam line bumped."})
+             {"body": f"**Operator: deferred to {new_date}** — via console Decision Queue (config#1926). Gate stands; Re-exam line bumped; hidden from the queue until then."})
 
 
 def send_to_session(repo: str, number: int) -> None:

@@ -173,14 +173,18 @@ def _render_decision_queue_chip() -> None:
     try:
         from loaders.decision_queue_loader import load_decision_queue
 
-        queue = load_decision_queue()
+        data = load_decision_queue()
     except Exception as exc:  # noqa: BLE001 — home must render; failure shown
         st.caption(f"⚠️ Decision queue unavailable — {type(exc).__name__}: {exc}")
         return
-    if not queue:
-        st.caption("🗳 Decision Queue: clear — nothing gated on you.")
+    items, snoozed = data["items"], data["snoozed"]
+    deferred_note = f" · {len(snoozed)} deferred" if snoozed else ""
+    if not items:
+        st.caption(f"🗳 Decision Queue: clear — nothing gated on you.{deferred_note}")
         return
-    st.markdown(f"🗳 **{len(queue)} decision(s) pending** — oldest {queue[0]['age_days']}d")
+    st.markdown(
+        f"🗳 **{len(items)} decision(s) pending** — oldest {items[0]['age_days']}d{deferred_note}"
+    )
     st.page_link("views/49_Decision_Queue.py", label="Open Decision Queue →", icon="🗳")
 
 

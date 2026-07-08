@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import date, timedelta
+from datetime import datetime, timedelta, timezone
 
 import streamlit as st
 
@@ -73,21 +73,28 @@ def _act(item_key: str, outcome: str, fn, *args) -> None:
 
 
 try:
-    queue = load_decision_queue()
+    data = load_decision_queue()
 except Exception as exc:
     st.error(f"Decision queue load failed: {exc}")
     st.stop()
 
-pending = [q for q in queue if q["key"] not in st.session_state.dq_done]
+snoozed = data["snoozed"]
+pending = [q for q in data["items"] if q["key"] not in st.session_state.dq_done]
 
-c1, c2, c3 = st.columns(3)
+c1, c2, c3, c4 = st.columns(4)
 c1.metric("Pending decisions", len(pending))
 c2.metric("Oldest", f"{pending[0]['age_days']}d" if pending else "—")
 c3.metric("Ruled this session", len(st.session_state.dq_done))
+c4.metric("Deferred", len(snoozed), help="Hidden until their Re-exam date arrives")
 
 if st.button("🔄 Refresh queue"):
     clear_queue_cache()
     st.rerun()
+
+if snoozed:
+    with st.expander(f"⏸ {len(snoozed)} deferred — re-enter the queue on their Re-exam date"):
+        for s in snoozed:
+            st.markdown(f"- **[{s['key']}]({s['url']})** — {s['title']} · until **{s['until']}**")
 
 if not pending:
     st.success("Queue clear — nothing is gated on you. 🎉")
@@ -133,8 +140,10 @@ for item in pending:
 
         action_cols = st.columns(3)
         if action_cols[0].button("⏸ Defer 2w", key=f"def-{key}"):
+            # UTC date — must match the loader's snoozed-until comparison.
             _act(key, "deferred 2w", defer_issue, item["repo"], item["number"],
-                 (date.today() + timedelta(days=14)).isoformat(), item["body"])
+                 (datetime.now(timezone.utc).date() + timedelta(days=14)).isoformat(),
+                 item["body"])
             st.rerun()
         if action_cols[1].button("💬 Session", key=f"ses-{key}", help="Needs discussion — park for /backlog-triage"):
             _act(key, "sent to session", send_to_session, item["repo"], item["number"])
