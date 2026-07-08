@@ -29,6 +29,7 @@ TARGET_SHA="${1:-HEAD}"
 # cutover), which moves ALL its routes — including health — under /live.
 CONSOLE_URL="http://localhost:8501/_stcore/health"
 LIVE_URL="http://localhost:8502/live/_stcore/health"
+DASH_URL="http://localhost:8503/dash/_stcore/health"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$LOG"; }
 fail() { log "FAIL $*"; exit 1; }
@@ -153,6 +154,23 @@ sleep 2
 systemctl restart nous-ergon-live 2>>"$LOG" || fail "restart nous-ergon-live"
 log "restarted nous-ergon-live.service"
 
+# ── 3b. Crucible /dash service (config#1957) — idempotent self-provision ────
+# The unit ships in this repo; install/refresh it on unit-file diff (or first
+# deploy) so the service can never drift from the repo copy — mirrors the CF
+# Pages project self-provision precedent (#328): a new box or a unit change
+# needs no manual step.
+DASH_UNIT_SRC="$REPO_DIR/infrastructure/crucible-dash.service"
+DASH_UNIT_DST="/etc/systemd/system/crucible-dash.service"
+if [ ! -f "$DASH_UNIT_DST" ] || ! cmp -s "$DASH_UNIT_SRC" "$DASH_UNIT_DST"; then
+    cp "$DASH_UNIT_SRC" "$DASH_UNIT_DST" 2>>"$LOG" || fail "install crucible-dash unit"
+    systemctl daemon-reload 2>>"$LOG" || fail "daemon-reload for crucible-dash"
+    systemctl enable crucible-dash 2>>"$LOG" || fail "enable crucible-dash"
+    log "installed/refreshed crucible-dash.service unit"
+fi
+sleep 2
+systemctl restart crucible-dash 2>>"$LOG" || fail "restart crucible-dash"
+log "restarted crucible-dash.service"
+
 # ── 4. Health check ─────────────────────────────────────────────────────────
 # Streamlit's /_stcore/health returns 200 OK with body "ok" once the
 # server is ready. Give it up to 30s per service to bind the port.
@@ -174,6 +192,7 @@ wait_for_health() {
 
 wait_for_health "$CONSOLE_URL" "dashboard (console)" || fail "console health"
 wait_for_health "$LIVE_URL" "nous-ergon-live" || fail "live health"
+wait_for_health "$DASH_URL" "crucible-dash" || fail "crucible-dash health"
 
 log "=== deploy-on-merge completed successfully — sha=$CURRENT_SHA ==="
 exit 0
