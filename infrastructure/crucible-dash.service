@@ -1,0 +1,16 @@
+[Unit]
+Description=Crucible Experiment Results (Streamlit, crucible.nousergon.ai/dash)
+After=network.target
+
+[Service]
+Type=simple
+User=ec2-user
+WorkingDirectory=/home/ec2-user/alpha-engine-dashboard/dash
+ExecStart=/home/ec2-user/alpha-engine-dashboard/.venv/bin/streamlit run app.py \
+          --server.port=8503 --server.address=127.0.0.1 \
+          --server.headless=true
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
