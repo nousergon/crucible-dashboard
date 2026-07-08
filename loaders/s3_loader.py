@@ -2079,6 +2079,7 @@ def load_claude_code_usage(n_days: int = 35):
             continue
         for model, rec in (doc.get("by_model") or {}).items():
             row = {"date": date_str, "source": source, "model": model,
+                   "provider": rec.get("provider", "anthropic"),   # backward compat: pre-provider docs
                    "wet": rec.get("wet", 0), "cost_usd": rec.get("cost_usd", 0.0),
                    "total": rec.get("total", 0)}
             for t in toks:
