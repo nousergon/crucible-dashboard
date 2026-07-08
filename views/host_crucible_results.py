@@ -2,7 +2,7 @@
 
 Experiment-scoped results for the Reference Rate experiment, per the plan
 IA (`crucible_ux_output_plan_260708.md` §4.2): Overview / Validation /
-Evaluation / Execution / Feedback loop. The Compare tab lands with the
+Evaluation / Execution / Feedback loop / Trust. The Compare tab lands with the
 ablation maturation (config#1959, ≈2026-08-03). Console-mounted first for
 dogfooding; the public crucible.nousergon.ai/dash exposure is a routing
 flip gated on the trust battery (config#1958).
@@ -21,6 +21,7 @@ render_host(
         ("Evaluation", "Crucible_Evaluation.py"),
         ("Execution", "Crucible_Execution.py"),
         ("Feedback loop", "Crucible_Feedback.py"),
+        ("Trust", "Crucible_Trust.py"),
     ],
     key="host_crucible_results",
 )
