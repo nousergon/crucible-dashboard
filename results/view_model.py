@@ -418,6 +418,37 @@ def config_snapshot_rows(meta: dict | None) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Trust battery (config#1958 — the /dash trust surface)
+# ---------------------------------------------------------------------------
+
+def trust_rows(legs: list[dict], ci_verdicts: dict[str, dict]) -> list[dict]:
+    """Join the battery-leg registry to each repo's live main-branch CI verdict.
+
+    A leg's status is its repo's latest completed main-branch CI conclusion —
+    the leg's tests are part of that suite, so suite-green vouches for the
+    leg. An unavailable lookup renders as UNAVAILABLE with the error, never
+    as a silently-missing row.
+    """
+    rows: list[dict] = []
+    for leg in legs:
+        verdict = ci_verdicts.get(leg["repo"]) or {"conclusion": "unavailable", "error": "not queried"}
+        conclusion = str(verdict.get("conclusion", "unknown")).upper()
+        rows.append({
+            "leg": leg["title"],
+            "repo": leg["repo"],
+            "tests": ", ".join(leg["tests"]),
+            "proves": leg["proves"],
+            "caveat": leg.get("caveat") or "",
+            "ci": conclusion,
+            "verified": verdict.get("updated_at") or ABSENT,
+            "commit": verdict.get("head_sha") or ABSENT,
+            "link": verdict.get("html_url") or "",
+            "error": verdict.get("error") or "",
+        })
+    return rows
+
+
+# ---------------------------------------------------------------------------
 # §C Evaluation (evaluator detail)
 # ---------------------------------------------------------------------------
 
