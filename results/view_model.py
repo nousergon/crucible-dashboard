@@ -460,10 +460,14 @@ def experiment_tile_verdicts(card: dict | None) -> list[dict]:
                 c for c in comps if c.get("criticality") == "critical"
                 and str(c.get("status", "")).startswith("N/A")
             ]
-            reason = (
-                f"{len(na_criticals)} critical component(s) not yet gradeable this cycle"
-                if na_criticals else "all graded components within bands"
-            )
+            if na_criticals:
+                # Name WHAT isn't gradeable and why — "1 component not yet
+                # gradeable" tells the reader nothing (Brian, 2026-07-08).
+                names = ", ".join(c.get("name", "?") for c in na_criticals[:3])
+                first_why = (na_criticals[0].get("status_reason") or "").strip()
+                reason = f"awaiting data: {names}" + (f" — {first_why}" if first_why else "")
+            else:
+                reason = "all graded components within bands"
         rows.append({
             "tile": key,
             "status": tile.get("status", "N/A"),

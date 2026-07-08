@@ -21,6 +21,8 @@ from loaders.s3_loader import (
     list_backtest_dates,
     load_backtest_file,
     load_eod_pnl,
+    load_intraday_nav,
+    load_intraday_nav_series,
     load_report_card,
 )
 from loaders.trust_battery_loader import load_ci_verdicts
@@ -167,3 +169,33 @@ def trust() -> dict:
         "legs": vm.trust_rows(BATTERY_LEGS, ci),
         "findings": BATTERY_FINDINGS,
     }
+
+
+@app.get("/api/intraday")
+def intraday() -> list[dict]:
+    """Today's intraday portfolio-vs-SPY return path (the 1D chart range).
+
+    Daemon-published best-effort artifact, market-hours only — an empty list
+    outside sessions is the honest state, not an error (the frontend says
+    "no intraday session data" rather than rendering a blank chart as if it
+    were a flat day).
+    """
+    import intraday_live
+
+    nav = _guard(load_intraday_nav)
+    if not nav:
+        return []
+    day = intraday_live.series_date_for(nav)
+    if not day:
+        return []
+    series = _guard(load_intraday_nav_series, day)
+    frame = intraday_live.build_intraday_curve(series, _guard(load_eod_pnl))
+    if frame is None or frame.empty:
+        return []
+    frame = frame.copy()
+    frame["time"] = frame["time"].astype(str)
+    out = frame.rename(columns={"port_cum": "Portfolio", "spy_cum": "SPY"}).round(4)
+    return [
+        {k: (None if v != v else v) for k, v in row.items()}  # NaN → null (json-safe)
+        for row in out.to_dict(orient="records")
+    ]

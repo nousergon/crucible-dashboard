@@ -118,3 +118,12 @@ class TestEndpoints:
         assert len(body["legs"]) >= 7
         assert all(r["ci"] == "SUCCESS" for r in body["legs"])
         assert all("fix" in f for f in body["findings"])
+
+
+class TestIntradayEndpoint:
+    def test_absent_intraday_is_honest_empty_not_error(self):
+        with _patched():
+            with patch.object(api, "load_intraday_nav", lambda: None):
+                resp = client.get("/api/intraday")
+        assert resp.status_code == 200
+        assert resp.json() == []
