@@ -4,18 +4,22 @@ Alpha Engine Dashboard — Overview (home page).
 Entry point for the Streamlit multi-page app. Designed for triage, not analysis:
 answer "is everything working?" in 10 seconds. Detail pages handle the rest.
 
-Layout (top to bottom):
-  1. Status Banner      — pipeline module health (green/yellow/red)
-  2. Today's Activity   — compact activity feed (approvals, vetoes, trades)
-  3. Key Metrics        — NAV, Daily Alpha, Cumulative Alpha, Model Hit Rate
-  4. Market Context     — regime, VIX, 10yr yield (single row)
-  5. Alerts             — only shown when non-empty
+Layout (top to bottom) — slimmed to a pure triage ROUTER (console-IA phase 3,
+config#1989): ONE status truth (the fleet resolver; the old health/*.json
+Pipeline banner was a second, disagreeing data path), KPIs sourced from the
+same eod_report.json headline the Performance page renders:
+  1. Fleet strip + Decision Queue chip
+  2. Today's Activity   — compact order-book/trades row → Execution
+  3. Key Metrics        — NAV, Daily Alpha (eod_report), Cum Alpha, Hit Rate
+  4. System Report Card — chips → Report Card page
+  5. Regime chip line   — → Predictor › Regime
+  6. Alerts             — drawdown + S3 errors, only when non-empty
 """
 
 import logging
 import os
 import sys
-from datetime import date, datetime
+from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -52,23 +56,17 @@ logger = logging.getLogger(__name__)
 from loaders.db_loader import get_macro_snapshots
 from components.report_card_v2 import render_home_summary
 from loaders.s3_loader import (
-    _fetch_s3_json,
-    _research_bucket,
-    _trades_bucket,
     get_recent_s3_errors,
+    list_eod_report_dates,
     load_eod_pnl,
+    load_eod_report,
     load_order_book_summary,
-    load_predictions_json,
     load_predictor_metrics,
     load_report_card,
     load_trades_full,
 )
-from shared.constants import get_thresholds
 from shared.formatters import format_dollar, regime_label
-from shared.normalizers import to_decimal_scalar, to_decimal_series
-
-_TH = get_thresholds()
-_VETO_CONF_DEFAULT = _TH["veto_confidence"]
+from shared.normalizers import to_decimal_series
 
 # ---------------------------------------------------------------------------
 # Page config
@@ -83,68 +81,12 @@ st.set_page_config(
 
 
 # ---------------------------------------------------------------------------
-# Data loaders
-# ---------------------------------------------------------------------------
-
-
-from nousergon_lib.health import DASHBOARD_HEALTH_MODULES
-
-
-# (module, bucket, stale_after_hrs) — derived from lib (config#1728).
-HEALTH_MODULES = list(DASHBOARD_HEALTH_MODULES)
-
-
-@st.cache_data(ttl=900)
-def _load_module_health() -> list[dict]:
-    """Load health/{module}.json for each pipeline module."""
-    now = datetime.utcnow()
-    rows = []
-    for module_name, bucket_key, stale_after_hrs in HEALTH_MODULES:
-        bucket = _research_bucket() if bucket_key == "research" else _trades_bucket()
-        health = _fetch_s3_json(bucket, f"health/{module_name}.json")
-
-        if health is None:
-            rows.append({
-                "module": module_name,
-                "status": "unknown",
-                "age_hrs": None,
-                "error": None,
-                "stale_after_hrs": stale_after_hrs,
-            })
-            continue
-
-        last_success = health.get("last_success")
-        age_hrs = None
-        if last_success:
-            try:
-                last_dt = datetime.fromisoformat(last_success.replace("Z", "+00:00")).replace(tzinfo=None)
-                age_hrs = (now - last_dt).total_seconds() / 3600
-            except (ValueError, TypeError):
-                pass
-
-        rows.append({
-            "module": module_name,
-            "status": health.get("status", "unknown"),
-            "age_hrs": age_hrs,
-            "error": health.get("error"),
-            "stale_after_hrs": stale_after_hrs,
-        })
-    return rows
-
-
-def _status_icon(status: str) -> str:
-    if status == "ok":
-        return "🟢"
-    if status == "degraded":
-        return "🟡"
-    if status == "failed":
-        return "🔴"
-    return "⚪"
-
-
-# ---------------------------------------------------------------------------
 # Section renderers
 # ---------------------------------------------------------------------------
+# The old health/*.json Pipeline banner (and its _load_module_health reader)
+# was retired in console-IA phase 3 (config#1989): the fleet-strip resolver
+# consumes the same health stamps with SLA-aware logic (config#1724 doctrine)
+# — one status truth on home, not three.
 
 
 def _render_fleet_strip() -> None:
@@ -188,35 +130,19 @@ def _render_decision_queue_chip() -> None:
     st.page_link("views/49_Decision_Queue.py", label="Open Decision Queue →", icon="🗳")
 
 
-def _render_status_banner(health_rows: list[dict]) -> None:
-    """One compact row with colored badges for each module."""
-    cols = st.columns(len(health_rows))
-    for col, row in zip(cols, health_rows):
-        with col:
-            icon = _status_icon(row["status"])
-            age = row.get("age_hrs")
-            age_str = f"{age:.0f}h ago" if age is not None else "—"
-            st.metric(f"{icon} {row['module']}", age_str, delta=row["status"], delta_color="off")
-
-
 def _render_todays_activity(
     order_book_summary: dict | None,
-    predictions_data: dict,
     trades_df: pd.DataFrame | None,
 ) -> None:
-    """Compact summary — entries, exits, vetoes, trades. Metric cards only."""
+    """Compact order-book/trades row → the Execution front page.
+
+    The former Vetoes card was dropped (config#1989): it read the
+    never-produced ``config/predictor_params.json`` and silently presented
+    the code-default threshold as configured state (I1984 item 4a).
+    """
     approved = len(order_book_summary.get("entries_approved", [])) if order_book_summary else 0
     blocked = len(order_book_summary.get("entries_blocked", [])) if order_book_summary else 0
     exits = len(order_book_summary.get("exits", [])) if order_book_summary else 0
-
-    # Count high-confidence vetoes
-    vetoes = 0
-    if predictions_data:
-        predictor_params = _fetch_s3_json(_research_bucket(), "config/predictor_params.json") or {}
-        veto_threshold = predictor_params.get("veto_confidence", _VETO_CONF_DEFAULT)
-        for pred in predictions_data.values():
-            if pred.get("predicted_direction") == "DOWN" and (pred.get("prediction_confidence") or 0) >= veto_threshold:
-                vetoes += 1
 
     # Trades executed today. `date` is the NYSE trading_day the order acted
     # on — strictly backward-looking (DATE_CONVENTIONS.md), so a trade filled
@@ -229,61 +155,77 @@ def _render_todays_activity(
         trades_df["created_at"] = pd.to_datetime(trades_df["created_at"], utc=True).dt.date
         trades_today = int((trades_df["created_at"] == date.today()).sum())
 
-    c1, c2, c3, c4, c5 = st.columns(5)
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("Entries Approved", approved)
     c2.metric("Entries Blocked", blocked)
     c3.metric("Exits / Covers", exits)
-    c4.metric("Vetoes", vetoes)
-    c5.metric("Trades Executed Today", trades_today)
+    c4.metric("Trades Executed Today", trades_today)
+    # Host tab, not a registered page — markdown link, not st.page_link
+    # (same constraint as the Fleet Status deep-links).
+    st.markdown("[Order book & rationale →](/host_execution?tab=Order+Book)")
 
 
-def _compute_cumulative_alpha(eod_df: pd.DataFrame) -> tuple[float | None, float | None]:
-    """Return (daily_alpha, cumulative_alpha) — both in decimal form."""
+def _compute_cumulative_alpha(eod_df: pd.DataFrame) -> float | None:
+    """Cumulative alpha (decimal) from the eod_pnl series — the one KPI the
+    daily eod_report headline doesn't carry (daily NAV/alpha come from the
+    report itself, config#1989)."""
     if eod_df is None or eod_df.empty:
-        return None, None
+        return None
 
     eod_df = eod_df.copy()
     eod_df["date"] = pd.to_datetime(eod_df["date"])
     eod_df = eod_df.sort_values("date")
 
-    daily_alpha = None
-    if "daily_alpha_pct" in eod_df.columns:
-        last_row = eod_df.iloc[-1]
-        daily_alpha = to_decimal_scalar(last_row.get("daily_alpha_pct"))
-
-    # Cumulative alpha: portfolio cum return minus SPY cum return, preferring NAV/spy_close
+    # Portfolio cum return minus SPY cum return, preferring NAV/spy_close
     nav_series = pd.to_numeric(eod_df.get("portfolio_nav"), errors="coerce")
     spy_close = pd.to_numeric(eod_df.get("spy_close"), errors="coerce")
-    cumulative_alpha = None
 
     if nav_series.notna().sum() >= 2 and spy_close.notna().sum() >= 2:
         port_cum = nav_series.iloc[-1] / nav_series.iloc[0] - 1
         spy_cum = spy_close.dropna().iloc[-1] / spy_close.dropna().iloc[0] - 1
-        cumulative_alpha = port_cum - spy_cum
-    elif "daily_alpha_pct" in eod_df.columns:
+        return port_cum - spy_cum
+    if "daily_alpha_pct" in eod_df.columns:
         alphas = to_decimal_series(eod_df["daily_alpha_pct"]).dropna()
         if not alphas.empty:
-            cumulative_alpha = alphas.sum()
+            return float(alphas.sum())
+    return None
 
-    return daily_alpha, cumulative_alpha
+
+@st.cache_data(ttl=900)
+def _load_latest_eod_report() -> dict | None:
+    """Latest eod_report.json — the SAME headline source the Performance
+    page renders (config#1989): home and Performance must never disagree on
+    NAV / daily alpha because one re-derived them from eod_pnl.csv."""
+    dates = list_eod_report_dates()
+    return load_eod_report(dates[0]) if dates else None
 
 
-def _render_key_metrics(eod_df: pd.DataFrame | None, predictor_metrics: dict | None) -> None:
-    """Four KPI cards: NAV, Daily Alpha, Cumulative Alpha, Model Hit Rate."""
-    nav = None
-    if eod_df is not None and not eod_df.empty:
-        nav = pd.to_numeric(eod_df.sort_values("date").iloc[-1].get("portfolio_nav"), errors="coerce")
+def _render_key_metrics(
+    eod_report: dict | None,
+    eod_df: pd.DataFrame | None,
+    predictor_metrics: dict | None,
+) -> None:
+    """Four KPI cards: NAV, Daily Alpha, Cumulative Alpha, Model Hit Rate.
 
-    daily_alpha, cumulative_alpha = _compute_cumulative_alpha(eod_df)
+    NAV + daily alpha come from the eod_report headline (one computation
+    path, shared with /eod-report); cumulative alpha stays derived from the
+    eod_pnl series (the daily report carries no cumulative figure)."""
+    summary = (eod_report or {}).get("summary", {})
+    nav = summary.get("nav")
+    daily_alpha = summary.get("daily_alpha_pct")
+    provisional = bool(summary.get("spy_close_provisional"))
+    cumulative_alpha = _compute_cumulative_alpha(eod_df)
     hit_rate = (predictor_metrics or {}).get("hit_rate_30d_rolling")
 
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        st.metric("Portfolio NAV", format_dollar(nav) if nav and pd.notna(nav) else "—")
+        st.metric("Portfolio NAV", format_dollar(nav) if isinstance(nav, (int, float)) else "—")
     with c2:
         st.metric(
-            "Daily Alpha vs SPY",
-            f"{daily_alpha * 100:+.2f}%" if daily_alpha is not None else "—",
+            "Daily Alpha vs SPY" + (" ⏳" if provisional else ""),
+            f"{daily_alpha:+.2f}%" if isinstance(daily_alpha, (int, float)) else "—",
+            help=("SPY close not yet settled — re-finalizes on the T+1 "
+                  "reconcile pass (config#1276)." if provisional else None),
         )
     with c3:
         st.metric(
@@ -297,54 +239,35 @@ def _render_key_metrics(eod_df: pd.DataFrame | None, predictor_metrics: dict | N
             st.metric("Model Hit Rate (30d)", "—")
 
 
-def _render_market_context(macro_df: pd.DataFrame | None) -> None:
+def _render_regime_chip(macro_df: pd.DataFrame | None) -> None:
+    """One-line regime chip → the Regime tab (the full Market Context grid
+    duplicated views/15_Regime — config#1989)."""
     if macro_df is None or macro_df.empty:
         return
 
     macro_df = macro_df.copy()
     macro_df["date"] = pd.to_datetime(macro_df["date"])
-    today_macro = macro_df[macro_df["date"].dt.date == date.today()]
-    if today_macro.empty:
-        today_macro = macro_df.tail(1)
-    if today_macro.empty:
-        return
-
-    row = today_macro.iloc[-1]
+    row = macro_df.sort_values("date").iloc[-1]
     regime = row.get("market_regime", row.get("regime", "—"))
-    vix = row.get("vix", "—")
-    yield_10yr = row.get("yield_10yr", row.get("10yr_yield", "—"))
-
-    mc1, mc2, mc3 = st.columns(3)
-    with mc1:
-        st.metric("Regime", regime_label(regime))
-    with mc2:
-        try:
-            st.metric("VIX", f"{float(vix):.1f}")
-        except (ValueError, TypeError):
-            st.metric("VIX", str(vix))
-    with mc3:
-        try:
-            st.metric("10yr Yield", f"{float(yield_10yr):.2f}%")
-        except (ValueError, TypeError):
-            st.metric("10yr Yield", str(yield_10yr))
+    vix = row.get("vix", None)
+    try:
+        vix_str = f" · VIX {float(vix):.1f}" if vix is not None else ""
+    except (ValueError, TypeError):
+        vix_str = ""
+    st.markdown(
+        f"**Regime:** {regime_label(regime)}{vix_str} &nbsp;·&nbsp; "
+        "[Regime detail →](/host_predictor?tab=Regime)"
+    )
 
 
 def _render_alerts(
-    health_rows: list[dict],
     eod_df: pd.DataFrame | None,
 ) -> None:
-    """Only shown when non-empty. Failed modules, stale modules, S3 errors, drawdown warnings."""
-    alerts: list[str] = []
+    """Only shown when non-empty: drawdown warnings + recent S3 errors.
 
-    # Failed or stale modules
-    for row in health_rows:
-        if row["status"] == "failed":
-            err = row.get("error") or "unknown error"
-            alerts.append(f"❌ Module **{row['module']}** FAILED — {err}")
-        elif row["status"] == "unknown":
-            alerts.append(f"⚠ Module **{row['module']}** has no health status (never run?)")
-        elif row.get("age_hrs") is not None and row["age_hrs"] > row.get("stale_after_hrs", 48):
-            alerts.append(f"⚠ Module **{row['module']}** stale — last success {row['age_hrs']:.0f}h ago")
+    Module-health alerts were dropped with the Pipeline banner (config#1989)
+    — the fleet strip's 🟡/🔴 dots carry that signal with SLA-aware logic."""
+    alerts: list[str] = []
 
     # Drawdown warning
     if eod_df is not None and not eod_df.empty and "daily_return_pct" in eod_df.columns:
@@ -383,7 +306,10 @@ def _render_report_card() -> None:
     grading.json summary (3 modules, letters only).
     """
     render_home_summary(load_report_card())
-    st.caption("Full breakdown → **Report Card** + **Report Card — Detail** (top of the sidebar).")
+    st.caption(
+        "Full breakdown → **Report Card** (top of the sidebar; the Component "
+        "Detail view is its second tab)."
+    )
 
 
 def main() -> None:
@@ -394,39 +320,33 @@ def main() -> None:
 
     with st.spinner("Loading..."):
         eod_df = load_eod_pnl()
+        eod_report = _load_latest_eod_report()
         trades_df = load_trades_full()
         macro_df = get_macro_snapshots()
-        predictions_data = load_predictions_json()
         order_book_summary = load_order_book_summary(today)
         predictor_metrics = load_predictor_metrics()
-        health_rows = _load_module_health()
 
     st.subheader("Fleet Status")
     _render_fleet_strip()
     _render_decision_queue_chip()
 
     st.divider()
-    st.subheader("Pipeline Status")
-    _render_status_banner(health_rows)
-
-    st.divider()
     st.subheader("Today's Activity")
-    _render_todays_activity(order_book_summary, predictions_data, trades_df)
+    _render_todays_activity(order_book_summary, trades_df)
 
     st.divider()
     st.subheader("Key Metrics")
-    _render_key_metrics(eod_df, predictor_metrics)
+    _render_key_metrics(eod_report, eod_df, predictor_metrics)
 
     st.divider()
     st.subheader("System Report Card")
     _render_report_card()
 
     st.divider()
-    st.subheader("Market Context")
-    _render_market_context(macro_df)
+    _render_regime_chip(macro_df)
 
     st.divider()
-    _render_alerts(health_rows, eod_df)
+    _render_alerts(eod_df)
 
 
 # ---------------------------------------------------------------------------
