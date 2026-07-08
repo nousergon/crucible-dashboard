@@ -291,17 +291,23 @@ class TestGroomer:
         assert "running" in s.reason
         assert "high" in s.reason
 
-    def test_yellow_stale_marker(self):
+    def test_red_stale_marker_no_spot_is_busted(self):
+        # config#1954 follow-up (Brian, 2026-07-08): GREEN is reserved for
+        # ACTIVELY RUNNING only. A dangling in-progress marker with no live
+        # spot to explain it means the run almost certainly died without
+        # finalizing — that's "busted," not a soft warning.
         s = resolve_groomer(_inputs(groom=GroomSnapshot(
             marker_started_at=TRADING_MID - timedelta(hours=5))))
-        assert s.dot == YELLOW
+        assert s.dot == RED
         assert "stale" in s.reason
 
-    def test_green_recent_run_no_marker(self):
+    def test_gray_recent_run_no_marker_is_idle_not_running(self):
+        # Nothing is executing right now — this is "idle, and that's fine"
+        # (within GROOM_IDLE_OK), never GREEN (reserved for actively running).
         s = resolve_groomer(_inputs(groom=GroomSnapshot(
             last_run_start=TRADING_MID - timedelta(hours=2),
             last_stop_reason="queue drained")))
-        assert s.dot == GREEN
+        assert s.dot == GRAY
 
     def test_yellow_idle_15h(self):
         s = resolve_groomer(_inputs(groom=GroomSnapshot(
