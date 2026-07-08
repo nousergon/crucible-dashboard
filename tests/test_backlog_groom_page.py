@@ -74,6 +74,22 @@ class TestListGroomRunKeys:
                 "groom/2026-06-30/230511.json",
             ]
 
+    def test_excludes_control_plane_and_in_progress_marker(self):
+        # groom/ also hosts the dispatcher control plane (groom/_control/*,
+        # nousergon-data#658) and the in-progress marker — "_" sorts AFTER
+        # digits, so unfiltered these displace every real run at the head
+        # of the reverse sort (bit Fleet Status + this page 2026-07-06).
+        keys = [
+            "groom/_control/completed/94332963e93a.json",
+            "groom/in_progress.json",
+            "groom/2026-07-05/103000.json",
+        ]
+        with patch.object(s3_loader, "_research_bucket", return_value="b"), \
+                patch.object(s3_loader, "get_s3_client", return_value=self._client(keys)):
+            assert s3_loader.list_groom_run_keys() == [
+                "groom/2026-07-05/103000.json",
+            ]
+
     def test_respects_limit(self):
         keys = [f"groom/2026-07-01/{i:06d}.json" for i in range(5)]
         with patch.object(s3_loader, "_research_bucket", return_value="b"), \
@@ -142,3 +158,10 @@ class TestNavRegistration:
         assert "digest_title" in src
         assert "digest_issue" in src
         assert "predates digest embedding" in src  # graceful pre-v3 fallback
+
+    def test_page_surfaces_token_efficiency_metrics(self):
+        src = (REPO_ROOT / "views" / "42_Backlog_Groom.py").read_text()
+        assert "Token efficiency" in src
+        assert "list_groom_usage_records" in src
+        assert "compute_efficiency" in src
+        assert "WET/eng" in src or "wet_per_engaged" in src

@@ -646,6 +646,8 @@ def load_ci_watch(date_str: str) -> dict | None:
 # ---------------------------------------------------------------------------
 
 _GROOM_RUNS_PREFIX = "groom/"
+# Run-artifact key shape — excludes groom/_control/* and groom/in_progress.json.
+_GROOM_RUN_KEY_RE = re.compile(r"^groom/\d{4}-\d{2}-\d{2}/[^/]+\.json$")
 
 
 @st.cache_data(ttl=_ttl("research"))
@@ -666,7 +668,14 @@ def list_groom_run_keys(limit: int = 30) -> list[str]:
         for page in paginator.paginate(Bucket=bucket, Prefix=_GROOM_RUNS_PREFIX):
             for obj in page.get("Contents", []):
                 k = obj.get("Key", "")
-                if k.endswith(".json"):
+                # Run artifacts ONLY: groom/{YYYY-MM-DD}/{run}.json. The
+                # prefix also hosts non-run subtrees — groom/_control/*
+                # (dispatcher control plane, nousergon-data#658) and the
+                # groom/in_progress.json marker — and "_" sorts after
+                # digits, so without this shape filter the control files
+                # displace every real run at the head of the reverse sort
+                # (bit the Fleet Status + Backlog Groom pages 2026-07-06).
+                if _GROOM_RUN_KEY_RE.match(k):
                     keys.append(k)
         keys.sort(reverse=True)  # ISO date + zero-padded HHMMSS/run-id sorts ~chronologically
         return keys[:limit]
@@ -689,6 +698,46 @@ def load_groom_run(key: str) -> dict | None:
     """
     data = _fetch_s3_json(_research_bucket(), key)
     return data if isinstance(data, dict) else None
+
+
+_GROOM_USAGE_PREFIX = "claude_code_usage/groom/"
+
+
+@st.cache_data(ttl=_ttl("research"))
+def list_groom_usage_records(days: int = 21) -> list[dict]:
+    """Lightweight index of groom usage files for run-efficiency joins.
+
+    Returns dicts with key, wet, total, cache_read, cache_read_pct, ts — see
+    ``loaders.groom_efficiency.usage_record_from_doc``. Skips manual-reset
+    offset files.
+    """
+    import datetime as _dt
+    from loaders.groom_efficiency import usage_record_from_doc
+
+    bucket = _research_bucket()
+    cutoff = (_dt.date.today() - _dt.timedelta(days=days)).isoformat()
+    out: list[dict] = []
+    try:
+        client = get_s3_client()
+        paginator = client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=bucket, Prefix=_GROOM_USAGE_PREFIX):
+            for obj in page.get("Contents", []):
+                key = obj.get("Key", "")
+                parts = key[len(_GROOM_USAGE_PREFIX):].split("/")
+                if len(parts) != 2 or not key.endswith(".json"):
+                    continue
+                if parts[0] < cutoff:
+                    continue
+                doc = _fetch_s3_json(bucket, key)
+                if not isinstance(doc, dict):
+                    continue
+                rec = usage_record_from_doc(key, doc)
+                if rec:
+                    out.append(rec)
+    except Exception as e:
+        logger.error("list_groom_usage_records failed: %s", e)
+        _record_s3_error(bucket, _GROOM_USAGE_PREFIX, type(e).__name__, str(e))
+    return out
 
 
 # ---------------------------------------------------------------------------

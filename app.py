@@ -87,16 +87,11 @@ st.set_page_config(
 # ---------------------------------------------------------------------------
 
 
-# (module, bucket, stale_after_hrs) — weekly Saturday-pipeline modules are
-# legitimately up to ~7 days old by Friday; daily modules span weekends
-# (Fri EOD → Mon run ≈ 67h, +24h on holiday Mondays).
-HEALTH_MODULES = [
-    ("research", "research", 8 * 24),
-    ("predictor_training", "research", 8 * 24),
-    ("predictor_inference", "research", 4 * 24),
-    ("executor", "research", 4 * 24),
-    ("eod_reconcile", "trades", 4 * 24),
-]
+from nousergon_lib.health import DASHBOARD_HEALTH_MODULES
+
+
+# (module, bucket, stale_after_hrs) — derived from lib (config#1728).
+HEALTH_MODULES = list(DASHBOARD_HEALTH_MODULES)
 
 
 @st.cache_data(ttl=900)
@@ -150,6 +145,43 @@ def _status_icon(status: str) -> str:
 # ---------------------------------------------------------------------------
 # Section renderers
 # ---------------------------------------------------------------------------
+
+
+def _render_fleet_strip() -> None:
+    """Compact fleet dot-strip (views/48_Fleet_Status.py's resolver over the
+    same 25s-cached loader snapshot) + link to the full live grid. Any
+    gathering failure renders in-line by name — visible degrade, never a
+    silently absent strip (feedback_no_silent_fails)."""
+    try:
+        from fleet_status import resolve_fleet
+        from loaders.fleet_status_loader import gather_fleet_inputs
+
+        statuses = resolve_fleet(gather_fleet_inputs())
+    except Exception as exc:  # noqa: BLE001 — degraded strip must not take
+        # down the console home; the failure is rendered, not swallowed.
+        st.caption(f"⚠️ Fleet status unavailable — {type(exc).__name__}: {exc}")
+        return
+    parts = [f"{s.icon} {s.label.split(' (')[0]}" for s in statuses]
+    st.markdown(" &nbsp;·&nbsp; ".join(parts))
+    st.page_link("views/48_Fleet_Status.py", label="Open Fleet Status (live) →", icon="🛰")
+
+
+def _render_decision_queue_chip() -> None:
+    """Home chip for the human-gated backlog pool (config#1926): pending
+    count + oldest age, linking to the Decision Queue page. Degrades to a
+    named caption — never silently absent (feedback_no_silent_fails)."""
+    try:
+        from loaders.decision_queue_loader import load_decision_queue
+
+        queue = load_decision_queue()
+    except Exception as exc:  # noqa: BLE001 — home must render; failure shown
+        st.caption(f"⚠️ Decision queue unavailable — {type(exc).__name__}: {exc}")
+        return
+    if not queue:
+        st.caption("🗳 Decision Queue: clear — nothing gated on you.")
+        return
+    st.markdown(f"🗳 **{len(queue)} decision(s) pending** — oldest {queue[0]['age_days']}d")
+    st.page_link("views/49_Decision_Queue.py", label="Open Decision Queue →", icon="🗳")
 
 
 def _render_status_banner(health_rows: list[dict]) -> None:
@@ -365,6 +397,11 @@ def main() -> None:
         predictor_metrics = load_predictor_metrics()
         health_rows = _load_module_health()
 
+    st.subheader("Fleet Status")
+    _render_fleet_strip()
+    _render_decision_queue_chip()
+
+    st.divider()
     st.subheader("Pipeline Status")
     _render_status_banner(health_rows)
 
@@ -485,7 +522,38 @@ def _build_navigation():
             page("46_Experiments.py", "Ablations", "⚗"),
         ],
         "🩺 System & Ops": [
+            # Real-time fleet grid (30s st.fragment auto-refresh): every
+            # weekly/daily process with a schedule-aware 🟢🟡🔴⚪ dot.
+            # url_path pinned to "fleet-status" (slug guard:
+            # tests/test_fleet_status_page.py) — standalone st.Page like
+            # pipeline-status below, so home-strip page_links + future
+            # notification deep-links stay stable.
+            st.Page(
+                "views/48_Fleet_Status.py", title="Fleet Status", icon="🛰",
+                url_path="fleet-status",
+            ),
+            # Human-gated backlog ruling surface (config#1926). url_path
+            # pinned to "decision-queue" — the weekly Telegram digest
+            # (config#1922) deep-links to it and the home chip page_links to
+            # it. Guarded by tests/test_decision_queue_page.py. Standalone
+            # st.Page (slug lives on the page, like fleet-status above).
+            st.Page(
+                "views/49_Decision_Queue.py", title="Decision Queue", icon="🗳",
+                url_path="decision-queue",
+            ),
             page("host_system_health.py", "System Health", "🩺"),
+            # url_path pinned to "pipeline-status" — the Step Function
+            # failure/complete notifications (nousergon-data) deep-link to
+            # …/pipeline-status?run=<execution-name> ($$.Execution.Name). So
+            # app.py MUST register this standalone st.Page with
+            # url_path="pipeline-status" and the page MUST honor ?run=.
+            # Guarded by tests/test_pipeline_status_page.py. Standalone (not a
+            # host tab) so the slug lives on the page, like director /
+            # eod-report / model-zoo / analysis.
+            st.Page(
+                "views/25_Pipeline_Status.py", title="Pipeline Status", icon="🚦",
+                url_path="pipeline-status",
+            ),
             page("host_observability.py", "Observability", "⏱"),
             page("host_cost_usage.py", "Cost & Usage", "💰"),
             page("22_Intraday_Surveillance.py", "Intraday Surveillance", "👁"),

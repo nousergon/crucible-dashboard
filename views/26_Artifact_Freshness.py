@@ -125,7 +125,8 @@ st.title("📡 Artifact Freshness")
 st.caption(
     "Absence-driven monitoring for load-bearing S3 artifacts. "
     "Complements flow-doctor / SF Catch (event-driven). "
-    "Substrate: `nousergon_lib.artifact_freshness` (v0.40.0); "
+    "**Severity routing:** `critical` misses page via SNS + Telegram; "
+    "`warning` misses are **console-only** (this page + check_results.json). "
     "SoT: `alpha-engine-config/private-docs/ARTIFACT_REGISTRY.yaml`."
 )
 
@@ -159,17 +160,21 @@ with cols[4]:
 with cols[5]:
     st.metric("🚨 probe failed", counts.get("probe_failed", 0))
 with cols[6]:
-    mode_label = "🔔 ALERTS LIVE" if alerts_enabled else "👁 OBSERVE-only"
+    mode_label = "🔔 CRITICAL pages live" if alerts_enabled else "👁 OBSERVE-only"
     st.metric("Mode", mode_label)
 
 # Mode banner — OBSERVE state is operationally important context.
 if not alerts_enabled:
     st.info(
         "**OBSERVE mode active.** Missing artifacts are surfaced here but "
-        "no Telegram / SNS alerts fire. Phase 6 cutover flips this with "
-        "`aws lambda update-function-configuration --function-name "
-        "alpha-engine-freshness-monitor --environment "
-        "'Variables={MNEMON_FRESHNESS_MONITOR_ENABLED=true,LOG_LEVEL=INFO}'`."
+        "no Telegram / SNS alerts fire. Cutover flips "
+        "`FRESHNESS_MONITOR_ENABLED=true` on the freshness-monitor Lambda."
+    )
+elif alerts_enabled:
+    st.caption(
+        "Alerts live for **critical** registry rows only. "
+        "**Warning**-severity stale/missing rows appear in the table below "
+        "but do not route to #ops-health — check here during triage."
     )
 
 st.divider()
@@ -256,7 +261,10 @@ with filter_cols[1]:
 with filter_cols[2]:
     severities = sorted(df["severity"].dropna().unique().tolist())
     selected_severities = st.multiselect(
-        "Severity", severities, default=severities
+        "Severity",
+        severities,
+        default=severities,
+        help="warning = console-only (no Telegram); critical = pages on miss",
     )
 with filter_cols[3]:
     states = sorted(df["state"].dropna().unique().tolist())

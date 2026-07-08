@@ -149,6 +149,14 @@ class TestFlowDoctorYamlSchema:
             "flow-doctor.yaml must declare an email notify channel"
         )
 
+    def test_yaml_github_routes_to_config_backlog(self):
+        text = self._read_yaml_text()
+        assert "repo: nousergon/alpha-engine-config" in text
+        assert "notify_on_category: [CODE, CONFIG]" in text
+        assert "area:dashboard" in text
+        assert "- type: telegram" in text
+        assert "notify_on_category: [TRANSIENT, EXTERNAL, INFRA]" in text
+
 
 @flow_doctor_required
 class TestSetupLoggingAttach:
@@ -268,8 +276,15 @@ class TestLibVersionPin:
             "nousergon_lib import alias still works via the shim)"
         )
         assert "@main" not in text, "nousergon-lib must be pinned to a tag, not @main"
-        assert "@v0.81.1" in text, (
-            "nousergon-lib should pin to v0.81.1 (nousergon-lib#155: __main__ delegation in CLI re-export shims, config#1646; supersedes #154: registers "
+        assert "@v0.89.0" in text, (
+            "nousergon-lib should pin to v0.89.0 (pipeline_status registry "
+            "entries for the 2026-07-06 SF states — WeeklyRunDayGate/"
+            "WeeklyRunDayGateFailed (config#1824), CodeFreshnessGate + "
+            "WaitForCodeFreshness + ForceStopUnresponsiveInstance "
+            "(config#1811), LaunchDailyDataSpot (config#1807) — clears the "
+            "local cross-repo drift guard test_pipeline_status_registry_drift). "
+            "Earlier: v0.87.0 (nousergon_lib.health registry-aligned "
+            "keys + dashboard constants for config#1728 Phase D). "
             "the EOD SF's RefreshExecutorDeploy top-of-pipeline executor-"
             "checkout refresh chokepoint (config#1549) + its "
             "WaitForRefreshExecutorDeploy companion in "

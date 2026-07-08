@@ -40,6 +40,7 @@ setup_logging(
 )
 
 import boto3
+from nousergon_lib.health import HEALTH_CHECK_CANDIDATES
 
 logger = logging.getLogger(__name__)
 
@@ -207,27 +208,8 @@ def check_all(bucket: str = DEFAULT_BUCKET) -> list[dict]:
         "status": "ok" if age is not None and age <= threshold else "stale" if age is not None else "missing",
     })
 
-    # 8. Module health markers
-    #
-    # Most modules write a single ``health/{module}.json`` file. The
-    # predictor is the exception: it writes one health file per surface
-    # (``predictor_inference.json``, ``predictor_training.json``,
-    # ``predictor_health_check.json``) and never a unified
-    # ``predictor.json``. Using a per-module candidate list lets the
-    # checker accept whichever surface emitted most recently. Surfaced
-    # 2026-05-24 in the health-checker false-positives audit (looking for
-    # ``predictor.json`` always missed because no producer writes it).
-    MODULE_HEALTH_CANDIDATES = {
-        "data_phase1": ["data_phase1.json"],
-        "data_phase2": ["data_phase2.json"],
-        "executor": ["executor.json"],
-        "predictor": [
-            "predictor_inference.json",
-            "predictor_training.json",
-            "predictor_health_check.json",
-        ],
-    }
-    for module, candidates in MODULE_HEALTH_CANDIDATES.items():
+    # Module health markers — candidate keys from lib (config#1728).
+    for module, candidates in HEALTH_CHECK_CANDIDATES.items():
         modified, age = None, None
         chosen_key = None
         for candidate in candidates:

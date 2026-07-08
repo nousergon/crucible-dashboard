@@ -281,6 +281,56 @@ class TestAppliedMarkers:
             assert mss.load_applied_markers() == {}
 
 
+class TestLlmDecisions:
+    """load_llm_decisions() mirrors load_applied_markers()'s list+fetch+
+    cache shape exactly (config#1659, morning-signal#106/#107)."""
+
+    def _client(self, keys_bodies: dict[str, dict]):
+        page = {"Contents": [{"Key": k} for k in keys_bodies]}
+        paginator = MagicMock()
+        paginator.paginate.return_value = [page]
+        client = MagicMock()
+        client.get_paginator.return_value = paginator
+
+        def _get(Bucket, Key):
+            body = MagicMock()
+            body.read.return_value = json.dumps(keys_bodies[Key]).encode()
+            return {"Body": body}
+
+        client.get_object.side_effect = _get
+        return client
+
+    def test_lists_and_parses_decisions(self):
+        record = {
+            "date": "2026-07-06", "edition": "am",
+            "primary_provider": "openrouter", "primary_model": "moonshotai/kimi-k2.6",
+            "used_provider": "openrouter", "used_model": "moonshotai/kimi-k2.6",
+            "fell_back": False,
+        }
+        client = self._client(
+            {f"{mss.LLM_DECISIONS_PREFIX}2026-07-06-am.llm_decision.json": record}
+        )
+        with patch.object(mss, "_ms_client", return_value=client):
+            decisions = mss.load_llm_decisions()
+        assert decisions == {"2026-07-06-am": record}
+
+    def test_empty_on_error(self):
+        client = MagicMock()
+        client.get_paginator.side_effect = RuntimeError("boom")
+        with patch.object(mss, "_ms_client", return_value=client):
+            assert mss.load_llm_decisions() == {}
+
+    def test_unreadable_record_skipped_not_raised(self):
+        client = self._client({})
+        paginator = client.get_paginator.return_value
+        paginator.paginate.return_value = [
+            {"Contents": [{"Key": f"{mss.LLM_DECISIONS_PREFIX}2026-07-06-am.llm_decision.json"}]}
+        ]
+        client.get_object.side_effect = RuntimeError("boom")
+        with patch.object(mss, "_ms_client", return_value=client):
+            assert mss.load_llm_decisions() == {}
+
+
 class TestScheduleContract:
     """Cross-repo contract: identical validator + identical fixtures as
     morning-signal (src/morning_signal/schedule_override.py +
@@ -364,3 +414,14 @@ class TestNavRegistration:
         ).read_text()
         assert "except ImportError" in src
         assert "st.stop()" in src
+
+    def test_page_shows_llm_decision_badge(self):
+        """config#1659: which model aired each day, additive to the
+        schedule calendar (most days have no schedule entry at all)."""
+        src = (
+            REPO_ROOT / "views" / "45_Morning_Signal_Schedule.py"
+        ).read_text()
+        assert "load_llm_decisions" in src
+        assert "_llm_events" in src
+        assert "fell_back" in src
+        assert "Recent model usage" in src

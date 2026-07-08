@@ -391,15 +391,59 @@ def _render_recent_executions_disclosure(arn: str, canonical_role: Optional[str]
                 st.rerun()
 
 
-def _render_section(arn: str) -> None:
+def _resolve_run_name_to_arn(arn: str, run_name: Optional[str]) -> Optional[str]:
+    """Resolve a ``?run=`` execution NAME to its execution ARN for this SF.
+
+    The SF failure/complete notifications (nousergon-data) deep-link to
+    ``…/pipeline-status?run=<execution-name>`` where ``<execution-name>`` is
+    the Step Function ``$$.Execution.Name`` — the trailing segment of the
+    execution ARN. The picker keys on ARN, so we scan the recent-execution
+    window for this state machine and return the ARN whose execution NAME
+    (or, belt-and-suspenders, the trailing name segment of its ARN) matches
+    ``run_name``.
+
+    Returns ``None`` when ``run_name`` is empty or no recent execution of
+    this SF matches — the caller then falls back to the canonical
+    most-recent auto-pick (never errors, never blanks). Listing errors are
+    swallowed to ``None`` for the same reason: a stale/bad deep-link must
+    never break the page render.
+    """
+    if not run_name:
+        return None
+    try:
+        # Cross-role listing (role_filter=None) so a ?run= link to a smoke /
+        # recovery / replay execution still resolves — the operator (or the
+        # notification) asked for that specific run by name.
+        summaries = list_recent_pipeline_runs_for_arn(arn, limit=10)
+    except Exception:  # noqa: BLE001 — a bad deep-link must never break render
+        return None
+    for s in summaries:
+        if s.name == run_name or s.execution_arn.rsplit(":", 1)[-1] == run_name:
+            return s.execution_arn
+    return None
+
+
+def _render_section(arn: str, run_param: Optional[str] = None) -> None:
     canonical_role = _canonical_role_for(arn)
     sm_name = arn.rsplit(":", 1)[-1]
     session_key = f"pinned_execution_{sm_name}"
     pinned_arn = st.session_state.get(session_key)
 
+    # ?run= deep-link: if a run name is supplied and matches an execution of
+    # THIS state machine, select it. An explicit in-session pin (Inspect ▸
+    # button) still wins. A non-matching / absent ?run= resolves to None and
+    # falls through to the canonical most-recent auto-pick below — behavior
+    # identical to before this param existed.
+    run_param_arn = (
+        _resolve_run_name_to_arn(arn, run_param) if not pinned_arn else None
+    )
+
     if pinned_arn:
         # Operator pinned a specific execution via the disclosure.
         result = read_pipeline_state_with_fallback(arn, execution_arn=pinned_arn)
+    elif run_param_arn:
+        # ?run= matched a specific execution of this SF.
+        result = read_pipeline_state_with_fallback(arn, execution_arn=run_param_arn)
     elif canonical_role:
         # Default: filter to canonical cadence role for this SF.
         result = read_pipeline_state_with_fallback(
@@ -441,9 +485,17 @@ if st.button("🔄 Refresh now", help="Forces a live poll + writes the last-good
         refresh_and_write_cache(arns_with_filters)
     st.rerun()
 
+# Honor the ?run= deep-link from the SF failure/complete notifications
+# (nousergon-data): …/pipeline-status?run=<execution-name> where the value is
+# the Step Function $$.Execution.Name. Each section resolves it against its own
+# recent-execution window; the one that owns that execution renders it, the
+# others fall back to their canonical most-recent auto-pick. Absent/unknown
+# ?run= leaves every section on its auto-pick (behavior unchanged).
+_run_param = st.query_params.get("run")
+
 for arn in _ALL_ARNS:
     st.divider()
-    _render_section(arn)
+    _render_section(arn, run_param=_run_param)
 
 st.divider()
 st.caption(
