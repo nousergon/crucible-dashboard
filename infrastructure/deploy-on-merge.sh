@@ -30,6 +30,7 @@ TARGET_SHA="${1:-HEAD}"
 CONSOLE_URL="http://localhost:8501/_stcore/health"
 LIVE_URL="http://localhost:8502/live/_stcore/health"
 DASH_URL="http://localhost:8504/dash/_stcore/health"
+DASH_API_URL="http://localhost:8506/api/health"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$LOG"; }
 fail() { log "FAIL $*"; exit 1; }
@@ -171,6 +172,20 @@ sleep 2
 systemctl restart crucible-dash 2>>"$LOG" || fail "restart crucible-dash"
 log "restarted crucible-dash.service"
 
+# ── 3c. Crucible dash-api service (config#1973 9-B) — same idempotent
+# self-provision pattern as 3b.
+API_UNIT_SRC="$REPO_DIR/infrastructure/crucible-dash-api.service"
+API_UNIT_DST="/etc/systemd/system/crucible-dash-api.service"
+if [ ! -f "$API_UNIT_DST" ] || ! cmp -s "$API_UNIT_SRC" "$API_UNIT_DST"; then
+    cp "$API_UNIT_SRC" "$API_UNIT_DST" 2>>"$LOG" || fail "install crucible-dash-api unit"
+    systemctl daemon-reload 2>>"$LOG" || fail "daemon-reload for crucible-dash-api"
+    systemctl enable crucible-dash-api 2>>"$LOG" || fail "enable crucible-dash-api"
+    log "installed/refreshed crucible-dash-api.service unit"
+fi
+sleep 1
+systemctl restart crucible-dash-api 2>>"$LOG" || fail "restart crucible-dash-api"
+log "restarted crucible-dash-api.service"
+
 # ── 4. Health check ─────────────────────────────────────────────────────────
 # Streamlit's /_stcore/health returns 200 OK with body "ok" once the
 # server is ready. Give it up to 30s per service to bind the port.
@@ -193,6 +208,7 @@ wait_for_health() {
 wait_for_health "$CONSOLE_URL" "dashboard (console)" || fail "console health"
 wait_for_health "$LIVE_URL" "nous-ergon-live" || fail "live health"
 wait_for_health "$DASH_URL" "crucible-dash" || fail "crucible-dash health"
+wait_for_health "$DASH_API_URL" "crucible-dash-api" || fail "crucible-dash-api health"
 
 log "=== deploy-on-merge completed successfully — sha=$CURRENT_SHA ==="
 exit 0
