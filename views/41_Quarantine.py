@@ -14,9 +14,14 @@ what was rejected and why, then decide whether the reject was a genuine vocab
 typo (fix upstream) or a schema lag worth migrating into `entries/`
 (config#868).
 
-Read-only: the "Approve & migrate to entries/" write-back is a later
-increment — it needs a dashboard IAM grant for `s3:PutObject`/`DeleteObject`
-on the two prefixes, which the read-only console role lacks.
+"Approve & migrate to entries/" writes the entry to the equivalent
+`changelog/entries/{date}/{event_id}.json` key and deletes the quarantine
+copy — requires the dashboard role's `s3:PutObject`/`DeleteObject` grant on
+both prefixes (config#868; codified in alpha-engine-config
+`iam/alpha-engine-dashboard-role/
+alpha-engine-dashboard-changelog-quarantine-writeback.json`). Until an
+operator applies that grant live, the button surfaces a clear error rather
+than crashing the page.
 
 **Loader:** `loaders/quarantine_loader.py`
 """
@@ -31,7 +36,10 @@ import streamlit as st
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from loaders.quarantine_loader import load_quarantine_entries  # noqa: E402
+from loaders.quarantine_loader import (  # noqa: E402
+    load_quarantine_entries,
+    migrate_quarantine_entry,
+)
 
 st.title("Changelog Quarantine — vocab-rejected entries")
 st.caption(
@@ -77,6 +85,37 @@ st.caption(
     "To clear an entry: fix the upstream vocab typo so the feeder re-emits a "
     "conforming entry, or — if the value is legitimate — add it to "
     "`alpha-engine-config/changelog/vocab.yaml` (additive-only) and the "
-    "vendored copies in the two producers. The S3 object can then be deleted "
-    "out of band."
+    "vendored copies in the two producers. Then Approve & migrate below (or "
+    "delete the quarantine object out of band)."
 )
+
+# --- Approve & migrate --------------------------------------------------
+st.subheader("Approve & migrate to entries/")
+st.caption(
+    "Moves a quarantined entry (unmodified) to `changelog/entries/` and "
+    "removes the quarantine copy — use once the vocab value has been added "
+    "to `vocab.yaml` (schema-lag case), not for genuine typos (fix "
+    "upstream instead). Requires the dashboard role's S3 write grant "
+    "(config#868); until an operator applies it live, this will show a "
+    "clear error rather than crash the page."
+)
+for _, row in df.iterrows():
+    day = row["day"].isoformat() if pd.notna(row["day"]) else None
+    event_id = row["event_id"]
+    label = f"{row['ts_utc']} · {row['subsystem']} · {event_id}"
+    btn_col, msg_col = st.columns([1, 3])
+    with btn_col:
+        clicked = st.button(
+            "Approve & migrate",
+            key=f"migrate_{event_id}",
+            disabled=not day or not event_id,
+        )
+    if clicked:
+        ok, msg = migrate_quarantine_entry(day, event_id)
+        if ok:
+            st.success(f"{label} — {msg}")
+            load_quarantine_entries.clear()
+            st.rerun()
+        else:
+            with msg_col:
+                st.error(f"{label} — {msg}")
