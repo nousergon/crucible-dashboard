@@ -247,3 +247,41 @@ class TestFeedbackBuilders:
         assert by["executor_params"]["state"] == "LIVE"
         assert by["scoring_weights"]["state"] == "NEVER WRITTEN"
         assert by["scoring_weights"]["last_written"] == vm.ABSENT
+
+
+class TestAudienceSplit:
+    """Plan §9.2 (config#1973): ops tiles never reach the prosumer surface."""
+
+    def test_tile_partition_is_total_and_disjoint(self):
+        assert set(vm.EXPERIMENT_TILES) & set(vm.OPS_TILES) == set()
+        # The union must cover the card's registered tiles (9, incl. the
+        # no-Tile-8 numbering) so a NEW tile can't silently leak to /dash
+        # unclassified.
+        assert set(vm.EXPERIMENT_TILES) | set(vm.OPS_TILES) == {
+            "portfolio_outcome", "predictor", "research", "executor",
+            "backtester", "substrate", "agent", "behavioral", "director_quality",
+        }
+
+    def test_performance_is_never_a_grade_on_the_prosumer_surface(self):
+        assert "portfolio_outcome" not in vm.EXPERIMENT_TILES
+
+    def test_verdicts_scoped_and_reasoned(self):
+        card = {"tiles": {
+            "research": {"status": "RED", "components": [
+                {"name": "scanner", "criticality": "critical", "status": "RED",
+                 "status_reason": "scanner IC negative at n=24 weeks"},
+                {"name": "x", "criticality": "supporting", "status": "GREEN"},
+            ]},
+            "substrate": {"status": "WATCH", "components": []},  # ops — excluded
+        }}
+        rows = vm.experiment_tile_verdicts(card)
+        assert [r["tile"] for r in rows] == ["research"]
+        assert rows[0]["reason"] == "scanner IC negative at n=24 weeks"
+        assert rows[0]["graded"] == 2 and rows[0]["total"] == 2
+
+    def test_verdict_reason_defaults_when_healthy(self):
+        card = {"tiles": {"predictor": {"status": "GREEN", "components": [
+            {"name": "ic", "criticality": "critical", "status": "GREEN"},
+        ]}}}
+        rows = vm.experiment_tile_verdicts(card)
+        assert rows[0]["reason"] == "all graded components within bands"

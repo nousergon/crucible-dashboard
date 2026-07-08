@@ -28,15 +28,15 @@ if not card:
     st.info("No Report Card published yet — the evaluator writes `evaluator/{date}/report_card.json` each Saturday.")
     st.stop()
 
-labels = vm.tile_labels(card)
+labels = [(k, lbl) for k, lbl in vm.tile_labels(card) if k in vm.EXPERIMENT_TILES or k == "portfolio_outcome"]
 if not labels:
-    st.warning("Report card carries no tiles — unexpected; check the grading Lambda output.")
+    st.warning("Report card carries no experiment tiles — unexpected; check the grading Lambda output.")
     st.stop()
 
 label_by_key = dict(labels)
 tile_key = st.selectbox(
     "Tile", [k for k, _ in labels], format_func=lambda k: label_by_key[k],
-    help="One tile per graded module; the Overview page shows the roll-up.",
+    help="Grader verdicts on this experiment's components. System-operations tiles (substrate, agent infrastructure, grader self-checks) are internal and live on the operator console.",
 )
 
 rows = vm.metric_rows(card, tile_key)
