@@ -39,13 +39,23 @@ def page_mod(monkeypatch):
     monkeypatch.setitem(sys.modules, "streamlit", mock_st)
 
     # tests/test_db_loader.py permanently replaces sys.modules["loaders.s3_loader"]
-    # with a bare MagicMock() (no restoration) — force a fresh real import if a
-    # sibling test module left that behind, mirroring the same guard in
-    # tests/test_regime_eval_loaders.py's `loader` fixture.
+    # with a bare MagicMock() (no restoration) — drop it and reimport-in-place
+    # (del + import + reload, not a bare `from ... import`) to get the real
+    # module back, mirroring tests/test_regime_substrate_loader.py's `loader`
+    # fixture and tests/test_process_archive.py's — the repo-wide convention.
+    # A plain post-del `from loaders import s3_loader` creates a *new* module
+    # object instead of reusing/reloading the existing one, which was
+    # observed to corrupt pytest's fixture-teardown bookkeeping under full-
+    # suite runs on CI's Linux/py3.12 image (reproduced via Docker; not
+    # reproducible on macOS or in single-file runs — a `assert not
+    # self._finalizers` cascade in _pytest/fixtures.py).
+    import importlib as _importlib
     for _mod_name in ("loaders.s3_loader", "loaders"):
         _cached = sys.modules.get(_mod_name)
         if _cached is not None and isinstance(_cached, MagicMock):
             del sys.modules[_mod_name]
+    import loaders.s3_loader as s3_loader
+    _importlib.reload(s3_loader)
 
     # Minimal valid heartbeat + check_results + history so the module execs
     # all the way through without network calls or an early st.stop() (which
@@ -53,7 +63,6 @@ def page_mod(monkeypatch):
     # AttributeErrors on None). Patched via monkeypatch (auto-restored after
     # the test) rather than a permanent module-attribute overwrite — these
     # are shared s3_loader internals other tests' loader calls depend on.
-    from loaders import s3_loader
 
     _heartbeat = {"last_run": "2026-07-09T12:00:00Z", "counts": {}, "alerts_enabled": True}
     _check_results = {
@@ -89,14 +98,6 @@ def page_mod(monkeypatch):
 
     monkeypatch.setattr(s3_loader, "_fetch_s3_json", _fake_fetch)
     monkeypatch.setattr(s3_loader, "_research_bucket", lambda: "test-bucket")
-    import sys as _sys_dbg
-    _other = _sys_dbg.modules.get("loaders.s3_loader")
-    print("DEBUG s3_loader file:", getattr(s3_loader, "__file__", None), file=_sys_dbg.stderr)
-    print("DEBUG sys.modules loaders.s3_loader file:", getattr(_other, "__file__", None), file=_sys_dbg.stderr)
-    print("DEBUG sys.modules loaders file:", getattr(_sys_dbg.modules.get("loaders"), "__file__", None), file=_sys_dbg.stderr)
-    print("DEBUG loaders pkg (from import) file:", getattr(_sys_dbg.modules.get("loaders"), "__path__", None), file=_sys_dbg.stderr)
-    print("DEBUG sys.path count:", len(_sys_dbg.path), "first 5:", _sys_dbg.path[:5], file=_sys_dbg.stderr)
-    print("DEBUG same:", s3_loader is _other, "fetch is fake:", s3_loader._fetch_s3_json is _fake_fetch, file=_sys_dbg.stderr)
 
     from loaders import observation_registry_loader as orl
     monkeypatch.setattr(orl, "load_observation_registry", lambda: None)
@@ -104,8 +105,6 @@ def page_mod(monkeypatch):
     spec = importlib.util.spec_from_file_location("_artifact_freshness_under_test", PAGE)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    import sys as _sys_dbg2
-    print("DEBUG page mod._fetch_s3_json is fake:", mod._fetch_s3_json is _fake_fetch, "page mod._research_bucket():", mod._research_bucket(), file=_sys_dbg2.stderr)
     return mod
 
 
