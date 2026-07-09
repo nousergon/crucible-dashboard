@@ -14,8 +14,11 @@ the laptop; run-scoped ``source='groom'`` from the GHA groom; run-scoped
 
 Anthropic publishes **no exact Max 20x weekly limit** (it's demand-variable; the
 in-app ``/usage`` % is the only ground truth). So the "% of ceiling" gauge below
-uses an empirically-calibrated constant — adjust ``WEEKLY_WET_CEILING`` once you
-see a real throttle, cross-referencing ``/usage``.
+uses an empirically-calibrated constant, read from the SSoT
+``config/usage_pacing.json`` (config#2043) — recalibrate via
+alpha-engine-config's ``scripts/set_usage_pacing_config.py``, cross-referencing
+``/usage``, once you see a real throttle. Falls back to a hardcoded constant
+below if that S3 object is unavailable.
 """
 from __future__ import annotations
 
@@ -31,29 +34,30 @@ import plotly.express as px
 import streamlit as st
 from krepis.usage_pacing import reset_window
 
-from loaders.s3_loader import load_claude_code_usage
+from loaders.s3_loader import load_claude_code_usage, load_usage_pacing_config
 
-# Empirically calibrated against /usage (all-models) every few days:
-#   ceiling = reset_aligned_week_wet / usage_fraction
-# 2026-07-08: ~708M WET @ /usage 83% -> 850M (console was 105% @ 674M anchor).
-# 2026-07-06: 175.2M WET @ /usage 26% -> 674M (was 1.14B from 2026-06-28 anchor).
-# WET is our price-independent proxy, NOT Anthropic's actual meter — the ceiling
-# is a scale factor so the console % tracks /usage, not a published limit.
-WEEKLY_WET_CEILING = 850_000_000
-
-# Anthropic's Max weekly limit resets every 7 days. The gauge MUST measure WET
-# over the same reset-aligned window the limit uses — a trailing-7d window would
-# read ~78% moments after a reset drops /usage to ~0%, giving false headroom
-# (the number #1348's dynamic allocation depends on). Anchor = one observed reset
-# instant from /usage (2026-06-28 8:59pm America/Los_Angeles); the current window
-# is [most recent reset <= now, next reset). Buckets are PT, so we work in PT.
-# If Anthropic ever shifts the reset cadence, update this anchor from /usage.
-# Window math itself is the shared krepis.usage_pacing.reset_window primitive
-# (config#1351 / config#1722) — also consumed by alpha-engine-config's
-# scripts/groom_budget.py, so the two stay bit-for-bit in sync.
+# SSoT (config#2043): s3://alpha-engine-research/config/usage_pacing.json,
+# written by alpha-engine-config's scripts/set_usage_pacing_config.py and also
+# read by that repo's groom_budget.py + the alpha-engine-data usage-pace-alert
+# Lambda, so all three consumers stay bit-for-bit in sync. The constants below
+# are FALLBACK ONLY (used iff the S3 object is missing/unparseable) — this
+# replaces what used to be an independently hand-maintained copy here, which
+# had drifted stale (674M) against groom_budget.py's recalibrated 850M before
+# the SSoT existed.
+_FALLBACK_WEEKLY_WET_CEILING = 850_000_000
 _PT = ZoneInfo("America/Los_Angeles")
-WEEKLY_RESET_ANCHOR = datetime(2026, 6, 28, 20, 59)   # PT, naive
+_FALLBACK_WEEKLY_RESET_ANCHOR = datetime(2026, 7, 12, 21, 0)   # PT, naive — Sunday 9pm PT
 WEEKLY_PERIOD = timedelta(days=7)
+
+_pacing_cfg = load_usage_pacing_config()
+if _pacing_cfg:
+    WEEKLY_WET_CEILING = float(_pacing_cfg["weekly_wet_ceiling"])
+    WEEKLY_RESET_ANCHOR = datetime.fromisoformat(_pacing_cfg["weekly_reset_anchor_pt"])
+    _ceiling_source = f"SSoT, calibrated {_pacing_cfg.get('calibrated_date', '?')}"
+else:
+    WEEKLY_WET_CEILING = _FALLBACK_WEEKLY_WET_CEILING
+    WEEKLY_RESET_ANCHOR = _FALLBACK_WEEKLY_RESET_ANCHOR
+    _ceiling_source = "fallback constant — config/usage_pacing.json unavailable"
 
 
 def _wet_since(df_hour: pd.DataFrame, df_model: pd.DataFrame, start: datetime) -> float:
@@ -120,7 +124,8 @@ ac1.metric("This week's WET (Anthropic only)", f"{ant_week_wet/1e6:,.0f}M",
                 f"Rolling-7d (informational): {roll/1e6:,.0f}M.")
 ac2.metric("% of weekly ceiling", f"{pct*100:,.0f}%",
            help=f"This week's WET (all models) / {WEEKLY_WET_CEILING/1e6:,.0f}M "
-                f"(calibrated 2026-07-08 @ /usage 83% → 850M; re-calibrate every few days).")
+                f"({_ceiling_source}; recalibrate via alpha-engine-config's "
+                "set_usage_pacing_config.py, cross-referencing /usage).")
 ac3.metric("Resets in", f"{hrs_to_reset:,.0f}h",
            help=f"Next weekly reset {next_reset:%Y-%m-%d %H:%M} PT (every 7 days).")
 st.progress(min(pct, 1.0),
