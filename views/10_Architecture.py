@@ -25,8 +25,6 @@ from __future__ import annotations
 
 import os
 import sys
-from functools import lru_cache
-from pathlib import Path
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -47,19 +45,8 @@ st.divider()
 # ---------------------------------------------------------------------------
 # Mermaid render helper — load once, reuse across diagrams
 # ---------------------------------------------------------------------------
-#
-# Vendored locally (I1984 item 6) instead of loaded from the jsdelivr CDN —
-# a CDN fetch inside the components.html() iframe breaks offline/strict-CSP
-# environments. assets/mermaid-10.9.6.min.js is the UMD single-file build
-# (exposes window.mermaid, no further dynamic imports) resolved from the
-# same "mermaid@10" pin the CDN URL used to request (x-jsd-version at the
-# time of vendoring: 10.9.6) — not a speculative version bump.
-_MERMAID_ASSET_PATH = Path(__file__).parent.parent / "assets" / "mermaid-10.9.6.min.js"
 
-
-@lru_cache(maxsize=1)
-def _mermaid_js() -> str:
-    return _MERMAID_ASSET_PATH.read_text()
+_MERMAID_CDN = "https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs"
 
 
 def render_mermaid(diagram: str, height: int = 500) -> None:
@@ -68,10 +55,8 @@ def render_mermaid(diagram: str, height: int = 500) -> None:
         <div class="mermaid" style="background:#000; color:#eee; padding:16px;">
 {diagram}
         </div>
-        <script>
-{_mermaid_js()}
-        </script>
-        <script>
+        <script type="module">
+          import mermaid from "{_MERMAID_CDN}";
           mermaid.initialize({{
             startOnLoad: true,
             theme: "dark",
