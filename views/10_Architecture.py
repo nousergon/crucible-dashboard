@@ -1,19 +1,24 @@
 """
 Alpha Engine — Architecture (private console)
 
-Bird's-eye walk through the system: thesis, the three orchestrated
-pipelines, per-module roles, and S3 data contracts. Designed as the
-single page an interviewer can watch over screenshare to understand
-what this is in 10 minutes.
-
-Merges Workstream 2.2 (architecture diagrams) and 2.4 (how-it-works
-narrative) of the presentation revamp plan into one surface — fewer
-clicks during a demo, single screenshare destination.
+Bird's-eye walk through the system: the three orchestrated pipelines
+(as mermaid diagrams) and per-module role cards. The full narrative
+(thesis, S3 data-contract details, phase trajectory) lives in
+OVERVIEW.md / nousergon-docs so it doesn't drift out of sync with this
+page — see the pointer at the bottom.
 
 Lives on console.nousergon.ai (Cloudflare Access-gated). Selected
 sections may promote to the public site after screenshare validation;
 for now it stays private so it can speak in module-specific detail
 without disclosure-boundary concerns.
+
+Note (config#1989 item 4, Brian-ruled 2026-07-08 Option A): this page
+previously carried hand-kept prose (module counts, phase status, S3
+contract cadence table) that drifted from reality — e.g. it claimed
+"six modules" when the system has seven (Report_Card.py's Portfolio
+Outcome + six component-module grade). That prose was deleted in favor
+of the diagrams + cards below, which are cheaper to keep accurate, plus
+a pointer to the maintained narrative doc.
 """
 
 from __future__ import annotations
@@ -77,33 +82,12 @@ def render_mermaid(diagram: str, height: int = 500) -> None:
 # ---------------------------------------------------------------------------
 
 st.markdown("### Architecture")
-st.markdown(
-    """
-    Nous Ergon is a multi-agent autonomous trading system that researches
-    stocks, predicts short-horizon market-relative alpha, executes trades,
-    and tunes its own parameters from realized outcomes. Equities trading
-    is the substrate — chosen because decisions, metrics, and outcomes are
-    unambiguous and continuously verifiable, which makes the agentic
-    pattern observable.
-
-    **The artifact on display is the agentic engineering pattern.** Six
-    modules communicate exclusively through S3 contracts; three Step
-    Function pipelines orchestrate the weekly research/training cycle,
-    the daily trading loop, and the post-market reconciliation. Every
-    signal, prediction, and fill is instrumented and traceable from
-    research to P&L.
-    """
-)
-
-st.markdown(
-    """
-    | Phase | Focus | Status |
-    |---|---|---|
-    | Phase 1 | Build the system end-to-end | ✅ Complete |
-    | Phase 2 | Reliability + measurement buildout | 🟡 **Current** |
-    | Phase 3 | Parameter tuning toward sustained alpha | ⏳ Next |
-    | Phase 4 | Live capital | ⏳ Gated on Phase 3 sustained outperformance |
-    """
+st.caption(
+    "For the full narrative — thesis, phase trajectory, S3 data-contract "
+    "details — see the [system overview](https://github.com/nousergon/nousergon-docs#readme) "
+    "in nousergon-docs (code index: `OVERVIEW.md` in this repo). This page "
+    "stays intentionally light: two pipeline diagrams + per-module role "
+    "cards, kept accurate by construction rather than hand-kept prose."
 )
 
 st.divider()
@@ -114,9 +98,10 @@ st.divider()
 
 st.markdown("## System overview")
 st.caption(
-    "Six modules, three orchestrated pipelines, one shared S3 bucket. "
-    "Modules never call each other directly — every inter-module "
-    "communication flows through versioned S3 contracts."
+    "Three orchestrated pipelines, one shared S3 bucket. Modules never "
+    "call each other directly — every inter-module communication flows "
+    "through versioned S3 contracts. See nousergon-docs for the full "
+    "module list and S3 contract table."
 )
 
 render_mermaid(f"""
@@ -323,48 +308,25 @@ _module_card(
 st.divider()
 
 # ---------------------------------------------------------------------------
-# S3 data contracts
+# Footer — pointer to the maintained narrative doc
 # ---------------------------------------------------------------------------
-
-st.markdown("## S3 data contracts")
-st.caption(
-    "Modules communicate exclusively through S3. Path/schema changes "
-    "follow the contract-safety rules in `~/Development/CLAUDE.md`: "
-    "dual-write old + new for ≥1 week on path changes; only ADD fields "
-    "(never rename/remove); coordinate breaking changes consumer-first."
-)
-
-st.markdown("""
-| Path | Producer | Consumer(s) | Cadence |
-|---|---|---|---|
-| `signals/{date}/signals.json` | Research | Predictor + Executor | Weekly (Sat) |
-| `predictor/predictions/{date}.json` | Predictor inference | Executor | Daily (weekday) |
-| `predictor/weights/meta/` | Predictor training | Predictor inference | Weekly (Sat) |
-| `predictor/price_cache_slim/*.parquet` | Data Platform | Predictor inference | Weekly |
-| `predictor/daily_closes/{date}.parquet` | Data Platform (Morning Enrich) | Predictor inference | Daily (weekday) |
-| `trades/trades_full.csv` | Executor (trade logger) | Dashboard + Backtester | Continuous |
-| `trades/eod_pnl.csv` | Executor (EOD reconcile) | Dashboard + Backtester | Daily |
-| `backtest/{date}/grading.json` | Backtester evaluator | Dashboard | Weekly (Sat) |
-| `config/scoring_weights.json` | Backtester optimizer | Research | Weekly (Sat) |
-| `config/executor_params.json` | Backtester optimizer | Executor | Weekly (Sat) |
-| `config/predictor_params.json` | Backtester optimizer | Predictor | Weekly (Sat) |
-| `archive/universe/{TICKER}/` | Research | Research (memory) + Dashboard | Per signal |
-| `rag/manifest/{date}.json` | Data Platform (RAG ingest) | Dashboard | Weekly (Sat) |
-| `uptime/{date}.json` | Executor (uptime tracker) | Dashboard | Daily |
-""")
-
-st.divider()
-
-# ---------------------------------------------------------------------------
-# Footer
-# ---------------------------------------------------------------------------
+#
+# The S3 data-contract table and thesis/phase prose that used to live here
+# were hand-kept and drifted from reality (config#1989 item 4) — e.g. listing
+# config/scoring_weights.json and config/predictor_params.json as live
+# "Weekly (Sat)" contracts when neither has ever been written (config#1841).
+# Point to the maintained doc instead of re-deriving a second copy here.
 
 st.markdown(
     """
-    Deeper material: each module's [public README](https://github.com/nousergon)
-    plus the [system overview](https://github.com/nousergon/nousergon-docs#readme)
-    in alpha-engine-docs. Per-module trade-offs, failure modes, and decision logs
-    live in the private interview kit.
+    **For the full architecture narrative** — thesis, phase trajectory, and
+    the current S3 data-contract table — see the
+    [system overview](https://github.com/nousergon/nousergon-docs#readme)
+    in nousergon-docs. `OVERVIEW.md` (this repo, alongside `app.py`) is the
+    companion code index — entry points, loaders, and this dashboard's own
+    S3 reads. Each module's public README has further per-module detail.
+    Per-module trade-offs, failure modes, and decision logs live in the
+    private interview kit.
     """
 )
 
