@@ -35,6 +35,7 @@ def page_mod(monkeypatch):
     ]
     mock_st.multiselect.side_effect = lambda label, options, default=None, **kw: default
     mock_st.session_state = {}
+    mock_st.stop = lambda: sys.exit("st.stop() called during page exec (expected in error paths)")
     monkeypatch.setitem(sys.modules, "streamlit", mock_st)
 
     # tests/test_db_loader.py permanently replaces sys.modules["loaders.s3_loader"]
