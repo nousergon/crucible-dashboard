@@ -1,12 +1,14 @@
-"""Guards for the Architecture page slim-down (alpha-engine-config#1989 item 4).
+"""Guards for the Architecture page slim-down (config#1989 item 4) + mermaid
+vendoring (config#1984 item 6).
 
 Brian ruled (Decision Queue, 2026-07-08) Option A: keep the two mermaid
 diagrams + module cards, delete the hand-kept prose narrative that had
 drifted (it claimed "six modules" when the system has seven), and add a
-pointer to the maintained narrative doc instead. Source-text assertions in
-the repo's usual style (streamlit is not imported/run; see
-test_console_ia_phase3.py / test_saturday_sf_watch_page.py for the same
-pattern).
+pointer to the maintained narrative doc instead. Additionally, vendor
+mermaid.js locally (config#1984 item 6) instead of loading from CDN.
+Source-text assertions in the repo's usual style (streamlit is not
+imported/run; see test_console_ia_phase3.py / test_saturday_sf_watch_page.py
+for the same pattern).
 """
 
 from __future__ import annotations
@@ -58,9 +60,13 @@ class TestKeptContent:
         for module in ("Research", "Predictor", "Executor", "Backtester", "Data Platform", "Dashboard"):
             assert f'"{module}"' in ARCH_SRC
 
-    def test_cdn_mermaid_load_untouched(self):
-        # Vendoring mermaid.js off the CDN is I1984 item 6 — out of scope here.
-        assert "cdn.jsdelivr.net/npm/mermaid" in ARCH_SRC
+    def test_mermaid_is_now_vendored(self):
+        # Vendoring mermaid.js off the CDN (I1984 item 6) was initially out of
+        # scope for the slim-down, but is now included in this PR. Verify the
+        # CDN reference has been replaced with the vendored asset load.
+        assert "cdn.jsdelivr.net/npm/mermaid" not in ARCH_SRC
+        assert "mermaid-10.9.6.min.js" in ARCH_SRC
+        assert "_mermaid_js()" in ARCH_SRC
 
 
 class TestOverviewPointerAdded:
