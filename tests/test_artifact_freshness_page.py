@@ -90,7 +90,13 @@ def page_mod(monkeypatch):
     monkeypatch.setattr(s3_loader, "_fetch_s3_json", _fake_fetch)
     monkeypatch.setattr(s3_loader, "_research_bucket", lambda: "test-bucket")
     import sys as _sys_dbg
-    print("DEBUG s3_loader id:", id(s3_loader), "sys.modules id:", id(_sys_dbg.modules.get("loaders.s3_loader")), "same:", s3_loader is _sys_dbg.modules.get("loaders.s3_loader"), "fetch is fake:", s3_loader._fetch_s3_json is _fake_fetch, file=_sys_dbg.stderr)
+    _other = _sys_dbg.modules.get("loaders.s3_loader")
+    print("DEBUG s3_loader file:", getattr(s3_loader, "__file__", None), file=_sys_dbg.stderr)
+    print("DEBUG sys.modules loaders.s3_loader file:", getattr(_other, "__file__", None), file=_sys_dbg.stderr)
+    print("DEBUG sys.modules loaders file:", getattr(_sys_dbg.modules.get("loaders"), "__file__", None), file=_sys_dbg.stderr)
+    print("DEBUG loaders pkg (from import) file:", getattr(_sys_dbg.modules.get("loaders"), "__path__", None), file=_sys_dbg.stderr)
+    print("DEBUG sys.path count:", len(_sys_dbg.path), "first 5:", _sys_dbg.path[:5], file=_sys_dbg.stderr)
+    print("DEBUG same:", s3_loader is _other, "fetch is fake:", s3_loader._fetch_s3_json is _fake_fetch, file=_sys_dbg.stderr)
 
     from loaders import observation_registry_loader as orl
     monkeypatch.setattr(orl, "load_observation_registry", lambda: None)
