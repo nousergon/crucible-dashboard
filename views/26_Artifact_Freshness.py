@@ -27,16 +27,31 @@ from __future__ import annotations
 
 import os
 import sys
+from datetime import date as _date
 from datetime import datetime, timezone
 
 import pandas as pd
 import streamlit as st
+from krepis.trading_calendar import is_trading_day
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from loaders.s3_loader import _fetch_s3_json, _research_bucket
 from loaders.observation_registry_loader import load_observation_registry
 
+
+def _is_non_trading_day(date_str: str | None) -> bool:
+    """True iff ``date_str`` (an ISO ``YYYY-MM-DD`` string) is a weekend or
+    NYSE holiday. Returns False (i.e. "treat as a trading day") on any
+    unparseable input so a malformed date still falls through to the
+    normal ✅/❌ presence check rather than being silently hidden."""
+    if not date_str:
+        return False
+    try:
+        parsed = _date.fromisoformat(str(date_str)[:10])
+    except ValueError:
+        return False
+    return not is_trading_day(parsed)
 
 
 HEARTBEAT_KEY = "_freshness_monitor/heartbeat.json"
@@ -317,6 +332,8 @@ def _format_history_summary(artifact_id: str) -> str:
         h = entry.get("history") or []
         if h and h[0].get("present"):
             return "✅ exists (latest-pointer)"
+        if h and _is_non_trading_day(h[0].get("date")):
+            return "➖ non-trading day (latest-pointer)"
         return "❌ absent (latest-pointer)"
     gap_count = entry.get("gap_count")
     lookback = entry.get("lookback_cycles", 0)
@@ -394,9 +411,14 @@ st.divider()
 # something other than ✅ continuous — i.e., the artifacts that need
 # attention. Latest-pointer artifacts surface their current state only.
 #
-# Calendar-naive — NYSE holidays may render as false-positive ❌ absent
-# cells; operator interprets in context. Calendar-aware probe is a
-# future enhancement.
+# Calendar-aware (I1984 item 7): NYSE weekends/holidays are marked
+# "➖ non-trading day" instead of ❌ absent via
+# krepis.trading_calendar.is_trading_day — a correct absence is no longer
+# flagged as a false-positive freshness failure. Note the underlying
+# gap_count / lookback_cycles fields on non-latest-pointer artifacts are
+# still produced by the Lambda's own historical-mode probe and are not
+# recomputed here; this page-level display fix only affects the ✅/❌/➖
+# badges rendered from ``present``, not the upstream gap-count math.
 
 
 _filtered_history_artifacts = {
@@ -446,7 +468,12 @@ elif _filtered_history_artifacts:
         if entry.get("is_latest_pointer"):
             h = entry.get("history") or []
             present = h[0].get("present") if h else None
-            badge = "✅ exists" if present else "❌ absent"
+            if present:
+                badge = "✅ exists"
+            elif h and _is_non_trading_day(h[0].get("date")):
+                badge = "➖ non-trading day"
+            else:
+                badge = "❌ absent"
             label = f"{aid}  ({cadence}, latest-pointer, {badge})"
         else:
             gap = entry.get("gap_count", 0)
@@ -460,9 +487,16 @@ elif _filtered_history_artifacts:
         with st.expander(label, expanded=(idx < 3)):
             rows = []
             for c in entry.get("history") or []:
+                c_date = c.get("date")
+                if c.get("present"):
+                    presence = "✅"
+                elif _is_non_trading_day(c_date):
+                    presence = "➖ non-trading day"
+                else:
+                    presence = "❌"
                 rows.append({
-                    "date": c.get("date"),
-                    "present": "✅" if c.get("present") else "❌",
+                    "date": c_date,
+                    "present": presence,
                     "size": c.get("size", ""),
                     "last_modified": c.get("last_modified", ""),
                     "error_code": c.get("error_code", ""),

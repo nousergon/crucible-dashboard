@@ -132,13 +132,15 @@ _T2_ARTIFACT = {
     "run_id": "2605170230",
     "schema_version": 1,
     "eval_tier": "T2_downstream_stratified_sortino",
-    "spread_10d": {
-        "horizon_days": 10,
+    # config#1456 / crucible-backtester#428 retired the 10d/30d eval
+    # horizons; 21d is canonical primary, 5d is diagnostic (I1984 item 2a).
+    "spread_21d": {
+        "horizon_days": 21,
         "spread_bull_minus_bear_sortino": 0.42,
         "interpretation": "regime_signal_useful",
     },
-    "spread_30d": {
-        "horizon_days": 30,
+    "spread_5d": {
+        "horizon_days": 5,
         "spread_bull_minus_bear_sortino": 0.21,
         "interpretation": "regime_signal_neutral",
     },
