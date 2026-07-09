@@ -2094,6 +2094,18 @@ def load_claude_code_usage(n_days: int = 35):
     return pd.DataFrame(model_rows), pd.DataFrame(hour_rows)
 
 
+@st.cache_data(ttl=900)
+def load_usage_pacing_config() -> dict | None:
+    """SSoT for the weekly WET ceiling + reset anchor (config#2043) —
+    ``config/usage_pacing.json``, written by alpha-engine-config's
+    ``scripts/set_usage_pacing_config.py``. Also read by that repo's
+    ``groom_budget.py`` and the ``alpha-engine-data`` usage-pace-alert Lambda,
+    so all three consumers stay bit-for-bit in sync. None if the object
+    doesn't exist yet or fails to parse — callers fall back to their own
+    last-known constants."""
+    return download_s3_json(_research_bucket(), "config/usage_pacing.json")
+
+
 # ---------------------------------------------------------------------------
 # Research Think Tank (data++) — config#1579
 # ---------------------------------------------------------------------------
