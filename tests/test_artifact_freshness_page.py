@@ -89,6 +89,8 @@ def page_mod(monkeypatch):
 
     monkeypatch.setattr(s3_loader, "_fetch_s3_json", _fake_fetch)
     monkeypatch.setattr(s3_loader, "_research_bucket", lambda: "test-bucket")
+    import sys as _sys_dbg
+    print("DEBUG s3_loader id:", id(s3_loader), "sys.modules id:", id(_sys_dbg.modules.get("loaders.s3_loader")), "same:", s3_loader is _sys_dbg.modules.get("loaders.s3_loader"), "fetch is fake:", s3_loader._fetch_s3_json is _fake_fetch, file=_sys_dbg.stderr)
 
     from loaders import observation_registry_loader as orl
     monkeypatch.setattr(orl, "load_observation_registry", lambda: None)
@@ -96,6 +98,8 @@ def page_mod(monkeypatch):
     spec = importlib.util.spec_from_file_location("_artifact_freshness_under_test", PAGE)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
+    import sys as _sys_dbg2
+    print("DEBUG page mod._fetch_s3_json is fake:", mod._fetch_s3_json is _fake_fetch, "page mod._research_bucket():", mod._research_bucket(), file=_sys_dbg2.stderr)
     return mod
 
 
