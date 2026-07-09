@@ -166,19 +166,18 @@ def _conviction_history_chart(score_df: pd.DataFrame, ticker: str) -> go.Figure:
 
 
 def _predictor_probability_chart(pred: dict, ticker: str) -> go.Figure:
+    # predictor#343 (2026-07-06) retired the FLAT direction — live
+    # predictions are UP/DOWN only (direction = sign(alpha)). p_flat may
+    # still be present on pre-2026-07-06 archived prediction JSON; it is
+    # intentionally not read/plotted here so old artifacts don't crash but
+    # also don't headline a retired state.
     p_up = pred.get("p_up", 0) or 0
-    p_flat = pred.get("p_flat", 0) or 0
     p_down = pred.get("p_down", 0) or 0
     fig = go.Figure()
     fig.add_trace(go.Bar(
         x=[p_up], y=[""], orientation="h",
         name="P(UP)", marker_color="#28a745",
         text=[f"P(UP): {p_up:.0%}"], textposition="inside",
-    ))
-    fig.add_trace(go.Bar(
-        x=[p_flat], y=[""], orientation="h",
-        name="P(FLAT)", marker_color="#6c757d",
-        text=[f"P(FLAT): {p_flat:.0%}"], textposition="inside",
     ))
     fig.add_trace(go.Bar(
         x=[p_down], y=[""], orientation="h",
@@ -231,7 +230,13 @@ with st.spinner(f"Loading signals for {selected_date}..."):
     predictions = load_predictions_json(selected_date)
     predictor_params = load_predictor_params()
 
+# config#1841: config/predictor_params.json has never been promoted/written
+# by the backtester's auto-apply — this read always falls back to the
+# constants default today. Label it honestly rather than presenting the
+# fallback as if it were a configured/live override (I1984 item 4a).
+_veto_is_default = "veto_confidence" not in predictor_params
 veto_threshold = predictor_params.get("veto_confidence", _VETO_CONF_DEFAULT)
+_veto_source_label = "default (no promoted override)" if _veto_is_default else "configured"
 
 if not signals_data:
     st.warning(f"No signals available for {selected_date}.")
@@ -327,8 +332,11 @@ st.caption(f"Showing {len(filtered_df)} of {len(sig_df)} signals")
 st.subheader("Signal Table")
 
 if predictions:
+    # predictor#343 (2026-07-06): FLAT retired, direction is now sign(alpha)
+    # (UP/DOWN only). A pre-2026-07-06 archived "FLAT" value falls through
+    # to the "" default below rather than being headlined as a live state.
     filtered_df["Prediction"] = filtered_df["ticker"].map(
-        lambda t: {"UP": "UP ↑", "DOWN": "DOWN ↓", "FLAT": "FLAT →"}.get(
+        lambda t: {"UP": "UP ↑", "DOWN": "DOWN ↓"}.get(
             (predictions.get(t) or {}).get("predicted_direction", ""), ""
         )
     )
@@ -356,7 +364,10 @@ if predictions:
     vetoed_count = enter_signals["Veto"].str.startswith("VETOED").sum() if not enter_signals.empty else 0
     total_enter = len(enter_signals)
     if vetoed_count > 0:
-        st.warning(f"{vetoed_count} of {total_enter} ENTER signals currently vetoed by predictor (threshold: {veto_threshold:.0%})")
+        st.warning(
+            f"{vetoed_count} of {total_enter} ENTER signals currently vetoed by predictor "
+            f"(threshold: {veto_threshold:.0%}, {_veto_source_label})"
+        )
 
 display_cols = [
     c for c in [
@@ -453,7 +464,7 @@ if selected_ticker:
         else:
             st.caption(
                 f"Predictor: {direction or '—'} (confidence {confidence:.0%}) — "
-                f"Modifier skipped (confidence < {veto_threshold:.0%})"
+                f"Modifier skipped (confidence < {veto_threshold:.0%}, {_veto_source_label})"
             )
 
     # --- Full score history from research DB (with sub-scores + signal markers) ---

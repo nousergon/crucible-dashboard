@@ -48,6 +48,16 @@ from loaders.s3_loader import (
     load_regime_substrate_latest,
 )
 from loaders.signal_loader import get_available_signal_dates, load_signals
+from loaders.outcome_store import PRIMARY_HORIZON_DAYS
+
+# config#1456 retired the 10d/30d eval horizons; 21d is now primary and 5d
+# is the diagnostic horizon (nousergon_lib.quant.horizons.DEFAULT_POLICY).
+# T2's producer (crucible-backtester's regime_stratified_sortino_runner,
+# crucible-backtester#428) follows the same rename the rest of the outcome
+# pipeline made — spread_10d/spread_30d became spread_21d/spread_5d.
+from nousergon_lib.quant.horizons import DEFAULT_POLICY as _HORIZON_POLICY
+
+_T2_DIAGNOSTIC_HORIZON_DAYS = _HORIZON_POLICY.diagnostic_horizons[0]
 
 
 
@@ -709,17 +719,17 @@ st.divider()
 # Groups ``score_performance`` by ``market_regime`` (the agent's
 # contemporaneous call at scoring time), computes Sortino + Sharpe +
 # log-alpha + hit-rate per (regime, horizon) stratum. Headline:
-# bull-Sortino minus bear-Sortino at 10d horizon. Positive spread =
+# bull-Sortino minus bear-Sortino at the primary horizon. Positive spread =
 # the regime call enabled better downside-risk-adjusted picks when
 # bull-regime was declared vs when bear-regime was declared.
 
 st.markdown("### T2 — Downstream-stratified Sortino")
 st.caption(
-    "Tier 2 of the regime-v3 three-tier eval framework. Groups picks "
-    "by ``market_regime`` and measures whether the regime call "
-    "translated to better downstream outcomes. Headline = "
-    "bull-Sortino minus bear-Sortino at 10d horizon; positive = "
-    "the regime label is signal-bearing for downstream pick quality."
+    f"Tier 2 of the regime-v3 three-tier eval framework. Groups picks "
+    f"by ``market_regime`` and measures whether the regime call "
+    f"translated to better downstream outcomes. Headline = "
+    f"bull-Sortino minus bear-Sortino at {PRIMARY_HORIZON_DAYS}d horizon; "
+    f"positive = the regime label is signal-bearing for downstream pick quality."
 )
 
 t2_latest = load_regime_stratified_sortino_latest()
@@ -732,58 +742,62 @@ if t2_latest is None:
         "``regime_stratified_sortino`` evaluate.py module."
     )
 else:
-    spread10 = t2_latest.get("spread_10d", {}) or {}
-    spread30 = t2_latest.get("spread_30d", {}) or {}
+    _primary_key = f"spread_{PRIMARY_HORIZON_DAYS}d"
+    _diag_key = f"spread_{_T2_DIAGNOSTIC_HORIZON_DAYS}d"
+    spread_primary = t2_latest.get(_primary_key, {}) or {}
+    spread_diag = t2_latest.get(_diag_key, {}) or {}
 
     t2c1, t2c2, t2c3, t2c4 = st.columns(4)
-    s10 = spread10.get("spread_bull_minus_bear_sortino")
-    s30 = spread30.get("spread_bull_minus_bear_sortino")
-    interp10 = spread10.get("interpretation", "—")
-    interp30 = spread30.get("interpretation", "—")
+    s_primary = spread_primary.get("spread_bull_minus_bear_sortino")
+    s_diag = spread_diag.get("spread_bull_minus_bear_sortino")
+    interp_primary = spread_primary.get("interpretation", "—")
+    interp_diag = spread_diag.get("interpretation", "—")
 
     t2c1.metric(
-        "Spread 10d (bull − bear)",
-        f"{s10:+.2f}" if s10 is not None else "—",
-        delta=interp10,
+        f"Spread {PRIMARY_HORIZON_DAYS}d (bull − bear)",
+        f"{s_primary:+.2f}" if s_primary is not None else "—",
+        delta=interp_primary,
         delta_color="off",
     )
     t2c2.metric(
-        "Spread 30d (bull − bear)",
-        f"{s30:+.2f}" if s30 is not None else "—",
-        delta=interp30,
+        f"Spread {_T2_DIAGNOSTIC_HORIZON_DAYS}d (bull − bear)",
+        f"{s_diag:+.2f}" if s_diag is not None else "—",
+        delta=interp_diag,
         delta_color="off",
     )
     t2c3.metric(
-        "Bull Sortino (10d)",
-        f"{spread10.get('bull_sortino'):.2f}" if spread10.get("bull_sortino") is not None else "—",
-        delta=f"n = {spread10.get('bull_n_picks', 0)}",
+        f"Bull Sortino ({PRIMARY_HORIZON_DAYS}d)",
+        f"{spread_primary.get('bull_sortino'):.2f}" if spread_primary.get("bull_sortino") is not None else "—",
+        delta=f"n = {spread_primary.get('bull_n_picks', 0)}",
         delta_color="off",
     )
     t2c4.metric(
-        "Bear Sortino (10d)",
-        f"{spread10.get('bear_sortino'):.2f}" if spread10.get("bear_sortino") is not None else "—",
-        delta=f"n = {spread10.get('bear_n_picks', 0)}",
+        f"Bear Sortino ({PRIMARY_HORIZON_DAYS}d)",
+        f"{spread_primary.get('bear_sortino'):.2f}" if spread_primary.get("bear_sortino") is not None else "—",
+        delta=f"n = {spread_primary.get('bear_n_picks', 0)}",
         delta_color="off",
     )
 
     # Interpretation banner
-    if interp10 == "regime_signal_useful":
+    if interp_primary == "regime_signal_useful":
         st.success(
-            f"**Regime signal is useful at 10d horizon.** Sortino spread "
-            f"{s10:+.2f} above the actionable threshold."
+            f"**Regime signal is useful at {PRIMARY_HORIZON_DAYS}d horizon.** "
+            f"Sortino spread {s_primary:+.2f} above the actionable threshold."
         )
-    elif interp10 == "regime_signal_inverted":
+    elif interp_primary == "regime_signal_inverted":
         st.warning(
-            f"**Regime signal inverted at 10d horizon.** Sortino spread "
-            f"{s10:+.2f} suggests bear-declared picks outperformed "
-            f"bull-declared — investigate before trusting the call."
+            f"**Regime signal inverted at {PRIMARY_HORIZON_DAYS}d horizon.** "
+            f"Sortino spread {s_primary:+.2f} suggests bear-declared picks "
+            f"outperformed bull-declared — investigate before trusting the call."
         )
-    elif interp10 == "regime_signal_neutral":
+    elif interp_primary == "regime_signal_neutral":
+        _neutral_spread = s_primary if s_primary else 0.0
         st.caption(
-            f"Regime signal neutral at 10d horizon (spread {s10:+.2f if s10 else 0.0} in the no-signal band)."
+            f"Regime signal neutral at {PRIMARY_HORIZON_DAYS}d horizon "
+            f"(spread {_neutral_spread:+.2f} in the no-signal band)."
         )
     else:
-        st.caption(f"10d interpretation: {interp10}")
+        st.caption(f"{PRIMARY_HORIZON_DAYS}d interpretation: {interp_primary}")
 
     # Per-stratum table
     strata = t2_latest.get("strata") or []
@@ -805,24 +819,24 @@ else:
         t2_rows = []
         for entry in t2_history:
             ts = pd.to_datetime(entry.get("trading_day"), errors="coerce")
-            sp10 = (entry.get("spread_10d") or {}).get("spread_bull_minus_bear_sortino")
-            sp30 = (entry.get("spread_30d") or {}).get("spread_bull_minus_bear_sortino")
+            sp_primary = (entry.get(_primary_key) or {}).get("spread_bull_minus_bear_sortino")
+            sp_diag = (entry.get(_diag_key) or {}).get("spread_bull_minus_bear_sortino")
             t2_rows.append({
                 "trading_day": ts,
-                "spread_10d": sp10,
-                "spread_30d": sp30,
+                _primary_key: sp_primary,
+                _diag_key: sp_diag,
             })
         t2_df = pd.DataFrame(t2_rows).dropna(subset=["trading_day"]).sort_values("trading_day")
         if not t2_df.empty:
             fig_t2 = go.Figure()
             fig_t2.add_trace(go.Scatter(
-                x=t2_df["trading_day"], y=t2_df["spread_10d"],
-                mode="lines+markers", name="spread 10d",
+                x=t2_df["trading_day"], y=t2_df[_primary_key],
+                mode="lines+markers", name=f"spread {PRIMARY_HORIZON_DAYS}d",
                 line=dict(color="#1f77b4", width=2),
             ))
             fig_t2.add_trace(go.Scatter(
-                x=t2_df["trading_day"], y=t2_df["spread_30d"],
-                mode="lines+markers", name="spread 30d",
+                x=t2_df["trading_day"], y=t2_df[_diag_key],
+                mode="lines+markers", name=f"spread {_T2_DIAGNOSTIC_HORIZON_DAYS}d",
                 line=dict(color="#ff7f0e", width=2),
             ))
             fig_t2.add_hline(y=0.0, line_dash="solid", line_color="#cccccc")

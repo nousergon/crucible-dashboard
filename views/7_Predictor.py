@@ -384,9 +384,12 @@ else:
         scat = scat[scat["_realized_alpha"].notna() & scat["prediction_confidence"].notna()]
         if not scat.empty:
             scat_fig = go.Figure()
+            # predictor#343 (2026-07-06): FLAT retired, direction is now
+            # sign(alpha) — UP/DOWN only. Any pre-2026-07-06 archived rows
+            # still labeled "FLAT" are simply excluded from this legend
+            # (not headlined as a live state), not dropped from the frame.
             for direction, color in (
                 ("UP", "#16a34a"),
-                ("FLAT", "#94a3b8"),
                 ("DOWN", "#dc2626"),
             ):
                 sub = scat[scat["predicted_direction"] == direction]
@@ -671,7 +674,11 @@ else:
         if not show_all and conf < _VETO_CONF:
             continue
         direction = pred.get("predicted_direction", "—")
-        arrow = {"UP": "↑", "DOWN": "↓", "FLAT": "→"}.get(direction, "")
+        # predictor#343 (2026-07-06): FLAT retired, direction is now
+        # sign(alpha) — UP/DOWN only. A pre-2026-07-06 archived "FLAT"
+        # value falls through to the "" default rather than being
+        # headlined as a live state.
+        arrow = {"UP": "↑", "DOWN": "↓"}.get(direction, "")
         p_up = pred.get("p_up") or 0.0
         p_down = pred.get("p_down") or 0.0
         modifier = (p_up - p_down) * 10.0 * conf if conf >= _VETO_CONF else 0.0
@@ -681,7 +688,6 @@ else:
             "Direction": f"{direction} {arrow}",
             "Confidence": conf,
             "P(UP)": p_up,
-            "P(FLAT)": pred.get("p_flat") or 0.0,
             "P(DOWN)": p_down,
             "Stance": pred.get("stance") or "—",
             "Source": pred.get("stance_source") or "—",
@@ -712,7 +718,7 @@ else:
 
         styled = df.style.apply(_row_color, axis=1)
         styled = styled.map(_source_color, subset=["Source"])
-        for col in ["Confidence", "P(UP)", "P(FLAT)", "P(DOWN)"]:
+        for col in ["Confidence", "P(UP)", "P(DOWN)"]:
             styled = styled.format({col: "{:.0%}"}, na_rep="—")
         st.dataframe(styled, use_container_width=True, hide_index=True)
     else:

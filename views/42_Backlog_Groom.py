@@ -2,8 +2,10 @@
 Backlog Groom — Alpha Engine (private console)
 
 Operator audit surface for the complexity-tier backlog groom (config#1495,
-#1512). Every scheduled groom run (2x/day Sonnet mid/low-tier + 1x/day Opus
-high-tier) writes a per-run artifact to
+#1512). As of the 2026-07-07 move to demand-driven dispatch, groom runs
+fire based on backlog demand rather than a fixed daily cadence (complexity
+tier still routes each run to the appropriate model — Sonnet for low/mid,
+Opus for high). Every run writes a per-run artifact to
 ``s3://alpha-engine-research/groom/{date}/{run_id_or_hhmmss}.json``
 (``groom_driver.py::write_run_artifact``) — this page is its consumer.
 Standalone PR-sweep runs (``groom_run.sh --mode sweep``) write here too as of
