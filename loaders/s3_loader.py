@@ -1530,6 +1530,78 @@ def load_predictor_metrics() -> dict:
     return data if isinstance(data, dict) else {}
 
 
+# ---------------------------------------------------------------------------
+# Flow-Doctor heartbeat (config#646) — the fleet's end-of-run liveness snapshot
+# ---------------------------------------------------------------------------
+# Each producing flow's entrypoint calls flow-doctor's FlowDoctor.emit_heartbeat()
+# at end-of-run, landing its status() snapshot (seen/fired/suppressed decision
+# breakdown + cost) at
+# ``s3://alpha-engine-research/_flow_doctor/heartbeat/{flow}/{date}.json``.
+# The System Health page reads these to answer "alive but quiet" vs "suppressing
+# X per flow" — the observability gap the "make it actually kick in" arc left.
+
+_FLOW_DOCTOR_HEARTBEAT_PREFIX = "_flow_doctor/heartbeat"
+
+
+def list_flow_doctor_heartbeat_flows() -> list[str]:
+    """Return the flow names that have emitted a heartbeat, sorted.
+
+    Lists the immediate ``{flow}`` sub-prefixes under
+    ``_flow_doctor/heartbeat/`` in the research bucket (one per producing
+    flow: predictor / research-alerts / freshness-monitor / daemon /
+    backtester, etc.). Returns [] on any failure.
+    """
+    bucket = _research_bucket()
+    prefix = f"{_FLOW_DOCTOR_HEARTBEAT_PREFIX}/"
+    try:
+        client = get_s3_client()
+        paginator = client.get_paginator("list_objects_v2")
+        flows: set[str] = set()
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix, Delimiter="/"):
+            for cp in page.get("CommonPrefixes", []):
+                p = cp.get("Prefix", "")
+                flow = p[len(prefix):].strip("/")
+                if flow:
+                    flows.add(flow)
+        return sorted(flows)
+    except Exception as e:
+        logger.error("Failed to list flow-doctor heartbeat flows: %s", e)
+        _record_s3_error(bucket, prefix, type(e).__name__, str(e))
+        return []
+
+
+def load_flow_doctor_heartbeat_latest(flow: str) -> dict | None:
+    """Load the most recent daily heartbeat JSON for ``flow``.
+
+    Finds the newest ``_flow_doctor/heartbeat/{flow}/{date}.json`` object and
+    returns its parsed contents (the emit_heartbeat payload:
+    ``{schema_version, ts_utc, flow_name, source, status:{...}}``). Returns None
+    when the flow has no heartbeat yet or on any failure.
+    """
+    bucket = _research_bucket()
+    prefix = f"{_FLOW_DOCTOR_HEARTBEAT_PREFIX}/{flow}/"
+    try:
+        client = get_s3_client()
+        paginator = client.get_paginator("list_objects_v2")
+        dates: list[str] = []
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+            for obj in page.get("Contents", []):
+                stem = obj.get("Key", "")[len(prefix):]
+                if stem.endswith(".json"):
+                    seg = stem[: -len(".json")]
+                    if ISO_DATE_PATTERN.match(seg):
+                        dates.append(seg)
+        if not dates:
+            return None
+        latest = max(dates)
+        data = _fetch_s3_json(bucket, f"{prefix}{latest}.json")
+        return data if isinstance(data, dict) else None
+    except Exception as e:
+        logger.error("Failed to load flow-doctor heartbeat for %s: %s", flow, e)
+        _record_s3_error(bucket, prefix, type(e).__name__, str(e))
+        return None
+
+
 _MODEL_ZOO_LEADERBOARD_PREFIX = "predictor/model_zoo/leaderboard/"
 
 
