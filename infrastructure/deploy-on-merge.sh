@@ -36,6 +36,48 @@ DASH_WEB_URL="http://localhost:3002/dash"
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$LOG"; }
 fail() { log "FAIL $*"; exit 1; }
 
+# paths_changed OLD_SHA NEW_SHA -- path [path...]
+#
+# Returns 0 (true) if `git diff OLD_SHA NEW_SHA -- paths...` shows any real
+# change, and returns 1 (false) only when the diff genuinely has none.
+#
+# This deliberately does NOT use the `git diff ... | grep -q PATTERN`
+# one-liner that every diff-gated block here used to use. That form is
+# unsafe under `set -o pipefail` (which this script sets): GNU grep's `-q`
+# exits as soon as it sees the first match, closing its end of the pipe.
+# `git diff` writes its output to the pipe in ~4KB stdio-buffered chunks
+# (confirmed via strace — NOT one write() per line, and NOT gated on the
+# 64KB pipe capacity), so a diff spanning more than one chunk (e.g. the
+# multi-path §2b-2e diffs, or any multi-file diff whose match falls in an
+# early chunk) can have `git diff` still writing a *later* chunk after grep
+# has already exited and closed the pipe. That write gets SIGPIPE, git diff
+# exits 141, and under `pipefail` the whole pipeline reports 141 — even
+# though grep DID find a real match. `if pipeline; then` then evaluates
+# as false on a truthy diff. This was confirmed by direct reproduction:
+# replaying the exact §2e box-health command 100x under `set -o pipefail`
+# returned non-zero ~99/100 times despite the diff always containing real
+# changes (config#2242).
+#
+# The fix: capture git diff's own output AND exit code first (no pipe to
+# grep at all), so grep never has a chance to race git's writes. A git-diff
+# failure (non-zero exit, e.g. bad revision/object-availability issue) is
+# NOT silently treated as "no change" — it's logged loudly and treated as
+# "assume changed", since re-running an idempotent installer unnecessarily
+# is far cheaper than silently skipping a needed reinstall.
+paths_changed() {
+    local old_sha="$1" new_sha="$2"
+    shift 2
+    local diff_out
+    local diff_rc
+    diff_out=$(sudo -u ec2-user git diff "$old_sha" "$new_sha" -- "$@" 2>&1)
+    diff_rc=$?
+    if [ $diff_rc -ne 0 ]; then
+        log "WARN git diff $old_sha $new_sha -- $* failed (exit $diff_rc) — assuming changed: $diff_out"
+        return 0
+    fi
+    printf '%s\n' "$diff_out" | grep -q '^[+-]'
+}
+
 log "=== deploy-on-merge started — target=$TARGET_SHA ==="
 
 cd "$REPO_DIR" || fail "cd $REPO_DIR"
@@ -46,7 +88,7 @@ log "$(sudo -u ec2-user git log --oneline -1)"
 # ── 1. Refresh deps (as the owning user) ────────────────────────────────────
 if [ -f ".venv/bin/pip" ] && [ -f "requirements.txt" ]; then
     # requirements.txt diff detection — pip install only on actual change.
-    if sudo -u ec2-user git diff "${CURRENT_SHA}~1" "$CURRENT_SHA" -- requirements.txt 2>/dev/null | grep -q '^[+-]'; then
+    if paths_changed "${CURRENT_SHA}~1" "$CURRENT_SHA" requirements.txt; then
         log "requirements.txt changed — pip install"
         sudo -u ec2-user .venv/bin/pip install --quiet -r requirements.txt 2>>"$LOG" \
             || fail "pip install requirements.txt"
@@ -72,7 +114,7 @@ fi
 NGINX_CONF_REPO="$REPO_DIR/infrastructure/nginx.conf"
 NGINX_CONF_LIVE="/etc/nginx/conf.d/nousergon.conf"
 if [ -f "$NGINX_CONF_REPO" ]; then
-    if sudo -u ec2-user git diff "${CURRENT_SHA}~1" "$CURRENT_SHA" -- infrastructure/nginx.conf 2>/dev/null | grep -q '^[+-]'; then
+    if paths_changed "${CURRENT_SHA}~1" "$CURRENT_SHA" infrastructure/nginx.conf; then
         log "infrastructure/nginx.conf changed — staging + validating"
         # Stage to a tmp file, validate via nginx -t, then atomic-rename
         # into place. nginx -t against the staged file catches syntax
@@ -112,7 +154,7 @@ fi
 # re-run the idempotent installer ONLY when the wrapper, its installer, or its
 # units changed in this merge.
 WATCHDOG_PATHS="infrastructure/morning-signal-watchdog.sh infrastructure/install-morning-signal-watchdog.sh infrastructure/systemd/morning-signal-watchdog.service infrastructure/systemd/morning-signal-watchdog.timer"
-if sudo -u ec2-user git diff "${CURRENT_SHA}~1" "$CURRENT_SHA" -- $WATCHDOG_PATHS 2>/dev/null | grep -q '^[+-]'; then
+if paths_changed "${CURRENT_SHA}~1" "$CURRENT_SHA" $WATCHDOG_PATHS; then
     log "morning-signal watchdog wrapper/units changed — re-installing"
     bash "$REPO_DIR/infrastructure/install-morning-signal-watchdog.sh" >>"$LOG" 2>&1 \
         || fail "install-morning-signal-watchdog.sh"
@@ -127,7 +169,7 @@ fi
 # (e.g. the Requires=->Wants= daily-news fix, morning-signal#78) actually
 # reaches the box instead of silently drifting.
 MS_UNIT_PATHS="infrastructure/systemd/morning-signal.service infrastructure/systemd/morning-signal.timer infrastructure/systemd/morning-signal.service.d infrastructure/install-morning-signal.sh infrastructure/morning-signal-recover.sh"
-if sudo -u ec2-user git diff "${CURRENT_SHA}~1" "$CURRENT_SHA" -- $MS_UNIT_PATHS 2>/dev/null | grep -q '^[+-]'; then
+if paths_changed "${CURRENT_SHA}~1" "$CURRENT_SHA" $MS_UNIT_PATHS; then
     log "morning-signal core units/recovery wrapper changed — re-installing"
     bash "$REPO_DIR/infrastructure/install-morning-signal.sh" >>"$LOG" 2>&1 \
         || fail "install-morning-signal.sh"
@@ -140,7 +182,7 @@ fi
 # introduction, since a brand-new file counts as a diff (`+` lines), so this
 # also handles the initial rollout without a manual on-box step.
 BAKEOFF_UNIT_PATHS="infrastructure/systemd/morning-signal-bakeoff.service infrastructure/systemd/morning-signal-bakeoff.timer infrastructure/install-morning-signal-bakeoff.sh"
-if sudo -u ec2-user git diff "${CURRENT_SHA}~1" "$CURRENT_SHA" -- $BAKEOFF_UNIT_PATHS 2>/dev/null | grep -q '^[+-]'; then
+if paths_changed "${CURRENT_SHA}~1" "$CURRENT_SHA" $BAKEOFF_UNIT_PATHS; then
     log "morning-signal bakeoff units changed — re-installing"
     bash "$REPO_DIR/infrastructure/install-morning-signal-bakeoff.sh" >>"$LOG" 2>&1 \
         || fail "install-morning-signal-bakeoff.sh"
@@ -153,7 +195,7 @@ fi
 # install-box-health.sh (config#2227). Same conditional-on-diff auto-deploy as
 # 2b-2d — including on first introduction (new files count as a diff).
 BOX_HEALTH_PATHS="infrastructure/box_health.sh infrastructure/box_hygiene.sh infrastructure/install-box-health.sh infrastructure/systemd/box-health.service infrastructure/systemd/box-health.timer infrastructure/systemd/box-hygiene.service infrastructure/systemd/box-hygiene.timer infrastructure/systemd/journald-size-cap.conf"
-if sudo -u ec2-user git diff "${CURRENT_SHA}~1" "$CURRENT_SHA" -- $BOX_HEALTH_PATHS 2>/dev/null | grep -q '^[+-]'; then
+if paths_changed "${CURRENT_SHA}~1" "$CURRENT_SHA" $BOX_HEALTH_PATHS; then
     log "box-health/hygiene script or units changed — re-installing"
     bash "$REPO_DIR/infrastructure/install-box-health.sh" >>"$LOG" 2>&1 \
         || fail "install-box-health.sh"
@@ -205,7 +247,7 @@ log "restarted crucible-dash-api.service"
 # next build are the expensive steps; unit self-provision mirrors 3b/3c.
 WEB_DIR="$REPO_DIR/dash-web"
 if [ -d "$WEB_DIR" ]; then
-    if sudo -u ec2-user git diff "${CURRENT_SHA}~1" "$CURRENT_SHA" -- dash-web/ 2>/dev/null | grep -q '^[+-]'         || [ ! -d "$WEB_DIR/.next" ]; then
+    if paths_changed "${CURRENT_SHA}~1" "$CURRENT_SHA" dash-web/ || [ ! -d "$WEB_DIR/.next" ]; then
         log "dash-web changed (or unbuilt) — npm ci + next build"
         sudo -u ec2-user bash -c "cd '$WEB_DIR' && npm ci --no-audit --no-fund && npm run build" >>"$LOG" 2>&1             || fail "dash-web npm build"
         log "dash-web built"
