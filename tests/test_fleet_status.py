@@ -468,6 +468,23 @@ class TestSfWatch:
         assert s.dot == GRAY
         assert "no watch events recorded" in s.reason
 
+    def test_green_active_when_repair_box_live(self):
+        # A running repair box is the "working right now" signal and outranks
+        # everything else — including an open dispatch alert, which is usually
+        # from the same incident the box is fixing (2026-07-11).
+        s = resolve_sf_watch(_inputs(
+            sf_watch_box_running=True,
+            sf_watch_box_launched_at="2026-07-11T14:29:51+00:00",
+            sf_watch_alert="dispatch failed to launch for x"))
+        assert s.dot == GREEN
+        assert "ACTIVE" in s.reason
+        assert "2026-07-11T14:29:51+00:00" in s.reason
+
+    def test_green_active_without_launch_time(self):
+        s = resolve_sf_watch(_inputs(sf_watch_box_running=True))
+        assert s.dot == GREEN
+        assert "ACTIVE" in s.reason
+
     def test_gray_idle_with_last_fired(self):
         # Idle-with-history is still the healthy steady state — dispatch-
         # driven, so no fire since last Saturday is expected, not stale.
@@ -494,6 +511,15 @@ class TestCiWatch:
         s = resolve_ci_watch(_inputs())
         assert s.dot == GRAY
         assert "no watch events recorded" in s.reason
+
+    def test_green_active_when_repair_box_live(self):
+        # Same live-box-outranks-all posture as TestSfWatch.
+        s = resolve_ci_watch(_inputs(
+            ci_watch_box_running=True,
+            ci_watch_box_launched_at="2026-07-11T13:18:25+00:00",
+            ci_watch_alert="dispatch failed for nousergon/x"))
+        assert s.dot == GREEN
+        assert "ACTIVE" in s.reason
 
     def test_gray_idle_with_last_fired(self):
         s = resolve_ci_watch(_inputs(
