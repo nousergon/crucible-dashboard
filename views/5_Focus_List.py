@@ -79,6 +79,12 @@ tab_summary, tab_trend, tab_stance, tab_rows = st.tabs([
 
 with tab_summary:
     st.subheader("Latest week per team")
+    st.caption(
+        "`tool_overrides` / `override_hit_rate` are attributed to the team whose "
+        "quant agent reached outside its focus list (config#750, schema v23). "
+        "A `—` team row is the legacy unattributed group — override rows written "
+        "before v23, kept visible rather than silently dropped."
+    )
     if weekly.empty:
         st.warning("No focus_list_by_team aggregates yet.")
     else:
@@ -97,6 +103,8 @@ with tab_summary:
             "n_picks": "agent_picks",
             "n_overrides": "tool_overrides",
         })
+        # Legacy unattributed override group (NULL team) renders as "—".
+        display["team"] = display["team"].fillna("—")
         # Format rates as percentages
         for col in ("precision", "recall", "override_hit_rate"):
             display[col] = display[col].apply(
@@ -128,6 +136,12 @@ with tab_summary:
 
 with tab_trend:
     st.subheader("Precision / recall over time")
+    st.caption(
+        "`override_hit_rate` is traced per team (config#750): each line is one "
+        "team's override-rate trajectory, so you can see which team's quant "
+        "agent reaches outside its focus list most often and whether those "
+        "reaches land."
+    )
     if weekly.empty:
         st.warning("Need at least 2 weekly runs for a trend.")
     else:
@@ -211,9 +225,16 @@ with tab_rows:
         recent = audit[audit["eval_date"] == latest_date].copy()
         st.caption(f"Run date: **{latest_date}** — {len(recent)} rows")
 
+        # Effective team = focus team for focus rows, overriding team for
+        # override rows (config#750). Lets the Team filter and sort attribute
+        # override rows to the team that reached out instead of a blank cell.
+        if "override_team_id" not in recent.columns:
+            recent["override_team_id"] = None
+        recent["team"] = recent["focus_team_id"].fillna(recent["override_team_id"])
+
         # Filters
         with st.expander("Filters", expanded=False):
-            teams = sorted(t for t in recent["focus_team_id"].dropna().unique())
+            teams = sorted(t for t in recent["team"].dropna().unique())
             team_filter = st.multiselect("Team", options=teams, default=teams)
             stances = sorted(
                 s for s in recent["focus_stance"].dropna().unique()
@@ -231,8 +252,8 @@ with tab_rows:
         filtered = recent
         if team_filter:
             filtered = filtered[
-                filtered["focus_team_id"].isin(team_filter)
-                | filtered["focus_team_id"].isna()
+                filtered["team"].isin(team_filter)
+                | filtered["team"].isna()
             ]
         if stance_filter:
             filtered = filtered[
@@ -246,7 +267,7 @@ with tab_rows:
 
         st.dataframe(
             filtered.sort_values(
-                ["focus_team_id", "focus_rank_in_team"],
+                ["team", "focus_rank_in_team"],
                 na_position="last",
             ),
             use_container_width=True,
