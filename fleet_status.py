@@ -191,6 +191,16 @@ class FleetInputs:
     ci_watch_last_date: Optional[str] = None
     ci_watch_last_n_events: int = 0
     ci_watch_alert: Optional[str] = None
+    # Live repair box — the "is it working RIGHT NOW" signal. A running EC2
+    # spot instance tagged as the watch's repair box, independent of any S3
+    # watch-log artifact (same posture as GroomSnapshot.spot_running): covers
+    # a charter mid-run before any event is written — on 2026-07-11 two
+    # operator re-fires wrote NO canonical watch-log, so these dots showed
+    # idle while a box was actively repairing the weekly SF.
+    sf_watch_box_running: bool = False
+    sf_watch_box_launched_at: Optional[str] = None
+    ci_watch_box_running: bool = False
+    ci_watch_box_launched_at: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -682,6 +692,17 @@ def resolve_sf_watch(inp: FleetInputs) -> ComponentStatus:
     failures (that needs a synthetic canary, deliberately out of scope
     here; see alpha-engine-config follow-up)."""
     cid, label = "sf_watch", "Saturday SF Watch (resilience agent)"
+    # Live repair box outranks everything, including an open dispatch alert —
+    # a box actively working IS the answer to "is the watch running right
+    # now", and an alert is usually from the same incident it is fixing.
+    if inp.sf_watch_box_running:
+        since = (f" since {inp.sf_watch_box_launched_at}"
+                 if inp.sf_watch_box_launched_at else "")
+        return ComponentStatus(
+            cid, label, GROUP_JOBS, GREEN,
+            f"ACTIVE — repair box live{since}, working a failure now",
+            deep_link="saturday-sf-watch",
+        )
     if inp.sf_watch_alert:
         return ComponentStatus(
             cid, label, GROUP_JOBS, RED,
@@ -710,6 +731,14 @@ def resolve_ci_watch(inp: FleetInputs) -> ComponentStatus:
     posture as :func:`resolve_sf_watch`; no dedicated console detail page
     yet, so no deep_link."""
     cid, label = "ci_watch", "Fleet CI Watch (resilience agent)"
+    # Same live-box-outranks-all posture as resolve_sf_watch.
+    if inp.ci_watch_box_running:
+        since = (f" since {inp.ci_watch_box_launched_at}"
+                 if inp.ci_watch_box_launched_at else "")
+        return ComponentStatus(
+            cid, label, GROUP_JOBS, GREEN,
+            f"ACTIVE — repair box live{since}, working a failure now",
+        )
     if inp.ci_watch_alert:
         return ComponentStatus(
             cid, label, GROUP_JOBS, RED,
