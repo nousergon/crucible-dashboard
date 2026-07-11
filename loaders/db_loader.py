@@ -633,6 +633,25 @@ def canonicalize_predictor_outcomes(df: pd.DataFrame) -> pd.DataFrame:
 # migration (alpha-engine-research #183). First audit data appears on the
 # Saturday SF run after that migration ran. All loaders below gracefully
 # return empty DataFrames when the columns are absent or no rows match.
+#
+# v23 (config#750) added override_team_id so overrides can be attributed to the
+# team whose quant agent reached outside its focus list, instead of collapsing
+# into one anonymous focus_team_id=NULL group. The loaders below detect the
+# column and gracefully fall back to the legacy (unattributed) grouping on a
+# pre-v23 DB so the page never breaks between the migration merging and the
+# next Saturday SF run repopulating research.db.
+
+
+def _scanner_eval_columns() -> set[str]:
+    """Column names present on scanner_evaluations (empty set if unavailable).
+
+    Used to feature-detect the v23 override_team_id column so queries degrade
+    gracefully on a research.db that predates config#750.
+    """
+    info = query_research_db("PRAGMA table_info(scanner_evaluations)")
+    if info.empty or "name" not in info.columns:
+        return set()
+    return set(info["name"].astype(str))
 
 
 def get_focus_list_audit(
@@ -644,7 +663,12 @@ def get_focus_list_audit(
     Returns the canonical audit columns: ticker, eval_date, sector,
     focus_score, focus_stance, focus_team_id, focus_rank_in_team,
     focus_rank_in_sector, focus_list_passed, agent_override,
-    quant_filter_pass. Optional date range filter on eval_date.
+    override_team_id, quant_filter_pass. Optional date range filter on
+    eval_date.
+
+    override_team_id (v23, config#750) names which team's quant agent reached
+    outside its focus list for an override row; NULL for focus-list members /
+    non-override rows, and projected as NULL on a pre-v23 DB.
 
     Empty DataFrame on any of: missing columns (pre-v17 DB), no rows,
     SQL failure.
@@ -658,12 +682,21 @@ def get_focus_list_audit(
         where.append("eval_date <= ?")
         params.append(end_date)
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+    # Feature-detect the v23 column so the SELECT never fails on a pre-config#750
+    # research.db — project a NULL placeholder there so the column always exists
+    # downstream (the view/Rows-tab can reference it unconditionally).
+    override_team_col = (
+        "override_team_id"
+        if "override_team_id" in _scanner_eval_columns()
+        else "NULL AS override_team_id"
+    )
     sql = f"""
         SELECT
             ticker, eval_date, sector,
             focus_score, focus_stance, focus_team_id,
             focus_rank_in_team, focus_rank_in_sector,
             focus_list_passed, agent_override,
+            {override_team_col},
             quant_filter_pass
         FROM scanner_evaluations
         {where_sql}
@@ -676,10 +709,15 @@ def get_focus_list_audit(
 def get_focus_list_weekly_summary() -> pd.DataFrame:
     """Per-week per-team funnel cardinality + override-rate summary.
 
-    Aggregates scanner_evaluations to one row per (eval_date, focus_team_id):
+    Aggregates scanner_evaluations to one row per (eval_date, team), where
+    ``team`` is the focus-list team for focus rows and, on a v23+ DB
+    (config#750), the OVERRIDING team for override rows — so each team's
+    overrides count against that team instead of collapsing into one anonymous
+    focus_team_id=NULL ("—") group:
+      - focus_team_id      — team identity (focus_team_id, else override_team_id)
       - n_focus_list       — count of focus_list_passed=1
       - n_picks            — count of quant_filter_pass=1 (agent picked)
-      - n_overrides        — count of agent_override=1
+      - n_overrides        — count of agent_override=1 (this team's overrides)
       - precision          — focus_list_passed=1 AND quant_filter_pass=1
                              / focus_list_passed=1  (was the focus list
                              a good predictor of agent picks?)
@@ -690,13 +728,26 @@ def get_focus_list_weekly_summary() -> pd.DataFrame:
                              / agent_override=1  (when the agent reached
                              outside the focus list, was it right?)
 
+    On a pre-v23 DB the override_team_id column is absent, so grouping falls back
+    to focus_team_id alone and overrides keep landing in the legacy NULL group.
+
     Empty DataFrame when the focus_list columns are absent or no rows have
     focus_list_passed flags set yet (pre-Sat-5/17 SF).
     """
+    # Per-team override attribution (config#750): group override rows under the
+    # overriding team when the v23 column exists. COALESCE keeps focus rows on
+    # focus_team_id and moves override rows (focus_team_id=NULL) onto
+    # override_team_id; both fall back to NULL for legacy unattributed rows.
+    has_override_team = "override_team_id" in _scanner_eval_columns()
+    team_expr = (
+        "COALESCE(focus_team_id, override_team_id)"
+        if has_override_team
+        else "focus_team_id"
+    )
     sql = f"""
         SELECT
             eval_date,
-            focus_team_id,
+            {team_expr} AS focus_team_id,
             SUM(CASE WHEN focus_list_passed = 1 THEN 1 ELSE 0 END) AS n_focus_list,
             SUM(CASE WHEN quant_filter_pass = 1 THEN 1 ELSE 0 END) AS n_picks,
             SUM(CASE WHEN agent_override = 1 THEN 1 ELSE 0 END) AS n_overrides,
@@ -704,7 +755,7 @@ def get_focus_list_weekly_summary() -> pd.DataFrame:
             SUM(CASE WHEN agent_override = 1 AND quant_filter_pass = 1 THEN 1 ELSE 0 END) AS n_override_and_picked
         FROM scanner_evaluations
         WHERE focus_team_id IS NOT NULL OR agent_override = 1
-        GROUP BY eval_date, focus_team_id
+        GROUP BY eval_date, {team_expr}
         ORDER BY eval_date DESC, focus_team_id
         LIMIT {_MAX_QUERY_ROWS}
     """
