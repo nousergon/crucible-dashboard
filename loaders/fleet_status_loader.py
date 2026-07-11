@@ -61,6 +61,8 @@ from loaders.s3_loader import (
     list_saturday_sf_watch_dates,
     load_ci_watch,
     load_groom_run,
+    load_latest_ci_watch_canary,
+    load_latest_sf_watch_canary,
     load_saturday_sf_watch,
 )
 from trading_calendar import is_trading_day
@@ -163,10 +165,16 @@ def _ec2_snapshot() -> dict:
         ])
         for res in resp.get("Reservations", []):
             for inst in res.get("Instances", []):
-                name = next((t["Value"] for t in inst.get("Tags", [])
-                             if t.get("Key") == "Name"), None)
-                key = _tag_to_key.get(name)
+                tags = {t.get("Key"): t.get("Value") for t in inst.get("Tags", [])}
+                key = _tag_to_key.get(tags.get("Name"))
                 if key is None:
+                    continue
+                # Canary drill boxes (config#2223) carry sf-watch-drill=true:
+                # a drill is a synthetic weekly exercise of the dispatch pipe,
+                # NOT a repair — it must never light the "ACTIVE — repair box
+                # live, working a failure now" signal. Its own health surface
+                # is the _canary heartbeat age.
+                if tags.get("sf-watch-drill") == "true":
                     continue
                 out[f"{key}_running"] = True
                 lt = inst.get("LaunchTime")
@@ -419,6 +427,22 @@ def _ci_watch_snapshot() -> dict:
     }
 
 
+def _canary_age_hrs(now: datetime, heartbeat: dict | None) -> float | None:
+    """Hours since the newest canary drill heartbeat (config#2223), or None
+    when no drill has ever reported. Prefers the heartbeat's own ``drill_at``
+    timestamp; falls back to the artifact's {date} key at 00:00 UTC when the
+    body is missing/unparseable (an age off by <1 day is irrelevant against
+    the 8/15-day escalation tiers)."""
+    if not heartbeat:
+        return None
+    when = _parse_iso(heartbeat.get("drill_at"))
+    if when is None:
+        when = _parse_iso(f"{heartbeat.get('date')}T00:00:00+00:00")
+    if when is None:
+        return None
+    return max(0.0, (now - when).total_seconds() / 3600)
+
+
 # ── Local box services ──────────────────────────────────────────────────────
 
 
@@ -474,4 +498,6 @@ def gather_fleet_inputs() -> FleetInputs:
         sf_watch_box_launched_at=ec2.get("sf_watch_box_launched_at"),
         ci_watch_box_running=bool(ec2.get("ci_watch_box_running")),
         ci_watch_box_launched_at=ec2.get("ci_watch_box_launched_at"),
+        sf_watch_canary_age_hrs=_canary_age_hrs(now, load_latest_sf_watch_canary()),
+        ci_watch_canary_age_hrs=_canary_age_hrs(now, load_latest_ci_watch_canary()),
     )

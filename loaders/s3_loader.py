@@ -642,6 +642,65 @@ def load_ci_watch(date_str: str) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
+# Watch-dispatch canary drill heartbeats (config#2223)
+# ---------------------------------------------------------------------------
+# The weekly synthetic drill (EventBridge Scheduler → the two spot-dispatcher
+# Lambdas) writes ``consolidated/{saturday_sf_watch,ci_watch}/_canary/
+# {date}.json`` ({drill_at, launched, ssm_connected}) after round-tripping
+# the dispatch pipe for real. The Fleet Status resolvers escalate on the
+# newest heartbeat's age — the "should have run and didn't" signal the
+# failure-driven watch-logs above cannot provide. Note the drill keys live
+# under an ``_canary/`` sub-prefix, so the watch-log listers above (which
+# match a bare ``{date}.json`` stem) never see them, and vice versa.
+
+_SF_WATCH_CANARY_PREFIX = "consolidated/saturday_sf_watch/_canary/"
+_CI_WATCH_CANARY_PREFIX = "consolidated/ci_watch/_canary/"
+
+
+def _latest_canary(prefix: str, label: str) -> dict | None:
+    """Newest ``{prefix}{date}.json`` heartbeat doc (with its ``date`` key
+    injected), or None when no drill has ever reported / on a listing error
+    (logged + recorded via _record_s3_error — the resolver escalates a
+    missing heartbeat once the canary is due, so an S3 outage here degrades
+    loud-by-age rather than silently green)."""
+    bucket = _research_bucket()
+    try:
+        client = get_s3_client()
+        paginator = client.get_paginator("list_objects_v2")
+        dates: set[str] = set()
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+            for obj in page.get("Contents", []):
+                stem = obj.get("Key", "")[len(prefix):]
+                if stem.endswith(".json"):
+                    seg = stem[: -len(".json")]
+                    if ISO_DATE_PATTERN.match(seg):
+                        dates.add(seg)
+        if not dates:
+            return None
+        newest = max(dates)
+        doc = _fetch_s3_json(bucket, f"{prefix}{newest}.json")
+        if not isinstance(doc, dict):
+            doc = {}
+        return {"date": newest, **doc}
+    except Exception as e:
+        logger.error("Failed to list %s canary heartbeats: %s", label, e)
+        _record_s3_error(bucket, prefix, type(e).__name__, str(e))
+        return None
+
+
+@st.cache_data(ttl=_ttl("research"))
+def load_latest_sf_watch_canary() -> dict | None:
+    """Newest Saturday-SF-Watch canary drill heartbeat, or None."""
+    return _latest_canary(_SF_WATCH_CANARY_PREFIX, "saturday_sf_watch")
+
+
+@st.cache_data(ttl=_ttl("research"))
+def load_latest_ci_watch_canary() -> dict | None:
+    """Newest Fleet-CI-Watch canary drill heartbeat, or None."""
+    return _latest_canary(_CI_WATCH_CANARY_PREFIX, "ci_watch")
+
+
+# ---------------------------------------------------------------------------
 # Backlog Groom runs (per-run artifact — config#1512 / console page follow-up)
 # ---------------------------------------------------------------------------
 
