@@ -94,6 +94,24 @@ FRESHNESS_HEARTBEAT_DEAD_S = 60 * 60.0
 GROOM_MARKER_STALE = timedelta(hours=4)
 GROOM_IDLE_OK = timedelta(hours=10)
 GROOM_IDLE_WARN = timedelta(hours=30)
+# Watch-dispatch canary drill (config#2223): a weekly synthetic drill
+# (EventBridge Scheduler → the two spot-dispatcher Lambdas, Wed 15:00/15:30
+# UTC) exercises the dispatch pipe end-to-end — Lambda IAM, scoped
+# RunInstances, SSM, bootstrap start — and writes
+# ``consolidated/{saturday_sf_watch,ci_watch}/_canary/{date}.json`` on
+# success. Unlike the last-fired date (which cannot distinguish "healthy
+# idle" from "silently broken idle"), a missed canary is a REAL "should have
+# run and didn't" signal: one missed weekly run (>8 d) ⇒ YELLOW; two
+# consecutive misses (>15 d) ⇒ RED; no heartbeat at all once the canary is
+# due to have run ⇒ RED.
+CANARY_STALE = timedelta(days=8)
+CANARY_DEAD = timedelta(days=15)
+# First moment a heartbeat MUST exist. The canary shipped with config#2223
+# (2026-07-11) but its Scheduler rules are operator-applied and the drills
+# fire Wednesdays — this anchor allows a full apply-plus-first-Wednesday
+# window before "never reported" escalates to RED (before it: GRAY note, not
+# a false alarm on a not-yet-applied schedule).
+CANARY_EXPECTED_FROM_UTC = datetime(2026, 7, 23, tzinfo=timezone.utc)
 
 
 @dataclass(frozen=True)
@@ -201,6 +219,12 @@ class FleetInputs:
     sf_watch_box_launched_at: Optional[str] = None
     ci_watch_box_running: bool = False
     ci_watch_box_launched_at: Optional[str] = None
+    # Canary drill heartbeat age (config#2223) — hours since the newest
+    # ``consolidated/{saturday_sf_watch,ci_watch}/_canary/{date}.json``
+    # drill_at. None ⇒ no heartbeat artifact exists (yet): RED once
+    # CANARY_EXPECTED_FROM_UTC has passed, benign before it.
+    sf_watch_canary_age_hrs: Optional[float] = None
+    ci_watch_canary_age_hrs: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -682,16 +706,60 @@ def resolve_module_self_reports(inp: FleetInputs) -> ComponentStatus:
     )
 
 
+def _canary_escalation(age_hrs: Optional[float], now: datetime) -> Optional[tuple[str, str]]:
+    """(dot, sentence) when the weekly canary drill (config#2223) demands
+    escalation, else None (healthy heartbeat, or none expected yet). This is
+    the "should have run and didn't" signal the last-fired display can't
+    provide — see the CANARY_* constants for the tier rationale."""
+    if age_hrs is None:
+        if now >= CANARY_EXPECTED_FROM_UTC:
+            return (
+                RED,
+                "canary drill has NEVER reported (weekly drill, config#2223) — "
+                "the dispatch pipe is unverified and may be silently broken",
+            )
+        return None
+    age = timedelta(hours=age_hrs)
+    if age > CANARY_DEAD:
+        return (
+            RED,
+            f"canary drill missed twice — last heartbeat {age_hrs / 24:.1f} d ago "
+            "(weekly cadence); the dispatch pipe may be silently broken",
+        )
+    if age > CANARY_STALE:
+        return (
+            YELLOW,
+            f"canary drill overdue — last heartbeat {age_hrs / 24:.1f} d ago "
+            "(weekly cadence)",
+        )
+    return None
+
+
+def _canary_detail(age_hrs: Optional[float]) -> tuple:
+    """Additive expander row surfacing the canary freshness on EVERY dot
+    state — the healthy-idle reason string stays byte-identical (config#2223
+    acceptance: additive, not replacing)."""
+    if age_hrs is None:
+        return ()
+    return (
+        {
+            "canary_last_heartbeat_days": round(age_hrs / 24, 1),
+            "canary_cadence": "weekly drill (Wed, config#2223)",
+        },
+    )
+
+
 def resolve_sf_watch(inp: FleetInputs) -> ComponentStatus:
     """Saturday SF Watch — fires only on a Saturday SF terminal failure
     (repository_dispatch, config#1227). Idle is the healthy steady state, so
-    this is GRAY the vast majority of the time by design; it only escalates
-    to RED when the dispatch mechanism ITSELF is known to have broken (an
-    open P1 issue from sf-watch.yml's own "dispatch failed to launch"
-    failure report) — it cannot detect a silent break between real
-    failures (that needs a synthetic canary, deliberately out of scope
-    here; see alpha-engine-config follow-up)."""
+    this is GRAY the vast majority of the time by design. It escalates to
+    RED when the dispatch mechanism ITSELF is known to have broken (an open
+    P1 issue from sf-watch.yml's own "dispatch failed to launch" failure
+    report), and — since config#2223 — to YELLOW/RED when the weekly
+    synthetic canary drill stops reporting, the signal that catches a
+    SILENT break between real failures."""
     cid, label = "sf_watch", "Saturday SF Watch (resilience agent)"
+    canary_detail = _canary_detail(inp.sf_watch_canary_age_hrs)
     # Live repair box outranks everything, including an open dispatch alert —
     # a box actively working IS the answer to "is the watch running right
     # now", and an alert is usually from the same incident it is fixing.
@@ -707,7 +775,18 @@ def resolve_sf_watch(inp: FleetInputs) -> ComponentStatus:
         return ComponentStatus(
             cid, label, GROUP_JOBS, RED,
             f"dispatch alert open: {inp.sf_watch_alert}",
-            deep_link="saturday-sf-watch",
+            detail=canary_detail, deep_link="saturday-sf-watch",
+        )
+    canary = _canary_escalation(inp.sf_watch_canary_age_hrs, inp.now)
+    if canary is not None:
+        dot, sentence = canary
+        last = (
+            f"; last real fire {inp.sf_watch_last_date}"
+            if inp.sf_watch_last_date else "; no real fires recorded"
+        )
+        return ComponentStatus(
+            cid, label, GROUP_JOBS, dot, f"{sentence}{last}",
+            detail=canary_detail, deep_link="saturday-sf-watch",
         )
     if inp.sf_watch_last_date:
         return ComponentStatus(
@@ -715,22 +794,24 @@ def resolve_sf_watch(inp: FleetInputs) -> ComponentStatus:
             f"idle — last fired {inp.sf_watch_last_date} "
             f"({inp.sf_watch_last_n_events} event(s)); dispatch-driven, "
             "fires only on a Saturday SF failure",
-            deep_link="saturday-sf-watch",
+            detail=canary_detail, deep_link="saturday-sf-watch",
         )
     return ComponentStatus(
         cid, label, GROUP_JOBS, GRAY,
         "no watch events recorded — dispatch-driven, fires only on a "
         "Saturday SF failure",
-        deep_link="saturday-sf-watch",
+        detail=canary_detail, deep_link="saturday-sf-watch",
     )
 
 
 def resolve_ci_watch(inp: FleetInputs) -> ComponentStatus:
     """Fleet CI Watch — fires only on a fleet repo's main-branch CI/deploy
     going red (repository_dispatch, config#1593). Same idle-is-healthy
-    posture as :func:`resolve_sf_watch`; no dedicated console detail page
-    yet, so no deep_link."""
+    posture — and same config#2223 canary escalation — as
+    :func:`resolve_sf_watch`; no dedicated console detail page yet, so no
+    deep_link."""
     cid, label = "ci_watch", "Fleet CI Watch (resilience agent)"
+    canary_detail = _canary_detail(inp.ci_watch_canary_age_hrs)
     # Same live-box-outranks-all posture as resolve_sf_watch.
     if inp.ci_watch_box_running:
         since = (f" since {inp.ci_watch_box_launched_at}"
@@ -743,6 +824,18 @@ def resolve_ci_watch(inp: FleetInputs) -> ComponentStatus:
         return ComponentStatus(
             cid, label, GROUP_JOBS, RED,
             f"dispatch alert open: {inp.ci_watch_alert}",
+            detail=canary_detail,
+        )
+    canary = _canary_escalation(inp.ci_watch_canary_age_hrs, inp.now)
+    if canary is not None:
+        dot, sentence = canary
+        last = (
+            f"; last real fire {inp.ci_watch_last_date}"
+            if inp.ci_watch_last_date else "; no real fires recorded"
+        )
+        return ComponentStatus(
+            cid, label, GROUP_JOBS, dot, f"{sentence}{last}",
+            detail=canary_detail,
         )
     if inp.ci_watch_last_date:
         return ComponentStatus(
@@ -750,11 +843,13 @@ def resolve_ci_watch(inp: FleetInputs) -> ComponentStatus:
             f"idle — last fired {inp.ci_watch_last_date} "
             f"({inp.ci_watch_last_n_events} event(s)); dispatch-driven, "
             "fires only on a fleet main-branch CI/deploy failure",
+            detail=canary_detail,
         )
     return ComponentStatus(
         cid, label, GROUP_JOBS, GRAY,
         "no watch events recorded — dispatch-driven, fires only on a "
         "fleet main-branch CI/deploy failure",
+        detail=canary_detail,
     )
 
 

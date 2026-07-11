@@ -34,7 +34,9 @@ st.title("🛰 Fleet Status")
 st.caption(
     "Live status of every fleet component — auto-refreshes every 30 s. "
     "🟢 online/healthy · 🟡 expected but stalled · 🔴 expected and offline/failed · "
-    "⚪ not expected right now."
+    "⚪ not expected right now. Watch-agent rows additionally escalate on a "
+    "missed weekly canary drill of the dispatch pipe (config#2223) — the "
+    "signal that catches a silently broken dispatch between real failures."
 )
 
 

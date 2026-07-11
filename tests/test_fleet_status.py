@@ -548,3 +548,142 @@ class TestResolveFleet:
         statuses = resolve_fleet(_inputs(trading_instance_state="stopped"))
         assert worst_dot(statuses) == RED
         assert worst_dot([]) == GRAY
+
+
+# ── Watch-dispatch canary drill (config#2223) ────────────────────────────────
+# Frozen clocks for the canary tiers: the weekly drill ships 2026-07-11 with
+# CANARY_EXPECTED_FROM_UTC = 2026-07-23, so TRADING_MID (2026-07-07) sits in
+# the benign pre-ship window and POST_SHIP well after it.
+
+POST_SHIP = datetime(2026, 8, 4, 15, 0, tzinfo=timezone.utc)
+
+
+class TestSfWatchCanary:
+    def test_healthy_canary_keeps_idle_reason_byte_identical(self):
+        # Acceptance (config#2223): additive, not replacing — a fresh
+        # heartbeat must not change the existing last-fired reason string.
+        # Base reason from the pre-ship clock (canary makes no claim there);
+        # the gray idle reason itself is clock-independent.
+        base = resolve_sf_watch(_inputs(
+            sf_watch_last_date="2026-07-04", sf_watch_last_n_events=2))
+        with_canary = resolve_sf_watch(_inputs(
+            now=POST_SHIP, sf_watch_last_date="2026-07-04",
+            sf_watch_last_n_events=2, sf_watch_canary_age_hrs=48.0))
+        assert with_canary.dot == GRAY
+        assert with_canary.reason == base.reason
+        # The canary freshness surfaces additively, in the detail rows.
+        assert with_canary.detail == (
+            {"canary_last_heartbeat_days": 2.0,
+             "canary_cadence": "weekly drill (Wed, config#2223)"},
+        )
+
+    def test_yellow_one_missed_weekly_drill(self):
+        s = resolve_sf_watch(_inputs(
+            now=POST_SHIP, sf_watch_last_date="2026-07-04",
+            sf_watch_canary_age_hrs=9 * 24.0))
+        assert s.dot == YELLOW
+        assert "canary drill overdue" in s.reason
+        assert "last real fire 2026-07-04" in s.reason
+
+    def test_red_two_consecutive_missed_drills(self):
+        s = resolve_sf_watch(_inputs(
+            now=POST_SHIP, sf_watch_canary_age_hrs=16 * 24.0))
+        assert s.dot == RED
+        assert "canary drill missed twice" in s.reason
+        assert "no real fires recorded" in s.reason
+
+    def test_red_never_reported_once_canary_is_due(self):
+        # The "missing entirely after ship" leg: no heartbeat has EVER been
+        # written and the first drills are overdue — a real "should have run
+        # and didn't", unlike the pre-ship window below.
+        s = resolve_sf_watch(_inputs(now=POST_SHIP))
+        assert s.dot == RED
+        assert "NEVER reported" in s.reason
+
+    def test_benign_before_expected_from_when_never_reported(self):
+        # TRADING_MID (2026-07-07) predates CANARY_EXPECTED_FROM_UTC — no
+        # false RED on a not-yet-applied schedule; reason unchanged.
+        s = resolve_sf_watch(_inputs())
+        assert s.dot == GRAY
+        assert "no watch events recorded" in s.reason
+
+    def test_exactly_at_stale_boundary_is_still_gray(self):
+        s = resolve_sf_watch(_inputs(
+            now=POST_SHIP, sf_watch_canary_age_hrs=8 * 24.0))
+        assert s.dot == GRAY
+
+    def test_open_dispatch_alert_outranks_canary_escalation(self):
+        s = resolve_sf_watch(_inputs(
+            now=POST_SHIP,
+            sf_watch_alert="SF-watch dispatch failed to launch for x",
+            sf_watch_canary_age_hrs=9 * 24.0))
+        assert s.dot == RED
+        assert "dispatch alert open" in s.reason
+
+    def test_live_repair_box_outranks_canary_escalation(self):
+        # A live box IS proof the pipe works right now — a stale canary must
+        # not repaint an actively-working watch.
+        s = resolve_sf_watch(_inputs(
+            now=POST_SHIP, sf_watch_box_running=True,
+            sf_watch_canary_age_hrs=16 * 24.0))
+        assert s.dot == GREEN
+        assert "ACTIVE" in s.reason
+
+    def test_canary_escalation_deep_links_to_watch_page(self):
+        s = resolve_sf_watch(_inputs(
+            now=POST_SHIP, sf_watch_canary_age_hrs=9 * 24.0))
+        assert s.deep_link == "saturday-sf-watch"
+
+
+class TestCiWatchCanary:
+    def test_healthy_canary_keeps_idle_reason_byte_identical(self):
+        # Base reason from the pre-ship clock — see the sf sibling test.
+        base = resolve_ci_watch(_inputs(
+            ci_watch_last_date="2026-07-10", ci_watch_last_n_events=1))
+        with_canary = resolve_ci_watch(_inputs(
+            now=POST_SHIP, ci_watch_last_date="2026-07-10",
+            ci_watch_last_n_events=1, ci_watch_canary_age_hrs=48.0))
+        assert with_canary.dot == GRAY
+        assert with_canary.reason == base.reason
+        assert with_canary.detail == (
+            {"canary_last_heartbeat_days": 2.0,
+             "canary_cadence": "weekly drill (Wed, config#2223)"},
+        )
+
+    def test_yellow_one_missed_weekly_drill(self):
+        s = resolve_ci_watch(_inputs(
+            now=POST_SHIP, ci_watch_last_date="2026-07-10",
+            ci_watch_canary_age_hrs=9 * 24.0))
+        assert s.dot == YELLOW
+        assert "canary drill overdue" in s.reason
+        assert "last real fire 2026-07-10" in s.reason
+
+    def test_red_two_consecutive_missed_drills(self):
+        s = resolve_ci_watch(_inputs(
+            now=POST_SHIP, ci_watch_canary_age_hrs=16 * 24.0))
+        assert s.dot == RED
+        assert "canary drill missed twice" in s.reason
+
+    def test_red_never_reported_once_canary_is_due(self):
+        s = resolve_ci_watch(_inputs(now=POST_SHIP))
+        assert s.dot == RED
+        assert "NEVER reported" in s.reason
+
+    def test_benign_before_expected_from_when_never_reported(self):
+        s = resolve_ci_watch(_inputs())
+        assert s.dot == GRAY
+        assert "no watch events recorded" in s.reason
+
+    def test_open_dispatch_alert_outranks_canary_escalation(self):
+        s = resolve_ci_watch(_inputs(
+            now=POST_SHIP,
+            ci_watch_alert="CI-watch dispatch failed to launch for nousergon/x",
+            ci_watch_canary_age_hrs=9 * 24.0))
+        assert s.dot == RED
+        assert "dispatch alert open" in s.reason
+
+    def test_live_repair_box_outranks_canary_escalation(self):
+        s = resolve_ci_watch(_inputs(
+            now=POST_SHIP, ci_watch_box_running=True,
+            ci_watch_canary_age_hrs=16 * 24.0))
+        assert s.dot == GREEN
