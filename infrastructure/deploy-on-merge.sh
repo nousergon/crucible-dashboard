@@ -147,6 +147,19 @@ if sudo -u ec2-user git diff "${CURRENT_SHA}~1" "$CURRENT_SHA" -- $BAKEOFF_UNIT_
     log "re-installed morning-signal bakeoff units"
 fi
 
+# ── 2e. Re-install box-health/hygiene watchdog if its script/units changed ──
+# box_health.sh + box_hygiene.sh + their units + the journald size cap are
+# /usr/local/bin + /etc provisioned OUT of the repo tree by
+# install-box-health.sh (config#2227). Same conditional-on-diff auto-deploy as
+# 2b-2d — including on first introduction (new files count as a diff).
+BOX_HEALTH_PATHS="infrastructure/box_health.sh infrastructure/box_hygiene.sh infrastructure/install-box-health.sh infrastructure/systemd/box-health.service infrastructure/systemd/box-health.timer infrastructure/systemd/box-hygiene.service infrastructure/systemd/box-hygiene.timer infrastructure/systemd/journald-size-cap.conf"
+if sudo -u ec2-user git diff "${CURRENT_SHA}~1" "$CURRENT_SHA" -- $BOX_HEALTH_PATHS 2>/dev/null | grep -q '^[+-]'; then
+    log "box-health/hygiene script or units changed — re-installing"
+    bash "$REPO_DIR/infrastructure/install-box-health.sh" >>"$LOG" 2>&1 \
+        || fail "install-box-health.sh"
+    log "re-installed box-health/hygiene"
+fi
+
 # ── 3. Restart both streamlit services (we are root) ───────────────────────
 # Both services run from this same repo. Two-second stagger avoids a
 # simultaneous blip on console + live site.
