@@ -74,6 +74,10 @@ _TTL_SECONDS = 25
 TRADING_INSTANCE_ID = os.environ.get("TRADING_INSTANCE_ID", "i-018eb3307a21329bf")
 # Name tag the groom EC2 spot launches under (config groom_run infra).
 GROOM_SPOT_NAME = os.environ.get("GROOM_SPOT_NAME", "alpha-engine-groom-spot")
+# Name tags the watch repair boxes launch under (nousergon-data sf-watch /
+# ci-watch spot dispatchers) — the live-box "working right now" signal.
+SF_WATCH_SPOT_NAME = os.environ.get("SF_WATCH_SPOT_NAME", "alpha-engine-sf-watch-spot")
+CI_WATCH_SPOT_NAME = os.environ.get("CI_WATCH_SPOT_NAME", "alpha-engine-ci-watch-spot")
 
 _HEARTBEAT_KEY = "_freshness_monitor/heartbeat.json"
 _CHECK_RESULTS_KEY = "_freshness_monitor/check_results.json"
@@ -123,8 +127,13 @@ def _ec2_snapshot() -> dict:
     import boto3
     from botocore.exceptions import BotoCoreError, ClientError
 
+    _spot_defaults = {
+        "groom_spot_running": False, "groom_spot_launched_at": None,
+        "sf_watch_box_running": False, "sf_watch_box_launched_at": None,
+        "ci_watch_box_running": False, "ci_watch_box_launched_at": None,
+    }
     out: dict = {"available": True, "error": None, "state": None, "ping": None,
-                 "groom_spot_running": False, "groom_spot_launched_at": None}
+                 **_spot_defaults}
     try:
         ec2 = boto3.client("ec2", region_name=_REGION)
         resp = ec2.describe_instances(InstanceIds=[TRADING_INSTANCE_ID])
@@ -134,27 +143,40 @@ def _ec2_snapshot() -> dict:
     except (ClientError, BotoCoreError) as exc:
         logger.warning("fleet_status ec2 describe failed: %s", exc)
         return {"available": False, "error": f"{type(exc).__name__}: {exc}",
-                "state": None, "ping": None,
-                "groom_spot_running": False, "groom_spot_launched_at": None}
+                "state": None, "ping": None, **_spot_defaults}
 
     try:
-        # Independent "groomer running now" signal: a live groom spot box.
-        # Covers runs the S3 in-progress marker can't (a run launched on
-        # pre-marker driver code, or a driver that died before finalizing).
+        # Independent "running now" signals: live spot boxes, one call for all
+        # three (groom + the two watch repair boxes). Covers activity the S3
+        # artifacts can't — a groom run launched on pre-marker driver code, or
+        # a watch charter mid-run before any watch-log event exists (both
+        # 2026-07-11 operator re-fires wrote no canonical log while a box was
+        # actively repairing the weekly SF).
+        _tag_to_key = {
+            GROOM_SPOT_NAME: "groom_spot",
+            SF_WATCH_SPOT_NAME: "sf_watch_box",
+            CI_WATCH_SPOT_NAME: "ci_watch_box",
+        }
         resp = ec2.describe_instances(Filters=[
-            {"Name": "tag:Name", "Values": [GROOM_SPOT_NAME]},
+            {"Name": "tag:Name", "Values": list(_tag_to_key)},
             {"Name": "instance-state-name", "Values": ["running"]},
         ])
         for res in resp.get("Reservations", []):
             for inst in res.get("Instances", []):
-                out["groom_spot_running"] = True
+                name = next((t["Value"] for t in inst.get("Tags", [])
+                             if t.get("Key") == "Name"), None)
+                key = _tag_to_key.get(name)
+                if key is None:
+                    continue
+                out[f"{key}_running"] = True
                 lt = inst.get("LaunchTime")
                 if lt is not None:
-                    out["groom_spot_launched_at"] = lt.isoformat()
+                    out[f"{key}_launched_at"] = lt.isoformat()
     except (ClientError, BotoCoreError) as exc:
         # Secondary signal — WARN + carry on; the groomer row falls back to
-        # the marker/recency tiers and the trading-instance read stands.
-        logger.warning("fleet_status groom-spot describe failed: %s", exc)
+        # the marker/recency tiers, the watch rows to their watch-log/alert
+        # tiers, and the trading-instance read stands.
+        logger.warning("fleet_status spot-box describe failed: %s", exc)
 
     try:
         ssm = boto3.client("ssm", region_name=_REGION)
@@ -448,4 +470,8 @@ def gather_fleet_inputs() -> FleetInputs:
         ci_watch_last_date=ci_watch["last_date"],
         ci_watch_last_n_events=ci_watch["last_n_events"],
         ci_watch_alert=ci_watch["alert"],
+        sf_watch_box_running=bool(ec2.get("sf_watch_box_running")),
+        sf_watch_box_launched_at=ec2.get("sf_watch_box_launched_at"),
+        ci_watch_box_running=bool(ec2.get("ci_watch_box_running")),
+        ci_watch_box_launched_at=ec2.get("ci_watch_box_launched_at"),
     )
