@@ -8,7 +8,12 @@ carve-out, config#1926).
 
 Read side: open issues carrying ``gate:operator`` / ``gate:decision`` across
 the four backlog repos, oldest-first, with the structured ``**Ask:**`` block
-(config#1923 contract) parsed from the newest gating comment.
+(config#1923 contract) parsed from the newest gating comment — including the
+``**Summary:**`` / ``**SOTA:**`` / ``**Delta:**`` fields the groom prompts
+began emitting alongside Ask/Options/Consequence (config#1923 extension),
+generalizing the "every recommendation names the SOTA approach and the
+delta" rule into the gate contract. All three degrade to ``None`` on older
+or unframed comments — the parser never requires them.
 
 Auth: the groom PAT from SSM ``/alpha-engine/groom/github_pat`` (cross-repo
 issues r/w — the same identity the groom board-sync uses), falling back to
@@ -52,6 +57,9 @@ _COMMENT_TAIL = 10  # newest comments scanned for the gating Ask block
 _ASK_RE = re.compile(r"^\*\*Ask:\*\*\s*(.+)$", re.MULTILINE)
 _OPTION_RE = re.compile(r"(?:^|\s)([A-D])\)\s*(.+?)(?=\s+[B-D]\)|$)", re.MULTILINE)
 _REEXAM_RE = re.compile(r"^Re-exam:\s*(\d{4}-\d{2}-\d{2})\s*$", re.MULTILINE)
+_SUMMARY_RE = re.compile(r"^\*\*Summary:\*\*\s*(.+)$", re.MULTILINE)
+_SOTA_RE = re.compile(r"^\*\*SOTA:\*\*\s*(.+)$", re.MULTILINE)
+_DELTA_RE = re.compile(r"^\*\*Delta:\*\*\s*(.+)$", re.MULTILINE)
 
 
 @dataclass
@@ -67,6 +75,9 @@ class DecisionItem:
     recommended: str | None = None  # option letter marked "(recommended)"
     excerpt: str | None = None  # newest gate comment fallback when no Ask block
     body: str = ""
+    summary: str | None = None  # plain-English context (config#1923 extension)
+    sota: str | None = None  # the institutional-grade / SOTA approach
+    delta: str | None = None  # how the recommended option differs from SOTA
 
     @property
     def key(self) -> str:
@@ -154,6 +165,24 @@ def parse_ask_block(text: str) -> tuple[str | None, list[tuple[str, str]], str |
             if "(recommended)" in body.lower():
                 recommended = letter
     return ask, options, recommended
+
+
+def parse_context_block(text: str) -> tuple[str | None, str | None, str | None]:
+    """Extract (summary, sota, delta) from a gating comment.
+
+    Contract (config#1923 extension): ``**Summary:** <one line>`` /
+    ``**SOTA:** <one line>`` / ``**Delta:** <one line>``, each independent
+    of the others and of the Ask/Options block — an older or unframed
+    comment simply yields ``None`` per missing field, never raises.
+    """
+    m_summary = _SUMMARY_RE.search(text or "")
+    m_sota = _SOTA_RE.search(text or "")
+    m_delta = _DELTA_RE.search(text or "")
+    return (
+        m_summary.group(1).strip() if m_summary else None,
+        m_sota.group(1).strip() if m_sota else None,
+        m_delta.group(1).strip() if m_delta else None,
+    )
 
 
 def bump_reexam_line(body: str, new_date: str) -> str:
@@ -246,6 +275,7 @@ def _build_decision_item(repo: str, label: str, it: dict, now: datetime) -> Deci
     created = datetime.fromisoformat(it["created_at"].replace("Z", "+00:00"))
     comment_body = _newest_gate_comment(repo, it["number"])
     ask, options, recommended = parse_ask_block(comment_body)
+    summary, sota, delta = parse_context_block(comment_body)
     return DecisionItem(
         repo=repo, number=it["number"], title=it["title"],
         gate=label, age_days=(now - created).days,
@@ -253,6 +283,7 @@ def _build_decision_item(repo: str, label: str, it: dict, now: datetime) -> Deci
         recommended=recommended,
         excerpt=None if ask else (comment_body or it.get("body") or "")[:600],
         body=it.get("body") or "",
+        summary=summary, sota=sota, delta=delta,
     )
 
 

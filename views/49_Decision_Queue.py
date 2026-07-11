@@ -108,10 +108,19 @@ for item in pending:
             f"**[{key}]({item['url']})** — {item['title']}  \n"
             f"{_GATE_BADGE.get(item['gate'], item['gate'])} · open **{item['age_days']}d**"
         )
+        if item["summary"]:
+            st.markdown(f"📋 {item['summary']}")
         if item["ask"]:
             st.markdown(f"**Ask:** {item['ask']}")
             for letter, text in item["options"]:
                 st.markdown(f"- **{letter})** {text}")
+            if item["sota"] or item["delta"]:
+                lines = []
+                if item["sota"]:
+                    lines.append(f"🏛 **SOTA:** {item['sota']}")
+                if item["delta"]:
+                    lines.append(f"↔ **Delta:** {item['delta']}")
+                st.caption("  \n".join(lines))
         else:
             right.markdown("🏷️ `needs framing`")
             with st.expander("Newest gate comment / body excerpt"):

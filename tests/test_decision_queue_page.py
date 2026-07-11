@@ -10,6 +10,8 @@ home-chip wiring, Ask-block parser, and write-payload purity.
 
 3. **Parser.** ``parse_ask_block`` extracts the config#1923 Ask contract;
    unframed comments degrade to (None, [], None), never raise.
+   ``parse_context_block`` extracts the config#1923 Summary/SOTA/Delta
+   extension — each field independent, absent fields degrade to None.
 
 4. **Write helpers.** ``bump_reexam_line`` / ``ruling_comment`` are pure and
    deterministic — the ruling comment must be self-contained enough for the
@@ -31,6 +33,7 @@ from loaders.decision_queue_loader import (  # noqa: E402
     defer_issue,
     kill_issue,
     parse_ask_block,
+    parse_context_block,
     post_ruling,
     reexam_snoozed_until,
     ruling_comment,
@@ -101,6 +104,49 @@ class TestAskParser:
 
     def test_empty_and_none_safe(self):
         assert parse_ask_block("") == (None, [], None)
+
+
+class TestContextParser:
+    """config#1923 extension: **Summary:** / **SOTA:** / **Delta:** — each
+    independent of the others and of the Ask/Options block, so an older
+    3-line comment (pre-extension) or a partially-backfilled one degrades
+    field-by-field rather than all-or-nothing."""
+
+    FULL = (
+        "**Summary:** groom PAT lacks ssm:GetParameter on the new prefix.\n"
+        "**Ask:** Should we widen the role or split the prefix?\n"
+        "**Options:** A) Widen role (recommended) B) Split prefix\n"
+        "**SOTA:** least-privilege — split the prefix and scope a new policy\n"
+        "**Delta:** recommended option widens an existing grant instead — "
+        "faster, small added blast radius\n"
+        "**Consequence of no action:** groom stays blocked.\n"
+    )
+
+    def test_full_block_parses_all_three_fields(self):
+        summary, sota, delta = parse_context_block(self.FULL)
+        assert summary == "groom PAT lacks ssm:GetParameter on the new prefix."
+        assert sota == "least-privilege — split the prefix and scope a new policy"
+        assert delta.startswith("recommended option widens an existing grant")
+
+    def test_legacy_three_line_block_degrades_to_none(self):
+        legacy = (
+            "**Ask:** Should low-stakes gated decisions auto-apply a default?\n"
+            "**Options:** A) Yes, as scoped (recommended) B) No\n"
+            "**Consequence of no action:** pool re-accumulates.\n"
+        )
+        assert parse_context_block(legacy) == (None, None, None)
+
+    def test_partial_backfill_only_missing_field_is_none(self):
+        summary, sota, delta = parse_context_block(
+            "**Summary:** context here.\n**Ask:** x?\n**Options:** A) y (recommended)\n"
+        )
+        assert summary == "context here."
+        assert sota is None
+        assert delta is None
+
+    def test_empty_and_none_safe(self):
+        assert parse_context_block("") == (None, None, None)
+        assert parse_context_block(None) == (None, None, None)
 
 
 class TestWriteHelpers:
@@ -299,3 +345,58 @@ class TestDeferSnooze:
         assert [s["key"] for s in out["snoozed"]] == ["nousergon/alpha-engine-config#1"]
         assert out["snoozed"][0]["until"] == "2099-01-01"
         assert comment_calls == [2]  # no network spent on the snoozed item
+
+
+class TestBuildDecisionItemContext:
+    """``_build_decision_item`` must wire ``parse_context_block`` output into
+    the item exactly like it wires ``parse_ask_block`` — the console can only
+    render Summary/SOTA/Delta if the builder actually populates them."""
+
+    def test_full_block_populates_all_three_fields(self, monkeypatch):
+        import loaders.decision_queue_loader as dq
+        from datetime import datetime, timezone
+
+        monkeypatch.setattr(
+            dq, "_newest_gate_comment",
+            lambda repo, number: TestContextParser.FULL,
+        )
+        it = {
+            "number": 1, "title": "t", "created_at": "2026-07-01T00:00:00Z",
+            "html_url": "http://x", "body": "",
+        }
+        item = dq._build_decision_item(
+            "nousergon/alpha-engine-config", "gate:decision", it,
+            datetime.now(timezone.utc),
+        )
+        assert item.summary == "groom PAT lacks ssm:GetParameter on the new prefix."
+        assert item.sota.startswith("least-privilege")
+        assert item.delta.startswith("recommended option widens")
+
+    def test_unframed_comment_leaves_context_fields_none(self, monkeypatch):
+        import loaders.decision_queue_loader as dq
+        from datetime import datetime, timezone
+
+        monkeypatch.setattr(dq, "_newest_gate_comment", lambda repo, number: "status update")
+        it = {
+            "number": 2, "title": "t", "created_at": "2026-07-01T00:00:00Z",
+            "html_url": "http://x", "body": "",
+        }
+        item = dq._build_decision_item(
+            "nousergon/alpha-engine-config", "gate:operator", it,
+            datetime.now(timezone.utc),
+        )
+        assert (item.summary, item.sota, item.delta) == (None, None, None)
+
+
+class TestCardRendersContext:
+    """Source-text contract (mirrors ``TestScopeContract``'s style): the page
+    must actually surface the three new fields, not just parse them — a
+    populated ``item["sota"]``/``item["delta"]`` that never reaches
+    ``st.markdown``/``st.caption`` would satisfy the parser tests while
+    leaving the console showing nothing new to Brian."""
+
+    def test_view_renders_summary_sota_and_delta(self):
+        src = (REPO_ROOT / "views" / "49_Decision_Queue.py").read_text()
+        assert 'item["summary"]' in src
+        assert 'item["sota"]' in src
+        assert 'item["delta"]' in src
