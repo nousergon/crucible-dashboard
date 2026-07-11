@@ -62,6 +62,8 @@ INSTANCE_ID=$(curl -s --max-time 2 -H "X-aws-ec2-metadata-token: ${_imds_tok}" h
 
 # ── thresholds ──────────────────────────────────────────────────────────
 MEM_MIN_MB=150                       # alert if MemAvailable drops below this
+DISK_WARN_PCT=80                     # root-disk warn band (page, deduped)
+DISK_CRIT_PCT=90                     # root-disk critical band (page, deduped)
 SERVICES=(dashboard.service nous-ergon-live.service crucible-dash.service signal.service metron-api.service metron-web.service)
 PORTS=(8501 8502 8503 8504 8505 8000 3000)
 RETRY_ATTEMPTS=4                     # samples before a problem is confirmed
@@ -75,6 +77,30 @@ for cand in /usr/sbin/ss /sbin/ss /usr/bin/ss /bin/ss; do
     [ -x "$cand" ] && { SS_BIN="$cand"; break; }
 done
 
+# root_disk_pct — used percent of / as a bare integer (empty on probe failure).
+root_disk_pct() {
+    df --output=pcent / 2>/dev/null | tail -1 | tr -dc '0-9'
+}
+
+# Publish resource gauges to CloudWatch (AlphaEngine/Box) on EVERY tick, healthy
+# or not — the paired CW alarm treats MISSING data as breaching, so a box too
+# broken to publish (disk full, agent dead, instance stopped) still pages. This
+# is the independent channel for the 2026-07-11 class where disk-full killed
+# SSM while the instance pinged Online (config#2227).
+emit_metrics() {
+    local disk_pct mem_avail_mb
+    disk_pct=$(root_disk_pct)
+    mem_avail_mb=$(awk '/^MemAvailable:/{printf "%d", $2/1024}' /proc/meminfo)
+    # Swallowed failure mode: transient CW/credential error on a metrics-only
+    # publish. The health checks below must still run; the recording surface is
+    # the journal line here PLUS the alarm's missing-data breach if it persists.
+    aws cloudwatch put-metric-data --namespace "AlphaEngine/Box" \
+        --metric-data \
+        "MetricName=disk_used_percent,Dimensions=[{Name=InstanceId,Value=${INSTANCE_ID}}],Value=${disk_pct:-0},Unit=Percent" \
+        "MetricName=mem_available_mb,Dimensions=[{Name=InstanceId,Value=${INSTANCE_ID}}],Value=${mem_avail_mb:-0},Unit=Megabytes" \
+        2>&1 | head -1 | sed 's/^/box_health: metric publish failed: /' >&2 || true
+}
+
 # snapshot_problems — run the full check ONCE, printing one problem per line.
 # No shared state; the caller samples it repeatedly and keeps the intersection.
 snapshot_problems() {
@@ -83,6 +109,24 @@ snapshot_problems() {
     mem_avail_mb=$(awk '/^MemAvailable:/{printf "%d", $2/1024}' /proc/meminfo)
     if [ "${mem_avail_mb:-0}" -lt "$MEM_MIN_MB" ]; then
         echo "low memory: <${MEM_MIN_MB}MB available"
+    fi
+
+    # root-disk headroom. Problem strings are STATIC (no live percent) because
+    # the confirm-on-retry intersection matches lines exactly — a fluctuating
+    # number would never confirm. Exact percent goes to the journal via the
+    # emit_metrics tick and the confirmed-problems log line.
+    local disk_pct
+    disk_pct=$(root_disk_pct)
+    if [ -n "$disk_pct" ]; then
+        if [ "$disk_pct" -ge "$DISK_CRIT_PCT" ]; then
+            echo "disk critical: root >=${DISK_CRIT_PCT}% used"
+        elif [ "$disk_pct" -ge "$DISK_WARN_PCT" ]; then
+            echo "disk high: root >=${DISK_WARN_PCT}% used"
+        fi
+    else
+        # Fail loud: a broken df probe is a watchdog malfunction, same class as
+        # the ss guard below — report distinctly, never silently skip the check.
+        echo "watchdog: df probe failed (cannot verify root disk)"
     fi
 
     # systemd services
@@ -115,6 +159,9 @@ snapshot_problems() {
         echo "$listening" | grep -qE ":$p\b" || echo "port not listening: $p"
     done
 }
+
+# Gauges flow on every tick regardless of health outcome (see emit_metrics).
+emit_metrics
 
 # Confirm-on-retry: keep only problems present in EVERY sample. The common
 # all-healthy path takes a single sample and exits without added latency.

@@ -79,10 +79,20 @@ jobs:
         if: always()
         run: |
           set +e
-          aws ssm get-command-invocation \
+          # StatusDetails + elapsed time make delivery-vs-script failure
+          # self-classifying (config#2224): a terminal Failed in <1s with empty
+          # output means the command never EXECUTED on the box (SSM agent
+          # down / disk full — the config#2227 signature), which no rerun can
+          # heal — vs a real deploy-script failure, which the stderr below
+          # explains.
+          read -r STATUS DETAILS ELAPSED <<< "$(aws ssm get-command-invocation \
             --instance-id ${DASHBOARD_INSTANCE_ID} \
             --command-id "${{ steps.send.outputs.command_id }}" \
-            --query '[Status,ResponseCode]' --output text
+            --query '[Status,StatusDetails,ExecutionElapsedTime]' --output text)"
+          echo "status=$STATUS details=$DETAILS elapsed=$ELAPSED"
+          if [ "$STATUS" = "Failed" ] && printf '%s' "$ELAPSED" | grep -qE '^PT0\.[0-9]+S$'; then
+            echo "::error::SSM DELIVERY FAILURE — command never executed on the box (elapsed $ELAPSED, host-side fault: agent down or disk full, config#2227 signature). Rerunning the workflow cannot heal this; fix the instance first."
+          fi
           echo "── stdout ──"
           aws ssm get-command-invocation \
             --instance-id ${DASHBOARD_INSTANCE_ID} \
@@ -93,6 +103,26 @@ jobs:
             --instance-id ${DASHBOARD_INSTANCE_ID} \
             --command-id "${{ steps.send.outputs.command_id }}" \
             --query 'StandardErrorContent' --output text
+
+      - name: Ensure box disk alarm exists (alarm-as-code, config#2227)
+        run: |
+          # Idempotent: put-metric-alarm creates or updates in place. Pages the
+          # alpha-engine-alerts SNS (Telegram) when the box's root disk crosses
+          # 90% — or when the metric GOES MISSING for 3 periods, which catches
+          # the box/agent/watchdog being too broken to publish at all (the
+          # 2026-07-11 disk-full-killed-SSM class). Metric is published every
+          # 10 min by box_health.sh (AlphaEngine/Box namespace).
+          aws cloudwatch put-metric-alarm \
+            --alarm-name alpha-engine-dashboard-box-disk-critical \
+            --alarm-description "Dashboard EC2 root disk >=90% or box health metric missing (config#2227)" \
+            --namespace AlphaEngine/Box --metric-name disk_used_percent \
+            --dimensions Name=InstanceId,Value=${DASHBOARD_INSTANCE_ID} \
+            --statistic Maximum --period 600 \
+            --evaluation-periods 3 --datapoints-to-alarm 2 \
+            --threshold 90 --comparison-operator GreaterThanOrEqualToThreshold \
+            --treat-missing-data breaching \
+            --alarm-actions arn:aws:sns:us-east-1:711398986525:alpha-engine-alerts \
+            --ok-actions arn:aws:sns:us-east-1:711398986525:alpha-engine-alerts
 
       - name: Append to system-wide deploy changelog
         if: always()

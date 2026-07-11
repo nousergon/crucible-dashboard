@@ -1,0 +1,13 @@
+[Unit]
+Description=Weekly disk-hygiene pass (package caches + journal) for the dashboard EC2
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Root: dnf clean + journal vacuum need it; user caches handled via runuser.
+ExecStart=/usr/local/bin/box_hygiene.sh
+TimeoutStartSec=300
+RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target

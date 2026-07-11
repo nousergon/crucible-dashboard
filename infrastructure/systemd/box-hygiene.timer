@@ -1,0 +1,13 @@
+[Unit]
+Description=Run the dashboard EC2 disk-hygiene pass weekly
+Requires=box-hygiene.service
+
+[Timer]
+# Sunday 09:20 UTC — after the Saturday weekly pipeline is long done, before
+# the Monday preopen chain. Catch up a missed slot if the box was down.
+OnCalendar=Sun *-*-* 09:20:00 UTC
+Persistent=true
+Unit=box-hygiene.service
+
+[Install]
+WantedBy=timers.target
