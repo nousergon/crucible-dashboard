@@ -10,6 +10,7 @@ import os
 import pandas as pd
 import streamlit as st
 
+from loaders import db_schema
 from loaders.outcome_store import attach_outcomes
 from loaders.s3_loader import load_config, download_s3_binary
 
@@ -268,10 +269,11 @@ def get_cycle_funnel(eval_date: str) -> dict:
         params=(eval_date,),
     )
     cio = query_research_db(
-        "SELECT ticker, cio_decision, cio_rank, cio_conviction, final_score "
+        f"SELECT {db_schema.join(db_schema.CIO_FUNNEL_COLS)} "
         "FROM cio_evaluations WHERE eval_date=? ORDER BY cio_rank",
         params=(eval_date,),
     )
+    db_schema.warn_missing(cio, "cio_evaluations", *db_schema.CIO_FUNNEL_COLS)
 
     def _int(df, col):
         if df.empty or col not in df.columns or pd.isna(df.iloc[0][col]):
@@ -302,7 +304,7 @@ def get_cio_inputs(eval_date: str) -> pd.DataFrame:
     ``team_recommended=1``). One row per (team_id, ticker) with the team-stage
     scores the CIO sees. Empty frame if no cycle ran / table missing."""
     return query_research_db(
-        "SELECT team_id, ticker, quant_rank, quant_score, qual_score "
+        f"SELECT {db_schema.join(db_schema.CIO_INPUTS_COLS)} "
         "FROM team_candidates "
         "WHERE eval_date=? AND team_recommended=1 "
         "ORDER BY team_id, quant_rank",
@@ -316,9 +318,7 @@ def get_cio_evaluations(eval_date: str) -> pd.DataFrame:
     rule_tags. Ordered ADVANCEd-first (by rank), then the rest. Empty frame if
     the CIO stage didn't run / persist that cycle."""
     return query_research_db(
-        "SELECT ticker, team_id, quant_score, qual_score, combined_score, "
-        "macro_shift, final_score, cio_decision, cio_conviction, cio_rank, "
-        "rationale, rule_tags "
+        f"SELECT {db_schema.join(db_schema.CIO_EVALUATIONS_COLS)} "
         "FROM cio_evaluations WHERE eval_date=? "
         "ORDER BY (cio_rank IS NULL), cio_rank",
         params=(eval_date,),
@@ -330,9 +330,7 @@ def get_team_candidates(eval_date: str, team_id: str) -> pd.DataFrame:
     score, the per-sub-signal scores, and the team_recommended flag. Ordered by
     quant_rank. Empty frame if the team didn't run / persist that cycle."""
     return query_research_db(
-        "SELECT ticker, quant_rank, quant_score, qual_score, team_recommended, "
-        "rsi_sub_score, macd_sub_score, ma50_sub_score, ma200_sub_score, "
-        "momentum_sub_score "
+        f"SELECT {db_schema.join(db_schema.TEAM_CANDIDATES_COLS)} "
         "FROM team_candidates WHERE eval_date=? AND team_id=? "
         "ORDER BY (quant_rank IS NULL), quant_rank",
         params=(eval_date, team_id),
@@ -346,7 +344,7 @@ def get_team_inputs(eval_date: str, team_id: str) -> pd.DataFrame:
     absent (pre-v19 DB) or the cycle predates the ledger — callers fall back to
     team_candidates in that case."""
     return query_research_db(
-        "SELECT ticker, source, sector FROM team_inputs "
+        f"SELECT {db_schema.join(db_schema.TEAM_INPUTS_COLS)} FROM team_inputs "
         "WHERE eval_date=? AND team_id=? ORDER BY ticker",
         params=(eval_date, team_id),
     )
@@ -357,13 +355,14 @@ def get_scanner_evaluations(eval_date: str) -> pd.DataFrame:
     per-gate pass flags (quant_filter_pass / liquidity_pass / volatility_pass /
     balance_sheet_pass), filter_fail_reason, scan_path, sector, and the
     technical indicators. Empty frame if no cycle ran that date."""
-    return query_research_db(
-        "SELECT ticker, sector, tech_score, scan_path, quant_filter_pass, "
-        "liquidity_pass, volatility_pass, balance_sheet_pass, filter_fail_reason, "
-        "rsi_14, atr_pct, price_vs_ma200, current_price, avg_volume_20d "
+    df = query_research_db(
+        f"SELECT {db_schema.join(db_schema.SCANNER_SCREEN_COLS)} "
         f"FROM scanner_evaluations WHERE eval_date=? "
         f"ORDER BY sector, tech_score DESC LIMIT {_MAX_QUERY_ROWS}",
         params=(eval_date,),
+    )
+    return db_schema.warn_missing(
+        df, "scanner_evaluations", *db_schema.SCANNER_SCREEN_COLS
     )
 
 
@@ -489,7 +488,7 @@ def get_model_version_scorecard() -> pd.DataFrame:
     until challengers exist; the champion's own scorecard shows immediately.
     Missing shadow table degrades to champion-only (query returns empty).
     """
-    cols = "model_version, prediction_date, p_up, actual_log_alpha, correct"
+    cols = db_schema.join(db_schema.PREDICTOR_SCORECARD_COLS)
     live = query_research_db(
         f"SELECT {cols} FROM predictor_outcomes WHERE actual_log_alpha IS NOT NULL"
     )
@@ -563,7 +562,7 @@ def get_per_spec_realized_alpha_series(window: int = 8) -> pd.DataFrame:
     sorted by model_version then prediction_date. Empty until outcomes mature;
     a missing shadow table degrades to champion-only.
     """
-    cols = "model_version, prediction_date, actual_log_alpha"
+    cols = db_schema.join(db_schema.PREDICTOR_REALIZED_SERIES_COLS)
     live = query_research_db(
         f"SELECT {cols} FROM predictor_outcomes WHERE actual_log_alpha IS NOT NULL"
     )
@@ -692,10 +691,7 @@ def get_focus_list_audit(
     )
     sql = f"""
         SELECT
-            ticker, eval_date, sector,
-            focus_score, focus_stance, focus_team_id,
-            focus_rank_in_team, focus_rank_in_sector,
-            focus_list_passed, agent_override,
+            {db_schema.join(db_schema.FOCUS_AUDIT_COLS)},
             {override_team_col},
             quant_filter_pass
         FROM scanner_evaluations

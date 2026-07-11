@@ -24,6 +24,10 @@ render_host(
         ("Saturday SF Watch", "37_Saturday_SF_Watch.py"),
         ("Backlog Groom", "42_Backlog_Groom.py"),
         ("Merged PRs", "47_Merged_PRs.py"),
+        # config#646 — the fleet's flow-doctor end-of-run heartbeat ("alive but
+        # quiet" vs "suppressing X per flow"), the System Health consumer for the
+        # "make it actually kick in" arc.
+        ("Flow-Doctor Heartbeat", "27_Flow_Doctor_Heartbeat.py"),
     ],
     key="host_system_health",
 )
