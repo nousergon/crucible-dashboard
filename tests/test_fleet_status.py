@@ -32,6 +32,7 @@ from fleet_status import (  # noqa: E402
     daemon_window,
     market_hours_utc,
     resolve_artifact_freshness,
+    resolve_ci_watch,
     resolve_daemon,
     resolve_fleet,
     resolve_freshness_monitor,
@@ -39,6 +40,7 @@ from fleet_status import (  # noqa: E402
     resolve_live_service,
     resolve_module_self_reports,
     resolve_pipeline,
+    resolve_sf_watch,
     resolve_trading_instance,
     trading_instance_window,
     worst_dot,
@@ -457,15 +459,64 @@ class TestModuleSelfReports:
         assert resolve_module_self_reports(_inputs()).dot == GRAY
 
 
+# ── SF Watch / CI Watch ──────────────────────────────────────────────────────
+
+
+class TestSfWatch:
+    def test_gray_no_events_ever(self):
+        s = resolve_sf_watch(_inputs())
+        assert s.dot == GRAY
+        assert "no watch events recorded" in s.reason
+
+    def test_gray_idle_with_last_fired(self):
+        # Idle-with-history is still the healthy steady state — dispatch-
+        # driven, so no fire since last Saturday is expected, not stale.
+        s = resolve_sf_watch(_inputs(
+            sf_watch_last_date="2026-07-04", sf_watch_last_n_events=2))
+        assert s.dot == GRAY
+        assert "2026-07-04" in s.reason
+        assert "2 event(s)" in s.reason
+
+    def test_red_open_dispatch_alert(self):
+        # The one thing this component can catch without a live failure to
+        # trigger it: sf-watch.yml's own "dispatch failed to launch" issue.
+        s = resolve_sf_watch(_inputs(
+            sf_watch_alert="SF-watch dispatch failed to launch for x (2026-07-11)"))
+        assert s.dot == RED
+        assert "dispatch alert open" in s.reason
+
+    def test_deep_links_to_saturday_sf_watch_page(self):
+        assert resolve_sf_watch(_inputs()).deep_link == "saturday-sf-watch"
+
+
+class TestCiWatch:
+    def test_gray_no_events_ever(self):
+        s = resolve_ci_watch(_inputs())
+        assert s.dot == GRAY
+        assert "no watch events recorded" in s.reason
+
+    def test_gray_idle_with_last_fired(self):
+        s = resolve_ci_watch(_inputs(
+            ci_watch_last_date="2026-07-10", ci_watch_last_n_events=1))
+        assert s.dot == GRAY
+        assert "2026-07-10" in s.reason
+
+    def test_red_open_dispatch_alert(self):
+        s = resolve_ci_watch(_inputs(
+            ci_watch_alert="CI-watch dispatch failed to launch for nousergon/x"))
+        assert s.dot == RED
+        assert "dispatch alert open" in s.reason
+
+
 # ── Full resolve + rollup ───────────────────────────────────────────────────
 
 
 class TestResolveFleet:
     def test_returns_all_components_in_known_groups(self):
         statuses = resolve_fleet(_inputs())
-        assert len(statuses) == 11
+        assert len(statuses) == 13
         assert {s.group for s in statuses} <= set(GROUP_ORDER)
-        assert len({s.component_id for s in statuses}) == 11
+        assert len({s.component_id for s in statuses}) == 13
 
     def test_worst_dot_severity_order(self):
         statuses = resolve_fleet(_inputs(trading_instance_state="stopped"))

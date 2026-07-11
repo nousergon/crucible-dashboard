@@ -29,9 +29,12 @@ degraded reads are visible, never swallowed.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import subprocess
+import urllib.error
+import urllib.request
 from datetime import date, datetime, timezone
 
 import streamlit as st
@@ -47,13 +50,18 @@ from loaders.pipeline_status_loader import (
     derive_cycle_verdict,
     read_pipeline_state_with_fallback,
 )
+from loaders.pr_merge_loader import _github_token
 from loaders.s3_loader import (
     _research_bucket,
     _trades_bucket,
     download_s3_json,
     get_s3_client,
+    list_ci_watch_dates,
     list_groom_run_keys,
+    list_saturday_sf_watch_dates,
+    load_ci_watch,
     load_groom_run,
+    load_saturday_sf_watch,
 )
 from trading_calendar import is_trading_day
 
@@ -298,6 +306,97 @@ def _module_health_rows() -> list[dict]:
     return rows
 
 
+# ── Fleet-SF Watch / Fleet CI Watch (config#1227/#1593) ────────────────────
+# Failure-driven dispatch agents (repository_dispatch only, no cron) — the
+# watch-log artifacts are written only on a real trading/CI failure, so an
+# empty list is the healthy steady state (see loaders.s3_loader's own
+# docstrings on list_saturday_sf_watch_dates/list_ci_watch_dates). The one
+# thing worth escalating to RED without a live failure to trigger it: the
+# dispatch mechanism itself is known to be broken — sf-watch.yml's own
+# ci-watch-dispatch/sf-watch-dispatch jobs file an open P1 GitHub issue
+# titled "{SF,CI}-watch dispatch failed to launch for ..." whenever the
+# Lambda invoke doesn't report launched=true. Reuses the FLOW_DOCTOR_GITHUB_
+# TOKEN already hydrated on the box for loaders.pr_merge_loader/
+# decision_queue_loader — no new credential.
+
+_WATCH_ALERT_TTL = 60  # short — an open dispatch-failure alert should surface fast
+_SF_WATCH_ALERT_TITLE = "SF-watch dispatch failed to launch"
+_CI_WATCH_ALERT_TITLE = "CI-watch dispatch failed to launch"
+
+
+@st.cache_data(ttl=_WATCH_ALERT_TTL, show_spinner=False)
+def _open_watch_dispatch_issues() -> list[dict]:
+    """Open P1 issues on alpha-engine-config, for dispatch-failure title
+    matching. [] on missing token or fetch failure — logged, never silently
+    conflated with 'no alert' by the caller having a different signal for
+    that (per feedback_no_silent_fails the failure is WARN-logged here;
+    the resolver still renders an honest idle/last-fired dot rather than a
+    fake red, since a fetch failure is not evidence of a broken dispatch)."""
+    token = _github_token()
+    if not token:
+        logger.warning(
+            "fleet_status: no GitHub token available — sf/ci watch dispatch "
+            "alerts unavailable this tick"
+        )
+        return []
+    req = urllib.request.Request(
+        "https://api.github.com/repos/nousergon/alpha-engine-config/issues"
+        "?state=open&labels=P1&per_page=100",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "alpha-engine-dashboard-fleet-status-loader",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode())
+        return data if isinstance(data, list) else []
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        logger.warning("fleet_status: GitHub P1 issue fetch failed: %s", exc)
+        return []
+
+
+def _watch_dispatch_alert(title_substr: str) -> str | None:
+    for issue in _open_watch_dispatch_issues():
+        title = issue.get("title") or ""
+        if title_substr in title:
+            return title
+    return None
+
+
+@st.cache_data(ttl=_TTL_SECONDS, show_spinner=False)
+def _sf_watch_snapshot() -> dict:
+    dates = list_saturday_sf_watch_dates()
+    last_date = dates[0] if dates else None
+    n_events = 0
+    if last_date:
+        doc = load_saturday_sf_watch(last_date)
+        if isinstance(doc, dict) and isinstance(doc.get("events"), list):
+            n_events = len(doc["events"])
+    return {
+        "last_date": last_date,
+        "last_n_events": n_events,
+        "alert": _watch_dispatch_alert(_SF_WATCH_ALERT_TITLE),
+    }
+
+
+@st.cache_data(ttl=_TTL_SECONDS, show_spinner=False)
+def _ci_watch_snapshot() -> dict:
+    dates = list_ci_watch_dates()
+    last_date = dates[0] if dates else None
+    n_events = 0
+    if last_date:
+        doc = load_ci_watch(last_date)
+        if isinstance(doc, dict) and isinstance(doc.get("events"), list):
+            n_events = len(doc["events"])
+    return {
+        "last_date": last_date,
+        "last_n_events": n_events,
+        "alert": _watch_dispatch_alert(_CI_WATCH_ALERT_TITLE),
+    }
+
+
 # ── Local box services ──────────────────────────────────────────────────────
 
 
@@ -327,6 +426,8 @@ def gather_fleet_inputs() -> FleetInputs:
     now = datetime.now(timezone.utc)
     ec2 = _ec2_snapshot()
     hb, cr = _freshness_artifacts()
+    sf_watch = _sf_watch_snapshot()
+    ci_watch = _ci_watch_snapshot()
     return FleetInputs(
         now=now,
         is_trading_day=is_trading_day(date.today()),
@@ -341,4 +442,10 @@ def gather_fleet_inputs() -> FleetInputs:
         check_results=cr,
         groom=_groom_snapshot(ec2),
         module_health=tuple(ModuleHealthRow(**r) for r in _module_health_rows()),
+        sf_watch_last_date=sf_watch["last_date"],
+        sf_watch_last_n_events=sf_watch["last_n_events"],
+        sf_watch_alert=sf_watch["alert"],
+        ci_watch_last_date=ci_watch["last_date"],
+        ci_watch_last_n_events=ci_watch["last_n_events"],
+        ci_watch_alert=ci_watch["alert"],
     )

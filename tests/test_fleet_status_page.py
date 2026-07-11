@@ -254,3 +254,36 @@ class TestPipelineSnapshots:
         )
         snaps = fsl._pipeline_snapshots()
         assert snaps["postclose"].status == "NO_EXECUTIONS"
+
+
+class TestWatchDispatchAlerts:
+    """_watch_dispatch_alert's title-matching (the only non-S3-passthrough
+    logic in the SF/CI Watch snapshot loaders) — monkeypatches the cached
+    _open_watch_dispatch_issues directly so no network/AWS/cache-runtime
+    dependency is exercised."""
+
+    def test_matches_sf_watch_title(self, monkeypatch):
+        import loaders.fleet_status_loader as fsl
+
+        monkeypatch.setattr(fsl, "_open_watch_dispatch_issues", lambda: [
+            {"title": "SF-watch dispatch failed to launch for "
+                      "ne-weekly-freshness-pipeline (2026-07-11)"},
+        ])
+        assert fsl._watch_dispatch_alert(fsl._SF_WATCH_ALERT_TITLE) is not None
+        assert fsl._watch_dispatch_alert(fsl._CI_WATCH_ALERT_TITLE) is None
+
+    def test_no_match_returns_none(self, monkeypatch):
+        import loaders.fleet_status_loader as fsl
+
+        monkeypatch.setattr(
+            fsl, "_open_watch_dispatch_issues",
+            lambda: [{"title": "some unrelated P1 issue"}],
+        )
+        assert fsl._watch_dispatch_alert(fsl._SF_WATCH_ALERT_TITLE) is None
+        assert fsl._watch_dispatch_alert(fsl._CI_WATCH_ALERT_TITLE) is None
+
+    def test_no_open_issues_returns_none(self, monkeypatch):
+        import loaders.fleet_status_loader as fsl
+
+        monkeypatch.setattr(fsl, "_open_watch_dispatch_issues", lambda: [])
+        assert fsl._watch_dispatch_alert(fsl._SF_WATCH_ALERT_TITLE) is None

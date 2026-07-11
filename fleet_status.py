@@ -178,6 +178,19 @@ class FleetInputs:
     check_results: Optional[dict] = None
     groom: GroomSnapshot = field(default_factory=GroomSnapshot)
     module_health: tuple = ()  # tuple[ModuleHealthRow, ...]
+    # Fleet-SF Watch / Fleet CI Watch (config#1227/#1593) — failure-driven
+    # dispatch agents, not continuous services: idle is the healthy steady
+    # state (see resolve_sf_watch/resolve_ci_watch). last_date/n_events come
+    # from the newest ``consolidated/{saturday_sf_watch,ci_watch}/{date}.json``
+    # watch-log; alert is the title of an open P1 "dispatch failed to
+    # launch" issue (sf-watch.yml's own failure reporting) — None when the
+    # dispatch mechanism itself hasn't been caught broken.
+    sf_watch_last_date: Optional[str] = None
+    sf_watch_last_n_events: int = 0
+    sf_watch_alert: Optional[str] = None
+    ci_watch_last_date: Optional[str] = None
+    ci_watch_last_n_events: int = 0
+    ci_watch_alert: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -659,6 +672,63 @@ def resolve_module_self_reports(inp: FleetInputs) -> ComponentStatus:
     )
 
 
+def resolve_sf_watch(inp: FleetInputs) -> ComponentStatus:
+    """Saturday SF Watch — fires only on a Saturday SF terminal failure
+    (repository_dispatch, config#1227). Idle is the healthy steady state, so
+    this is GRAY the vast majority of the time by design; it only escalates
+    to RED when the dispatch mechanism ITSELF is known to have broken (an
+    open P1 issue from sf-watch.yml's own "dispatch failed to launch"
+    failure report) — it cannot detect a silent break between real
+    failures (that needs a synthetic canary, deliberately out of scope
+    here; see alpha-engine-config follow-up)."""
+    cid, label = "sf_watch", "Saturday SF Watch (resilience agent)"
+    if inp.sf_watch_alert:
+        return ComponentStatus(
+            cid, label, GROUP_JOBS, RED,
+            f"dispatch alert open: {inp.sf_watch_alert}",
+            deep_link="saturday-sf-watch",
+        )
+    if inp.sf_watch_last_date:
+        return ComponentStatus(
+            cid, label, GROUP_JOBS, GRAY,
+            f"idle — last fired {inp.sf_watch_last_date} "
+            f"({inp.sf_watch_last_n_events} event(s)); dispatch-driven, "
+            "fires only on a Saturday SF failure",
+            deep_link="saturday-sf-watch",
+        )
+    return ComponentStatus(
+        cid, label, GROUP_JOBS, GRAY,
+        "no watch events recorded — dispatch-driven, fires only on a "
+        "Saturday SF failure",
+        deep_link="saturday-sf-watch",
+    )
+
+
+def resolve_ci_watch(inp: FleetInputs) -> ComponentStatus:
+    """Fleet CI Watch — fires only on a fleet repo's main-branch CI/deploy
+    going red (repository_dispatch, config#1593). Same idle-is-healthy
+    posture as :func:`resolve_sf_watch`; no dedicated console detail page
+    yet, so no deep_link."""
+    cid, label = "ci_watch", "Fleet CI Watch (resilience agent)"
+    if inp.ci_watch_alert:
+        return ComponentStatus(
+            cid, label, GROUP_JOBS, RED,
+            f"dispatch alert open: {inp.ci_watch_alert}",
+        )
+    if inp.ci_watch_last_date:
+        return ComponentStatus(
+            cid, label, GROUP_JOBS, GRAY,
+            f"idle — last fired {inp.ci_watch_last_date} "
+            f"({inp.ci_watch_last_n_events} event(s)); dispatch-driven, "
+            "fires only on a fleet main-branch CI/deploy failure",
+        )
+    return ComponentStatus(
+        cid, label, GROUP_JOBS, GRAY,
+        "no watch events recorded — dispatch-driven, fires only on a "
+        "fleet main-branch CI/deploy failure",
+    )
+
+
 def resolve_fleet(inp: FleetInputs) -> list[ComponentStatus]:
     """All components, in render order (grouped)."""
     return [
@@ -670,6 +740,8 @@ def resolve_fleet(inp: FleetInputs) -> list[ComponentStatus]:
         resolve_pipeline("preopen", inp),
         resolve_pipeline("postclose", inp),
         resolve_groomer(inp),
+        resolve_sf_watch(inp),
+        resolve_ci_watch(inp),
         resolve_freshness_monitor(inp),
         resolve_artifact_freshness(inp),
         resolve_module_self_reports(inp),
