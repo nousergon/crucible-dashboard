@@ -1,10 +1,18 @@
 """
-LLM Cost — Alpha Engine (private console)
+API — Alpha Engine (private console)
 
-Per-Saturday and trailing-trend visibility on Anthropic LLM spend across
-the Research pipeline's agent fleet. Reads the per-call cost archive
-written by alpha-engine-research's `evals/cost_aggregator.py`
-(`decision_artifacts/_cost/{date}/cost.parquet`, ~weekly cadence).
+All pay-per-token LLM spend — anything billed by the call, as opposed to the
+flat Claude Max 20x subscription (see the **Plan** tab for that). Two
+independent sources feed this page:
+
+1. **Personal — non-Anthropic** (DeepSeek, etc.) — Brian's own Claude Code
+   usage routed through a non-Anthropic provider. Source: the per-(source,date)
+   JSON at ``claude_code_usage/{source}/{date}.json``, produced by
+   alpha-engine-config ``scripts/collect_usage.py``.
+2. **Research pipeline — Anthropic** — per-call Anthropic spend from the
+   Saturday research pipeline's agent fleet + intraday alerts. Source:
+   ``decision_artifacts/_cost/{date}/cost.parquet``, emitted by
+   ``evals/cost_aggregator.py`` on each run.
 
 ROADMAP "Streamlit dashboard cost view (P2)" — gate cleared once the
 cost archive crosses ~2 weeks of depth so the weekly trend signal is
@@ -15,20 +23,101 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import date, timedelta
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+from krepis.usage_pacing import reset_window
 
-from loaders.s3_loader import load_llm_cost_parquets
+from loaders.s3_loader import (
+    load_claude_code_usage,
+    load_llm_cost_parquets,
+    load_usage_pacing_config,
+)
 
+_PT = ZoneInfo("America/Los_Angeles")
+_FALLBACK_WEEKLY_RESET_ANCHOR = datetime(2026, 7, 12, 21, 0)   # PT, naive — Sunday 9pm PT
+WEEKLY_PERIOD = timedelta(days=7)
 
 st.divider()
 
-st.title("LLM Cost")
+st.title("API")
+st.caption(
+    "All pay-per-token LLM spend — Brian's personal non-Anthropic usage plus the "
+    "research pipeline's Anthropic API spend. See the **Plan** tab for Claude Max "
+    "20x subscription (WET-vs-ceiling) tracking, which is separate from all of this."
+)
+
+# =============================================================================
+# Personal — non-Anthropic (DeepSeek, etc.) API cost
+# =============================================================================
+st.subheader("Personal — non-Anthropic API cost", divider="orange")
+
+_pacing_cfg = load_usage_pacing_config()
+_reset_anchor = (
+    datetime.fromisoformat(_pacing_cfg["weekly_reset_anchor_pt"])
+    if _pacing_cfg else _FALLBACK_WEEKLY_RESET_ANCHOR
+)
+
+df_model, _df_hour = load_claude_code_usage(n_days=35)
+df_non_anthropic = df_model[df_model["provider"] == "non-anthropic"] if not df_model.empty else df_model
+
+if df_non_anthropic.empty:
+    st.caption("No non-Anthropic usage data yet — routed via Claude Code's provider "
+               "config (e.g. DeepSeek). Source: `claude_code_usage/{source}/{date}.json`.")
+else:
+    now_pt = datetime.now(_PT).replace(tzinfo=None)
+    win_start, _next_reset = reset_window(now_pt, _reset_anchor, WEEKLY_PERIOD)
+    na_week = df_non_anthropic[df_non_anthropic["date"] >= win_start.date().isoformat()]
+    na_week_tokens = int(na_week["total"].sum()) if not na_week.empty else 0
+    na_week_cost = float(na_week["cost_usd"].sum()) if not na_week.empty else 0.0
+
+    nc1, nc2, nc3 = st.columns(3)
+    nc1.metric("Raw tokens this week", f"{na_week_tokens/1e6:,.0f}M",
+               help=f"Reset-aligned window start {win_start:%Y-%m-%d %H:%M} PT "
+                    "(same cadence as the Plan tab's Max ceiling reset). "
+                    "Non-Anthropic tokens never draw against the Max quota.")
+    nc2.metric("API cost this week", f"${na_week_cost:,.2f}",
+               help="Notional API-equivalent cost at current public pricing. "
+                    "DeepSeek V4-Pro: $1.74/M in, $3.48/M out (non-promo, post-May-31 2026).")
+    nc3.metric("Source", f"{na_week['source'].nunique() if not na_week.empty else 0}",
+               help="Number of distinct sources contributing non-Anthropic usage.")
+
+    na_m1, na_m2 = st.columns([2, 1])
+    na_daily_mod = (df_non_anthropic.groupby(["date", "model"], as_index=False)["total"].sum())
+    fig_na_tok = px.bar(na_daily_mod, x="date", y="total", color="model",
+                        labels={"total": "raw tokens", "date": ""})
+    fig_na_tok.update_layout(barmode="stack", height=300, margin=dict(t=10, b=0, l=0, r=0))
+    na_m1.plotly_chart(fig_na_tok, use_container_width=True)
+
+    na_model_cost = (df_non_anthropic.groupby("model", as_index=False)["cost_usd"].sum()
+                     .sort_values("cost_usd", ascending=False))
+    total_na_cost = na_model_cost["cost_usd"].sum()
+    fig_na_pie = px.pie(na_model_cost, names="model", values="cost_usd", hole=0.5)
+    fig_na_pie.update_layout(height=300, margin=dict(t=10, b=0, l=0, r=0), showlegend=True)
+    na_m2.plotly_chart(fig_na_pie, use_container_width=True)
+    na_m2.caption(
+        f"API-equivalent cost at current public pricing (35-day window). "
+        f"Total tracked: **${total_na_cost:,.2f}**. "
+        f"DeepSeek V4-Pro: $1.74/M in, $3.48/M out (non-promo, post-May-31 2026)."
+    )
+
+    na_daily_cost = (df_non_anthropic.groupby(["date", "model"], as_index=False)["cost_usd"].sum())
+    fig_na_cost = px.bar(na_daily_cost, x="date", y="cost_usd", color="model",
+                         labels={"cost_usd": "API cost ($)", "date": ""})
+    fig_na_cost.update_layout(barmode="stack", height=280, margin=dict(t=10, b=0, l=0, r=0))
+    st.plotly_chart(fig_na_cost, use_container_width=True)
+
+st.markdown("---")
+
+# =============================================================================
+# Research pipeline — Anthropic API cost
+# =============================================================================
+st.subheader("Research pipeline — Anthropic API cost", divider="gray")
 st.caption(
     "Per-call Anthropic spend from the Saturday research pipeline + intraday "
     "alerts. Source: `decision_artifacts/_cost/{date}/cost.parquet`, emitted "
@@ -292,7 +381,7 @@ with tab_calls:
 
 st.markdown("---")
 st.caption(
-    "Window covers the most recent 12 capture dates. Production cost-cap thresholds live in the "
-    "Saturday pipeline's hard ceiling check; this surface is observation-only."
+    "Research-fleet window covers the most recent 12 capture dates. Production cost-cap "
+    "thresholds live in the Saturday pipeline's hard ceiling check; this surface is "
+    "observation-only."
 )
-
