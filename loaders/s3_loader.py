@@ -9,6 +9,7 @@ Naming conventions:
   - _fetch_*  — internal helpers that combine S3 I/O + parsing
 """
 
+import contextvars
 import functools
 import io
 import json
@@ -26,6 +27,66 @@ import yaml
 from shared.constants import DEFAULT_CACHE_TTL_SECONDS, ISO_DATE_PATTERN
 
 logger = logging.getLogger(__name__)
+
+
+class S3AccessError(Exception):
+    """Raised for a non-NoSuchKey S3 ClientError (config#2339) when the
+    caller has opted into strict mode (see raise_s3_access_errors below).
+
+    Distinguishes "the object legitimately doesn't exist" (NoSuchKey — stays
+    honest-ABSENT, returns None) from "S3 refused/failed the request for a
+    reason unrelated to the object's existence" (AccessDenied, malformed
+    request, retries-exhausted throttling, etc.) — the latter is an
+    operational failure that must not be silently rendered as empty data.
+    """
+
+    def __init__(self, message: str, *, error_type: str, bucket: str, key: str):
+        super().__init__(message)
+        self.error_type = error_type
+        self.bucket = bucket
+        self.key = key
+
+
+# _STRICT_S3_ERRORS (config#2339): the ~40 Streamlit console call sites into
+# this module were all written against the historical "None on ANY S3
+# failure, including AccessDenied" contract — several (e.g. views 2/6) have
+# their own get_recent_s3_errors()-based degrade UI for exactly that
+# contract, and none of them expect this module to ever raise. dash_api's
+# `_guard`, on the other hand, needs a hard AccessDenied to become an actual
+# exception it can map to a 503 — the whole point of config#2339 (the
+# console's swallow-to-None + telemetry mitigation already exists and is
+# staying; only the API surface was lying about health).
+#
+# Both dash_api and the Streamlit console call the SAME shared loader
+# functions (e.g. load_report_card, load_eod_pnl) — there is no separate
+# code path to hang a "strict" kwarg off without threading it through every
+# loader in the chain (several of which are @st.cache_data-memoized, where
+# an extra kwarg would also perturb the cache key). A ContextVar opt-in
+# scoped to the call is the minimal-blast-radius way to give dash_api's
+# `_guard` strict behavior while leaving every existing Streamlit call site
+# byte-for-byte unchanged (default: swallow to None + record, same as
+# before this fix).
+_STRICT_S3_ERRORS: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "_STRICT_S3_ERRORS", default=False
+)
+
+
+class raise_s3_access_errors:
+    """Context manager: within this block, non-NoSuchKey S3 ClientErrors
+    propagate as S3AccessError instead of being swallowed to None. Used by
+    dash_api._guard so a real IAM/AccessDenied failure becomes a 503 instead
+    of an honest-looking empty response. Reentrant-safe (restores the prior
+    value on exit, so nested use — e.g. one guarded loader calling another
+    internally — behaves correctly)."""
+
+    def __enter__(self):
+        self._token = _STRICT_S3_ERRORS.set(True)
+        return self
+
+    def __exit__(self, *exc_info):
+        _STRICT_S3_ERRORS.reset(self._token)
+        return False
+
 
 # ---------------------------------------------------------------------------
 # S3 error tracking
@@ -137,7 +198,19 @@ _S3_RETRY_BACKOFF_BASE = 1.0  # seconds
 def _s3_get_object(bucket: str, key: str) -> bytes | None:
     """Raw GetObject call with retry for transient errors.
 
-    Returns the response body bytes or None on error.
+    Returns the response body bytes on success, or None when the object is
+    legitimately absent (NoSuchKey — honest-ABSENT, not an error) OR (the
+    default, back-compat mode) any other failure.
+
+    Under raise_s3_access_errors() (config#2339 — dash_api._guard opts in),
+    raises S3AccessError instead of returning None for any OTHER
+    non-retryable ClientError — most notably AccessDenied: an IAM-gap
+    failure is an operational fault, not "no data", and must not be
+    indistinguishable from a 404 to a caller that needs to tell the
+    difference. Outside strict mode, every existing Streamlit console call
+    site keeps its original contract unchanged: None + a recorded entry in
+    get_recent_s3_errors(), no exception.
+
     Retries on ConnectionError, TimeoutError, and throttling (503/SlowDown).
     Does NOT retry on NoSuchKey or AccessDenied (non-transient).
     """
@@ -169,6 +242,11 @@ def _s3_get_object(bucket: str, key: str) -> bytes | None:
                 "S3 ClientError for %s/%s: %s (non-retryable)", bucket, key, error_code,
             )
             _record_s3_error(bucket, key, f"ClientError:{error_code}", str(e))
+            if _STRICT_S3_ERRORS.get():
+                raise S3AccessError(
+                    f"S3 {error_code} for {bucket}/{key}: {e}",
+                    error_type=f"ClientError:{error_code}", bucket=bucket, key=key,
+                ) from e
             return None
         except (ConnectionError, TimeoutError) as e:
             last_error = e
@@ -200,8 +278,14 @@ def _s3_get_object(bucket: str, key: str) -> bytes | None:
 def _fetch_s3_json(bucket: str, key: str) -> dict | list | None:
     """Fetch an S3 object and parse as JSON with unified error tracking.
 
-    Returns None on missing key or any failure (errors are logged and recorded).
-    Delegates S3 I/O to _s3_get_object so error handling is not duplicated.
+    Returns None on missing key (honest-ABSENT), a JSON-parse failure, or
+    (default mode) any other S3 failure — errors are logged and recorded
+    either way. Delegates S3 I/O to _s3_get_object so error handling is not
+    duplicated — in particular, under raise_s3_access_errors() (config#2339,
+    dash_api._guard) _s3_get_object raises S3AccessError for a non-NoSuchKey
+    ClientError (e.g. AccessDenied) instead of returning None, and that
+    propagates through here unswallowed so the caller can distinguish
+    "absent" from "errored".
     """
     raw = _s3_get_object(bucket, key)
     if raw is None:
@@ -217,14 +301,22 @@ def _fetch_s3_json(bucket: str, key: str) -> dict | list | None:
 def with_s3_error_tracking(fallback: Any = None):
     """Decorator that wraps a function with S3 error logging and tracking.
 
-    On any exception, logs the error, records it via _record_s3_error
-    (using the function name as context), and returns *fallback*.
+    On S3AccessError (config#2339 — a real operational failure, e.g. an IAM
+    AccessDenied), logs, records via _record_s3_error, and RE-RAISES rather
+    than swallowing — this is the taxonomy dash_api's `_guard` needs to turn
+    an IAM gap into a 503 instead of a silent empty/default 200. On any
+    other exception, behavior is unchanged: log, record, and return
+    *fallback* (used for genuinely best-effort call sites).
     """
     def decorator(fn):
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
             try:
                 return fn(*args, **kwargs)
+            except S3AccessError as e:
+                logger.error("%s failed: %s", fn.__name__, e, exc_info=True)
+                _record_s3_error(e.bucket, e.key, e.error_type, str(e))
+                raise
             except Exception as e:
                 context = fn.__name__
                 logger.error("%s failed: %s", context, e, exc_info=True)
