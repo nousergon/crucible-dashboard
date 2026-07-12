@@ -108,6 +108,42 @@ export interface Finding {
   fix: string;
 }
 
+export interface TriggerRow {
+  trigger: string;
+  n_trades: number | string;
+  slippage_vs_signal: string;
+  slippage_vs_open: string;
+  win_rate_vs_spy: string;
+}
+
+export interface ExitRuleRow {
+  exit_type: string;
+  n: number | string;
+  avg_mfe: string;
+  avg_mae: string;
+  avg_realized: string;
+  avg_capture: string;
+}
+
+export interface ShadowRow {
+  measure: string;
+  value: string;
+}
+
+export interface Execution {
+  headline: Stat[];
+  triggers: TriggerRow[];
+  exit_rules: ExitRuleRow[];
+  shadow_classification: ShadowRow[];
+}
+
+export interface AttributionRow {
+  sub_score: string;
+  target: string;
+  correlation: number;
+  fdr_significant: boolean;
+}
+
 export const api = {
   experiment: () => get<Experiment>("/api/experiment"),
   intraday: () => get<IntradayPoint[]>("/api/intraday"),
@@ -119,4 +155,6 @@ export const api = {
   verdicts: () => get<Verdict[]>("/api/verdicts"),
   integrity: () => get<IntegrityRow[]>("/api/integrity"),
   trust: () => get<{ legs: TrustLeg[]; findings: Finding[] }>("/api/trust"),
+  execution: () => get<Execution>("/api/execution"),
+  attribution: () => get<AttributionRow[]>("/api/attribution"),
 };
