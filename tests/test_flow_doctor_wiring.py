@@ -276,8 +276,14 @@ class TestLibVersionPin:
             "nousergon_lib import alias still works via the shim)"
         )
         assert "@main" not in text, "nousergon-lib must be pinned to a tag, not @main"
-        assert "@v0.96.0" in text, (
-            "nousergon-lib should pin to v0.96.0 (pipeline_status registry "
+        assert "@v0.107.0" in text, (
+            "nousergon-lib should pin to v0.107.0 (nousergon-lib#185: "
+            "pipeline_status.registry's AggregateCosts ArchivePageRef follows "
+            "this repo's LLM Cost/Usage -> API/Plan tab rename, "
+            "host_cost_usage?tab=LLM+Cost -> ?tab=API; keeps "
+            "test_registry_page_targets.py::test_every_archive_page_ref_resolves "
+            "green, crucible-dashboard#391). "
+            "Earlier: v0.96.0 (pipeline_status registry "
             "entries for the config#1687 data-spot SF states — LaunchMorning"
             "EnrichSpot/LaunchMorningArcticAppendSpot/LaunchPostMarketDataSpot/"
             "LaunchPostMarketArcticAppendSpot/PublishDataSpotFailureImmediate — "
