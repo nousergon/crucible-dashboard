@@ -10,6 +10,7 @@ import os
 import pandas as pd
 import streamlit as st
 
+from loaders import db_schema
 from loaders.outcome_store import attach_outcomes
 from loaders.s3_loader import load_config, download_s3_binary
 
@@ -268,10 +269,11 @@ def get_cycle_funnel(eval_date: str) -> dict:
         params=(eval_date,),
     )
     cio = query_research_db(
-        "SELECT ticker, cio_decision, cio_rank, cio_conviction, final_score "
+        f"SELECT {db_schema.join(db_schema.CIO_FUNNEL_COLS)} "
         "FROM cio_evaluations WHERE eval_date=? ORDER BY cio_rank",
         params=(eval_date,),
     )
+    db_schema.warn_missing(cio, "cio_evaluations", *db_schema.CIO_FUNNEL_COLS)
 
     def _int(df, col):
         if df.empty or col not in df.columns or pd.isna(df.iloc[0][col]):
@@ -302,7 +304,7 @@ def get_cio_inputs(eval_date: str) -> pd.DataFrame:
     ``team_recommended=1``). One row per (team_id, ticker) with the team-stage
     scores the CIO sees. Empty frame if no cycle ran / table missing."""
     return query_research_db(
-        "SELECT team_id, ticker, quant_rank, quant_score, qual_score "
+        f"SELECT {db_schema.join(db_schema.CIO_INPUTS_COLS)} "
         "FROM team_candidates "
         "WHERE eval_date=? AND team_recommended=1 "
         "ORDER BY team_id, quant_rank",
@@ -316,9 +318,7 @@ def get_cio_evaluations(eval_date: str) -> pd.DataFrame:
     rule_tags. Ordered ADVANCEd-first (by rank), then the rest. Empty frame if
     the CIO stage didn't run / persist that cycle."""
     return query_research_db(
-        "SELECT ticker, team_id, quant_score, qual_score, combined_score, "
-        "macro_shift, final_score, cio_decision, cio_conviction, cio_rank, "
-        "rationale, rule_tags "
+        f"SELECT {db_schema.join(db_schema.CIO_EVALUATIONS_COLS)} "
         "FROM cio_evaluations WHERE eval_date=? "
         "ORDER BY (cio_rank IS NULL), cio_rank",
         params=(eval_date,),
@@ -330,9 +330,7 @@ def get_team_candidates(eval_date: str, team_id: str) -> pd.DataFrame:
     score, the per-sub-signal scores, and the team_recommended flag. Ordered by
     quant_rank. Empty frame if the team didn't run / persist that cycle."""
     return query_research_db(
-        "SELECT ticker, quant_rank, quant_score, qual_score, team_recommended, "
-        "rsi_sub_score, macd_sub_score, ma50_sub_score, ma200_sub_score, "
-        "momentum_sub_score "
+        f"SELECT {db_schema.join(db_schema.TEAM_CANDIDATES_COLS)} "
         "FROM team_candidates WHERE eval_date=? AND team_id=? "
         "ORDER BY (quant_rank IS NULL), quant_rank",
         params=(eval_date, team_id),
@@ -346,7 +344,7 @@ def get_team_inputs(eval_date: str, team_id: str) -> pd.DataFrame:
     absent (pre-v19 DB) or the cycle predates the ledger — callers fall back to
     team_candidates in that case."""
     return query_research_db(
-        "SELECT ticker, source, sector FROM team_inputs "
+        f"SELECT {db_schema.join(db_schema.TEAM_INPUTS_COLS)} FROM team_inputs "
         "WHERE eval_date=? AND team_id=? ORDER BY ticker",
         params=(eval_date, team_id),
     )
@@ -357,13 +355,14 @@ def get_scanner_evaluations(eval_date: str) -> pd.DataFrame:
     per-gate pass flags (quant_filter_pass / liquidity_pass / volatility_pass /
     balance_sheet_pass), filter_fail_reason, scan_path, sector, and the
     technical indicators. Empty frame if no cycle ran that date."""
-    return query_research_db(
-        "SELECT ticker, sector, tech_score, scan_path, quant_filter_pass, "
-        "liquidity_pass, volatility_pass, balance_sheet_pass, filter_fail_reason, "
-        "rsi_14, atr_pct, price_vs_ma200, current_price, avg_volume_20d "
+    df = query_research_db(
+        f"SELECT {db_schema.join(db_schema.SCANNER_SCREEN_COLS)} "
         f"FROM scanner_evaluations WHERE eval_date=? "
         f"ORDER BY sector, tech_score DESC LIMIT {_MAX_QUERY_ROWS}",
         params=(eval_date,),
+    )
+    return db_schema.warn_missing(
+        df, "scanner_evaluations", *db_schema.SCANNER_SCREEN_COLS
     )
 
 
@@ -489,7 +488,7 @@ def get_model_version_scorecard() -> pd.DataFrame:
     until challengers exist; the champion's own scorecard shows immediately.
     Missing shadow table degrades to champion-only (query returns empty).
     """
-    cols = "model_version, prediction_date, p_up, actual_log_alpha, correct"
+    cols = db_schema.join(db_schema.PREDICTOR_SCORECARD_COLS)
     live = query_research_db(
         f"SELECT {cols} FROM predictor_outcomes WHERE actual_log_alpha IS NOT NULL"
     )
@@ -563,7 +562,7 @@ def get_per_spec_realized_alpha_series(window: int = 8) -> pd.DataFrame:
     sorted by model_version then prediction_date. Empty until outcomes mature;
     a missing shadow table degrades to champion-only.
     """
-    cols = "model_version, prediction_date, actual_log_alpha"
+    cols = db_schema.join(db_schema.PREDICTOR_REALIZED_SERIES_COLS)
     live = query_research_db(
         f"SELECT {cols} FROM predictor_outcomes WHERE actual_log_alpha IS NOT NULL"
     )
@@ -633,6 +632,25 @@ def canonicalize_predictor_outcomes(df: pd.DataFrame) -> pd.DataFrame:
 # migration (alpha-engine-research #183). First audit data appears on the
 # Saturday SF run after that migration ran. All loaders below gracefully
 # return empty DataFrames when the columns are absent or no rows match.
+#
+# v23 (config#750) added override_team_id so overrides can be attributed to the
+# team whose quant agent reached outside its focus list, instead of collapsing
+# into one anonymous focus_team_id=NULL group. The loaders below detect the
+# column and gracefully fall back to the legacy (unattributed) grouping on a
+# pre-v23 DB so the page never breaks between the migration merging and the
+# next Saturday SF run repopulating research.db.
+
+
+def _scanner_eval_columns() -> set[str]:
+    """Column names present on scanner_evaluations (empty set if unavailable).
+
+    Used to feature-detect the v23 override_team_id column so queries degrade
+    gracefully on a research.db that predates config#750.
+    """
+    info = query_research_db("PRAGMA table_info(scanner_evaluations)")
+    if info.empty or "name" not in info.columns:
+        return set()
+    return set(info["name"].astype(str))
 
 
 def get_focus_list_audit(
@@ -644,7 +662,12 @@ def get_focus_list_audit(
     Returns the canonical audit columns: ticker, eval_date, sector,
     focus_score, focus_stance, focus_team_id, focus_rank_in_team,
     focus_rank_in_sector, focus_list_passed, agent_override,
-    quant_filter_pass. Optional date range filter on eval_date.
+    override_team_id, quant_filter_pass. Optional date range filter on
+    eval_date.
+
+    override_team_id (v23, config#750) names which team's quant agent reached
+    outside its focus list for an override row; NULL for focus-list members /
+    non-override rows, and projected as NULL on a pre-v23 DB.
 
     Empty DataFrame on any of: missing columns (pre-v17 DB), no rows,
     SQL failure.
@@ -658,12 +681,18 @@ def get_focus_list_audit(
         where.append("eval_date <= ?")
         params.append(end_date)
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+    # Feature-detect the v23 column so the SELECT never fails on a pre-config#750
+    # research.db — project a NULL placeholder there so the column always exists
+    # downstream (the view/Rows-tab can reference it unconditionally).
+    override_team_col = (
+        "override_team_id"
+        if "override_team_id" in _scanner_eval_columns()
+        else "NULL AS override_team_id"
+    )
     sql = f"""
         SELECT
-            ticker, eval_date, sector,
-            focus_score, focus_stance, focus_team_id,
-            focus_rank_in_team, focus_rank_in_sector,
-            focus_list_passed, agent_override,
+            {db_schema.join(db_schema.FOCUS_AUDIT_COLS)},
+            {override_team_col},
             quant_filter_pass
         FROM scanner_evaluations
         {where_sql}
@@ -676,10 +705,15 @@ def get_focus_list_audit(
 def get_focus_list_weekly_summary() -> pd.DataFrame:
     """Per-week per-team funnel cardinality + override-rate summary.
 
-    Aggregates scanner_evaluations to one row per (eval_date, focus_team_id):
+    Aggregates scanner_evaluations to one row per (eval_date, team), where
+    ``team`` is the focus-list team for focus rows and, on a v23+ DB
+    (config#750), the OVERRIDING team for override rows — so each team's
+    overrides count against that team instead of collapsing into one anonymous
+    focus_team_id=NULL ("—") group:
+      - focus_team_id      — team identity (focus_team_id, else override_team_id)
       - n_focus_list       — count of focus_list_passed=1
       - n_picks            — count of quant_filter_pass=1 (agent picked)
-      - n_overrides        — count of agent_override=1
+      - n_overrides        — count of agent_override=1 (this team's overrides)
       - precision          — focus_list_passed=1 AND quant_filter_pass=1
                              / focus_list_passed=1  (was the focus list
                              a good predictor of agent picks?)
@@ -690,13 +724,26 @@ def get_focus_list_weekly_summary() -> pd.DataFrame:
                              / agent_override=1  (when the agent reached
                              outside the focus list, was it right?)
 
+    On a pre-v23 DB the override_team_id column is absent, so grouping falls back
+    to focus_team_id alone and overrides keep landing in the legacy NULL group.
+
     Empty DataFrame when the focus_list columns are absent or no rows have
     focus_list_passed flags set yet (pre-Sat-5/17 SF).
     """
+    # Per-team override attribution (config#750): group override rows under the
+    # overriding team when the v23 column exists. COALESCE keeps focus rows on
+    # focus_team_id and moves override rows (focus_team_id=NULL) onto
+    # override_team_id; both fall back to NULL for legacy unattributed rows.
+    has_override_team = "override_team_id" in _scanner_eval_columns()
+    team_expr = (
+        "COALESCE(focus_team_id, override_team_id)"
+        if has_override_team
+        else "focus_team_id"
+    )
     sql = f"""
         SELECT
             eval_date,
-            focus_team_id,
+            {team_expr} AS focus_team_id,
             SUM(CASE WHEN focus_list_passed = 1 THEN 1 ELSE 0 END) AS n_focus_list,
             SUM(CASE WHEN quant_filter_pass = 1 THEN 1 ELSE 0 END) AS n_picks,
             SUM(CASE WHEN agent_override = 1 THEN 1 ELSE 0 END) AS n_overrides,
@@ -704,7 +751,7 @@ def get_focus_list_weekly_summary() -> pd.DataFrame:
             SUM(CASE WHEN agent_override = 1 AND quant_filter_pass = 1 THEN 1 ELSE 0 END) AS n_override_and_picked
         FROM scanner_evaluations
         WHERE focus_team_id IS NOT NULL OR agent_override = 1
-        GROUP BY eval_date, focus_team_id
+        GROUP BY eval_date, {team_expr}
         ORDER BY eval_date DESC, focus_team_id
         LIMIT {_MAX_QUERY_ROWS}
     """

@@ -14,8 +14,8 @@ import streamlit as st
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from loaders.s3_loader import load_predictions_json, load_predictor_metrics, load_predictor_training_state, load_production_health, load_signals_json, load_mode_history, load_feature_importance, load_hold_book_flag, load_model_zoo_leaderboard, list_model_zoo_leaderboard_dates
-from loaders.db_loader import get_predictor_outcomes, canonicalize_predictor_outcomes, get_model_version_scorecard
+from loaders.s3_loader import load_predictions_json, list_predictions_dates, load_predictor_metrics, load_predictor_training_state, load_production_health, load_signals_json, load_mode_history, load_feature_importance, load_hold_book_flag
+from loaders.db_loader import get_predictor_outcomes, canonicalize_predictor_outcomes
 from loaders.signal_loader import get_available_signal_dates
 from charts.predictor_chart import make_model_drift_chart, make_feature_importance_chart
 from shared.constants import get_thresholds
@@ -165,133 +165,15 @@ st.divider()
 # `l2_lift_vs_l1_mean` ≤ 0 across multiple cycles = the meta-learner
 # is not adding value.
 
-# ── Champion / Challenger leaderboard (L4469 Phase 3) ────────────────────────
-# Per-model-version REALIZED scorecard: rank-IC (out-of-sample, Fama-MacBeth) +
-# hit-rate, champion vs the shadow-run challengers. This is how a promotion is
-# earned — see which version actually has OOS edge before swapping the champion.
-st.subheader("Champion / Challenger Leaderboard")
-try:
-    _scorecard = get_model_version_scorecard()
-    if _scorecard.empty:
-        st.info(
-            "No resolved per-version outcomes yet. The champion's scorecard "
-            "populates as predictions mature (~21 trading days); challengers "
-            "appear once a retrain registers one and the shadow runner scores it."
-        )
-    else:
-        _disp = _scorecard.rename(columns={
-            "model_version": "Version", "stage": "Stage", "rank_ic": "Rank-IC (OOS)",
-            "hit_rate": "Hit-rate", "n_predictions": "N preds", "n_dates": "N dates",
-        })
-        _styled = _disp.style.format({
-            "Rank-IC (OOS)": "{:.3f}", "Hit-rate": "{:.1%}",
-        }, na_rep="—").apply(
-            lambda row: [
-                "background-color: rgba(46,160,67,0.18)" if row["Stage"] == "champion" else ""
-                for _ in row
-            ],
-            axis=1,
-        )
-        st.dataframe(_styled, use_container_width=True, hide_index=True)
-        st.caption(
-            "Rank-IC = mean per-date Spearman(p_up, realized 21d log-alpha) — the "
-            "cross-sectional skill the optimizer trades on. Challengers trade on "
-            "none; a challenger only earns promotion by beating the champion on "
-            "realized OOS metrics over a soak (pre-registered gate)."
-        )
-except Exception as _sc_err:  # observability section must never break the page
-    st.warning(f"Leaderboard unavailable: {_sc_err}")
-
-# ── Model Zoo — Weekly Selection (L4544/L4571) ────────────────────────────────
-# Each Saturday the zoo ranks {base champion-arch retrain + variant(s)} against
-# the live champion on leak-free CPCV mean IC (gated by the downside-Sortino +
-# overfit-DSR battery) and, with auto-promote ON, promotes the best that beats
-# the incumbent by the margin. This panel surfaces every rotation's outcome —
-# what trained, how it scored, whether it was eligible, and what (if anything)
-# got promoted. Distinct from the leaderboard above (realized OOS rank-IC); this
-# is the TRAINING-TIME selector that actually decides promotion.
-st.subheader("Model Zoo — Weekly Selection")
-try:
-    _zoo_dates = list_model_zoo_leaderboard_dates()
-    _zoo_pick = None
-    if _zoo_dates:
-        _zoo_pick = st.selectbox(
-            "Rotation date", options=list(reversed(_zoo_dates)), index=0,
-            help="Most recent Saturday model-zoo rotation first.",
-        )
-    _zoo = load_model_zoo_leaderboard(_zoo_pick)  # None → latest
-    if not _zoo or not _zoo.get("candidates"):
-        st.info(
-            "No model-zoo rotation has run yet. The first leak-free-CPCV "
-            "selection runs on the next Saturday training cycle and writes "
-            "`predictor/model_zoo/leaderboard/{date}.json`."
-        )
-    else:
-        _mode = _zoo.get("mode", "observe")
-        _champ = _zoo.get("champion") or {}
-        _promoted = _zoo.get("promoted")
-        _winner = _zoo.get("winner_version_id")
-        _c1, _c2, _c3 = st.columns(3)
-        _c1.metric("Mode", _mode.upper())
-        _c2.metric("Champion CPCV IC", f"{_champ.get('cpcv_mean_ic'):.3f}"
-                   if isinstance(_champ.get("cpcv_mean_ic"), (int, float)) else "—")
-        _c3.metric("Margin", f"{_zoo.get('margin')}")
-        if _promoted:
-            st.success(
-                f"✅ PROMOTED `{_promoted}` to champion"
-                + (f" (reverted_from `{_zoo.get('reverted_from')}`)"
-                   if _zoo.get("reverted_from") else "")
-            )
-        elif _winner:
-            st.warning(
-                f"◆ Recommended winner `{_winner}` — NOT promoted "
-                f"({'observe mode' if _mode == 'observe' else 'auto-promote off'}). "
-                f"Promote manually: `python -m model.registry --bucket "
-                f"alpha-engine-research --promote {_winner}`"
-            )
-        else:
-            st.info("No eligible challenger beat the champion this rotation — incumbent stays.")
-
-        import pandas as _pd
-        _rows = []
-        for _c in _zoo.get("candidates", []):
-            _ic = _c.get("cpcv_mean_ic")
-            _rows.append({
-                "Spec": _c.get("spec_id"),
-                "Version": _c.get("version_id"),
-                "Fwd (d)": _c.get("forward_days"),
-                "CPCV IC": _ic if isinstance(_ic, (int, float)) else None,
-                "Gate": "✓" if _c.get("passes_gate") else "✗",
-                "Eligible": "✓" if _c.get("eligible") else "✗",
-                "Reason": _c.get("reason"),
-            })
-        _zdf = _pd.DataFrame(_rows).sort_values(
-            "CPCV IC", ascending=False, na_position="last"
-        )
-        _winner_vid = _winner
-
-        def _hl(row):
-            if row["Version"] == _promoted:
-                return ["background-color: rgba(46,160,67,0.28)"] * len(row)
-            if row["Version"] == _winner_vid:
-                return ["background-color: rgba(210,153,34,0.18)"] * len(row)
-            if row["Spec"] == "champion-arch":
-                return ["background-color: rgba(56,139,253,0.12)"] * len(row)
-            return [""] * len(row)
-
-        st.dataframe(
-            _zdf.style.format({"CPCV IC": "{:.3f}"}, na_rep="—").apply(_hl, axis=1),
-            use_container_width=True, hide_index=True,
-        )
-        st.caption(
-            "Green = promoted; amber = recommended winner; blue = the base "
-            "champion-architecture retrain (L4571 — it competes in the same pool). "
-            "CPCV IC = leak-free combinatorial-purged-CV mean IC; Gate = downside-"
-            "Sortino + overfit-DSR battery. A candidate is eligible only at the "
-            "canonical 21d horizon, gates-passing, and beating champion + margin."
-        )
-except Exception as _zoo_err:  # observability section must never break the page
-    st.warning(f"Model-zoo panel unavailable: {_zoo_err}")
+# Champion/challenger rotation surfaces moved to Model Zoo — the canonical
+# rotation record (console-IA phase 1, config#1990): the realized OOS
+# scorecard, the weekly CPCV selection leaderboard, and promotion history all
+# render there. Keeping duplicates here forced two pages to disagree.
+st.markdown(
+    "**Champion / Challenger & Weekly Rotation** → see the "
+    "[Model Zoo](/model-zoo) page (realized OOS scorecard, per-cycle CPCV "
+    "leaderboard + promotion verdicts, 26-week history)."
+)
 
 st.subheader("IC Decomposition (per-L1 + L2)")
 
@@ -502,9 +384,12 @@ else:
         scat = scat[scat["_realized_alpha"].notna() & scat["prediction_confidence"].notna()]
         if not scat.empty:
             scat_fig = go.Figure()
+            # predictor#343 (2026-07-06): FLAT retired, direction is now
+            # sign(alpha) — UP/DOWN only. Any pre-2026-07-06 archived rows
+            # still labeled "FLAT" are simply excluded from this legend
+            # (not headlined as a live state), not dropped from the frame.
             for direction, color in (
                 ("UP", "#16a34a"),
-                ("FLAT", "#94a3b8"),
                 ("DOWN", "#dc2626"),
             ):
                 sub = scat[scat["predicted_direction"] == direction]
@@ -698,17 +583,36 @@ else:
 st.divider()
 
 # ---------------------------------------------------------------------------
-# Today's predictions table
+# Predictions table — honors the ?date= deep-link from the predictor's slim
+# morning-briefing email (config#856: …/predictor?date=YYYY-MM-DD), falling
+# back to today's/latest predictions when no param is given (unchanged
+# default behavior). Mirrors the EOD Report / Model Zoo pages' pattern.
 # ---------------------------------------------------------------------------
 
-st.subheader("Today's Predictions")
-
 today_str = datetime.now(ZoneInfo("America/Los_Angeles")).strftime("%Y-%m-%d")
-predictions = load_predictions_json()
-signals_data = load_signals_json(today_str) if get_available_signal_dates() else None
+
+_pred_dates = list_predictions_dates()
+qp_date = st.query_params.get("date")
+if qp_date and qp_date in _pred_dates:
+    # Explicit, recognized deep-link date — load that day's predictions and
+    # keep the URL param round-tripped (bookmarkable), same as EOD Report /
+    # Model Zoo.
+    selected_date = qp_date
+    predictions = load_predictions_json(selected_date)
+    st.query_params["date"] = selected_date
+    st.subheader(f"Predictions — {selected_date}")
+else:
+    # Default (no ?date=, or an unrecognized date): today's/latest — unchanged
+    # from pre-config#856 behavior. Query params are left untouched here so
+    # a plain page load doesn't grow a ?date= it wasn't given.
+    selected_date = today_str
+    predictions = load_predictions_json()
+    st.subheader("Today's Predictions")
+
+signals_data = load_signals_json(selected_date) if get_available_signal_dates() else None
 
 if not predictions:
-    st.info("No predictions available for today. Run the predictor to populate.")
+    st.info(f"No predictions available for {selected_date}. Run the predictor to populate.")
 else:
     show_all = st.toggle("Show all predictions (including low confidence)", value=False)
 
@@ -770,7 +674,11 @@ else:
         if not show_all and conf < _VETO_CONF:
             continue
         direction = pred.get("predicted_direction", "—")
-        arrow = {"UP": "↑", "DOWN": "↓", "FLAT": "→"}.get(direction, "")
+        # predictor#343 (2026-07-06): FLAT retired, direction is now
+        # sign(alpha) — UP/DOWN only. A pre-2026-07-06 archived "FLAT"
+        # value falls through to the "" default rather than being
+        # headlined as a live state.
+        arrow = {"UP": "↑", "DOWN": "↓"}.get(direction, "")
         p_up = pred.get("p_up") or 0.0
         p_down = pred.get("p_down") or 0.0
         modifier = (p_up - p_down) * 10.0 * conf if conf >= _VETO_CONF else 0.0
@@ -780,7 +688,6 @@ else:
             "Direction": f"{direction} {arrow}",
             "Confidence": conf,
             "P(UP)": p_up,
-            "P(FLAT)": pred.get("p_flat") or 0.0,
             "P(DOWN)": p_down,
             "Stance": pred.get("stance") or "—",
             "Source": pred.get("stance_source") or "—",
@@ -811,7 +718,7 @@ else:
 
         styled = df.style.apply(_row_color, axis=1)
         styled = styled.map(_source_color, subset=["Source"])
-        for col in ["Confidence", "P(UP)", "P(FLAT)", "P(DOWN)"]:
+        for col in ["Confidence", "P(UP)", "P(DOWN)"]:
             styled = styled.format({col: "{:.0%}"}, na_rep="—")
         st.dataframe(styled, use_container_width=True, hide_index=True)
     else:

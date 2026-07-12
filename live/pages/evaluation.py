@@ -17,8 +17,8 @@ from loaders.s3_loader import load_latest_grading
 
 st.title("Evaluation")
 st.caption(
-    "Per-module letter grades from the weekly evaluator. Phase-2 sample "
-    "sizes are small — directional signal, not a verdict."
+    "Per-module letter grades from the weekly evaluator, tracking "
+    "directional signal on the Phase-2 substrate."
 )
 
 grading = load_latest_grading()

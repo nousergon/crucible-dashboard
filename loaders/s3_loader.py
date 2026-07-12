@@ -9,6 +9,7 @@ Naming conventions:
   - _fetch_*  — internal helpers that combine S3 I/O + parsing
 """
 
+import contextvars
 import functools
 import io
 import json
@@ -26,6 +27,66 @@ import yaml
 from shared.constants import DEFAULT_CACHE_TTL_SECONDS, ISO_DATE_PATTERN
 
 logger = logging.getLogger(__name__)
+
+
+class S3AccessError(Exception):
+    """Raised for a non-NoSuchKey S3 ClientError (config#2339) when the
+    caller has opted into strict mode (see raise_s3_access_errors below).
+
+    Distinguishes "the object legitimately doesn't exist" (NoSuchKey — stays
+    honest-ABSENT, returns None) from "S3 refused/failed the request for a
+    reason unrelated to the object's existence" (AccessDenied, malformed
+    request, retries-exhausted throttling, etc.) — the latter is an
+    operational failure that must not be silently rendered as empty data.
+    """
+
+    def __init__(self, message: str, *, error_type: str, bucket: str, key: str):
+        super().__init__(message)
+        self.error_type = error_type
+        self.bucket = bucket
+        self.key = key
+
+
+# _STRICT_S3_ERRORS (config#2339): the ~40 Streamlit console call sites into
+# this module were all written against the historical "None on ANY S3
+# failure, including AccessDenied" contract — several (e.g. views 2/6) have
+# their own get_recent_s3_errors()-based degrade UI for exactly that
+# contract, and none of them expect this module to ever raise. dash_api's
+# `_guard`, on the other hand, needs a hard AccessDenied to become an actual
+# exception it can map to a 503 — the whole point of config#2339 (the
+# console's swallow-to-None + telemetry mitigation already exists and is
+# staying; only the API surface was lying about health).
+#
+# Both dash_api and the Streamlit console call the SAME shared loader
+# functions (e.g. load_report_card, load_eod_pnl) — there is no separate
+# code path to hang a "strict" kwarg off without threading it through every
+# loader in the chain (several of which are @st.cache_data-memoized, where
+# an extra kwarg would also perturb the cache key). A ContextVar opt-in
+# scoped to the call is the minimal-blast-radius way to give dash_api's
+# `_guard` strict behavior while leaving every existing Streamlit call site
+# byte-for-byte unchanged (default: swallow to None + record, same as
+# before this fix).
+_STRICT_S3_ERRORS: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "_STRICT_S3_ERRORS", default=False
+)
+
+
+class raise_s3_access_errors:
+    """Context manager: within this block, non-NoSuchKey S3 ClientErrors
+    propagate as S3AccessError instead of being swallowed to None. Used by
+    dash_api._guard so a real IAM/AccessDenied failure becomes a 503 instead
+    of an honest-looking empty response. Reentrant-safe (restores the prior
+    value on exit, so nested use — e.g. one guarded loader calling another
+    internally — behaves correctly)."""
+
+    def __enter__(self):
+        self._token = _STRICT_S3_ERRORS.set(True)
+        return self
+
+    def __exit__(self, *exc_info):
+        _STRICT_S3_ERRORS.reset(self._token)
+        return False
+
 
 # ---------------------------------------------------------------------------
 # S3 error tracking
@@ -137,7 +198,19 @@ _S3_RETRY_BACKOFF_BASE = 1.0  # seconds
 def _s3_get_object(bucket: str, key: str) -> bytes | None:
     """Raw GetObject call with retry for transient errors.
 
-    Returns the response body bytes or None on error.
+    Returns the response body bytes on success, or None when the object is
+    legitimately absent (NoSuchKey — honest-ABSENT, not an error) OR (the
+    default, back-compat mode) any other failure.
+
+    Under raise_s3_access_errors() (config#2339 — dash_api._guard opts in),
+    raises S3AccessError instead of returning None for any OTHER
+    non-retryable ClientError — most notably AccessDenied: an IAM-gap
+    failure is an operational fault, not "no data", and must not be
+    indistinguishable from a 404 to a caller that needs to tell the
+    difference. Outside strict mode, every existing Streamlit console call
+    site keeps its original contract unchanged: None + a recorded entry in
+    get_recent_s3_errors(), no exception.
+
     Retries on ConnectionError, TimeoutError, and throttling (503/SlowDown).
     Does NOT retry on NoSuchKey or AccessDenied (non-transient).
     """
@@ -169,6 +242,11 @@ def _s3_get_object(bucket: str, key: str) -> bytes | None:
                 "S3 ClientError for %s/%s: %s (non-retryable)", bucket, key, error_code,
             )
             _record_s3_error(bucket, key, f"ClientError:{error_code}", str(e))
+            if _STRICT_S3_ERRORS.get():
+                raise S3AccessError(
+                    f"S3 {error_code} for {bucket}/{key}: {e}",
+                    error_type=f"ClientError:{error_code}", bucket=bucket, key=key,
+                ) from e
             return None
         except (ConnectionError, TimeoutError) as e:
             last_error = e
@@ -200,8 +278,14 @@ def _s3_get_object(bucket: str, key: str) -> bytes | None:
 def _fetch_s3_json(bucket: str, key: str) -> dict | list | None:
     """Fetch an S3 object and parse as JSON with unified error tracking.
 
-    Returns None on missing key or any failure (errors are logged and recorded).
-    Delegates S3 I/O to _s3_get_object so error handling is not duplicated.
+    Returns None on missing key (honest-ABSENT), a JSON-parse failure, or
+    (default mode) any other S3 failure — errors are logged and recorded
+    either way. Delegates S3 I/O to _s3_get_object so error handling is not
+    duplicated — in particular, under raise_s3_access_errors() (config#2339,
+    dash_api._guard) _s3_get_object raises S3AccessError for a non-NoSuchKey
+    ClientError (e.g. AccessDenied) instead of returning None, and that
+    propagates through here unswallowed so the caller can distinguish
+    "absent" from "errored".
     """
     raw = _s3_get_object(bucket, key)
     if raw is None:
@@ -217,14 +301,22 @@ def _fetch_s3_json(bucket: str, key: str) -> dict | list | None:
 def with_s3_error_tracking(fallback: Any = None):
     """Decorator that wraps a function with S3 error logging and tracking.
 
-    On any exception, logs the error, records it via _record_s3_error
-    (using the function name as context), and returns *fallback*.
+    On S3AccessError (config#2339 — a real operational failure, e.g. an IAM
+    AccessDenied), logs, records via _record_s3_error, and RE-RAISES rather
+    than swallowing — this is the taxonomy dash_api's `_guard` needs to turn
+    an IAM gap into a 503 instead of a silent empty/default 200. On any
+    other exception, behavior is unchanged: log, record, and return
+    *fallback* (used for genuinely best-effort call sites).
     """
     def decorator(fn):
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
             try:
                 return fn(*args, **kwargs)
+            except S3AccessError as e:
+                logger.error("%s failed: %s", fn.__name__, e, exc_info=True)
+                _record_s3_error(e.bucket, e.key, e.error_type, str(e))
+                raise
             except Exception as e:
                 context = fn.__name__
                 logger.error("%s failed: %s", context, e, exc_info=True)
@@ -642,10 +734,71 @@ def load_ci_watch(date_str: str) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
+# Watch-dispatch canary drill heartbeats (config#2223)
+# ---------------------------------------------------------------------------
+# The weekly synthetic drill (EventBridge Scheduler → the two spot-dispatcher
+# Lambdas) writes ``consolidated/{saturday_sf_watch,ci_watch}/_canary/
+# {date}.json`` ({drill_at, launched, ssm_connected}) after round-tripping
+# the dispatch pipe for real. The Fleet Status resolvers escalate on the
+# newest heartbeat's age — the "should have run and didn't" signal the
+# failure-driven watch-logs above cannot provide. Note the drill keys live
+# under an ``_canary/`` sub-prefix, so the watch-log listers above (which
+# match a bare ``{date}.json`` stem) never see them, and vice versa.
+
+_SF_WATCH_CANARY_PREFIX = "consolidated/saturday_sf_watch/_canary/"
+_CI_WATCH_CANARY_PREFIX = "consolidated/ci_watch/_canary/"
+
+
+def _latest_canary(prefix: str, label: str) -> dict | None:
+    """Newest ``{prefix}{date}.json`` heartbeat doc (with its ``date`` key
+    injected), or None when no drill has ever reported / on a listing error
+    (logged + recorded via _record_s3_error — the resolver escalates a
+    missing heartbeat once the canary is due, so an S3 outage here degrades
+    loud-by-age rather than silently green)."""
+    bucket = _research_bucket()
+    try:
+        client = get_s3_client()
+        paginator = client.get_paginator("list_objects_v2")
+        dates: set[str] = set()
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+            for obj in page.get("Contents", []):
+                stem = obj.get("Key", "")[len(prefix):]
+                if stem.endswith(".json"):
+                    seg = stem[: -len(".json")]
+                    if ISO_DATE_PATTERN.match(seg):
+                        dates.add(seg)
+        if not dates:
+            return None
+        newest = max(dates)
+        doc = _fetch_s3_json(bucket, f"{prefix}{newest}.json")
+        if not isinstance(doc, dict):
+            doc = {}
+        return {"date": newest, **doc}
+    except Exception as e:
+        logger.error("Failed to list %s canary heartbeats: %s", label, e)
+        _record_s3_error(bucket, prefix, type(e).__name__, str(e))
+        return None
+
+
+@st.cache_data(ttl=_ttl("research"))
+def load_latest_sf_watch_canary() -> dict | None:
+    """Newest Saturday-SF-Watch canary drill heartbeat, or None."""
+    return _latest_canary(_SF_WATCH_CANARY_PREFIX, "saturday_sf_watch")
+
+
+@st.cache_data(ttl=_ttl("research"))
+def load_latest_ci_watch_canary() -> dict | None:
+    """Newest Fleet-CI-Watch canary drill heartbeat, or None."""
+    return _latest_canary(_CI_WATCH_CANARY_PREFIX, "ci_watch")
+
+
+# ---------------------------------------------------------------------------
 # Backlog Groom runs (per-run artifact — config#1512 / console page follow-up)
 # ---------------------------------------------------------------------------
 
 _GROOM_RUNS_PREFIX = "groom/"
+# Run-artifact key shape — excludes groom/_control/* and groom/in_progress.json.
+_GROOM_RUN_KEY_RE = re.compile(r"^groom/\d{4}-\d{2}-\d{2}/[^/]+\.json$")
 
 
 @st.cache_data(ttl=_ttl("research"))
@@ -666,7 +819,14 @@ def list_groom_run_keys(limit: int = 30) -> list[str]:
         for page in paginator.paginate(Bucket=bucket, Prefix=_GROOM_RUNS_PREFIX):
             for obj in page.get("Contents", []):
                 k = obj.get("Key", "")
-                if k.endswith(".json"):
+                # Run artifacts ONLY: groom/{YYYY-MM-DD}/{run}.json. The
+                # prefix also hosts non-run subtrees — groom/_control/*
+                # (dispatcher control plane, nousergon-data#658) and the
+                # groom/in_progress.json marker — and "_" sorts after
+                # digits, so without this shape filter the control files
+                # displace every real run at the head of the reverse sort
+                # (bit the Fleet Status + Backlog Groom pages 2026-07-06).
+                if _GROOM_RUN_KEY_RE.match(k):
                     keys.append(k)
         keys.sort(reverse=True)  # ISO date + zero-padded HHMMSS/run-id sorts ~chronologically
         return keys[:limit]
@@ -689,6 +849,179 @@ def load_groom_run(key: str) -> dict | None:
     """
     data = _fetch_s3_json(_research_bucket(), key)
     return data if isinstance(data, dict) else None
+
+
+# ---------------------------------------------------------------------------
+# Groom slot decisions (demand-driven dispatch — config#1933 / config#1935)
+# ---------------------------------------------------------------------------
+#
+# Written by the ``nousergon-data`` scheduled-groom-dispatcher Lambda's
+# enumerate-then-decide step, BEFORE any spot spend — the ground-truth record
+# of "did the dispatcher actually evaluate the backlog at this slot, and what
+# did it decide" (as distinct from ``load_groom_run`` above, which only
+# exists once a box actually launched and finished). A day with no record for
+# a scheduled slot is the broken-scheduler signal these records exist to
+# expose, so the console must render a loud gap warning rather than silently
+# omitting the slot (config#1935).
+#
+# Key shape observed live (nousergon-data-PR685 same-day symmetric
+# correction, schema_version 2): ``groom/decisions/{date}/trigger-{HHMM}.json``
+# with a top-level ``decisions: [...]`` list (0-3 entries, one per
+# tier-box the dispatcher decided to launch that slot; an empty list is a
+# full-slot skip). The original config#1935 issue text describes the
+# pre-correction schema_version 1 shape (singular slot_tier/launch/tiers/
+# issue_filter/model/reason fields, one decision per file, key
+# ``{slot}.json``) — ``_normalize_decision_record`` below accepts both so a
+# still-in-flight v1 record (if any survive) degrades gracefully rather than
+# rendering blank.
+_GROOM_DECISIONS_PREFIX = "groom/decisions/"
+_GROOM_DECISIONS_KEY_RE = re.compile(
+    r"^groom/decisions/(?P<date>\d{4}-\d{2}-\d{2})/(?P<slot>[^/]+)\.json$"
+)
+
+#: The three daily dispatcher triggers (UTC), per nousergon-data-PR685 —
+#: "all three daily triggers carry IDENTICAL {run_mode:full,
+#: trigger:demand-all, pr_budget:100}". Used as the known-slots set for the
+#: missing-record warning; kept as a soft default (not enforced elsewhere)
+#: so a schedule change doesn't require a code change to avoid false
+#: positives — see ``known_slots_from_records`` fallback below.
+KNOWN_GROOM_SLOTS: tuple[str, ...] = ("trigger-0100", "trigger-0700", "trigger-1900")
+
+
+@st.cache_data(ttl=_ttl("groom_decisions"))
+def list_groom_decision_keys(days: int = 3) -> list[str]:
+    """Return ``groom/decisions/{date}/{slot}.json`` keys for the last *days*
+    calendar dates (including today), newest first.
+
+    Mirrors :func:`list_groom_run_keys` — lists via the date-prefixed S3
+    layout rather than assuming a fixed slot count, since a light backlog
+    triggers a decision write with zero launches, and a scheduler outage
+    means NO write at all (the gap this loader exists to expose, per
+    config#1935). Returns ``[]`` on any listing error (page renders the
+    "no records" state, never a stack trace).
+    """
+    import datetime as _dt
+
+    bucket = _research_bucket()
+    today = _dt.date.today()
+    wanted_dates = {(today - _dt.timedelta(days=i)).isoformat() for i in range(days)}
+    try:
+        client = get_s3_client()
+        paginator = client.get_paginator("list_objects_v2")
+        keys: list[str] = []
+        for page in paginator.paginate(Bucket=bucket, Prefix=_GROOM_DECISIONS_PREFIX):
+            for obj in page.get("Contents", []):
+                k = obj.get("Key", "")
+                m = _GROOM_DECISIONS_KEY_RE.match(k)
+                if m and m.group("date") in wanted_dates:
+                    keys.append(k)
+        keys.sort(reverse=True)
+        return keys
+    except Exception as e:
+        logger.error("Failed to list groom decision keys: %s", e)
+        _record_s3_error(bucket, _GROOM_DECISIONS_PREFIX, type(e).__name__, str(e))
+        return []
+
+
+@st.cache_data(ttl=_ttl("groom_decisions"))
+def load_groom_decision(key: str) -> dict | None:
+    """Load a single slot-decision record (schema_version 1 or 2 — see
+    module docstring above ``_GROOM_DECISIONS_PREFIX``). Returns the raw
+    parsed dict (un-normalized); use :func:`normalize_groom_decision_record`
+    to get a uniform ``decisions: [...]`` list regardless of schema version.
+    None on missing key / parse error / non-dict payload.
+    """
+    data = _fetch_s3_json(_research_bucket(), key)
+    return data if isinstance(data, dict) else None
+
+
+def normalize_groom_decision_record(raw: dict) -> list[dict]:
+    """Flatten a raw decision record (either schema version) into a list of
+    per-box decision dicts, each with ``launch``, ``tiers``, ``issue_filter``,
+    ``model``, ``reason`` — the shape the console strip renders per chip.
+
+    schema_version 2 (live, nousergon-data-PR685): top-level ``decisions``
+    is already this list (possibly empty — a full-slot skip with zero
+    boxes launched).
+    schema_version 1 (original config#1933 plan / config#1935 issue text):
+    the record IS a single decision — ``slot_tier``/``launch``/``tiers``/
+    ``issue_filter``/``model``/``reason`` live at the top level. Wrapped
+    into a one-element list for a uniform caller-side shape.
+    """
+    if not isinstance(raw, dict):
+        return []
+    decisions = raw.get("decisions")
+    if isinstance(decisions, list):
+        return [d for d in decisions if isinstance(d, dict)]
+    # schema_version 1 fallback: single decision at the top level.
+    if "launch" in raw:
+        return [{
+            "launch": raw.get("launch"),
+            "tiers": raw.get("tiers") or [],
+            "issue_filter": raw.get("issue_filter"),
+            "model": raw.get("model"),
+            "reason": raw.get("reason"),
+            "slot_tier": raw.get("slot_tier"),
+        }]
+    return []
+
+
+def known_slots_from_records(decision_keys: list[str]) -> list[str]:
+    """Fallback known-slots set: every distinct slot name seen across
+    *decision_keys* (usually the last-N-days window from
+    :func:`list_groom_decision_keys`), sorted.
+
+    Used only when :data:`KNOWN_GROOM_SLOTS` needs a live cross-check (e.g.
+    a slot name that doesn't match the hardcoded trio — schedule drift) —
+    the console unions both sets so a schedule change surfaces new slots
+    instead of hiding them, per config#1935 step 3's documented fallback.
+    """
+    slots: set[str] = set()
+    for k in decision_keys:
+        m = _GROOM_DECISIONS_KEY_RE.match(k)
+        if m:
+            slots.add(m.group("slot"))
+    return sorted(slots)
+
+
+_GROOM_USAGE_PREFIX = "claude_code_usage/groom/"
+
+
+@st.cache_data(ttl=_ttl("research"))
+def list_groom_usage_records(days: int = 21) -> list[dict]:
+    """Lightweight index of groom usage files for run-efficiency joins.
+
+    Returns dicts with key, wet, total, cache_read, cache_read_pct, ts — see
+    ``loaders.groom_efficiency.usage_record_from_doc``. Skips manual-reset
+    offset files.
+    """
+    import datetime as _dt
+    from loaders.groom_efficiency import usage_record_from_doc
+
+    bucket = _research_bucket()
+    cutoff = (_dt.date.today() - _dt.timedelta(days=days)).isoformat()
+    out: list[dict] = []
+    try:
+        client = get_s3_client()
+        paginator = client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=bucket, Prefix=_GROOM_USAGE_PREFIX):
+            for obj in page.get("Contents", []):
+                key = obj.get("Key", "")
+                parts = key[len(_GROOM_USAGE_PREFIX):].split("/")
+                if len(parts) != 2 or not key.endswith(".json"):
+                    continue
+                if parts[0] < cutoff:
+                    continue
+                doc = _fetch_s3_json(bucket, key)
+                if not isinstance(doc, dict):
+                    continue
+                rec = usage_record_from_doc(key, doc)
+                if rec:
+                    out.append(rec)
+    except Exception as e:
+        logger.error("list_groom_usage_records failed: %s", e)
+        _record_s3_error(bucket, _GROOM_USAGE_PREFIX, type(e).__name__, str(e))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -1310,10 +1643,114 @@ def load_predictions_json(date_str: str | None = None) -> dict:
     return {p["ticker"]: p for p in pred_list if "ticker" in p}
 
 
+@st.cache_data(ttl=_ttl("signals"), show_spinner=False)
+def list_predictions_dates() -> list[str]:
+    """Return available predictor predictions dates, newest first.
+
+    Lists flat ``predictor/predictions/{date}.json`` objects in the research
+    bucket (producer: alpha-engine-predictor ``inference/stages/write_output.py``
+    ``write_predictions`` — unchanged by config#856; only the predictor
+    EMAIL was slimmed, this artifact still carries the full payload). Used
+    by the console Predictor page's ``?date=`` deep-link picker; excludes
+    the ``latest.json`` sidecar. Returns [] on any failure.
+    """
+    bucket = _research_bucket()
+    prefix = f"{_PREDICTOR_PREDICTIONS_PREFIX}/"
+    try:
+        client = get_s3_client()
+        paginator = client.get_paginator("list_objects_v2")
+        dates: set[str] = set()
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+            for obj in page.get("Contents", []):
+                k = obj.get("Key", "")
+                stem = k[len(prefix):]
+                if stem.endswith(".json") and stem != "latest.json":
+                    seg = stem[: -len(".json")]
+                    if ISO_DATE_PATTERN.match(seg):
+                        dates.add(seg)
+        return sorted(dates, reverse=True)
+    except Exception as e:
+        logger.error("Failed to list predictor predictions dates: %s", e)
+        _record_s3_error(bucket, prefix, type(e).__name__, str(e))
+        return []
+
+
 def load_predictor_metrics() -> dict:
     """Load predictor metrics from S3. Returns {} on any failure."""
     data = _fetch_s3_json(_research_bucket(), f"{_PREDICTOR_METRICS_PREFIX}/latest.json")
     return data if isinstance(data, dict) else {}
+
+
+# ---------------------------------------------------------------------------
+# Flow-Doctor heartbeat (config#646) — the fleet's end-of-run liveness snapshot
+# ---------------------------------------------------------------------------
+# Each producing flow's entrypoint calls flow-doctor's FlowDoctor.emit_heartbeat()
+# at end-of-run, landing its status() snapshot (seen/fired/suppressed decision
+# breakdown + cost) at
+# ``s3://alpha-engine-research/_flow_doctor/heartbeat/{flow}/{date}.json``.
+# The System Health page reads these to answer "alive but quiet" vs "suppressing
+# X per flow" — the observability gap the "make it actually kick in" arc left.
+
+_FLOW_DOCTOR_HEARTBEAT_PREFIX = "_flow_doctor/heartbeat"
+
+
+def list_flow_doctor_heartbeat_flows() -> list[str]:
+    """Return the flow names that have emitted a heartbeat, sorted.
+
+    Lists the immediate ``{flow}`` sub-prefixes under
+    ``_flow_doctor/heartbeat/`` in the research bucket (one per producing
+    flow: predictor / research-alerts / freshness-monitor / daemon /
+    backtester, etc.). Returns [] on any failure.
+    """
+    bucket = _research_bucket()
+    prefix = f"{_FLOW_DOCTOR_HEARTBEAT_PREFIX}/"
+    try:
+        client = get_s3_client()
+        paginator = client.get_paginator("list_objects_v2")
+        flows: set[str] = set()
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix, Delimiter="/"):
+            for cp in page.get("CommonPrefixes", []):
+                p = cp.get("Prefix", "")
+                flow = p[len(prefix):].strip("/")
+                if flow:
+                    flows.add(flow)
+        return sorted(flows)
+    except Exception as e:
+        logger.error("Failed to list flow-doctor heartbeat flows: %s", e)
+        _record_s3_error(bucket, prefix, type(e).__name__, str(e))
+        return []
+
+
+def load_flow_doctor_heartbeat_latest(flow: str) -> dict | None:
+    """Load the most recent daily heartbeat JSON for ``flow``.
+
+    Finds the newest ``_flow_doctor/heartbeat/{flow}/{date}.json`` object and
+    returns its parsed contents (the emit_heartbeat payload:
+    ``{schema_version, ts_utc, flow_name, source, status:{...}}``). Returns None
+    when the flow has no heartbeat yet or on any failure.
+    """
+    bucket = _research_bucket()
+    prefix = f"{_FLOW_DOCTOR_HEARTBEAT_PREFIX}/{flow}/"
+    try:
+        client = get_s3_client()
+        paginator = client.get_paginator("list_objects_v2")
+        dates: list[str] = []
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+            for obj in page.get("Contents", []):
+                stem = obj.get("Key", "")[len(prefix):]
+                if stem.endswith(".json"):
+                    seg = stem[: -len(".json")]
+                    if ISO_DATE_PATTERN.match(seg):
+                        dates.append(seg)
+        if not dates:
+            return None
+        latest = max(dates)
+        data = _fetch_s3_json(bucket, f"{prefix}{latest}.json")
+        return data if isinstance(data, dict) else None
+    except Exception as e:
+        logger.error("Failed to load flow-doctor heartbeat for %s: %s", flow, e)
+        _record_s3_error(bucket, prefix, type(e).__name__, str(e))
+        return None
 
 
 _MODEL_ZOO_LEADERBOARD_PREFIX = "predictor/model_zoo/leaderboard/"
@@ -1691,7 +2128,7 @@ def _drop_implausible_cost_rows(df: pd.DataFrame) -> pd.DataFrame:
     Mirrors the producer-side guard in alpha-engine-research's
     ``scripts/aggregate_costs._is_plausible_cost_row``. Belt-and-suspenders
     so historical pollution (the 2026-05-13 ~$1014 spike from a unit-test
-    run with real AWS creds) doesn't render on the LLM Cost page until
+    run with real AWS creds) doesn't render on the API page until
     the producer-side rewrite of that day's parquet lands.
 
     Drops rows where ``run_id`` doesn't start with an ISO date, or any
@@ -1865,6 +2302,7 @@ def load_claude_code_usage(n_days: int = 35):
             continue
         for model, rec in (doc.get("by_model") or {}).items():
             row = {"date": date_str, "source": source, "model": model,
+                   "provider": rec.get("provider", "anthropic"),   # backward compat: pre-provider docs
                    "wet": rec.get("wet", 0), "cost_usd": rec.get("cost_usd", 0.0),
                    "total": rec.get("total", 0)}
             for t in toks:
@@ -1877,6 +2315,18 @@ def load_claude_code_usage(n_days: int = 35):
                 "cost_usd": sum(r.get("cost_usd", 0.0) for r in models.values()),
             })
     return pd.DataFrame(model_rows), pd.DataFrame(hour_rows)
+
+
+@st.cache_data(ttl=900)
+def load_usage_pacing_config() -> dict | None:
+    """SSoT for the weekly WET ceiling + reset anchor (config#2043) —
+    ``config/usage_pacing.json``, written by alpha-engine-config's
+    ``scripts/set_usage_pacing_config.py``. Also read by that repo's
+    ``groom_budget.py`` and the ``alpha-engine-data`` usage-pace-alert Lambda,
+    so all three consumers stay bit-for-bit in sync. None if the object
+    doesn't exist yet or fails to parse — callers fall back to their own
+    last-known constants."""
+    return download_s3_json(_research_bucket(), "config/usage_pacing.json")
 
 
 # ---------------------------------------------------------------------------
@@ -1998,3 +2448,51 @@ def list_shadow_cohort_dates(prefix: str) -> list[str]:
     """Sorted cohort dates under a shadow prefix (date-named sub-prefixes),
     e.g. ``signals_shadow/no_agent_quant/`` → ['2026-07-02', ...]."""
     return list_s3_prefixes(_research_bucket(), prefix)
+
+
+# --- Crucible results surface: feedback-loop artifacts (config#1957) -------
+
+_AUTOAPPLY_CONFIG_KEYS = {
+    "executor_params": "config/executor_params.json",
+    "scoring_weights": "config/scoring_weights.json",
+    "research_params": "config/research_params.json",
+    "portfolio_optimizer": "config/portfolio_optimizer.json",
+}
+
+
+@st.cache_data(ttl=_ttl("signals"))
+def load_apply_audit() -> dict | None:
+    """Load the auto-apply outcome audit (backtester config#1848).
+
+    Reads ``config/apply_audit/latest.json`` — schema v1: per-loop
+    ``outcome`` (promoted/blocked/insufficient_data/error/disabled),
+    ``blocked_by`` slugs and the ``consecutive_blocked_weeks`` carry-forward
+    counter. First emission is the 2026-07-11 Saturday run; None until then
+    (the Crucible Feedback tab renders that absence honestly).
+    """
+    return download_s3_json(_research_bucket(), "config/apply_audit/latest.json")
+
+
+@st.cache_data(ttl=_ttl("signals"))
+def load_autoapply_config_meta() -> dict:
+    """Presence + last-modified + top-level keys of the four auto-apply
+    config artifacts the backtester may write. A missing artifact is an
+    honest ``{"present": False}`` entry — as of 2026-07-06 only
+    ``executor_params`` has EVER been written live (config#1841 diagnosis),
+    and surfacing that state is the Crucible Feedback tab's job.
+    """
+    client = get_s3_client()
+    bucket = _research_bucket()
+    out: dict[str, dict] = {}
+    for name, key in _AUTOAPPLY_CONFIG_KEYS.items():
+        try:
+            obj = client.get_object(Bucket=bucket, Key=key)
+            body = json.loads(obj["Body"].read())
+            out[name] = {
+                "present": True,
+                "last_modified": obj["LastModified"].isoformat()[:10],
+                "keys": sorted(body) if isinstance(body, dict) else [],
+            }
+        except Exception:
+            out[name] = {"present": False}
+    return out

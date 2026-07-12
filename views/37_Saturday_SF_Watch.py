@@ -9,10 +9,12 @@ terminal failure and appends an event to a per-date watch-log at
 (schema_version, run_date, events: [...]). This page is its consumer surface.
 
 The watch-log is **failure-driven** — a date exists only for a Saturday where
-the pipeline failed, so an empty list is the healthy steady state. Today the
-watcher runs in **OBSERVE mode** (M1): every event is ``action="observe"`` and
-no autonomous fix is enacted. Later milestones populate ``lane`` /
-``action`` (proposed / auto-fixed / rerun) and a PR link.
+the pipeline failed, so an empty list is the healthy steady state. Full
+autonomy shipped 2026-07-07 (all four dispatch flags now true) — the watcher
+dispatches an agent that can propose, auto-fix, merge, and rerun; ``lane`` /
+``action`` and a PR link populate per-event once the agent has run. Events
+from before 2026-07-07 may still show ``action="observe"`` (the earlier
+observe-only milestone) — that's historical, not current-mode.
 
 Complementary to **Pipeline Status** (live SF run/succeeded/failed state) and
 **Artifact Freshness** (independent artifact-integrity, the Sat→Mon swallow
@@ -52,8 +54,9 @@ _STATUS_COLOR_HEX: dict[str, str] = {
     "ABORTED": "#82071e",
 }
 
-# Watcher action → label. OBSERVE is all M1 emits; the rest are forward-compat
-# with M2+ (the agent fills lane/action).
+# Watcher action → label. "observe" is the pre-2026-07-07 historical
+# milestone's only action; full autonomy (shipped 2026-07-07) can also
+# emit proposed / auto-fixed / merged / rerun / refused / escalated.
 _ACTION_LABEL: dict[str, str] = {
     "observe": "👁 observed",
     "proposed": "📝 proposed (review)",
@@ -177,7 +180,11 @@ with tiles[2]:
 with tiles[3]:
     st.metric("📝 proposed", n_proposed)
 
-mode = "agent dispatch ON" if dispatch_on else "OBSERVE only (M1)"
+# Full autonomy shipped 2026-07-07 (all four dispatch flags true); the
+# false branch below now means "no dispatch-enabled event in this
+# specific date's log" (e.g. a pre-2026-07-07 date), not "OBSERVE-only
+# milestone" as a blanket system state.
+mode = "agent dispatch ON" if dispatch_on else "agent dispatch off for this date"
 st.caption(
     f"Mode: **{mode}** · updated {data.get('updated_at', '—')} · "
     f"failed state(s): {', '.join(distinct_states) if distinct_states else '—'}"
@@ -224,9 +231,10 @@ st.dataframe(
 )
 
 st.caption(
-    "Until the agent half lands (M2), every event is observe-only — the watcher "
-    "records the failed state + cause but enacts no fix. See config#1227 for the "
-    "M2→M5 rollout (propose-only soak → autonomous merge after it earns trust)."
+    "Full autonomy shipped 2026-07-07 (config#1227's M2→M5 rollout — "
+    "propose-only soak → autonomous merge — complete; all four dispatch "
+    "flags now true). Events dated before 2026-07-07 may show "
+    "observe-only action from the earlier milestone; that's historical."
 )
 
 # ── Agent action detail (enrichment fields written by the watch agent) ───────

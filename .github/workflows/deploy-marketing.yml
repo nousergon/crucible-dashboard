@@ -1,6 +1,6 @@
 name: deploy-marketing
 
-# Deploys the six Astro static sites to their Cloudflare Pages projects on
+# Deploys the seven Astro static sites to their Cloudflare Pages projects on
 # push to main — the durable replacement for the CF git-integration, which was
 # observed silently NOT firing on merge (config#1317: nousergon.ai served stale
 # copy for a week after a merge because no CF build triggered). Deploy lives in
@@ -14,6 +14,7 @@ name: deploy-marketing
 #   marketing-vires  -> nousergon-vires     -> fitness.nousergon.ai (vires.nousergon.ai = the live Vires APP, never attach it here)
 #   marketing-finance-> nousergon-finance   -> finance.nousergon.ai
 #   marketing-dev    -> nousergon-dev       -> dev.nousergon.ai
+#   marketing-telos  -> nousergon-telos     -> telos.nousergon.ai (/dash via Worker)
 #
 # IMPORTANT: the deploy step runs INSIDE each site directory (workingDirectory)
 # and deploys `dist` as a relative path. `wrangler pages deploy` only bundles a
@@ -44,6 +45,7 @@ on:
       - marketing-vires/**
       - marketing-finance/**
       - marketing-dev/**
+      - marketing-telos/**
       - blog/**
       - .github/workflows/deploy-marketing.yml
   workflow_dispatch:
@@ -66,6 +68,7 @@ jobs:
       vires: ${{ steps.decide.outputs.vires }}
       finance: ${{ steps.decide.outputs.finance }}
       dev: ${{ steps.decide.outputs.dev }}
+      telos: ${{ steps.decide.outputs.telos }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -95,6 +98,9 @@ jobs:
             dev:
               - 'marketing-dev/**'
               - '.github/workflows/deploy-marketing.yml'
+            telos:
+              - 'marketing-telos/**'
+              - '.github/workflows/deploy-marketing.yml'
       - name: Decide (force-all on manual dispatch)
         id: decide
         run: |
@@ -105,6 +111,7 @@ jobs:
             echo "vires=true"    >> "$GITHUB_OUTPUT"
             echo "finance=true"  >> "$GITHUB_OUTPUT"
             echo "dev=true"      >> "$GITHUB_OUTPUT"
+            echo "telos=true"    >> "$GITHUB_OUTPUT"
           else
             echo "apex=${{ steps.filter.outputs.apex }}"         >> "$GITHUB_OUTPUT"
             echo "crucible=${{ steps.filter.outputs.crucible }}" >> "$GITHUB_OUTPUT"
@@ -112,6 +119,7 @@ jobs:
             echo "vires=${{ steps.filter.outputs.vires }}"       >> "$GITHUB_OUTPUT"
             echo "finance=${{ steps.filter.outputs.finance }}"   >> "$GITHUB_OUTPUT"
             echo "dev=${{ steps.filter.outputs.dev }}"           >> "$GITHUB_OUTPUT"
+            echo "telos=${{ steps.filter.outputs.telos }}"       >> "$GITHUB_OUTPUT"
           fi
 
   deploy:
@@ -137,17 +145,25 @@ jobs:
             project: nousergon-metron
             changed: ${{ needs.changes.outputs.metron }}
             has_functions: true
+            analytics_token: ${{ vars.CF_ANALYTICS_TOKEN_METRON }}
           - site: marketing-vires
             project: nousergon-vires
             changed: ${{ needs.changes.outputs.vires }}
             has_functions: true
+            analytics_token: ${{ vars.CF_ANALYTICS_TOKEN_VIRES }}
           - site: marketing-finance
             project: nousergon-finance
             changed: ${{ needs.changes.outputs.finance }}
             has_functions: false
+            analytics_token: ${{ vars.CF_ANALYTICS_TOKEN_FINANCE }}
           - site: marketing-dev
             project: nousergon-dev
             changed: ${{ needs.changes.outputs.dev }}
+            has_functions: false
+            analytics_token: ${{ vars.CF_ANALYTICS_TOKEN_DEV }}
+          - site: marketing-telos
+            project: nousergon-telos
+            changed: ${{ needs.changes.outputs.telos }}
             has_functions: false
     steps:
       - name: Checkout
@@ -165,9 +181,33 @@ jobs:
       - name: Install + build (astro check && astro build)
         if: matrix.changed == 'true'
         working-directory: ${{ matrix.site }}
+        env:
+          # Web Analytics beacon token, per-site (astro reads PUBLIC_* at build
+          # time — see marketing-{metron,vires,finance,dev}/src/pages/index.astro).
+          # Unset repo var -> empty string -> astro omits the beacon (safe no-op).
+          PUBLIC_CF_ANALYTICS_TOKEN: ${{ matrix.analytics_token }}
         run: |
           npm ci
           npm run build
+
+      # wrangler pages deploy requires the CF Pages project to ALREADY exist —
+      # it does NOT auto-create. Adding a site to the matrix must be sufficient
+      # to ship it; provisioning was an undocumented manual dashboard click, so
+      # telos first-deploy went red 'Project not found [8000007]' (2026-07-05).
+      - name: Ensure Cloudflare Pages project exists (idempotent self-provision)
+        if: matrix.changed == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          proj="${{ matrix.project }}"
+          if npx --yes wrangler@3.90.0 pages project list 2>/dev/null \
+              | grep -qE "(^|[[:space:]])${proj}([[:space:]]|$)"; then
+            echo "Cloudflare Pages project ${proj} already exists — nothing to do."
+          else
+            echo "Creating Cloudflare Pages project ${proj} (Direct Upload, prod branch main)."
+            npx --yes wrangler@3.90.0 pages project create "${proj}" --production-branch=main
+          fi
 
       - name: Deploy to Cloudflare Pages (production)
         if: matrix.changed == 'true'

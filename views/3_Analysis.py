@@ -44,6 +44,9 @@ from loaders.s3_loader import (
     list_backtest_dates,
     load_backtest_file,
     load_eod_pnl,
+    load_executor_params,
+    load_executor_params_history,
+    load_research_params,
     load_scoring_weights,
     load_scoring_weights_history,
 )
@@ -157,8 +160,8 @@ if backtest_dates:
     )
     st.query_params["date"] = selected_backtest_date
 
-tab_accuracy, tab_backtest, tab_eval = st.tabs(
-    ["Signal Accuracy", "Backtester", "Pipeline Evaluation"]
+tab_accuracy, tab_backtest, tab_tuning, tab_eval = st.tabs(
+    ["Signal Accuracy", "Backtester", "Self-Tuning", "Pipeline Evaluation"]
 )
 
 # ===========================================================================
@@ -411,33 +414,14 @@ with tab_backtest:
 
         st.divider()
 
-        # ---- Scoring Weights (current + history + recommendations) ----
-        st.subheader("Scoring Weights")
+        # ---- Scoring Weight Recommendations ----
+        # The backtester's per-run suggested weights (real weekly output).
+        # The LIVE weights channel has never promoted (config#1841) — its
+        # honest status lives on the Self-Tuning tab, not as a permanent
+        # not-found warning here.
+        st.subheader("Scoring Weight Recommendations")
 
         current_weights = load_scoring_weights()
-        weight_history = load_scoring_weights_history()
-
-        if current_weights:
-            def _to_pct(val) -> str:
-                try:
-                    v = float(val)
-                    if v <= 1.0:
-                        v = v * 100
-                    return f"{v:.1f}%"
-                except (ValueError, TypeError):
-                    return str(val)
-
-            w1, w2, w3 = st.columns(3)
-            with w1:
-                st.metric("Technical Weight", _to_pct(current_weights.get("technical", "—")))
-            with w2:
-                st.metric("News Weight", _to_pct(current_weights.get("news", "—")))
-            with w3:
-                st.metric("Research Weight", _to_pct(current_weights.get("research", "—")))
-            updated = current_weights.get("updated_at", current_weights.get("date", "unknown"))
-            st.caption(f"Weights last updated: {updated}")
-        else:
-            st.warning("scoring_weights.json not found in S3.")
 
         # Recommendations (from metrics.json)
         if metrics:
@@ -490,12 +474,6 @@ with tab_backtest:
                     st.markdown("**Weight Recommendations**")
                     st.dataframe(pd.DataFrame(rec_rows), use_container_width=True, hide_index=True)
 
-        if weight_history:
-            st.markdown("**Weight History**")
-            st.plotly_chart(make_weight_history_chart(weight_history), use_container_width=True)
-        else:
-            st.info("No scoring weight history files found in S3.")
-
         st.divider()
 
         # ---- Raw Report ----
@@ -505,6 +483,219 @@ with tab_backtest:
             else:
                 st.info("report.md not found for this backtest run.")
 
+
+
+# ===========================================================================
+# TAB: Self-Tuning — the auto-apply channels (absorbed the former standalone
+# Feedback Loop page; console-IA phase 2b, config#1988)
+# ===========================================================================
+with tab_tuning:
+    st.subheader("Self-Tuning — governed auto-apply channels")
+    st.caption(
+        "Every Saturday the backtester sweeps params and MAY write winners "
+        "back to S3 behind promotion gates. Honest status (config#1841): "
+        "**executor_params is the only channel that has ever promoted to "
+        "live S3** — scoring_weights and predictor_params have never been "
+        "written, research_params has been frozen since 2026-05-02. The "
+        "per-run promoted/blocked record is the apply-audit artifact "
+        "(`config/apply_audit/latest.json`, first emit Sat 2026-07-11), "
+        "rendered on Experiments › Crucible Results › Feedback loop."
+    )
+
+    st.divider()
+
+    # ---- Live Optimizer Params (ROADMAP L234) ----
+    # Rehomed from the retired System Health page (config#1987), now on the
+    # Self-Tuning tab (config#1988): the auto-tuned params the executor
+    # reads from S3 at cold-start — the ONE auto-apply channel that actually
+    # promotes to live S3 (config#1841).
+    st.subheader("Live Optimizer Params")
+    st.caption(
+        "The backtester's `executor_optimizer` writes auto-tuned values "
+        "to `config/executor_params.json` on each Saturday SF promotion. "
+        "These OVERRIDE the corresponding keys in the executor's local "
+        "`risk.yaml` at cold-start. Keys NOT present here fall through to "
+        "the risk.yaml default — see "
+        "`alpha-engine/executor/main.py::_load_executor_params_from_s3`."
+    )
+
+    exec_params = load_executor_params()
+
+    if not exec_params:
+        st.info(
+            "No `config/executor_params.json` found — executor running on "
+            "hardcoded defaults + local `risk.yaml`. The Saturday SF "
+            "backtester optimizer writes this artifact on each promotion."
+        )
+    else:
+        meta_cols = st.columns(4)
+        updated = exec_params.get("updated_at", "—")
+        meta_cols[0].metric("Last promoted", str(updated))
+        best_sharpe = exec_params.get("best_sharpe")
+        meta_cols[1].metric(
+            "Best Sharpe (sweep)",
+            f"{best_sharpe:.2f}" if isinstance(best_sharpe, (int, float)) else "—",
+        )
+        best_alpha = exec_params.get("best_alpha")
+        meta_cols[2].metric(
+            "Best alpha (sweep)",
+            f"{best_alpha:+.1%}" if isinstance(best_alpha, (int, float)) else "—",
+        )
+        n_combos = exec_params.get("n_combos_tested")
+        meta_cols[3].metric(
+            "Combos tested",
+            f"{int(n_combos):,}" if isinstance(n_combos, (int, float)) else "—",
+        )
+
+        _PARAM_LABELS = {
+            "min_score": "min_score_to_enter (research score)",
+            "max_position_pct": "max_position_pct (NAV)",
+            "atr_multiplier": "atr_multiplier (trailing stop)",
+            "time_decay_reduce_days": "time_decay_reduce_days",
+            "time_decay_exit_days": "time_decay_exit_days",
+            "profit_take_pct": "profit_take_pct (intraday)",
+            "reduce_fraction": "reduce_fraction",
+            "atr_sizing_target_risk": "atr_sizing_target_risk",
+            "confidence_sizing_min": "confidence_sizing_min",
+            "confidence_sizing_range": "confidence_sizing_range",
+            "staleness_decay_per_day": "staleness_decay_per_day",
+            "earnings_sizing_reduction": "earnings_sizing_reduction",
+            "earnings_proximity_days": "earnings_proximity_days",
+            "momentum_gate_threshold": "momentum_gate_threshold",
+            "correlation_block_threshold": "correlation_block_threshold",
+            "momentum_exit_threshold": "momentum_exit_threshold",
+            "use_p_up_sizing": "use_p_up_sizing (Phase 4 flag)",
+            "p_up_sizing_blend": "p_up_sizing_blend",
+            "disabled_triggers": "disabled_triggers (intraday)",
+        }
+        _METADATA_KEYS = {
+            "updated_at", "best_sharpe", "best_alpha", "improvement_pct",
+            "improvement_delta", "n_combos_tested", "manual_override",
+        }
+        param_rows = []
+        for key, val in exec_params.items():
+            if key in _METADATA_KEYS:
+                continue
+            label = _PARAM_LABELS.get(key, key)
+            if isinstance(val, float):
+                display = f"{val:.4f}" if abs(val) < 1 else f"{val:.2f}"
+            elif isinstance(val, list):
+                display = ", ".join(str(x) for x in val) if val else "(none)"
+            else:
+                display = str(val)
+            param_rows.append(
+                {"Param": label, "Live value": display, "Source": "S3 (auto-tuned)"}
+            )
+
+        if param_rows:
+            params_df = pd.DataFrame(param_rows).sort_values("Param").reset_index(drop=True)
+            st.dataframe(params_df, hide_index=True, use_container_width=True)
+        else:
+            st.caption("Artifact present but no auto-tuned param keys recognized.")
+
+        if exec_params.get("manual_override"):
+            st.warning(
+                "**Manual override flag set** in `config/executor_params.json` — "
+                "the backtester optimizer is currently held off the auto-apply "
+                "path. Investigate before next Saturday SF."
+            )
+
+        improvement_pct = exec_params.get("improvement_pct")
+        if isinstance(improvement_pct, (int, float)):
+            st.caption(
+                f"Promotion gate margin: **{improvement_pct:+.1%}** Sharpe "
+                f"improvement vs prior live config (backtester "
+                f"`executor_optimizer.recommend` decision)."
+            )
+
+    st.divider()
+    # ---- Executor promotion history (the one LIVE channel) ----
+    st.subheader("Executor promotion history")
+    st.caption(
+        "Source: `config/executor_params_history/{date}.json` (producer: "
+        "crucible-backtester `optimizer/executor_optimizer.py`). Auto-scaled "
+        "random search over the core risk params; ranked by Sharpe; promoted "
+        "on holdout validation behind a guarded margin. Gaps between dates "
+        "are Saturdays where the optimizer ran but the gate held."
+    )
+    exec_history = load_executor_params_history()
+    if not exec_history:
+        st.info("No executor param history yet — no successful promotion recorded.")
+    else:
+        hist_df = pd.DataFrame(exec_history).sort_values("updated_at").reset_index(drop=True)
+        st.markdown(f"**{len(hist_df)} dated promotions** since the optimizer started writing back.")
+        hist_cols = [c for c in [
+            "updated_at", "min_score", "max_position_pct", "atr_multiplier",
+            "time_decay_reduce_days", "time_decay_exit_days",
+            "best_sharpe", "improvement_pct", "n_combos_tested",
+        ] if c in hist_df.columns]
+        hist_fmt = hist_df[hist_cols].copy()
+        if "max_position_pct" in hist_fmt.columns:
+            hist_fmt["max_position_pct"] = hist_fmt["max_position_pct"].apply(
+                lambda v: f"{float(v) * 100:.1f}%" if pd.notna(v) else "—")
+        if "best_sharpe" in hist_fmt.columns:
+            hist_fmt["best_sharpe"] = hist_fmt["best_sharpe"].apply(
+                lambda v: f"{float(v):.3f}" if pd.notna(v) else "—")
+        if "improvement_pct" in hist_fmt.columns:
+            hist_fmt["improvement_pct"] = hist_fmt["improvement_pct"].apply(
+                lambda v: f"{float(v) * 100:+.2f}%" if pd.notna(v) else "—")
+        hist_fmt.columns = [
+            "Date" if c == "updated_at" else c.replace("_", " ").title()
+            for c in hist_fmt.columns
+        ]
+        st.dataframe(hist_fmt, use_container_width=True, hide_index=True)
+
+        if "updated_at" in hist_df.columns:
+            hist_df["updated_at"] = pd.to_datetime(hist_df["updated_at"], errors="coerce")
+        if "best_sharpe" in hist_df.columns and hist_df["best_sharpe"].notna().any():
+            sharpe_fig = go.Figure(go.Scatter(
+                x=hist_df["updated_at"],
+                y=pd.to_numeric(hist_df["best_sharpe"], errors="coerce"),
+                mode="lines+markers",
+                line=dict(color="#7fd17f", width=2), marker=dict(size=10),
+            ))
+            sharpe_fig.add_hline(y=0, line_dash="dot", line_color="#888")
+            sharpe_fig.update_layout(
+                title="Backtester best Sharpe at each promotion", height=260,
+                margin=dict(l=10, r=10, t=40, b=20),
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            )
+            st.plotly_chart(sharpe_fig, use_container_width=True, key="tuning_sharpe_trajectory")
+
+    st.divider()
+
+    # ---- The dead / frozen channels, stated honestly ----
+    st.subheader("Dead / frozen channels")
+    research_params = load_research_params() or {}
+    if research_params:
+        rc1, rc2 = st.columns([1, 2])
+        rc1.metric("CIO mode (research_params)", str(research_params.get("cio_mode", "—")))
+        rc2.warning(
+            "`config/research_params.json` has been **frozen since 2026-05-02** "
+            "(config#1841) — the value shown is stale, not a live decision. "
+            f"Recorded rationale: {research_params.get('cio_mode_reason', '—')}"
+        )
+    else:
+        st.markdown("- `config/research_params.json` — frozen since 2026-05-02 (config#1841).")
+    st.markdown(
+        "- `config/scoring_weights.json` — **never written** to live S3; the "
+        "weekly recommendations render on the Backtester tab.\n"
+        "- `config/predictor_params.json` — **never written**; the veto "
+        "threshold in production is the code default."
+    )
+
+    st.divider()
+
+    # ---- Why every weekly run isn't a promotion ----
+    st.markdown(
+        "**Why every weekly run isn't a promotion** — each optimizer has a "
+        "promotion gate: the executor optimizer validates the winner on a "
+        "held-out split before writing back; the weight optimizer requires "
+        "improvement vs the prior baseline by a configurable margin. When "
+        "the gate fails, the prior config stays and the run records a "
+        "no-promotion outcome. The gate is the discipline that keeps the "
+        "loop from shifting the system around in response to noise."
+    )
 
 # ===========================================================================
 # TAB 3: Pipeline Evaluation

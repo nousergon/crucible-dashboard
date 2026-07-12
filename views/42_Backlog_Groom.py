@@ -2,10 +2,16 @@
 Backlog Groom — Alpha Engine (private console)
 
 Operator audit surface for the complexity-tier backlog groom (config#1495,
-#1512). Every scheduled groom run (2x/day Sonnet mid/low-tier + 1x/day Opus
-high-tier) writes a per-run artifact to
+#1512). As of the 2026-07-07 move to demand-driven dispatch, groom runs
+fire based on backlog demand rather than a fixed daily cadence (complexity
+tier still routes each run to the appropriate model — Sonnet for low/mid,
+Opus for high). Every run writes a per-run artifact to
 ``s3://alpha-engine-research/groom/{date}/{run_id_or_hhmmss}.json``
 (``groom_driver.py::write_run_artifact``) — this page is its consumer.
+Standalone PR-sweep runs (``groom_run.sh --mode sweep``) write here too as of
+config#1986, via ``scripts/write_sweep_artifact.py`` — same schema,
+``run_kind="sweep"``, no issue queue — replacing the `groom-digest` GitHub
+issue they used to file as their only reporting surface.
 
 The point of this page: answer "did the model actually think about each
 issue?" from VERIFIABLE artifacts, never a self-report. Each queued issue's
@@ -17,6 +23,15 @@ same ground-truth-over-self-report principle the run-attribution fix
 
 Complementary to **Saturday SF Watch** (failure-event timeline for the trading
 pipelines) — this page is the per-run activity log for the groom pipeline.
+
+**Slot decisions strip (config#1933 demand-driven dispatch / config#1935):**
+above the run history, a per-slot/per-day chip strip sourced from
+``s3://alpha-engine-research/groom/decisions/{date}/{slot}.json`` — the
+dispatcher's enumerate-then-decide record, written BEFORE any spot spend.
+Distinct from the run artifacts above: a decision record exists even when
+the dispatcher decides NOT to launch (a light backlog), and a missing
+record for a scheduled slot is a broken-scheduler signal in its own right —
+rendered as an explicit ⚠️, never blank.
 """
 
 from __future__ import annotations
@@ -29,18 +44,36 @@ import streamlit as st
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from loaders.s3_loader import list_groom_run_keys, load_groom_run  # noqa: E402
+from loaders.groom_efficiency import (  # noqa: E402
+    compute_efficiency,
+    format_efficiency_row,
+    match_usage_for_run,
+)
+from loaders.s3_loader import (  # noqa: E402
+    KNOWN_GROOM_SLOTS,
+    known_slots_from_records,
+    list_groom_decision_keys,
+    list_groom_run_keys,
+    list_groom_usage_records,
+    load_groom_decision,
+    load_groom_run,
+    normalize_groom_decision_record,
+)
 
 _DISPOSITION_LABEL: dict[str, str] = {
     "closed": "✅ closed",
     "pr_opened": "🔧 PR opened",
     "commented": "💬 commented",
+    # config#1928: label-only work (gate labels, complexity escalations) —
+    # the norm for blocked dispositions since the config#1890 comment-skip.
+    "labeled": "🏷 labeled",
     "untouched": "⚠️ untouched",
 }
 _DISPOSITION_COLOR_HEX: dict[str, str] = {
     "closed": "#1a7f37",
     "pr_opened": "#0969da",
     "commented": "#9a6700",
+    "labeled": "#8250df",
     "untouched": "#cf222e",
 }
 
@@ -51,12 +84,132 @@ def _run_label(key: str) -> str:
     return stem.replace("/", " ")
 
 
+_DECISIONS_HISTORY_DAYS = 3
+
+
+def _render_slot_decisions_strip() -> None:
+    """"Slot decisions" strip (config#1935) — one chip per scheduled slot
+    per day for the last ``_DECISIONS_HISTORY_DAYS`` days, sourced from the
+    dispatcher's enumerate-then-decide records
+    (``groom/decisions/{date}/{slot}.json``, written BEFORE any spot spend —
+    distinct from the post-hoc run artifacts the rest of this page reads).
+
+    Chips: 🟢 launched (filter + model), ⚪ skipped (reason on hover/expander),
+    ⚠️ missing record. A day with no record for an otherwise-known slot is
+    the broken-scheduler signal these records exist to expose, so it is
+    ALWAYS rendered loud — never silently blanked, even with zero records
+    anywhere (the pre-bootstrap cold-start state).
+    """
+    import datetime as _dt
+
+    st.subheader("Slot decisions")
+    st.caption(
+        "Dispatcher enumerate-then-decide records, per scheduled slot — "
+        "written BEFORE any spot spend, so a light backlog shows ⚪ skipped "
+        "with zero cost. A slot with NO record for a day it should have run "
+        "renders ⚠️ — that gap is the broken-scheduler signal these records "
+        "exist to expose. (config#1933, config#1935)"
+    )
+
+    decision_keys = list_groom_decision_keys(days=_DECISIONS_HISTORY_DAYS)
+
+    # Known-slots set: the hardcoded daily trigger trio, unioned with any
+    # slot name actually observed in the window — so a schedule change
+    # (new/renamed slot) surfaces as a new column instead of being silently
+    # invisible (config#1935 step 3 fallback, documented in the PR body).
+    known_slots = sorted(set(KNOWN_GROOM_SLOTS) | set(known_slots_from_records(decision_keys)))
+
+    today = _dt.date.today()
+    days = [(today - _dt.timedelta(days=i)).isoformat() for i in range(_DECISIONS_HISTORY_DAYS)]
+
+    if not known_slots:
+        # Nothing in KNOWN_GROOM_SLOTS AND nothing observed live — the
+        # pre-bootstrap cold-start state (nousergon-data-PR684 not yet
+        # produced a single record). Render an explicit notice, not a blank
+        # section.
+        st.warning(
+            "⚠️ No slot decision records found in the last "
+            f"{_DECISIONS_HISTORY_DAYS} days and no known schedule configured — "
+            "either the dispatcher hasn't written its first record yet "
+            "(cold start) or the scheduler is down. Expected slots: "
+            + ", ".join(KNOWN_GROOM_SLOTS)
+        )
+        return
+
+    records_by_key: dict[str, dict | None] = {k: load_groom_decision(k) for k in decision_keys}
+    keys_by_date_slot: dict[tuple[str, str], str] = {}
+    for k in decision_keys:
+        parts = k.removeprefix("groom/decisions/").removesuffix(".json").split("/", 1)
+        if len(parts) == 2:
+            keys_by_date_slot[(parts[0], parts[1])] = k
+
+    any_missing = False
+    # Newest day first (matches Run history's newest-first convention);
+    # within a day, slots in canonical schedule order.
+    for date_str in days:
+        st.markdown(f"**{date_str}**")
+        cols = st.columns(len(known_slots))
+        for col, slot in zip(cols, known_slots):
+            key = keys_by_date_slot.get((date_str, slot))
+            with col:
+                if key is None:
+                    any_missing = True
+                    st.markdown(f"⚠️ **{slot}**")
+                    st.caption("no decision record")
+                    continue
+                raw = records_by_key.get(key)
+                if raw is None:
+                    any_missing = True
+                    st.markdown(f"⚠️ **{slot}**")
+                    st.caption("record unreadable")
+                    continue
+                boxes = normalize_groom_decision_record(raw)
+                if not boxes:
+                    # Zero-length decisions list == a real, deliberate
+                    # full-slot skip (light backlog) — distinct from a
+                    # missing record. Never conflate the two.
+                    st.markdown(f"⚪ **{slot}**")
+                    with st.expander("skipped", expanded=False):
+                        st.caption(
+                            "0 tier boxes launched this slot (light backlog "
+                            "across all tiers, or a skip below the floor)."
+                        )
+                        st.json(raw)
+                else:
+                    launched = [b for b in boxes if b.get("launch")]
+                    skipped = [b for b in boxes if not b.get("launch")]
+                    if launched:
+                        st.markdown(f"🟢 **{slot}**")
+                        with st.expander(f"{len(launched)} launched", expanded=False):
+                            for b in launched:
+                                st.caption(
+                                    f"`{b.get('issue_filter', '—')}` → "
+                                    f"**{b.get('model', '—')}** — {b.get('reason', '—')}"
+                                )
+                            for b in skipped:
+                                st.caption(f"⚪ skipped: {b.get('reason', '—')}")
+                    else:
+                        st.markdown(f"⚪ **{slot}**")
+                        with st.expander("skipped", expanded=False):
+                            for b in skipped:
+                                st.caption(f"{b.get('reason', '—')}")
+    if any_missing:
+        st.caption(
+            "⚠️ above = no decision record for that slot/day — verify the "
+            "dispatcher Lambda actually invoked (scheduler outage is the "
+            "primary suspect; check CloudWatch for the "
+            "`scheduled-groom-dispatcher` function)."
+        )
+
+
 st.title("🧹 Backlog Groom")
 st.caption(
     "Per-run audit trail for the complexity-tier backlog groom — every "
     "issue's disposition cross-referenced against real GitHub state, not a "
     "self-report. (config#1495, #1512)"
 )
+
+_render_slot_decisions_strip()
 
 keys = list_groom_run_keys()
 if not keys:
@@ -74,32 +227,56 @@ if not keys:
 # GETs and re-renders free within the TTL. ──────────────────────────────────
 _HISTORY_N = 12
 _DIGEST_ISSUE_URL = "https://github.com/nousergon/alpha-engine-config/issues/{n}"
+usage_index = list_groom_usage_records()
+assigned_usage: set[str] = set()
 history_rows = []
+run_efficiency: dict[str, dict] = {}
 for k in keys[:_HISTORY_N]:
     run = load_groom_run(k)
     if not run:
         continue
+    # config#1986: schema_version 6 adds run_kind ("coverage" | "sweep") —
+    # older artifacts and coverage runs default to "coverage". A standalone
+    # PR-sweep run has no issue queue, so its Coverage/disposition columns
+    # are not meaningful the way a coverage run's are — render "—" rather
+    # than a misleading "0/0".
+    run_kind = run.get("run_kind", "coverage")
     run_issues = run.get("issues") or []
     counts = {d: sum(1 for i in run_issues if i.get("disposition") == d)
               for d in ("closed", "pr_opened", "commented", "untouched")}
     soft = run.get("soft_limit_min") or 0
     digest_n = run.get("digest_issue") or 0
+    usage = match_usage_for_run(k, run, usage_index, assigned=assigned_usage)
+    if usage:
+        assigned_usage.add(usage["key"])
+    eff = compute_efficiency(run, run_issues, usage)
+    run_efficiency[k] = eff
+    eff_cols = format_efficiency_row(eff)
     history_rows.append({
         "Run": _run_label(k),
+        "Kind": "🔧 sweep" if run_kind == "sweep" else "🧹 coverage",
         "Tier": run.get("issue_filter", "—"),
         "Outcome": "🟠 floor breach" if run.get("floor_fail") else "✅ ok",
         "Stop reason": (run.get("stop_reason") or "—")[:60],
-        "Coverage": f"{run.get('processed', len(run_issues))}/{run.get('total_issues', len(run_issues))}",
+        "Coverage": ("—" if run_kind == "sweep" else
+                     f"{run.get('processed', len(run_issues))}/{run.get('total_issues', len(run_issues))}"),
         "✅ closed": counts["closed"],
         "🔧 PRs": counts["pr_opened"],
         "💬 comm.": counts["commented"],
         "⚠️ unt.": counts["untouched"],
         "Budget (min)": f"{run.get('elapsed_min') or 0}/{soft}" if soft else "—",
+        **eff_cols,
         "Digest": _DIGEST_ISSUE_URL.format(n=digest_n) if digest_n else None,
     })
 
 st.subheader("Run history")
 if history_rows:
+    st.caption(
+        "**WET** / **WET/eng** / **iss/min** join run artifacts to "
+        "`claude_code_usage/groom/` by date + nearest end-time (spot runs use "
+        "different IDs than the artifact key). **Efficiency** flags high "
+        "untouched %, WET/issue, or slow throughput vs tier baselines."
+    )
     st.dataframe(
         pd.DataFrame(history_rows),
         use_container_width=True,
@@ -125,11 +302,19 @@ if data is None:
 issues = data.get("issues") or []
 other_closed = data.get("other_closed") or []
 other_prs = data.get("other_prs") or []
+sel_run_kind = data.get("run_kind", "coverage")
 
 n_closed = sum(1 for i in issues if i.get("disposition") == "closed")
 n_pr = sum(1 for i in issues if i.get("disposition") == "pr_opened")
 n_commented = sum(1 for i in issues if i.get("disposition") == "commented")
 n_untouched = sum(1 for i in issues if i.get("disposition") == "untouched")
+
+# Efficiency for selected run (reuse history cache when present)
+if selected_key in run_efficiency:
+    sel_eff = run_efficiency[selected_key]
+else:
+    sel_usage = match_usage_for_run(selected_key, data, usage_index)
+    sel_eff = compute_efficiency(data, issues, sel_usage)
 
 with col_meta:
     st.caption(
@@ -137,66 +322,122 @@ with col_meta:
         f"Stop reason: {data.get('stop_reason', '—')}"
     )
 
-# ── Budget vs consumed (config#1569; schema_version >= 2 only — older runs ──
-# never captured these fields, so soft_limit_min is 0/absent for them) ───────
-if data.get("schema_version", 1) >= 2 and data.get("soft_limit_min"):
-    soft_limit = data["soft_limit_min"]
-    elapsed = data.get("elapsed_min", 0)
-    engaged = data.get("engaged", 0)
-    floor = data.get("floor", 0)
-    pct_used = (elapsed / soft_limit * 100) if soft_limit else 0.0
-    bcol1, bcol2, bcol3 = st.columns(3)
-    with bcol1:
-        st.metric("Soft budget used", f"{elapsed}/{soft_limit} min", f"{pct_used:.0f}%")
-    with bcol2:
-        st.metric(
-            "Engaged / floor", f"{engaged} / {floor}",
-            help="Issues dispositioned (closed/PR'd/commented) this run vs the fail-loud "
-                 "floor below which a budget+time-remaining stop is flagged as a "
-                 "self-taper (config#1374, engagement metric per config#1382/#1564).",
-        )
-    with bcol3:
-        st.metric("Queue coverage", f"{data.get('processed', len(issues))}/{data.get('total_issues', len(issues))}")
-    if not data.get("floor_fail") and elapsed < soft_limit:
-        st.caption(
-            f"Finished {soft_limit - elapsed} min under budget with stop reason starting "
-            f"\"{(data.get('stop_reason') or '')[:40]}...\" — **this is expected, not a bug**, "
-            "when the queue drains before the soft deadline (a small/clean backlog is cheap "
-            "to fully disposition). Only a 🟠 floor-breach below is a self-taper signal."
-        )
+st.subheader("Token efficiency")
+if sel_eff.get("usage_matched"):
+    e1, e2, e3, e4, e5, e6 = st.columns(6)
+    wet = sel_eff.get("wet")
+    e1.metric("Run WET", f"{wet/1e6:.1f}M" if wet is not None else "—",
+              help="Weighted effective tokens for this groom run (from usage capture).")
+    wpe = sel_eff.get("wet_per_engaged")
+    e2.metric("WET / engaged", f"{wpe/1e3:.0f}K" if wpe is not None else "—",
+              help="Token cost per dispositioned issue — primary efficiency ratio.")
+    wph = sel_eff.get("wet_per_hard")
+    e3.metric("WET / hard outcome", f"{wph/1e3:.0f}K" if wph is not None else "—",
+              help="WET per close or PR opened (undefined when none).")
+    thr = sel_eff.get("throughput")
+    e4.metric("Throughput", f"{thr:.2f}/min" if thr is not None else "—",
+              help="Engaged issues per elapsed minute.")
+    cr = sel_eff.get("cache_read_pct")
+    e5.metric("Cache-read %", f"{cr:.0f}%" if cr is not None else "—",
+              help="Share of raw tokens that were cache reads (high = good).")
+    hr = sel_eff.get("hard_rate")
+    e6.metric("Hard-outcome rate", f"{hr*100:.0f}%" if hr is not None else "—",
+              help="(closes + PRs) / engaged — comment-only runs skew low on Opus.")
+    r1, r2, r3 = st.columns(3)
+    dr = sel_eff.get("disposition_rate")
+    r1.metric("Disposition rate", f"{dr*100:.0f}%" if dr is not None else "—",
+              help="Engaged / queued — coverage quality.")
+    cr2 = sel_eff.get("comment_rate")
+    r2.metric("Comment-only rate", f"{cr2*100:.0f}%" if cr2 is not None else "—",
+              help="Commented / engaged — high on verify-heavy Opus runs.")
+    uf = sel_eff.get("untouched_frac")
+    r3.metric("Untouched rate", f"{uf*100:.0f}%" if uf is not None else "—",
+              help="Untouched / queued — should stay near 0.")
+    if sel_eff.get("alerts"):
+        st.warning("Efficiency flags: " + "; ".join(sel_eff["alerts"]))
+    else:
+        st.caption(f"Usage matched: `{sel_eff.get('usage_key', '—')}`")
 else:
     st.caption(
-        "🛈 This run predates budget-tracking (schema_version "
-        f"{data.get('schema_version', 1)}, pre-2026-07-02) — no soft-budget-vs-consumed "
-        "data was captured for it."
+        "🛈 No groom usage file matched this run (pre-2026-07-02 capture gap, or "
+        "usage capture failed). Token efficiency metrics need "
+        "`claude_code_usage/groom/{date}/*.json` from the spot bootstrap step."
     )
+    if sel_eff.get("alerts"):
+        st.warning("Outcome flags (no usage join): " + "; ".join(sel_eff["alerts"]))
 
-tiles = st.columns(5)
-with tiles[0]:
-    st.metric("Queued issues", len(issues))
-with tiles[1]:
-    st.metric("✅ Closed", n_closed)
-with tiles[2]:
-    st.metric("🔧 PR opened", n_pr)
-with tiles[3]:
-    st.metric("💬 Commented", n_commented)
-with tiles[4]:
-    st.metric("⚠️ Untouched", n_untouched, delta=None if n_untouched == 0 else "check below",
-             delta_color="inverse")
+if sel_run_kind == "sweep":
+    # config#1986: a standalone PR-sweep run has no issue queue, so the
+    # coverage-loop's Engaged/floor + Queue coverage framing doesn't apply —
+    # just show elapsed vs soft budget. PRs-swept detail lives in the report
+    # below (Run digest), which IS this run's disposition record.
+    st.caption(
+        f"🔧 Standalone PR-sweep run — elapsed **{data.get('elapsed_min', 0)}** / "
+        f"**{data.get('soft_limit_min', 0)}** min soft budget. No issue queue "
+        "(sweep runs bring existing PRs to merge-ready, they don't triage "
+        "issues) — see the report below for what was swept."
+    )
+else:
+    # ── Budget vs consumed (config#1569; schema_version >= 2 only — older ──
+    # runs never captured these fields, so soft_limit_min is 0/absent). ─────
+    if data.get("schema_version", 1) >= 2 and data.get("soft_limit_min"):
+        soft_limit = data["soft_limit_min"]
+        elapsed = data.get("elapsed_min", 0)
+        engaged = data.get("engaged", 0)
+        floor = data.get("floor", 0)
+        pct_used = (elapsed / soft_limit * 100) if soft_limit else 0.0
+        bcol1, bcol2, bcol3 = st.columns(3)
+        with bcol1:
+            st.metric("Soft budget used", f"{elapsed}/{soft_limit} min", f"{pct_used:.0f}%")
+        with bcol2:
+            st.metric(
+                "Engaged / floor", f"{engaged} / {floor}",
+                help="Issues dispositioned (closed/PR'd/commented) this run vs the fail-loud "
+                     "floor below which a budget+time-remaining stop is flagged as a "
+                     "self-taper (config#1374, engagement metric per config#1382/#1564).",
+            )
+        with bcol3:
+            st.metric("Queue coverage", f"{data.get('processed', len(issues))}/{data.get('total_issues', len(issues))}")
+        if not data.get("floor_fail") and elapsed < soft_limit:
+            st.caption(
+                f"Finished {soft_limit - elapsed} min under budget with stop reason starting "
+                f"\"{(data.get('stop_reason') or '')[:40]}...\" — **this is expected, not a bug**, "
+                "when the queue drains before the soft deadline (a small/clean backlog is cheap "
+                "to fully disposition). Only a 🟠 floor-breach below is a self-taper signal."
+            )
+    else:
+        st.caption(
+            "🛈 This run predates budget-tracking (schema_version "
+            f"{data.get('schema_version', 1)}, pre-2026-07-02) — no soft-budget-vs-consumed "
+            "data was captured for it."
+        )
 
-if data.get("floor_fail"):
-    st.error(
-        "⚠️ FAIL-LOUD FLOOR BREACHED — this run stopped with budget+time "
-        "remaining but delivered fewer than the minimum work-items. Treated "
-        "as a self-taper failure; see the `groom-digest` GitHub issue."
-    )
-if n_untouched:
-    st.warning(
-        f"{n_untouched} queued issue(s) got NO action this run (not closed, "
-        "no PR, no comment) — coverage is supposed to be mandatory; an "
-        "untouched issue here means it hit the re-queue attempt cap without "
-        "ever being dispositioned. Worth checking why."
-    )
+    tiles = st.columns(5)
+    with tiles[0]:
+        st.metric("Queued issues", len(issues))
+    with tiles[1]:
+        st.metric("✅ Closed", n_closed)
+    with tiles[2]:
+        st.metric("🔧 PR opened", n_pr)
+    with tiles[3]:
+        st.metric("💬 Commented", n_commented)
+    with tiles[4]:
+        st.metric("⚠️ Untouched", n_untouched, delta=None if n_untouched == 0 else "check below",
+                 delta_color="inverse")
+
+    if data.get("floor_fail"):
+        st.error(
+            "⚠️ FAIL-LOUD FLOOR BREACHED — this run stopped with budget+time "
+            "remaining but delivered fewer than the minimum work-items. Treated "
+            "as a self-taper failure; see the run digest below."
+        )
+    if n_untouched:
+        st.warning(
+            f"{n_untouched} queued issue(s) got NO action this run (not closed, "
+            "no PR, no comment) — coverage is supposed to be mandatory; an "
+            "untouched issue here means it hit the re-queue attempt cap without "
+            "ever being dispositioned. Worth checking why."
+        )
 
 # ── Run digest (schema_version >= 3 embeds the finalized digest verbatim, ──
 # written by groom_driver.py at the same moment it finalizes the GitHub
@@ -249,6 +490,8 @@ if len(display):
         use_container_width=True,
         hide_index=True,
     )
+elif sel_run_kind == "sweep":
+    st.caption("This is a standalone PR-sweep run — it has no issue queue by design (see the report above for PRs swept).")
 else:
     st.caption("No issues in this run's queue (e.g. a clean empty-queue shutdown).")
 

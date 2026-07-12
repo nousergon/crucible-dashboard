@@ -1,0 +1,23 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Semantic tokens (metron/web convention: RGB channels so Tailwind opacity
+   modifiers work). Single deliberate dark theme — a quant terminal surface;
+   cool graphite ground, steel-blue accent, restrained P&L green/red. */
+:root {
+  --c-paper: 15 17 21;      /* page ground   #0f1115 */
+  --c-surface: 23 26 32;    /* cards         #171a20 */
+  --c-ink: 238 241 244;     /* primary text  #eef1f4 */
+  --c-muted: 138 147 158;   /* secondary     #8a939e */
+  --c-line: 44 50 60;       /* hairlines     #2c323c */
+  --c-positive: 47 191 111; /* P&L green     #2fbf6f */
+  --c-negative: 230 103 103;/* P&L red       #e66767 */
+  --c-accent: 87 143 227;   /* steel blue    #578fe3 */
+  --c-warn: 250 178 25;     /* watch amber   #fab219 */
+}
+
+body {
+  @apply bg-paper text-ink antialiased;
+  font-feature-settings: "tnum";
+}

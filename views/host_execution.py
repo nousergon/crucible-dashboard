@@ -16,8 +16,9 @@ render_host(
     [
         ("Order Book", "16_Order_Book_Rationale.py"),
         ("Execution", "6_Execution.py"),
-        ("Optimizer Decision", "32_Optimizer_Decision.py"),
-        ("Optimizer Risk", "30_Optimizer_Risk.py"),
+        # Decision + Risk merged into one Optimizer tab (two lenses on the
+        # same optimizer_shadow artifact) — console-IA phase 1, config#1990.
+        ("Optimizer", "Optimizer.py"),
     ],
     key="host_execution",
 )

@@ -28,16 +28,31 @@ fi
 install -m 0755 "$SCRIPT_SRC" "$SCRIPT_DST"
 echo "Installed $SCRIPT_DST"
 
-for unit in box-health.service box-health.timer; do
+install -m 0755 "$REPO_INFRA/box_hygiene.sh" /usr/local/bin/box_hygiene.sh
+echo "Installed /usr/local/bin/box_hygiene.sh"
+
+for unit in box-health.service box-health.timer box-hygiene.service box-hygiene.timer; do
     cp "$SYSTEMD_SRC/$unit" "/etc/systemd/system/$unit"
     echo "Installed /etc/systemd/system/$unit"
 done
 
+# journald size cap (config#2227) — restart journald only when the drop-in
+# actually changed, so routine re-runs don't bounce the journal.
+mkdir -p /etc/systemd/journald.conf.d
+if ! cmp -s "$SYSTEMD_SRC/journald-size-cap.conf" /etc/systemd/journald.conf.d/size-cap.conf 2>/dev/null; then
+    cp "$SYSTEMD_SRC/journald-size-cap.conf" /etc/systemd/journald.conf.d/size-cap.conf
+    systemctl restart systemd-journald
+    echo "Installed journald size cap (journald restarted)"
+fi
+
 systemctl daemon-reload
 systemctl enable box-health.service
 systemctl enable --now box-health.timer
+systemctl enable box-hygiene.service
+systemctl enable --now box-hygiene.timer
 
 echo ""
 echo "box-health installed and enabled (runs every 10 min)."
-echo "  Verify:  systemctl list-timers box-health.timer"
+echo "box-hygiene installed and enabled (weekly, Sun 09:20 UTC)."
+echo "  Verify:  systemctl list-timers box-health.timer box-hygiene.timer"
 echo "  Run now: sudo systemctl start box-health.service"

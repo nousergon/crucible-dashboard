@@ -55,7 +55,7 @@ if not eval_dates:
 
 col_d, col_t = st.columns([1, 1])
 with col_d:
-    eval_date = st.selectbox("Cycle (eval_date)", eval_dates, index=0)
+    eval_date = st.selectbox("Cycle (eval_date)", eval_dates, index=0, key="agent_reviews_cycle")  # shared across the Agent Reviews tabs (config#1988) — pick the cycle once
 with col_t:
     team_id = st.selectbox("Sector team", TEAM_IDS, index=0)
 

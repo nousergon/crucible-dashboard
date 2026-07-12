@@ -47,7 +47,7 @@ if not eval_dates:
 
 col_date, col_ticker = st.columns([1, 1])
 with col_date:
-    eval_date = st.selectbox("Cycle (eval_date)", eval_dates, index=0)
+    eval_date = st.selectbox("Cycle (eval_date)", eval_dates, index=0, key="agent_reviews_cycle")  # shared across the Agent Reviews tabs (config#1988) — pick the cycle once
 with col_ticker:
     ticker = st.text_input("Ticker", value="", placeholder="e.g. NVDA").strip().upper()
 

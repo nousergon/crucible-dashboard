@@ -72,17 +72,16 @@ manifest = load_rag_manifest()
 
 if not manifest or not isinstance(manifest, dict):
     st.info(
-        "**Awaiting first manifest.** The RAG manifest emitter is wired "
-        "as step 6/6 of the weekly ingestion script "
-        "(`alpha-engine-data/rag/pipelines/emit_manifest.py`, shipped "
-        "2026-05-05 via data PR #154). The first manifest fires on the "
-        "next Saturday SF run — **2026-05-09** — and writes "
+        "**No RAG manifest found.** The manifest emitter runs as step 6/6 "
+        "of the weekly ingestion script "
+        "(`alpha-engine-data/rag/pipelines/emit_manifest.py`) on the "
+        "Saturday SF run, writing "
         "`s3://alpha-engine-research/rag/manifest/{date}.json` + "
-        "`latest.json`.\n\n"
-        "Until then this page renders with no data. Manual one-off run: "
-        "`python -m rag.pipelines.emit_manifest --output-s3` from any "
-        "host with the alpha-engine-lib RAG client installed and "
-        "pgvector credentials in env."
+        "`latest.json`. This page renders with no data until the next "
+        "successful run.\n\n"
+        "Manual one-off run: `python -m rag.pipelines.emit_manifest "
+        "--output-s3` from any host with the alpha-engine-lib RAG client "
+        "installed and pgvector credentials in env."
     )
     st.stop()
 

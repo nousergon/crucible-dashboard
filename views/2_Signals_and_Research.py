@@ -24,8 +24,6 @@ from loaders.signal_loader import (
     load_signals,
     signals_to_df,
     get_sector_ratings_df,
-    compute_entrant_flow,
-    get_entrant_detail_df,
 )
 from loaders.db_loader import (
     get_macro_snapshots,
@@ -168,19 +166,18 @@ def _conviction_history_chart(score_df: pd.DataFrame, ticker: str) -> go.Figure:
 
 
 def _predictor_probability_chart(pred: dict, ticker: str) -> go.Figure:
+    # predictor#343 (2026-07-06) retired the FLAT direction — live
+    # predictions are UP/DOWN only (direction = sign(alpha)). p_flat may
+    # still be present on pre-2026-07-06 archived prediction JSON; it is
+    # intentionally not read/plotted here so old artifacts don't crash but
+    # also don't headline a retired state.
     p_up = pred.get("p_up", 0) or 0
-    p_flat = pred.get("p_flat", 0) or 0
     p_down = pred.get("p_down", 0) or 0
     fig = go.Figure()
     fig.add_trace(go.Bar(
         x=[p_up], y=[""], orientation="h",
         name="P(UP)", marker_color="#28a745",
         text=[f"P(UP): {p_up:.0%}"], textposition="inside",
-    ))
-    fig.add_trace(go.Bar(
-        x=[p_flat], y=[""], orientation="h",
-        name="P(FLAT)", marker_color="#6c757d",
-        text=[f"P(FLAT): {p_flat:.0%}"], textposition="inside",
     ))
     fig.add_trace(go.Bar(
         x=[p_down], y=[""], orientation="h",
@@ -233,7 +230,13 @@ with st.spinner(f"Loading signals for {selected_date}..."):
     predictions = load_predictions_json(selected_date)
     predictor_params = load_predictor_params()
 
+# config#1841: config/predictor_params.json has never been promoted/written
+# by the backtester's auto-apply — this read always falls back to the
+# constants default today. Label it honestly rather than presenting the
+# fallback as if it were a configured/live override (I1984 item 4a).
+_veto_is_default = "veto_confidence" not in predictor_params
 veto_threshold = predictor_params.get("veto_confidence", _VETO_CONF_DEFAULT)
+_veto_source_label = "default (no promoted override)" if _veto_is_default else "configured"
 
 if not signals_data:
     st.warning(f"No signals available for {selected_date}.")
@@ -271,150 +274,9 @@ if macro_df is not None and not macro_df.empty:
 
 st.divider()
 
-# -----------------------------------------------------------------------
-# Population Flow & New Entrants
-# -----------------------------------------------------------------------
-# Tracks whether the weekly run adds new names to the tracked population.
-# A zero-add week is legitimate when no fresh candidate clears the CIO
-# conviction bar (e.g. 2026-06-05: all 7 fresh names < conviction 40 vs the
-# ~60 bar, mostly in underweight sectors) — but a sustained streak signals
-# saturation. Previously this was invisible in the console.
-st.subheader("Population Flow & New Entrants")
-st.caption(
-    "Net-new entrant = a candidate not held the prior week that the CIO "
-    "advanced (including floor-forced). A zero-add week is defensible when "
-    "the fresh slate is genuinely weak; watch the trend for a saturation streak."
-)
-
-_pop_target = _TH.get("population_target", 25)
-_conv_bar = _TH.get("entrant_conviction_bar", 60)
-
-# Prior signal date (next entry in the descending list) = new-vs-held baseline.
-try:
-    _sel_idx = available_dates.index(selected_date)
-    _prior_date = (
-        available_dates[_sel_idx + 1]
-        if _sel_idx + 1 < len(available_dates)
-        else None
-    )
-except ValueError:
-    _prior_date = None
-
-_flow_df = compute_entrant_flow(available_dates, weeks=12)
-_this_row = None
-if not _flow_df.empty:
-    _match = _flow_df[_flow_df["date"] == selected_date]
-    if not _match.empty:
-        _this_row = _match.iloc[-1]
-
-if _this_row is None:
-    st.info(
-        f"No CIO decision archive (archive/agent_runs/{selected_date}/cio.json) "
-        "— new-entrant stats unavailable for this date."
-    )
-else:
-    _nne = _this_row["net_new_entrants"]
-    _nc = _this_row["new_candidates"]
-    _cm = _this_row["new_conv_max"]
-    _ps = _this_row["population_size"]
-    fm1, fm2, fm3, fm4 = st.columns(4)
-    with fm1:
-        st.metric(
-            "Net-new entrants",
-            "—" if pd.isna(_nne) else int(_nne),
-            help="Fresh names (not held last week) the CIO advanced this week.",
-        )
-    with fm2:
-        st.metric(
-            "Fresh candidates surfaced",
-            "—" if pd.isna(_nc) else int(_nc),
-            help="Candidates not in last week's population that the CIO evaluated.",
-        )
-    with fm3:
-        st.metric(
-            "Fresh-slate max conviction",
-            "—" if pd.isna(_cm) else f"{_cm:.0f}",
-            delta=None if pd.isna(_cm) else f"{_cm - _conv_bar:+.0f} vs ~{_conv_bar} bar",
-            delta_color="normal",
-            help=f"Highest conviction among fresh candidates. Entrants typically clear ~{_conv_bar}.",
-        )
-    with fm4:
-        st.metric(
-            "Population size",
-            "—" if pd.isna(_ps) else int(_ps),
-            delta=None if pd.isna(_ps) else f"{int(_ps) - _pop_target:+d} vs target {_pop_target}",
-            delta_color="off",
-            help=f"Held names vs target_size {_pop_target}. Above target → 0 open slots (saturation).",
-        )
-
-    if not pd.isna(_nne) and _nne == 0:
-        _why = (
-            f" Best fresh candidate scored {_cm:.0f} (bar ~{_conv_bar})."
-            if not pd.isna(_cm)
-            else ""
-        )
-        st.warning(
-            f"**0 net-new entrants this week.**{_why} Defensible if the slate is "
-            "genuinely weak — confirm via the detail table below; watch the trend "
-            "for a saturation streak."
-        )
-
-# Weekly trend: net-new entrants (bars) + fresh-slate max conviction (line).
-_disp = (
-    _flow_df.dropna(subset=["net_new_entrants"])
-    if not _flow_df.empty
-    else _flow_df
-)
-if not _disp.empty:
-    flow_fig = go.Figure()
-    flow_fig.add_trace(
-        go.Bar(
-            x=_disp["date"],
-            y=_disp["net_new_entrants"],
-            name="Net-new entrants",
-            marker_color="#2ca02c",
-        )
-    )
-    flow_fig.add_trace(
-        go.Scatter(
-            x=_disp["date"],
-            y=_disp["new_conv_max"],
-            name="Fresh-slate max conviction",
-            yaxis="y2",
-            mode="lines+markers",
-            line=dict(color="#1f77b4"),
-        )
-    )
-    flow_fig.add_trace(
-        go.Scatter(
-            x=_disp["date"],
-            y=[_conv_bar] * len(_disp),
-            name=f"~{_conv_bar} entrant bar",
-            yaxis="y2",
-            mode="lines",
-            line=dict(color="gray", dash="dot"),
-        )
-    )
-    flow_fig.update_layout(
-        height=320,
-        margin=dict(t=30, b=0, l=0, r=0),
-        yaxis=dict(title="Net-new entrants"),
-        yaxis2=dict(
-            title="Max conviction", overlaying="y", side="right", range=[0, 100]
-        ),
-        legend=dict(orientation="h", y=1.18),
-    )
-    st.plotly_chart(flow_fig, use_container_width=True)
-
-# This-week fresh-candidate detail (advanced + rejected new names).
-_detail = get_entrant_detail_df(selected_date, _prior_date)
-if not _detail.empty:
-    st.markdown("**This week's fresh candidates** (not held last week)")
-    st.dataframe(_detail, use_container_width=True, hide_index=True)
-elif _this_row is not None:
-    st.caption(
-        "No fresh candidates surfaced this week — all CIO candidates were incumbents."
-    )
+# Population Flow & New Entrants moved to the Agent Reviews CIO tab
+# (console-IA phase 2b, config#1988) — it renders the same CIO
+# advance/reject events this page only aggregated.
 
 st.divider()
 
@@ -470,8 +332,11 @@ st.caption(f"Showing {len(filtered_df)} of {len(sig_df)} signals")
 st.subheader("Signal Table")
 
 if predictions:
+    # predictor#343 (2026-07-06): FLAT retired, direction is now sign(alpha)
+    # (UP/DOWN only). A pre-2026-07-06 archived "FLAT" value falls through
+    # to the "" default below rather than being headlined as a live state.
     filtered_df["Prediction"] = filtered_df["ticker"].map(
-        lambda t: {"UP": "UP ↑", "DOWN": "DOWN ↓", "FLAT": "FLAT →"}.get(
+        lambda t: {"UP": "UP ↑", "DOWN": "DOWN ↓"}.get(
             (predictions.get(t) or {}).get("predicted_direction", ""), ""
         )
     )
@@ -499,7 +364,10 @@ if predictions:
     vetoed_count = enter_signals["Veto"].str.startswith("VETOED").sum() if not enter_signals.empty else 0
     total_enter = len(enter_signals)
     if vetoed_count > 0:
-        st.warning(f"{vetoed_count} of {total_enter} ENTER signals currently vetoed by predictor (threshold: {veto_threshold:.0%})")
+        st.warning(
+            f"{vetoed_count} of {total_enter} ENTER signals currently vetoed by predictor "
+            f"(threshold: {veto_threshold:.0%}, {_veto_source_label})"
+        )
 
 display_cols = [
     c for c in [
@@ -596,7 +464,7 @@ if selected_ticker:
         else:
             st.caption(
                 f"Predictor: {direction or '—'} (confidence {confidence:.0%}) — "
-                f"Modifier skipped (confidence < {veto_threshold:.0%})"
+                f"Modifier skipped (confidence < {veto_threshold:.0%}, {_veto_source_label})"
             )
 
     # --- Full score history from research DB (with sub-scores + signal markers) ---

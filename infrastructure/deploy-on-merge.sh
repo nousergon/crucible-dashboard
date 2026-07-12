@@ -29,9 +29,54 @@ TARGET_SHA="${1:-HEAD}"
 # cutover), which moves ALL its routes — including health — under /live.
 CONSOLE_URL="http://localhost:8501/_stcore/health"
 LIVE_URL="http://localhost:8502/live/_stcore/health"
+DASH_URL="http://localhost:8504/dash/_stcore/health"
+DASH_API_URL="http://localhost:8506/api/health"
+DASH_WEB_URL="http://localhost:3002/dash"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$LOG"; }
 fail() { log "FAIL $*"; exit 1; }
+
+# paths_changed OLD_SHA NEW_SHA -- path [path...]
+#
+# Returns 0 (true) if `git diff OLD_SHA NEW_SHA -- paths...` shows any real
+# change, and returns 1 (false) only when the diff genuinely has none.
+#
+# This deliberately does NOT use the `git diff ... | grep -q PATTERN`
+# one-liner that every diff-gated block here used to use. That form is
+# unsafe under `set -o pipefail` (which this script sets): GNU grep's `-q`
+# exits as soon as it sees the first match, closing its end of the pipe.
+# `git diff` writes its output to the pipe in ~4KB stdio-buffered chunks
+# (confirmed via strace — NOT one write() per line, and NOT gated on the
+# 64KB pipe capacity), so a diff spanning more than one chunk (e.g. the
+# multi-path §2b-2e diffs, or any multi-file diff whose match falls in an
+# early chunk) can have `git diff` still writing a *later* chunk after grep
+# has already exited and closed the pipe. That write gets SIGPIPE, git diff
+# exits 141, and under `pipefail` the whole pipeline reports 141 — even
+# though grep DID find a real match. `if pipeline; then` then evaluates
+# as false on a truthy diff. This was confirmed by direct reproduction:
+# replaying the exact §2e box-health command 100x under `set -o pipefail`
+# returned non-zero ~99/100 times despite the diff always containing real
+# changes (config#2242).
+#
+# The fix: capture git diff's own output AND exit code first (no pipe to
+# grep at all), so grep never has a chance to race git's writes. A git-diff
+# failure (non-zero exit, e.g. bad revision/object-availability issue) is
+# NOT silently treated as "no change" — it's logged loudly and treated as
+# "assume changed", since re-running an idempotent installer unnecessarily
+# is far cheaper than silently skipping a needed reinstall.
+paths_changed() {
+    local old_sha="$1" new_sha="$2"
+    shift 2
+    local diff_out
+    local diff_rc
+    diff_out=$(sudo -u ec2-user git diff "$old_sha" "$new_sha" -- "$@" 2>&1)
+    diff_rc=$?
+    if [ $diff_rc -ne 0 ]; then
+        log "WARN git diff $old_sha $new_sha -- $* failed (exit $diff_rc) — assuming changed: $diff_out"
+        return 0
+    fi
+    printf '%s\n' "$diff_out" | grep -q '^[+-]'
+}
 
 log "=== deploy-on-merge started — target=$TARGET_SHA ==="
 
@@ -43,7 +88,7 @@ log "$(sudo -u ec2-user git log --oneline -1)"
 # ── 1. Refresh deps (as the owning user) ────────────────────────────────────
 if [ -f ".venv/bin/pip" ] && [ -f "requirements.txt" ]; then
     # requirements.txt diff detection — pip install only on actual change.
-    if sudo -u ec2-user git diff "${CURRENT_SHA}~1" "$CURRENT_SHA" -- requirements.txt 2>/dev/null | grep -q '^[+-]'; then
+    if paths_changed "${CURRENT_SHA}~1" "$CURRENT_SHA" requirements.txt; then
         log "requirements.txt changed — pip install"
         sudo -u ec2-user .venv/bin/pip install --quiet -r requirements.txt 2>>"$LOG" \
             || fail "pip install requirements.txt"
@@ -69,7 +114,7 @@ fi
 NGINX_CONF_REPO="$REPO_DIR/infrastructure/nginx.conf"
 NGINX_CONF_LIVE="/etc/nginx/conf.d/nousergon.conf"
 if [ -f "$NGINX_CONF_REPO" ]; then
-    if sudo -u ec2-user git diff "${CURRENT_SHA}~1" "$CURRENT_SHA" -- infrastructure/nginx.conf 2>/dev/null | grep -q '^[+-]'; then
+    if paths_changed "${CURRENT_SHA}~1" "$CURRENT_SHA" infrastructure/nginx.conf; then
         log "infrastructure/nginx.conf changed — staging + validating"
         # Stage to a tmp file, validate via nginx -t, then atomic-rename
         # into place. nginx -t against the staged file catches syntax
@@ -109,7 +154,7 @@ fi
 # re-run the idempotent installer ONLY when the wrapper, its installer, or its
 # units changed in this merge.
 WATCHDOG_PATHS="infrastructure/morning-signal-watchdog.sh infrastructure/install-morning-signal-watchdog.sh infrastructure/systemd/morning-signal-watchdog.service infrastructure/systemd/morning-signal-watchdog.timer"
-if sudo -u ec2-user git diff "${CURRENT_SHA}~1" "$CURRENT_SHA" -- $WATCHDOG_PATHS 2>/dev/null | grep -q '^[+-]'; then
+if paths_changed "${CURRENT_SHA}~1" "$CURRENT_SHA" $WATCHDOG_PATHS; then
     log "morning-signal watchdog wrapper/units changed — re-installing"
     bash "$REPO_DIR/infrastructure/install-morning-signal-watchdog.sh" >>"$LOG" 2>&1 \
         || fail "install-morning-signal-watchdog.sh"
@@ -124,14 +169,62 @@ fi
 # (e.g. the Requires=->Wants= daily-news fix, morning-signal#78) actually
 # reaches the box instead of silently drifting.
 MS_UNIT_PATHS="infrastructure/systemd/morning-signal.service infrastructure/systemd/morning-signal.timer infrastructure/systemd/morning-signal.service.d infrastructure/install-morning-signal.sh infrastructure/morning-signal-recover.sh"
-if sudo -u ec2-user git diff "${CURRENT_SHA}~1" "$CURRENT_SHA" -- $MS_UNIT_PATHS 2>/dev/null | grep -q '^[+-]'; then
+if paths_changed "${CURRENT_SHA}~1" "$CURRENT_SHA" $MS_UNIT_PATHS; then
     log "morning-signal core units/recovery wrapper changed — re-installing"
     bash "$REPO_DIR/infrastructure/install-morning-signal.sh" >>"$LOG" 2>&1 \
         || fail "install-morning-signal.sh"
     log "re-installed morning-signal core units"
 fi
 
-# ── 3. Restart both streamlit services (we are root) ───────────────────────
+# ── 2d. Re-install morning-signal OSS bakeoff units if they changed ────────
+# The weekly Phase B shadow-bakeoff (config#1659) timer/service, same
+# conditional-on-diff auto-deploy as 2b/2c above -- including on FIRST
+# introduction, since a brand-new file counts as a diff (`+` lines), so this
+# also handles the initial rollout without a manual on-box step.
+BAKEOFF_UNIT_PATHS="infrastructure/systemd/morning-signal-bakeoff.service infrastructure/systemd/morning-signal-bakeoff.timer infrastructure/install-morning-signal-bakeoff.sh"
+if paths_changed "${CURRENT_SHA}~1" "$CURRENT_SHA" $BAKEOFF_UNIT_PATHS; then
+    log "morning-signal bakeoff units changed — re-installing"
+    bash "$REPO_DIR/infrastructure/install-morning-signal-bakeoff.sh" >>"$LOG" 2>&1 \
+        || fail "install-morning-signal-bakeoff.sh"
+    log "re-installed morning-signal bakeoff units"
+fi
+
+# ── 2e. Re-install box-health/hygiene watchdog if its script/units changed ──
+# box_health.sh + box_hygiene.sh + their units + the journald size cap are
+# /usr/local/bin + /etc provisioned OUT of the repo tree by
+# install-box-health.sh (config#2227). Same conditional-on-diff auto-deploy as
+# 2b-2d — including on first introduction (new files count as a diff).
+BOX_HEALTH_PATHS="infrastructure/box_health.sh infrastructure/box_hygiene.sh infrastructure/install-box-health.sh infrastructure/systemd/box-health.service infrastructure/systemd/box-health.timer infrastructure/systemd/box-hygiene.service infrastructure/systemd/box-hygiene.timer infrastructure/systemd/journald-size-cap.conf"
+if paths_changed "${CURRENT_SHA}~1" "$CURRENT_SHA" $BOX_HEALTH_PATHS; then
+    log "box-health/hygiene script or units changed — re-installing"
+    bash "$REPO_DIR/infrastructure/install-box-health.sh" >>"$LOG" 2>&1 \
+        || fail "install-box-health.sh"
+    log "re-installed box-health/hygiene"
+fi
+
+# ── 3. Self-provision dashboard and nous-ergon-live unit files ──────────────
+# Both services ship in the repo; install/refresh them on unit-file diff
+# (or first deploy) so they can never drift from the repo copy — same
+# idempotent pattern as crucible-dash/dash-api/dash-web (§3b-3d).
+DASHBOARD_UNIT_SRC="$REPO_DIR/infrastructure/dashboard.service"
+DASHBOARD_UNIT_DST="/etc/systemd/system/dashboard.service"
+if [ ! -f "$DASHBOARD_UNIT_DST" ] || ! cmp -s "$DASHBOARD_UNIT_SRC" "$DASHBOARD_UNIT_DST"; then
+    cp "$DASHBOARD_UNIT_SRC" "$DASHBOARD_UNIT_DST" 2>>"$LOG" || fail "install dashboard unit"
+    systemctl daemon-reload 2>>"$LOG" || fail "daemon-reload for dashboard"
+    systemctl enable dashboard 2>>"$LOG" || fail "enable dashboard"
+    log "installed/refreshed dashboard.service unit"
+fi
+
+LIVE_UNIT_SRC="$REPO_DIR/live/infrastructure/nous-ergon-live.service"
+LIVE_UNIT_DST="/etc/systemd/system/nous-ergon-live.service"
+if [ ! -f "$LIVE_UNIT_DST" ] || ! cmp -s "$LIVE_UNIT_SRC" "$LIVE_UNIT_DST"; then
+    cp "$LIVE_UNIT_SRC" "$LIVE_UNIT_DST" 2>>"$LOG" || fail "install nous-ergon-live unit"
+    systemctl daemon-reload 2>>"$LOG" || fail "daemon-reload for nous-ergon-live"
+    systemctl enable nous-ergon-live 2>>"$LOG" || fail "enable nous-ergon-live"
+    log "installed/refreshed nous-ergon-live.service unit"
+fi
+
+# ── 3a. Restart both streamlit services (we are root) ──────────────────────
 # Both services run from this same repo. Two-second stagger avoids a
 # simultaneous blip on console + live site.
 systemctl restart dashboard 2>>"$LOG" || fail "restart dashboard"
@@ -139,6 +232,61 @@ log "restarted dashboard.service"
 sleep 2
 systemctl restart nous-ergon-live 2>>"$LOG" || fail "restart nous-ergon-live"
 log "restarted nous-ergon-live.service"
+
+# ── 3b. Crucible /dash service (config#1957) — idempotent self-provision ────
+# Same pattern as the dashboard/nous-ergon-live units above (§3).
+# The unit ships in this repo; install/refresh it on unit-file diff (or first
+# deploy) so the service can never drift from the repo copy — mirrors the CF
+# Pages project self-provision precedent (#328): a new box or a unit change
+# needs no manual step.
+DASH_UNIT_SRC="$REPO_DIR/infrastructure/crucible-dash.service"
+DASH_UNIT_DST="/etc/systemd/system/crucible-dash.service"
+if [ ! -f "$DASH_UNIT_DST" ] || ! cmp -s "$DASH_UNIT_SRC" "$DASH_UNIT_DST"; then
+    cp "$DASH_UNIT_SRC" "$DASH_UNIT_DST" 2>>"$LOG" || fail "install crucible-dash unit"
+    systemctl daemon-reload 2>>"$LOG" || fail "daemon-reload for crucible-dash"
+    systemctl enable crucible-dash 2>>"$LOG" || fail "enable crucible-dash"
+    log "installed/refreshed crucible-dash.service unit"
+fi
+sleep 2
+systemctl restart crucible-dash 2>>"$LOG" || fail "restart crucible-dash"
+log "restarted crucible-dash.service"
+
+# ── 3c. Crucible dash-api service (config#1973 9-B) — same idempotent
+# self-provision pattern as 3b.
+API_UNIT_SRC="$REPO_DIR/infrastructure/crucible-dash-api.service"
+API_UNIT_DST="/etc/systemd/system/crucible-dash-api.service"
+if [ ! -f "$API_UNIT_DST" ] || ! cmp -s "$API_UNIT_SRC" "$API_UNIT_DST"; then
+    cp "$API_UNIT_SRC" "$API_UNIT_DST" 2>>"$LOG" || fail "install crucible-dash-api unit"
+    systemctl daemon-reload 2>>"$LOG" || fail "daemon-reload for crucible-dash-api"
+    systemctl enable crucible-dash-api 2>>"$LOG" || fail "enable crucible-dash-api"
+    log "installed/refreshed crucible-dash-api.service unit"
+fi
+sleep 1
+systemctl restart crucible-dash-api 2>>"$LOG" || fail "restart crucible-dash-api"
+log "restarted crucible-dash-api.service"
+
+# ── 3d. Crucible dash-web (Next.js, config#1973 9-C) ───────────────────────
+# Build only when dash-web/ changed (or no build exists yet) — npm ci +
+# next build are the expensive steps; unit self-provision mirrors 3b/3c.
+WEB_DIR="$REPO_DIR/dash-web"
+if [ -d "$WEB_DIR" ]; then
+    if paths_changed "${CURRENT_SHA}~1" "$CURRENT_SHA" dash-web/ || [ ! -d "$WEB_DIR/.next" ]; then
+        log "dash-web changed (or unbuilt) — npm ci + next build"
+        sudo -u ec2-user bash -c "cd '$WEB_DIR' && npm ci --no-audit --no-fund && npm run build" >>"$LOG" 2>&1             || fail "dash-web npm build"
+        log "dash-web built"
+    fi
+    WEB_UNIT_SRC="$REPO_DIR/infrastructure/crucible-dash-web.service"
+    WEB_UNIT_DST="/etc/systemd/system/crucible-dash-web.service"
+    if [ ! -f "$WEB_UNIT_DST" ] || ! cmp -s "$WEB_UNIT_SRC" "$WEB_UNIT_DST"; then
+        cp "$WEB_UNIT_SRC" "$WEB_UNIT_DST" 2>>"$LOG" || fail "install crucible-dash-web unit"
+        systemctl daemon-reload 2>>"$LOG" || fail "daemon-reload for crucible-dash-web"
+        systemctl enable crucible-dash-web 2>>"$LOG" || fail "enable crucible-dash-web"
+        log "installed/refreshed crucible-dash-web.service unit"
+    fi
+    sleep 1
+    systemctl restart crucible-dash-web 2>>"$LOG" || fail "restart crucible-dash-web"
+    log "restarted crucible-dash-web.service"
+fi
 
 # ── 4. Health check ─────────────────────────────────────────────────────────
 # Streamlit's /_stcore/health returns 200 OK with body "ok" once the
@@ -161,6 +309,11 @@ wait_for_health() {
 
 wait_for_health "$CONSOLE_URL" "dashboard (console)" || fail "console health"
 wait_for_health "$LIVE_URL" "nous-ergon-live" || fail "live health"
+wait_for_health "$DASH_URL" "crucible-dash" || fail "crucible-dash health"
+wait_for_health "$DASH_API_URL" "crucible-dash-api" || fail "crucible-dash-api health"
+if [ -d "$REPO_DIR/dash-web" ]; then
+    wait_for_health "$DASH_WEB_URL" "crucible-dash-web" || fail "crucible-dash-web health"
+fi
 
 log "=== deploy-on-merge completed successfully — sha=$CURRENT_SHA ==="
 exit 0

@@ -74,6 +74,22 @@ class TestListGroomRunKeys:
                 "groom/2026-06-30/230511.json",
             ]
 
+    def test_excludes_control_plane_and_in_progress_marker(self):
+        # groom/ also hosts the dispatcher control plane (groom/_control/*,
+        # nousergon-data#658) and the in-progress marker — "_" sorts AFTER
+        # digits, so unfiltered these displace every real run at the head
+        # of the reverse sort (bit Fleet Status + this page 2026-07-06).
+        keys = [
+            "groom/_control/completed/94332963e93a.json",
+            "groom/in_progress.json",
+            "groom/2026-07-05/103000.json",
+        ]
+        with patch.object(s3_loader, "_research_bucket", return_value="b"), \
+                patch.object(s3_loader, "get_s3_client", return_value=self._client(keys)):
+            assert s3_loader.list_groom_run_keys() == [
+                "groom/2026-07-05/103000.json",
+            ]
+
     def test_respects_limit(self):
         keys = [f"groom/2026-07-01/{i:06d}.json" for i in range(5)]
         with patch.object(s3_loader, "_research_bucket", return_value="b"), \
@@ -91,6 +107,118 @@ class TestListGroomRunKeys:
         with patch.object(s3_loader, "_research_bucket", return_value="b"), \
                 patch.object(s3_loader, "get_s3_client", return_value=client):
             assert s3_loader.list_groom_run_keys() == []
+
+
+class TestListGroomDecisionKeys:
+    def _client(self, keys):
+        page = {"Contents": [{"Key": k} for k in keys]}
+        paginator = MagicMock()
+        paginator.paginate.return_value = [page]
+        client = MagicMock()
+        client.get_paginator.return_value = paginator
+        return client
+
+    def _fixed_today(self, iso_date):
+        import datetime as dt
+
+        class _FixedDate(dt.date):
+            @classmethod
+            def today(cls):
+                return dt.date(*map(int, iso_date.split("-")))
+
+        return _FixedDate
+
+    def test_lists_within_window_newest_first(self):
+        keys = [
+            "groom/decisions/2026-07-08/trigger-0100.json",
+            "groom/decisions/2026-07-07/trigger-1900.json",
+            "groom/decisions/2026-07-07/trigger-0700.json",
+            "groom/decisions/2026-07-01/trigger-0100.json",  # outside 3-day window
+        ]
+        with patch.object(s3_loader, "_research_bucket", return_value="b"), \
+                patch.object(s3_loader, "get_s3_client", return_value=self._client(keys)), \
+                patch("datetime.date", self._fixed_today("2026-07-08")):
+            result = s3_loader.list_groom_decision_keys(days=3)
+        assert result == [
+            "groom/decisions/2026-07-08/trigger-0100.json",
+            "groom/decisions/2026-07-07/trigger-1900.json",
+            "groom/decisions/2026-07-07/trigger-0700.json",
+        ]
+
+    def test_empty_when_no_records_yet(self):
+        with patch.object(s3_loader, "_research_bucket", return_value="b"), \
+                patch.object(s3_loader, "get_s3_client", return_value=self._client([])):
+            assert s3_loader.list_groom_decision_keys() == []
+
+    def test_empty_on_error(self):
+        client = MagicMock()
+        client.get_paginator.side_effect = RuntimeError("boom")
+        with patch.object(s3_loader, "_research_bucket", return_value="b"), \
+                patch.object(s3_loader, "get_s3_client", return_value=client):
+            assert s3_loader.list_groom_decision_keys() == []
+
+
+class TestLoadGroomDecision:
+    def test_returns_dict_on_valid_json(self):
+        payload = {"schema_version": 2, "decisions": [], "decided_at": "x"}
+        with patch.object(s3_loader, "_research_bucket", return_value="b"), \
+                patch.object(s3_loader, "_s3_get_object",
+                             return_value=json.dumps(payload).encode()):
+            key = "groom/decisions/2026-07-08/trigger-0100.json"
+            assert s3_loader.load_groom_decision(key) == payload
+
+    def test_returns_none_on_missing(self):
+        with patch.object(s3_loader, "_research_bucket", return_value="b"), \
+                patch.object(s3_loader, "_s3_get_object", return_value=None):
+            key = "groom/decisions/2026-07-08/trigger-0100.json"
+            assert s3_loader.load_groom_decision(key) is None
+
+
+class TestNormalizeGroomDecisionRecord:
+    def test_schema_v2_decisions_list_passthrough(self):
+        raw = {
+            "schema_version": 2,
+            "decisions": [
+                {"launch": True, "tiers": ["high"], "issue_filter": "high-only",
+                 "model": "claude-opus-4-8", "reason": "29 actionable"},
+            ],
+        }
+        assert s3_loader.normalize_groom_decision_record(raw) == raw["decisions"]
+
+    def test_schema_v2_empty_decisions_is_full_skip(self):
+        raw = {"schema_version": 2, "decisions": []}
+        assert s3_loader.normalize_groom_decision_record(raw) == []
+
+    def test_schema_v1_singular_fields_wrapped(self):
+        raw = {
+            "schema_version": 1, "slot_tier": "mid", "launch": False,
+            "tiers": [], "issue_filter": "", "model": "",
+            "reason": "8 actionable, below floor 10",
+        }
+        result = s3_loader.normalize_groom_decision_record(raw)
+        assert len(result) == 1
+        assert result[0]["launch"] is False
+        assert result[0]["reason"] == "8 actionable, below floor 10"
+        assert result[0]["slot_tier"] == "mid"
+
+    def test_malformed_record_returns_empty_list(self):
+        assert s3_loader.normalize_groom_decision_record({}) == []
+        assert s3_loader.normalize_groom_decision_record(None) == []  # type: ignore[arg-type]
+
+
+class TestKnownSlotsFromRecords:
+    def test_extracts_distinct_slot_names(self):
+        keys = [
+            "groom/decisions/2026-07-08/trigger-0100.json",
+            "groom/decisions/2026-07-07/trigger-0100.json",
+            "groom/decisions/2026-07-07/trigger-1900.json",
+        ]
+        assert s3_loader.known_slots_from_records(keys) == [
+            "trigger-0100", "trigger-1900",
+        ]
+
+    def test_empty_when_no_keys(self):
+        assert s3_loader.known_slots_from_records([]) == []
 
 
 class TestNavRegistration:
@@ -142,3 +270,48 @@ class TestNavRegistration:
         assert "digest_title" in src
         assert "digest_issue" in src
         assert "predates digest embedding" in src  # graceful pre-v3 fallback
+
+    def test_page_surfaces_token_efficiency_metrics(self):
+        src = (REPO_ROOT / "views" / "42_Backlog_Groom.py").read_text()
+        assert "Token efficiency" in src
+        assert "list_groom_usage_records" in src
+        assert "compute_efficiency" in src
+        assert "WET/eng" in src or "wet_per_engaged" in src
+
+    def test_page_renders_slot_decisions_strip_above_run_history(self):
+        # config#1935: the strip must render ABOVE "Run history" and must
+        # use the decision loaders (never re-derive decision state from the
+        # post-hoc run artifacts).
+        src = (REPO_ROOT / "views" / "42_Backlog_Groom.py").read_text()
+        assert "Slot decisions" in src
+        assert "list_groom_decision_keys" in src
+        assert "load_groom_decision" in src
+        assert "normalize_groom_decision_record" in src
+        strip_pos = src.index("Slot decisions")
+        history_pos = src.index("Run history")
+        assert strip_pos < history_pos
+
+    def test_page_renders_slot_decisions_strip_before_early_stop(self):
+        # The page st.stop()s early when there are zero groom RUN artifacts
+        # (list_groom_run_keys() == []) — the decisions strip must render
+        # before that early exit, or it silently vanishes on a clean/cold
+        # backlog even though decision records are a separate, always-
+        # present-or-loudly-missing source (config#1935 step 6).
+        src = (REPO_ROOT / "views" / "42_Backlog_Groom.py").read_text()
+        strip_call_pos = src.index("_render_slot_decisions_strip()")
+        stop_pos = src.index("st.stop()")
+        assert strip_call_pos < stop_pos
+
+    def test_slot_decisions_strip_never_silently_blanks_on_missing_record(self):
+        # The whole point of the feature (config#1935): a gap must render a
+        # visible warning glyph, not nothing.
+        src = (REPO_ROOT / "views" / "42_Backlog_Groom.py").read_text()
+        assert "no decision record" in src
+        assert "⚠️" in src
+
+    def test_slot_decisions_strip_handles_zero_records_defensively(self):
+        # nousergon-data-PR684 may not have bootstrapped its first record
+        # yet at merge time — the strip must degrade to an explicit notice,
+        # not crash or render blank.
+        src = (REPO_ROOT / "views" / "42_Backlog_Groom.py").read_text()
+        assert "cold start" in src.lower() or "cold-start" in src.lower()

@@ -7,6 +7,30 @@ on:
     branches: [main]
 
 jobs:
+  dash-web:
+    # Crucible /dash Next.js frontend (config#1973 9-C): vitest + typecheck +
+    # production build so a TS or build break can't reach the merge deploy.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: dash-web/package-lock.json
+      - name: Install
+        working-directory: dash-web
+        run: npm ci --no-audit --no-fund
+      - name: Unit tests
+        working-directory: dash-web
+        run: npm test
+      - name: Typecheck
+        working-directory: dash-web
+        run: npm run typecheck
+      - name: Production build
+        working-directory: dash-web
+        run: npm run build
+
   test:
     runs-on: ubuntu-latest
 
@@ -29,7 +53,13 @@ jobs:
       - name: Security audit
         run: |
           pip install pip-audit
-          pip-audit || true
+          IGNORE_ARGS=()
+          if [ -f .github/pip-audit-ignore.txt ]; then
+            while IFS= read -r vuln_id; do
+              IGNORE_ARGS+=(--ignore-vuln "$vuln_id")
+            done < <(grep -vE '^\s*#|^\s*$' .github/pip-audit-ignore.txt)
+          fi
+          pip-audit "${IGNORE_ARGS[@]}"
 
   # Alert (Telegram) ONLY on genuine post-merge breakage of the default
   # branch. PR-branch reds (mid-fix commits, cross-repo lib-tag merge-order

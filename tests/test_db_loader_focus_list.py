@@ -247,3 +247,110 @@ class TestGetFocusListStanceMix:
         with patch("loaders.db_loader.load_research_db", return_value=empty_db):
             df = get_focus_list_stance_mix()
         assert df.empty
+
+
+# ── config#750: per-team override attribution (v23) ─────────────────────────
+
+
+@pytest.fixture
+def mock_scanner_evals_db_v23():
+    """In-memory SQLite with the v23 scanner_evaluations schema (adds
+    override_team_id) + seed data where two teams each override one ticker."""
+    conn = sqlite3.connect(":memory:")
+    conn.execute("""
+        CREATE TABLE scanner_evaluations (
+            id INTEGER PRIMARY KEY,
+            ticker TEXT NOT NULL,
+            eval_date TEXT NOT NULL,
+            sector TEXT,
+            tech_score REAL, scan_path TEXT,
+            quant_filter_pass INTEGER NOT NULL DEFAULT 0,
+            liquidity_pass INTEGER NOT NULL DEFAULT 1,
+            volatility_pass INTEGER NOT NULL DEFAULT 1,
+            balance_sheet_pass INTEGER NOT NULL DEFAULT 1,
+            filter_fail_reason TEXT,
+            rsi_14 REAL, atr_pct REAL, price_vs_ma200 REAL,
+            current_price REAL, avg_volume_20d REAL,
+            focus_score REAL, focus_stance TEXT, focus_team_id TEXT,
+            focus_rank_in_team INTEGER, focus_rank_in_sector INTEGER,
+            focus_list_passed INTEGER NOT NULL DEFAULT 0,
+            agent_override INTEGER NOT NULL DEFAULT 0,
+            override_team_id TEXT,
+            UNIQUE(ticker, eval_date)
+        )
+    """)
+    rows = [
+        # ticker, eval_date, sector, focus_score, focus_stance, focus_team_id,
+        # focus_rank_in_team, focus_rank_in_sector, focus_list_passed,
+        # agent_override, quant_filter_pass, override_team_id
+        # Week 1: technology focus list (NVDA picked, MSFT not) + one override
+        # per team: TSLA overridden by technology (hit), XOM by energy (miss).
+        ("NVDA", "2026-05-17", "Technology", 85.0, "momentum", "technology",
+         1, 1, 1, 0, 1, None),
+        ("MSFT", "2026-05-17", "Technology", 72.0, "quality", "technology",
+         2, 2, 1, 0, 0, None),
+        ("TSLA", "2026-05-17", "Technology", None, None, None,
+         None, None, 0, 1, 1, "technology"),   # tech override, picked
+        ("XOM",  "2026-05-17", "Energy", None, None, None,
+         None, None, 0, 1, 0, "energy"),        # energy override, missed
+    ]
+    conn.executemany(
+        """INSERT INTO scanner_evaluations
+           (ticker, eval_date, sector, focus_score, focus_stance, focus_team_id,
+            focus_rank_in_team, focus_rank_in_sector, focus_list_passed,
+            agent_override, quant_filter_pass, override_team_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        rows,
+    )
+    conn.commit()
+    return conn
+
+
+class TestPerTeamOverrideAttributionV23:
+    def test_overrides_attributed_to_overriding_team(
+        self, mock_scanner_evals_db_v23
+    ):
+        """config#750: TSLA's override counts against technology and XOM's
+        against energy — no anonymous NULL group when override_team_id is set."""
+        with patch(
+            "loaders.db_loader.load_research_db",
+            return_value=mock_scanner_evals_db_v23,
+        ):
+            df = get_focus_list_weekly_summary()
+        # No NULL/anonymous team row — every override is attributed.
+        assert df["focus_team_id"].isna().sum() == 0
+        tech = df[df["focus_team_id"] == "technology"].iloc[0]
+        energy = df[df["focus_team_id"] == "energy"].iloc[0]
+        # technology row carries its focus list AND its one override.
+        assert tech["n_focus_list"] == 2
+        assert tech["n_overrides"] == 1
+        assert tech["override_hit_rate"] == pytest.approx(1.0)  # TSLA hit
+        # energy row is override-only, and its override missed.
+        assert energy["n_focus_list"] == 0
+        assert energy["n_overrides"] == 1
+        assert energy["override_hit_rate"] == pytest.approx(0.0)  # XOM missed
+
+    def test_audit_exposes_override_team_id(self, mock_scanner_evals_db_v23):
+        with patch(
+            "loaders.db_loader.load_research_db",
+            return_value=mock_scanner_evals_db_v23,
+        ):
+            df = get_focus_list_audit()
+        assert "override_team_id" in df.columns
+        by_ticker = df.set_index("ticker")["override_team_id"].to_dict()
+        assert by_ticker["TSLA"] == "technology"
+        assert by_ticker["XOM"] == "energy"
+        assert by_ticker["NVDA"] is None or pd.isna(by_ticker["NVDA"])
+
+    def test_pre_v23_db_gracefully_projects_null_override_team(
+        self, mock_scanner_evals_db
+    ):
+        """On a pre-v23 DB (no override_team_id column) the audit query still
+        succeeds and projects a NULL override_team_id column."""
+        with patch(
+            "loaders.db_loader.load_research_db",
+            return_value=mock_scanner_evals_db,
+        ):
+            df = get_focus_list_audit()
+        assert "override_team_id" in df.columns
+        assert df["override_team_id"].isna().all()

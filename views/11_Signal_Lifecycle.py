@@ -34,7 +34,7 @@ from loaders.db_loader import (
     get_score_history,
     get_score_performance,
 )
-from loaders.outcome_store import BEAT_SPY_PRIMARY
+from loaders.outcome_store import BEAT_SPY_PRIMARY, PRIMARY_HORIZON_DAYS
 from loaders.s3_loader import (
     load_eod_pnl,
     load_order_book_summary,
@@ -428,9 +428,9 @@ st.divider()
 
 st.markdown("## 7. Backtester accuracy update")
 st.caption(
-    "Source: `research.db:score_performance` (producer: signal_returns "
-    "collector). For BUY signals, did the ticker beat SPY at 10-day and "
-    "30-day windows?"
+    f"Source: `research.db:score_performance` (producer: signal_returns "
+    f"collector). For BUY signals, did the ticker beat SPY at the "
+    f"{PRIMARY_HORIZON_DAYS}-day primary window?"
 )
 
 perf_df = get_score_performance()

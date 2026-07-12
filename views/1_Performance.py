@@ -261,9 +261,13 @@ def render_attribution(report: dict, eod_win: pd.DataFrame, as_of: str, window: 
         st.dataframe(attr_df, use_container_width=True, hide_index=True)
         st.caption(
             "Sleeves: **position** (each holding vs SPY on its retained prior "
-            "capital), **rotation** (shares sold out today), **cash** (interest "
-            "minus SPY on idle cash), **pricing & timing** (IB marks vs settled "
-            "closes — isolated, not hidden), **unattributed** (true residual)."
+            "capital, including that name's own IB-mark-vs-settled-close basis "
+            "slice — see \"of which pricing/timing $\" below), **rotation** "
+            "(shares sold out today, plus exited names' basis slice), **cash** "
+            "(interest minus SPY on idle cash), **pricing & timing** (only the "
+            "leftover no stock could be attributed — normally ~$0), "
+            "**unattributed** (true residual — not allocated to any stock; see "
+            "config#2046)."
         )
 
         sectors = report.get("sector_attribution", []) or []
@@ -350,6 +354,14 @@ def render_positions(report: dict, eod_win: pd.DataFrame, window: str) -> None:
                 "α contrib (bps)": (
                     f"{p.get('alpha_contrib_bps'):+.1f}"
                     if p.get("alpha_contrib_bps") is not None else "—"
+                ),
+                # Schema 2.2 (config#2046): this name's own slice of the
+                # pricing&timing (IB-mark-vs-settled) basis gap, already
+                # folded into "α contrib" above — shown separately so a
+                # large/small α contrib isn't mistaken for pure economic P&L.
+                "of which pricing/timing $": (
+                    _usd_signed(p.get("pricing_timing_contrib_usd"))
+                    if p.get("pricing_timing_contrib_usd") else "—"
                 ),
             }
             for p in positions

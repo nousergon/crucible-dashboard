@@ -19,8 +19,8 @@ _UPTIME_WINDOW_SESSIONS = 20
 
 st.title("Performance")
 st.caption(
-    "Phase 2 baseline. Tracked, not optimized — Phase 3 turns on tuning "
-    "once the substrate is trustworthy."
+    "Alpha vs SPY, tracked continuously as a background metric on the "
+    "Phase-2 substrate."
 )
 
 prep = load_and_prepare_eod()
