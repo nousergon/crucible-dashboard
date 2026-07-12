@@ -1,24 +1,26 @@
 """
-LLM Usage — Alpha Engine (private console)
+Plan — Alpha Engine (private console)
 
-How much of Brian's LLM token budget is being consumed, split by provider.
-**Anthropic** models (Opus/Sonnet/Haiku/Fable) track against the Claude **Max 20x**
-weekly ceiling in **WET** (weighted effective tokens — Opus-input-equivalent,
-price-independent). **Non-Anthropic** models (DeepSeek, etc.) are tracked
-separately in raw tokens + actual API cost since they don't count toward Max.
+How much of Brian's Claude **Max 20x** weekly quota is being consumed.
+Tracked in **WET** (weighted effective tokens — Opus-input-equivalent,
+price-independent) against a weekly reset cycle. Anthropic publishes no
+exact Max 20x limit, so the ceiling is an empirically-calibrated constant —
+see the "% of weekly ceiling" gauge below.
+
+Non-Anthropic (DeepSeek, etc.) spend does NOT draw against this quota — it's
+billed per-token instead, and lives on the **API** tab alongside the
+research pipeline's Anthropic API spend.
 
 Source: the per-(source,date) JSON at ``claude_code_usage/{source}/{date}.json``,
 produced by alpha-engine-config ``scripts/collect_usage.py`` (hourly launchd on
 the laptop; run-scoped ``source='groom'`` from the GHA groom; run-scoped
 ``source='watch'`` from the Fleet-SF/CI Watch agent runs — config#1899).
 
-Anthropic publishes **no exact Max 20x weekly limit** (it's demand-variable; the
-in-app ``/usage`` % is the only ground truth). So the "% of ceiling" gauge below
-uses an empirically-calibrated constant, read from the SSoT
-``config/usage_pacing.json`` (config#2043) — recalibrate via
+The "% of weekly ceiling" gauge uses an empirically-calibrated constant, read
+from the SSoT ``config/usage_pacing.json`` (config#2043) — recalibrate via
 alpha-engine-config's ``scripts/set_usage_pacing_config.py``, cross-referencing
-``/usage``, once you see a real throttle. Falls back to a hardcoded constant
-below if that S3 object is unavailable.
+``/usage``. Falls back to a hardcoded constant below if that S3 object is
+unavailable.
 """
 from __future__ import annotations
 
@@ -40,10 +42,7 @@ from loaders.s3_loader import load_claude_code_usage, load_usage_pacing_config
 # written by alpha-engine-config's scripts/set_usage_pacing_config.py and also
 # read by that repo's groom_budget.py + the alpha-engine-data usage-pace-alert
 # Lambda, so all three consumers stay bit-for-bit in sync. The constants below
-# are FALLBACK ONLY (used iff the S3 object is missing/unparseable) — this
-# replaces what used to be an independently hand-maintained copy here, which
-# had drifted stale (674M) against groom_budget.py's recalibrated 850M before
-# the SSoT existed.
+# are FALLBACK ONLY (used iff the S3 object is missing/unparseable).
 _FALLBACK_WEEKLY_WET_CEILING = 850_000_000
 _PT = ZoneInfo("America/Los_Angeles")
 _FALLBACK_WEEKLY_RESET_ANCHOR = datetime(2026, 7, 12, 21, 0)   # PT, naive — Sunday 9pm PT
@@ -60,28 +59,18 @@ else:
     _ceiling_source = "fallback constant — config/usage_pacing.json unavailable"
 
 
-def _wet_since(df_hour: pd.DataFrame, df_model: pd.DataFrame, start: datetime) -> float:
-    """Sum WET at/after the PT datetime ``start``. Prefer hour-precision (df_hour);
-    fall back to day-granularity (df_model) if the hourly frame is empty."""
-    if not df_hour.empty:
-        dts = pd.to_datetime(df_hour["date"]) + pd.to_timedelta(df_hour["hour"], unit="h")
-        return float(df_hour.loc[dts >= pd.Timestamp(start), "wet"].sum())
-    return float(df_model.loc[df_model["date"] >= start.date().isoformat(), "wet"].sum())
-
-
 def _model_since(df_model: pd.DataFrame, start: datetime) -> pd.DataFrame:
     """Rows at/after ``start`` (day-granularity; cache fields live on df_model)."""
     return df_model.loc[df_model["date"] >= start.date().isoformat()]
 
 
 st.divider()
-st.title("LLM Usage")
+st.title("Plan")
 st.caption(
-    "Brian's LLM consumption, split by provider. **Anthropic** (Opus / Sonnet / "
-    "Haiku / Fable) is tracked in **WET** (weighted effective tokens — "
-    "price-independent) against the Claude **Max 20x** weekly ceiling. "
-    "**Non-Anthropic** (DeepSeek, etc.) is tracked separately in raw tokens + "
-    "API-equivalent cost — it does **not** count toward Max."
+    "Brian's Claude Max 20x weekly quota consumption, tracked in **WET** "
+    "(weighted effective tokens — price-independent) against the weekly reset. "
+    "Non-Anthropic spend (DeepSeek, etc.) does not draw against this quota — "
+    "see the **API** tab for that plus the research pipeline's Anthropic spend."
 )
 
 df_model, df_hour = load_claude_code_usage(n_days=35)
@@ -94,24 +83,21 @@ if df_model.empty:
     )
     st.stop()
 
-# --- provider splits -----------------------------------------------------------
+# --- provider split (Max ceiling only counts Anthropic) -----------------------
 df_anthropic = df_model[df_model["provider"] == "anthropic"]
-df_non_anthropic = df_model[df_model["provider"] == "non-anthropic"]
 
 now_pt = datetime.now(_PT).replace(tzinfo=None)
 win_start, next_reset = reset_window(now_pt, WEEKLY_RESET_ANCHOR, WEEKLY_PERIOD)
 
-# Anthropic metrics (WET toward Max ceiling)
-week_wet = _wet_since(df_hour, df_model, win_start)  # all WET (for % of ceiling)
+# Anthropic metrics (WET toward Max ceiling) — day-granularity, Anthropic-only.
+# (Hour-granularity df_hour sums WET across ALL providers with no provider
+# breakdown, so it can't be used for the ceiling gauge without pulling in
+# non-Anthropic WET; day-granularity df_anthropic is already provider-filtered.)
 ant_week_wet = float(df_anthropic.loc[df_anthropic["date"] >= win_start.date().isoformat(), "wet"].sum())
+all_week_wet = df_model[df_model["date"] >= win_start.date().isoformat()]["wet"].sum()
 roll = df_model[df_model["date"] >= (now_pt.date() - timedelta(days=6)).isoformat()]["wet"].sum()
-pct = (week_wet / WEEKLY_WET_CEILING) if WEEKLY_WET_CEILING else 0.0
+pct = (ant_week_wet / WEEKLY_WET_CEILING) if WEEKLY_WET_CEILING else 0.0
 hrs_to_reset = max(0, (next_reset - now_pt).total_seconds()) / 3600.0
-
-# Non-Anthropic metrics (raw tokens + API cost)
-na_week = df_non_anthropic[df_non_anthropic["date"] >= win_start.date().isoformat()]
-na_week_tokens = int(na_week["total"].sum()) if not na_week.empty else 0
-na_week_cost = float(na_week["cost_usd"].sum()) if not na_week.empty else 0.0
 
 # =============================================================================
 # HEADLINE: Anthropic (Max ceiling)
@@ -120,30 +106,16 @@ st.subheader("Anthropic — Max 20x ceiling", divider="gray")
 ac1, ac2, ac3 = st.columns(3)
 ac1.metric("This week's WET (Anthropic only)", f"{ant_week_wet/1e6:,.0f}M",
            help=f"Reset-aligned window start {win_start:%Y-%m-%d %H:%M} PT. "
-                f"All-model WET (incl. non-Anthropic): {week_wet/1e6:,.0f}M. "
-                f"Rolling-7d (informational): {roll/1e6:,.0f}M.")
+                f"All-provider WET (incl. non-Anthropic, informational only): "
+                f"{all_week_wet/1e6:,.0f}M. Rolling-7d: {roll/1e6:,.0f}M.")
 ac2.metric("% of weekly ceiling", f"{pct*100:,.0f}%",
-           help=f"This week's WET (all models) / {WEEKLY_WET_CEILING/1e6:,.0f}M "
+           help=f"This week's Anthropic-only WET / {WEEKLY_WET_CEILING/1e6:,.0f}M "
                 f"({_ceiling_source}; recalibrate via alpha-engine-config's "
                 "set_usage_pacing_config.py, cross-referencing /usage).")
 ac3.metric("Resets in", f"{hrs_to_reset:,.0f}h",
            help=f"Next weekly reset {next_reset:%Y-%m-%d %H:%M} PT (every 7 days).")
 st.progress(min(pct, 1.0),
-            text=f"{week_wet/1e6:,.0f}M / {WEEKLY_WET_CEILING/1e6:,.0f}M WET this week")
-
-# =============================================================================
-# HEADLINE: Non-Anthropic (API cost)
-# =============================================================================
-st.subheader("Non-Anthropic — API cost", divider="orange")
-nc1, nc2, nc3 = st.columns(3)
-nc1.metric("Raw tokens this week", f"{na_week_tokens/1e6:,.0f}M",
-           help="All non-Anthropic providers since the last reset. "
-                "These do NOT count toward the Max ceiling.")
-nc2.metric("API cost this week", f"${na_week_cost:,.2f}",
-           help="Notional API-equivalent cost at current public pricing. "
-                "DeepSeek V4-Pro: $1.74/M in, $3.48/M out (non-promo, post-May-31 2026).")
-nc3.metric("Source", f"{na_week['source'].nunique() if not na_week.empty else 0}",
-           help="Number of distinct sources contributing non-Anthropic usage.")
+            text=f"{ant_week_wet/1e6:,.0f}M / {WEEKLY_WET_CEILING/1e6:,.0f}M WET this week")
 
 # =============================================================================
 # Cache efficiency (Anthropic only — non-Anthropic cache fields are unreliable)
@@ -180,7 +152,7 @@ st.caption("Anthropic only. Target: high cache-read ratio + stable daily writes.
            "sessions improve reads.")
 
 # =============================================================================
-# Daily WET by source (all providers)
+# Daily WET by source (all providers — informational)
 # =============================================================================
 st.subheader("Daily WET (by source)", divider="gray")
 daily_src = (df_model.groupby(["date", "source"], as_index=False)["wet"].sum())
@@ -189,6 +161,8 @@ fig_d = px.bar(daily_src, x="date", y="wet", color="source",
 fig_d.update_layout(barmode="stack", height=320, legend_title_text="source",
                     margin=dict(t=10, b=0, l=0, r=0))
 st.plotly_chart(fig_d, use_container_width=True)
+st.caption("Includes a small non-Anthropic WET contribution (informational cross-model "
+           "comparison unit) — the ceiling gauge above uses Anthropic-only WET.")
 
 # =============================================================================
 # Anthropic — WET by model
@@ -212,45 +186,7 @@ else:
     st.caption("No Anthropic usage data yet.")
 
 # =============================================================================
-# Non-Anthropic — raw tokens + API cost by model
-# =============================================================================
-st.subheader("Non-Anthropic — tokens + cost by model", divider="orange")
-if not df_non_anthropic.empty:
-    na_m1, na_m2 = st.columns([2, 1])
-    # Daily raw tokens by model
-    na_daily_mod = (df_non_anthropic.groupby(["date", "model"], as_index=False)["total"].sum())
-    fig_na_tok = px.bar(na_daily_mod, x="date", y="total", color="model",
-                        labels={"total": "raw tokens", "date": ""})
-    fig_na_tok.update_layout(barmode="stack", height=300, margin=dict(t=10, b=0, l=0, r=0))
-    na_m1.plotly_chart(fig_na_tok, use_container_width=True)
-    # Cost donut
-    na_model_cost = (df_non_anthropic.groupby("model", as_index=False)["cost_usd"].sum()
-                     .sort_values("cost_usd", ascending=False))
-    total_na_cost = na_model_cost["cost_usd"].sum()
-    fig_na_pie = px.pie(na_model_cost, names="model", values="cost_usd", hole=0.5)
-    fig_na_pie.update_layout(height=300, margin=dict(t=10, b=0, l=0, r=0),
-                             showlegend=True)
-    na_m2.plotly_chart(fig_na_pie, use_container_width=True)
-    na_m2.caption(
-        f"API-equivalent cost at current public pricing. "
-        f"Total tracked: **${total_na_cost:,.2f}**. "
-        f"DeepSeek V4-Pro: $1.74/M in, $3.48/M out (non-promo, post-May-31 2026)."
-    )
-
-    # Daily cost by model (stacked bar)
-    st.subheader("Non-Anthropic — daily API cost", divider="orange")
-    na_daily_cost = (df_non_anthropic.groupby(["date", "model"], as_index=False)["cost_usd"].sum())
-    fig_na_cost = px.bar(na_daily_cost, x="date", y="cost_usd", color="model",
-                         labels={"cost_usd": "API cost ($)", "date": ""})
-    fig_na_cost.update_layout(barmode="stack", height=280, margin=dict(t=10, b=0, l=0, r=0))
-    st.plotly_chart(fig_na_cost, use_container_width=True)
-else:
-    st.caption("No non-Anthropic usage data yet. (Expected — the provider-aware "
-               "collector was just deployed; data will appear as new transcripts "
-               "with non-Anthropic models are collected.)")
-
-# =============================================================================
-# Hourly profile heatmap (all models, WET)
+# Hourly profile heatmap (all models, WET — informational)
 # =============================================================================
 st.subheader("Hourly profile (WET, PT)", divider="gray")
 if not df_hour.empty:
@@ -263,13 +199,15 @@ if not df_hour.empty:
     st.caption("Daytime band = interactive (laptop) work; the overnight/8-hourly "
                "band is the backlog groom's `source='groom'` usage. Irregular "
                "spikes are `source='watch'` — Fleet-SF/CI Watch resilience-agent "
-               "runs, which fire only on pipeline/CI failures (config#1899).")
+               "runs, which fire only on pipeline/CI failures (config#1899). "
+               "Hour-granularity data has no provider breakdown, so this includes "
+               "a small non-Anthropic contribution.")
 
 # =============================================================================
-# Secondary: raw tokens + notional $ (all models, expander)
+# Secondary: Anthropic raw tokens + notional $ (expander)
 # =============================================================================
-with st.expander("Raw tokens + notional $ (all models)"):
-    daily_full = (df_model.groupby("date", as_index=False)
+with st.expander("Anthropic — raw tokens + notional $"):
+    daily_full = (ant_week.groupby("date", as_index=False)
                   .agg(wet=("wet", "sum"), cost_usd=("cost_usd", "sum"),
                        raw_total=("total", "sum"),
                        input=("input_tokens", "sum"), output=("output_tokens", "sum"),
@@ -278,10 +216,10 @@ with st.expander("Raw tokens + notional $ (all models)"):
                   .sort_values("date", ascending=False))
     daily_full["$ (notional)"] = daily_full["cost_usd"].map(lambda v: f"${v:,.0f}")
     st.caption("`$` is API-equivalent at current public pricing — a snapshot, NOT "
-               "what the Max plan charges. Non-Anthropic cost is the actual "
-               "API-equivalent since those models bill per-token outside of Max. "
+               "what the Max plan actually charges (it's a flat subscription). "
                "Raw tokens are ~99% cache-reads (cheap), which is why WET is the "
-               "headline for Anthropic.")
+               "headline here. Window: this reset cycle only — see the **API** "
+               "tab for the fuller 35-day non-Anthropic + research-fleet history.")
     st.dataframe(
         daily_full[["date", "wet", "$ (notional)", "raw_total",
                     "input", "output", "cache_write", "cache_read"]],
