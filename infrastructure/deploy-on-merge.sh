@@ -202,7 +202,29 @@ if paths_changed "${CURRENT_SHA}~1" "$CURRENT_SHA" $BOX_HEALTH_PATHS; then
     log "re-installed box-health/hygiene"
 fi
 
-# ── 3. Restart both streamlit services (we are root) ───────────────────────
+# ── 3. Self-provision dashboard and nous-ergon-live unit files ──────────────
+# Both services ship in the repo; install/refresh them on unit-file diff
+# (or first deploy) so they can never drift from the repo copy — same
+# idempotent pattern as crucible-dash/dash-api/dash-web (§3b-3d).
+DASHBOARD_UNIT_SRC="$REPO_DIR/infrastructure/dashboard.service"
+DASHBOARD_UNIT_DST="/etc/systemd/system/dashboard.service"
+if [ ! -f "$DASHBOARD_UNIT_DST" ] || ! cmp -s "$DASHBOARD_UNIT_SRC" "$DASHBOARD_UNIT_DST"; then
+    cp "$DASHBOARD_UNIT_SRC" "$DASHBOARD_UNIT_DST" 2>>"$LOG" || fail "install dashboard unit"
+    systemctl daemon-reload 2>>"$LOG" || fail "daemon-reload for dashboard"
+    systemctl enable dashboard 2>>"$LOG" || fail "enable dashboard"
+    log "installed/refreshed dashboard.service unit"
+fi
+
+LIVE_UNIT_SRC="$REPO_DIR/live/infrastructure/nous-ergon-live.service"
+LIVE_UNIT_DST="/etc/systemd/system/nous-ergon-live.service"
+if [ ! -f "$LIVE_UNIT_DST" ] || ! cmp -s "$LIVE_UNIT_SRC" "$LIVE_UNIT_DST"; then
+    cp "$LIVE_UNIT_SRC" "$LIVE_UNIT_DST" 2>>"$LOG" || fail "install nous-ergon-live unit"
+    systemctl daemon-reload 2>>"$LOG" || fail "daemon-reload for nous-ergon-live"
+    systemctl enable nous-ergon-live 2>>"$LOG" || fail "enable nous-ergon-live"
+    log "installed/refreshed nous-ergon-live.service unit"
+fi
+
+# ── 3a. Restart both streamlit services (we are root) ──────────────────────
 # Both services run from this same repo. Two-second stagger avoids a
 # simultaneous blip on console + live site.
 systemctl restart dashboard 2>>"$LOG" || fail "restart dashboard"
@@ -212,6 +234,7 @@ systemctl restart nous-ergon-live 2>>"$LOG" || fail "restart nous-ergon-live"
 log "restarted nous-ergon-live.service"
 
 # ── 3b. Crucible /dash service (config#1957) — idempotent self-provision ────
+# Same pattern as the dashboard/nous-ergon-live units above (§3).
 # The unit ships in this repo; install/refresh it on unit-file diff (or first
 # deploy) so the service can never drift from the repo copy — mirrors the CF
 # Pages project self-provision precedent (#328): a new box or a unit change
