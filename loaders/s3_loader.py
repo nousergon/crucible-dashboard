@@ -2036,7 +2036,7 @@ def _drop_implausible_cost_rows(df: pd.DataFrame) -> pd.DataFrame:
     Mirrors the producer-side guard in alpha-engine-research's
     ``scripts/aggregate_costs._is_plausible_cost_row``. Belt-and-suspenders
     so historical pollution (the 2026-05-13 ~$1014 spike from a unit-test
-    run with real AWS creds) doesn't render on the LLM Cost page until
+    run with real AWS creds) doesn't render on the API page until
     the producer-side rewrite of that day's parquet lands.
 
     Drops rows where ``run_id`` doesn't start with an ISO date, or any
