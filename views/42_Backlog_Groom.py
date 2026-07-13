@@ -21,8 +21,9 @@ actual latest comment — not a claim the agent made about itself. This is the
 same ground-truth-over-self-report principle the run-attribution fix
 (config#1512) applies to the PR/close counts in the GitHub digest issue.
 
-Complementary to **Saturday SF Watch** (failure-event timeline for the trading
-pipelines) — this page is the per-run activity log for the groom pipeline.
+Complementary to **Watch Status** (failure-event timeline + aggregate efficacy
+for the SF Watch and CI Watch resilience agents) — this page is the per-run
+activity log for the groom pipeline.
 
 **Slot decisions strip (config#1933 demand-driven dispatch / config#1935):**
 above the run history, a per-slot/per-day chip strip sourced from

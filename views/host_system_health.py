@@ -21,7 +21,7 @@ render_host(
         # standalone st.Page in app.py like the other slug-owning pages
         # (director / eod-report / model-zoo / analysis). Hosting it here too
         # would move the slug onto the host and break the deep-link guard.
-        ("Saturday SF Watch", "37_Saturday_SF_Watch.py"),
+        ("Watch Status", "37_Watch_Status.py"),
         ("Backlog Groom", "42_Backlog_Groom.py"),
         ("Merged PRs", "47_Merged_PRs.py"),
         # config#646 — the fleet's flow-doctor end-of-run heartbeat ("alive but
