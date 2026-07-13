@@ -3,7 +3,6 @@ title: '"Configured" is not "working" — the PWA that never told open tabs to r
 date: '2026-07-08'
 severity: 'P1'
 domain: 'Client reliability'
-order: 8
 summary: >-
   A PWA plugin was set to auto-update from day one, but the app never wired up
   the piece that actually tells an open tab to reload. Every deploy shipped

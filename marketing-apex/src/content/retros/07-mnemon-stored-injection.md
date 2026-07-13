@@ -3,7 +3,6 @@ title: 'Stored prompt injection — a memory system that flagged itself as malwa
 date: '2026-05-17'
 severity: 'P1'
 domain: 'Security'
-order: 7
 summary: >-
   A memory server captured its own host's control markup as if it were
   ordinary conversation, replayed it into a later session, and watched a model

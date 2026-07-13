@@ -4,11 +4,10 @@ import { glob } from 'astro/loaders';
 /**
  * Retros: incident case studies sourced from markdown files in
  * `src/content/retros/`. Each retro is a curated narrative (what failed,
- * how it was caught, root cause, fix, structural change) — not a
- * chronological feed.
- *
- * Schema mirrors the Streamlit page's `_RETROS` registry one-for-one so
- * the listing page can render exactly the same metadata.
+ * how it was caught, root cause, fix, structural change). The set of
+ * retros is curated by hand; the index page displays them in date order,
+ * latest first — `date` is the sole ordering key, so there is no separate
+ * `order` field to keep in sync.
  */
 const retros = defineCollection({
   loader: glob({ pattern: '**/*.md', base: './src/content/retros' }),
@@ -18,11 +17,6 @@ const retros = defineCollection({
     severity: z.enum(['P0', 'P1', 'P2', 'P3']),
     domain: z.string(),
     summary: z.string(),
-    /**
-     * Display order in the index. Lower = top. Brian's curation is
-     * "case studies, not a chronological feed" — so order isn't by date.
-     */
-    order: z.number().int().nonnegative(),
   }),
 });
 

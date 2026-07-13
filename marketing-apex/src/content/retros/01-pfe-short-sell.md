@@ -3,7 +3,6 @@ title: 'PFE short-sell — accidental short on a long-only system'
 date: '2026-04-22'
 severity: 'P1'
 domain: 'Trade execution'
-order: 1
 summary: >-
   The executor opened a short position on a stock the system was only supposed
   to be exiting. Defense-in-depth fix shipped same day.

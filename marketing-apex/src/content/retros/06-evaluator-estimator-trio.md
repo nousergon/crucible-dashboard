@@ -3,7 +3,6 @@ title: 'The false-positive trio — three RED flags, three broken estimators'
 date: '2026-06-07'
 severity: 'P2'
 domain: 'Evaluation harness'
-order: 6
 summary: >-
   A single week produced three simultaneous critical RED flags on the system's
   own report card. All three turned out to be artifacts of how the metrics
