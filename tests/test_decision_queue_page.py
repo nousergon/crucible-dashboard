@@ -28,6 +28,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from loaders.decision_queue_loader import (  # noqa: E402
     BACKLOG_REPOS,
+    CODE_REPOS,
     HUMAN_GATE_LABELS,
     bump_reexam_line,
     defer_issue,
@@ -39,6 +40,7 @@ from loaders.decision_queue_loader import (  # noqa: E402
     ruling_comment,
     send_to_session,
 )
+import loaders.decision_queue_loader as dq_module  # noqa: E402
 
 EXPECTED_SLUG = "decision-queue"
 PAGE = REPO_ROOT / "views" / "49_Decision_Queue.py"
@@ -68,7 +70,9 @@ class TestScopeContract:
         ]
 
     def test_only_human_gates(self):
-        assert set(HUMAN_GATE_LABELS) == {"gate:operator", "gate:decision"}
+        # config#2431: widened to include gate:device — equally human-only
+        # (no S3/API check substitutes for physically validating hardware).
+        assert set(HUMAN_GATE_LABELS) == {"gate:operator", "gate:decision", "gate:device"}
 
     def test_loader_never_shells_to_gh_for_api_calls(self):
         # Proxy-TLS constraint: GitHub via urllib only. `gh auth token` (local
@@ -271,6 +275,7 @@ class TestLoadQueueFanout:
             "created_at": "2026-07-01T00:00:00Z", "html_url": "http://x", "body": "b",
         }
         monkeypatch.setattr(dq, "BACKLOG_REPOS", ["nousergon/alpha-engine-config"])
+        monkeypatch.setattr(dq, "CODE_REPOS", [])  # config#2431: isolate from the PR scan
         monkeypatch.setattr(dq, "_list_gated_issues", lambda repo, label: [shared_issue])
         comment_calls: list[tuple] = []
 
@@ -330,6 +335,7 @@ class TestDeferSnooze:
              "html_url": "http://b", "body": "Re-exam: 2020-01-01\n"},
         ]
         monkeypatch.setattr(dq, "BACKLOG_REPOS", ["nousergon/alpha-engine-config"])
+        monkeypatch.setattr(dq, "CODE_REPOS", [])  # config#2431: isolate from the PR scan
         monkeypatch.setattr(dq, "HUMAN_GATE_LABELS", ("gate:decision",))
         monkeypatch.setattr(dq, "_list_gated_issues", lambda repo, label: issues)
         comment_calls: list[int] = []
@@ -400,3 +406,162 @@ class TestCardRendersContext:
         assert 'item["summary"]' in src
         assert 'item["sota"]' in src
         assert 'item["delta"]' in src
+
+
+# ── config#2431: PR coverage + gate:device + ruling-resolves-the-gate ───────
+
+
+class TestCodeReposContract:
+    def test_code_repos_covers_the_full_fleet(self):
+        assert set(CODE_REPOS) == {
+            "nousergon/alpha-engine-config", "nousergon/metron-ops",
+            "nousergon/crucible-executor", "nousergon/nousergon-data",
+            "nousergon/crucible-predictor", "nousergon/crucible-research",
+            "nousergon/crucible-backtester", "nousergon/crucible-dashboard",
+            "nousergon/crucible-evaluator", "nousergon/nousergon-lib",
+            "nousergon/nousergon-docs", "nousergon/metron",
+            "nousergon/vires", "nousergon/vires-ops",
+            "nousergon/telos", "nousergon/telos-ops",
+        }
+
+    def test_view_shows_pr_vs_issue_badge(self):
+        src = (REPO_ROOT / "views" / "49_Decision_Queue.py").read_text()
+        assert 'item["is_pr"]' in src
+
+
+class TestListGatedPrs:
+    def test_filters_to_pull_requests_only(self, monkeypatch):
+        page1 = [
+            {"number": 1, "labels": []},  # issue — no pull_request key
+            {"number": 2, "labels": [], "pull_request": {}},
+        ]
+        monkeypatch.setattr(dq_module, "_request", lambda *a, **k: page1)
+        prs = dq_module._list_gated_prs("r/repo", "gate:device")
+        assert [p["number"] for p in prs] == [2]
+
+    def test_excludes_triage_session_parked_prs(self, monkeypatch):
+        page1 = [
+            {"number": 1, "labels": [{"name": "triage:session"}], "pull_request": {}},
+            {"number": 2, "labels": [], "pull_request": {}},
+        ]
+        monkeypatch.setattr(dq_module, "_request", lambda *a, **k: page1)
+        prs = dq_module._list_gated_prs("r/repo", "gate:device")
+        assert [p["number"] for p in prs] == [2]
+
+
+class TestBuildDecisionItemIsPr:
+    def test_is_pr_flows_through_to_the_item(self, monkeypatch):
+        from datetime import datetime, timezone
+        it = {
+            "number": 9, "title": "t", "created_at": "2026-07-01T00:00:00Z",
+            "html_url": "http://x", "body": "b",
+        }
+        monkeypatch.setattr(dq_module, "_newest_gate_comment", lambda repo, number: "")
+        item = dq_module._build_decision_item(
+            "r/repo", "gate:device", it, datetime.now(timezone.utc), is_pr=True)
+        assert item.is_pr is True
+
+    def test_is_pr_defaults_false_for_issues(self, monkeypatch):
+        from datetime import datetime, timezone
+        it = {
+            "number": 9, "title": "t", "created_at": "2026-07-01T00:00:00Z",
+            "html_url": "http://x", "body": "b",
+        }
+        monkeypatch.setattr(dq_module, "_newest_gate_comment", lambda repo, number: "")
+        item = dq_module._build_decision_item(
+            "r/repo", "gate:operator", it, datetime.now(timezone.utc))
+        assert item.is_pr is False
+
+
+class TestLoadQueueScansCodeReposPrs:
+    def test_pr_items_are_included_and_flagged(self, monkeypatch):
+        pr = {
+            "number": 5, "title": "a PR", "created_at": "2026-07-01T00:00:00Z",
+            "html_url": "http://x", "body": "b", "pull_request": {},
+        }
+        monkeypatch.setattr(dq_module, "BACKLOG_REPOS", [])
+        monkeypatch.setattr(dq_module, "CODE_REPOS", ["nousergon/some-repo"])
+        monkeypatch.setattr(dq_module, "HUMAN_GATE_LABELS", ("gate:device",))
+        monkeypatch.setattr(dq_module, "_list_gated_prs", lambda repo, label: [pr])
+        monkeypatch.setattr(dq_module, "_newest_gate_comment", lambda repo, number: "")
+        out = dq_module.load_decision_queue()
+        assert len(out["items"]) == 1
+        assert out["items"][0]["is_pr"] is True
+        assert out["items"][0]["number"] == 5
+
+
+class TestMarkPrReady:
+    def test_posts_graphql_mutation_with_node_id(self, monkeypatch):
+        calls = []
+
+        def fake_request(method, url, payload=None):
+            calls.append((method, url, payload))
+            if url.endswith("/pulls/9"):
+                return {"node_id": "PR_kwABC"}
+            return {}
+
+        monkeypatch.setattr(dq_module, "_request", fake_request)
+        dq_module._mark_pr_ready("r/repo", 9)
+        graphql_calls = [c for c in calls if c[1].endswith("/graphql")]
+        assert len(graphql_calls) == 1
+        assert graphql_calls[0][2]["variables"] == {"id": "PR_kwABC"}
+        assert "markPullRequestReadyForReview" in graphql_calls[0][2]["query"]
+
+    def test_missing_node_id_does_not_crash(self, monkeypatch):
+        monkeypatch.setattr(dq_module, "_request", lambda *a, **k: {})
+        dq_module._mark_pr_ready("r/repo", 9)  # must not raise
+
+
+class TestResolvePrGateFollowup:
+    def test_already_ready_is_noop(self, monkeypatch):
+        monkeypatch.setattr(dq_module, "_request", lambda *a, **k: {"draft": False})
+        calls = []
+        monkeypatch.setattr(dq_module, "_mark_pr_ready", lambda *a, **k: calls.append(a))
+        dq_module._resolve_pr_gate_followup("r/repo", 9)
+        assert calls == []
+
+    def test_leaves_draft_when_another_gate_remains(self, monkeypatch):
+        monkeypatch.setattr(dq_module, "_request", lambda *a, **k: {
+            "draft": True, "labels": [{"name": "gate:dependency"}],
+        })
+        calls = []
+        monkeypatch.setattr(dq_module, "_mark_pr_ready", lambda *a, **k: calls.append(a))
+        dq_module._resolve_pr_gate_followup("r/repo", 9)
+        assert calls == []
+
+    def test_flips_ready_when_fully_unblocked(self, monkeypatch):
+        monkeypatch.setattr(dq_module, "_request", lambda *a, **k: {
+            "draft": True, "labels": [{"name": "source:groom"}],
+        })
+        calls = []
+        monkeypatch.setattr(dq_module, "_mark_pr_ready",
+                            lambda repo, num: calls.append((repo, num)))
+        dq_module._resolve_pr_gate_followup("r/repo", 9)
+        assert calls == [("r/repo", 9)]
+
+    def test_never_raises_on_fetch_failure(self, monkeypatch):
+        def boom(*a, **k):
+            raise RuntimeError("network error")
+
+        monkeypatch.setattr(dq_module, "_request", boom)
+        dq_module._resolve_pr_gate_followup("r/repo", 9)  # must not raise
+
+
+class TestPostRulingPrFollowup:
+    def test_is_pr_true_calls_followup(self, monkeypatch):
+        monkeypatch.setattr(dq_module, "_request", lambda *a, **k: {})
+        monkeypatch.setattr(dq_module, "_remove_gate_labels", lambda *a, **k: None)
+        calls = []
+        monkeypatch.setattr(dq_module, "_resolve_pr_gate_followup",
+                            lambda *a, **k: calls.append(a))
+        post_ruling("r/repo", 9, "Option A", is_pr=True)
+        assert calls == [("r/repo", 9)]
+
+    def test_is_pr_false_skips_followup(self, monkeypatch):
+        monkeypatch.setattr(dq_module, "_request", lambda *a, **k: {})
+        monkeypatch.setattr(dq_module, "_remove_gate_labels", lambda *a, **k: None)
+        calls = []
+        monkeypatch.setattr(dq_module, "_resolve_pr_gate_followup",
+                            lambda *a, **k: calls.append(a))
+        post_ruling("r/repo", 9, "Option A")
+        assert calls == []
