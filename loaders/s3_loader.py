@@ -2496,3 +2496,70 @@ def load_autoapply_config_meta() -> dict:
         except Exception:
             out[name] = {"present": False}
     return out
+
+
+# --- Champion/challenger promotion loop (config#2364/#2367/#2369) ---------
+#
+# The gated weekly promotion/demotion engine (crucible-backtester
+# optimizer/champion_promotion.py) writes:
+#   config/producer_champion.json                        (live pointer)
+#   config/apply_audit/producer_champion/{date}.json      (weekly audit, +latest.json)
+#   research/producer_leaderboard_champion_gate/{date}.json (gate-input history)
+# The leaderboard key was renamed off a colliding path 2026-07-13 (config#2452)
+# -- DISTINCT from research/producer_leaderboard/ above, which is crucible-
+# research's own (differently-scored) producer ablation.
+
+_CHAMPION_POINTER_KEY = "config/producer_champion.json"
+_CHAMPION_AUDIT_PREFIX = "config/apply_audit/producer_champion/"
+_CHAMPION_LEADERBOARD_PREFIX = "research/producer_leaderboard_champion_gate/"
+
+
+@st.cache_data(ttl=_ttl("signals"))
+def load_champion_pointer() -> dict | None:
+    """Load the live champion pointer -- schema v1: ``{schema_version,
+    champion, promoted_at, promotion_source}``. None until the first
+    promotion/demotion or operator-bootstrap write (pre-bootstrap default is
+    'agentic', mirroring executor/champion.py's own default) -- an honest
+    absence, never guessed at here."""
+    return download_s3_json(_research_bucket(), _CHAMPION_POINTER_KEY)
+
+
+@st.cache_data(ttl=_ttl("signals"))
+def list_champion_audit_dates() -> list[str]:
+    """Sorted dates for the weekly champion-promotion audit history. Written
+    UNCONDITIONALLY every Saturday evaluate.py run regardless of outcome
+    (config#2054 liveness-proxy posture) -- this listing IS the promotion
+    loop's own freshness signal."""
+    return _list_dated_json_keys(_CHAMPION_AUDIT_PREFIX)
+
+
+@st.cache_data(ttl=_ttl("signals"))
+def load_champion_audit(date: str) -> dict | None:
+    """One weekly champion-promotion audit record (contracts/
+    producer_champion_audit.schema.json v1): outcome/champion_before/
+    champion_after/challenger_matured_cohorts/sn_lift_vs_champion/
+    consecutive_wins/cooldown_until/blocked_by."""
+    return download_s3_json(_research_bucket(), f"{_CHAMPION_AUDIT_PREFIX}{date}.json")
+
+
+@st.cache_data(ttl=_ttl("signals"))
+def load_champion_audit_latest() -> dict | None:
+    """Latest champion-promotion audit record -- same shape as
+    ``load_champion_audit``, fetched directly at the ``latest.json`` mirror
+    key rather than via ``list_champion_audit_dates()``."""
+    return download_s3_json(_research_bucket(), f"{_CHAMPION_AUDIT_PREFIX}latest.json")
+
+
+@st.cache_data(ttl=_ttl("research"))
+def list_champion_leaderboard_dates() -> list[str]:
+    """Sorted build dates for the champion-gate leaderboard -- the promotion
+    engine's own weekly sector-neutral 21d lift history for the challenger
+    arm (schema: ``{"weekly_points": [...]}``, distinct from the producer/
+    scanner ablation leaderboards above)."""
+    return _list_dated_json_keys(_CHAMPION_LEADERBOARD_PREFIX)
+
+
+@st.cache_data(ttl=_ttl("research"))
+def load_champion_leaderboard(date: str) -> dict | None:
+    """One champion-gate leaderboard build."""
+    return download_s3_json(_research_bucket(), f"{_CHAMPION_LEADERBOARD_PREFIX}{date}.json")
