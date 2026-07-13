@@ -797,3 +797,45 @@ class TestSaveSpotcheckFlag:
             {"spotcheck_id": "x", "verdict": "looks_right"}, bucket="test-bucket",
         )
         assert ok is False
+
+
+# ── Rubric text fetch (Calibrate tab simplification, 2026-07-13) ──────────
+
+
+from loaders.eval_loader import load_rubric_text  # noqa: E402
+
+
+class TestLoadRubricText:
+    def test_decodes_github_contents_response(self, monkeypatch):
+        import base64
+
+        import loaders.decision_queue_loader as dq
+
+        raw = "# version: 1.0.0\nSome rubric anchors here."
+        encoded = base64.b64encode(raw.encode("utf-8")).decode("ascii")
+        calls = []
+
+        def fake_request(method, url):
+            calls.append((method, url))
+            return {"content": encoded}
+
+        monkeypatch.setattr(dq, "_request", fake_request)
+        text = load_rubric_text("eval_rubric_sector_quant")
+        assert text == raw
+        assert calls[0][0] == "GET"
+        assert "alpha-engine-config/contents/research/prompts/eval_rubric_sector_quant.txt" in calls[0][1]
+
+    def test_returns_none_on_fetch_failure(self, monkeypatch):
+        import loaders.decision_queue_loader as dq
+
+        def fake_request(method, url):
+            raise RuntimeError("404")
+
+        monkeypatch.setattr(dq, "_request", fake_request)
+        assert load_rubric_text("eval_rubric_missing") is None
+
+    def test_returns_none_on_empty_content(self, monkeypatch):
+        import loaders.decision_queue_loader as dq
+
+        monkeypatch.setattr(dq, "_request", lambda m, u: {"content": ""})
+        assert load_rubric_text("eval_rubric_sector_quant") is None
