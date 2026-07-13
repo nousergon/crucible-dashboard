@@ -1,8 +1,8 @@
-"""Tests for the Saturday SF Watch console page + its loaders.
+"""Tests for the Watch Status console page (SF Watch + CI Watch) + its loaders.
 
 Covers the watch-log loaders (``load_saturday_sf_watch`` /
 ``list_saturday_sf_watch_dates``) and the nav-registration contract (app.py
-must register ``37_Saturday_SF_Watch.py`` under System & Ops). The page reads
+must register ``37_Watch_Status.py`` under System & Ops). The page reads
 the failure-driven watch-log written by the alpha-engine-data
 ``saturday-sf-watch-dispatcher`` Lambda (config#1227).
 
@@ -87,18 +87,25 @@ class TestListSaturdaySfWatchDates:
 
 class TestNavRegistration:
     def test_page_file_exists(self):
-        assert (REPO_ROOT / "views" / "37_Saturday_SF_Watch.py").exists()
+        assert (REPO_ROOT / "views" / "37_Watch_Status.py").exists()
+
+    def test_old_page_file_removed(self):
+        # config#2389 rename: "Saturday SF Watch" -> "Watch Status" (now
+        # covers both SF Watch and CI Watch) — the pre-rename filename must
+        # not linger as a stale duplicate.
+        assert not (REPO_ROOT / "views" / "37_Saturday_SF_Watch.py").exists()
 
     def test_app_registers_page(self):
         # Hosted under the System Health front page (lazy view-host) post-IA-reorg
         # rather than registered directly in app.py.
         host_src = (REPO_ROOT / "views" / "host_system_health.py").read_text()
-        assert '"37_Saturday_SF_Watch.py"' in host_src
+        assert '"37_Watch_Status.py"' in host_src
+        assert '"Watch Status"' in host_src
         app_src = (REPO_ROOT / "app.py").read_text()
         assert 'page("host_system_health.py"' in app_src
 
     def test_page_uses_watch_loaders(self):
-        src = (REPO_ROOT / "views" / "37_Saturday_SF_Watch.py").read_text()
+        src = (REPO_ROOT / "views" / "37_Watch_Status.py").read_text()
         assert "list_saturday_sf_watch_dates" in src
         assert "load_saturday_sf_watch" in src
 
@@ -168,12 +175,12 @@ class TestPageIntegrationFields:
     fields (pr_urls / diagnosis / recommended_command) — config#1244."""
 
     def test_page_uses_integrity_loaders(self):
-        src = (REPO_ROOT / "views" / "37_Saturday_SF_Watch.py").read_text()
+        src = (REPO_ROOT / "views" / "37_Watch_Status.py").read_text()
         assert "list_saturday_integrity_dates" in src
         assert "load_saturday_integrity" in src
 
     def test_page_surfaces_agent_enrichment_fields(self):
-        src = (REPO_ROOT / "views" / "37_Saturday_SF_Watch.py").read_text()
+        src = (REPO_ROOT / "views" / "37_Watch_Status.py").read_text()
         assert "pr_urls" in src
         assert "diagnosis" in src
         assert "recommended_command" in src
@@ -239,12 +246,12 @@ class TestListCiWatchDates:
 
 class TestPageWiresCiWatch:
     def test_page_uses_ci_watch_loaders(self):
-        src = (REPO_ROOT / "views" / "37_Saturday_SF_Watch.py").read_text()
+        src = (REPO_ROOT / "views" / "37_Watch_Status.py").read_text()
         assert "list_ci_watch_dates" in src
         assert "load_ci_watch" in src
 
     def test_page_surfaces_ci_watch_schema_fields(self):
-        src = (REPO_ROOT / "views" / "37_Saturday_SF_Watch.py").read_text()
+        src = (REPO_ROOT / "views" / "37_Watch_Status.py").read_text()
         for field in ("repo", "run_id", "run_url", "sha", "workflow",
                       "agent_attempt", "lane", "action", "pr_urls",
                       "diagnosis", "rerun_conclusion", "followup_issues"):

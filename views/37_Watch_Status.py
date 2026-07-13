@@ -1,31 +1,42 @@
 """
-Saturday SF Watch — Alpha Engine (private console)
+Watch Status — Alpha Engine (private console)
 
-Operator surface for the autonomous Saturday-SF resilience arc
-(spec: nousergon/alpha-engine-config#1227). The
-``alpha-engine-saturday-sf-watch-dispatcher`` Lambda fires on a Saturday SF
-terminal failure and appends an event to a per-date watch-log at
+Operator surface for BOTH autonomous resilience watches: Saturday SF Watch
+(spec: nousergon/alpha-engine-config#1227) and Fleet CI Watch (config#1593 /
+#1596). The ``alpha-engine-saturday-sf-watch-dispatcher`` Lambda fires on a
+Saturday SF terminal failure and appends an event to a per-date watch-log at
 ``s3://alpha-engine-research/consolidated/saturday_sf_watch/{date}.json``
-(schema_version, run_date, events: [...]). This page is its consumer surface.
+(schema_version, run_date, events: [...]); the Fleet CI Watch dispatch mirrors
+this shape under ``consolidated/ci_watch/{date}.json`` for main-branch
+CI/deploy red events. This page is the consumer surface for both.
 
-The watch-log is **failure-driven** — a date exists only for a Saturday where
-the pipeline failed, so an empty list is the healthy steady state. Full
-autonomy shipped 2026-07-07 (all four dispatch flags now true) — the watcher
-dispatches an agent that can propose, auto-fix, merge, and rerun; ``lane`` /
-``action`` and a PR link populate per-event once the agent has run. Events
-from before 2026-07-07 may still show ``action="observe"`` (the earlier
-observe-only milestone) — that's historical, not current-mode.
+Renamed from "Saturday SF Watch" (config#2389) — the page always rendered
+both SF Watch and CI Watch sections below; the title/nav label now says so.
+
+Each watch-log is **failure-driven** — a date exists only where the watched
+pipeline actually failed/redded, so an empty list is the healthy steady
+state. Full autonomy shipped 2026-07-07 (all four dispatch flags now true) —
+the watcher dispatches an agent that can propose, auto-fix, merge, and rerun;
+``lane`` / ``action`` and a PR link populate per-event once the agent has
+run. Events from before 2026-07-07 may still show ``action="observe"`` (the
+earlier observe-only milestone) — that's historical, not current-mode.
 
 Complementary to **Pipeline Status** (live SF run/succeeded/failed state) and
 **Artifact Freshness** (independent artifact-integrity, the Sat→Mon swallow
 safeguard) — this page is the failure-event timeline + what-the-watcher-did log.
 
-Two enrichments (config#1244):
-1. A top **Saturday Integrity GO/NO-GO banner** from the independent integrity
-   gate's marker (config#1227 §8) — the Sat→Mon swallow safeguard, validated
-   independently of the agent's own report.
-2. The watch agent's per-event enrichment fields (``pr_urls`` / ``diagnosis`` /
-   ``recommended_command``) surfaced on the event timeline.
+Sections, top to bottom (config#2389 aggregate efficacy metrics added above
+the pre-existing per-date sections):
+0. **Watch Efficacy** — aggregate fix/escalation rates, MTTR, top failure
+   modes and canary drill health across ALL watch-log dates
+   (``loaders/watch_efficacy.py``).
+1. A **Saturday Integrity GO/NO-GO banner** (config#1244) from the independent
+   integrity gate's marker (config#1227 §8) — the Sat→Mon swallow safeguard,
+   validated independently of the agent's own report.
+2. The Saturday SF Watch per-date event timeline, with the watch agent's
+   per-event enrichment fields (``pr_urls`` / ``diagnosis`` /
+   ``recommended_command``) surfaced (config#1244).
+3. The Fleet CI Watch per-date event timeline (config#1593/#1596).
 """
 
 from __future__ import annotations
@@ -46,6 +57,7 @@ from loaders.s3_loader import (  # noqa: E402
     load_saturday_integrity,
     load_saturday_sf_watch,
 )
+from loaders.watch_efficacy import load_watch_efficacy_snapshot  # noqa: E402
 
 # Terminal-failure status → display color.
 _STATUS_COLOR_HEX: dict[str, str] = {
@@ -69,12 +81,107 @@ _ACTION_LABEL: dict[str, str] = {
 }
 
 
-st.title("📡 Saturday SF Watch")
+st.title("📡 Watch Status")
 st.caption(
-    "Autonomous Saturday-pipeline resilience watch — failure-event timeline + "
-    "what the watcher did. Failure-driven: no entry means no failure. "
-    "(config#1227)"
+    "Autonomous resilience watch — Saturday SF Watch + Fleet CI Watch. "
+    "Failure-event timeline + what the watcher did. Failure-driven: no "
+    "entry means no failure. (config#1227 / config#1593)"
 )
+
+
+# ── Watch Efficacy (aggregate metrics across ALL watch-log dates — config#2389) ──
+# Sits above the per-date Saturday Integrity banner + event timelines below:
+# "how well is the watch actually doing" is the operator's first question,
+# the per-date drill-down is the second.
+def _render_efficacy_section() -> None:
+    st.subheader("📊 Watch Efficacy")
+    snap = load_watch_efficacy_snapshot()
+    st.caption(f"computed_at: {snap.computed_at.isoformat()}")
+
+    # ── SF Watch ─────────────────────────────────────────────────────────
+    st.markdown("**SF Watch**")
+    sf = snap.sf_watch
+    sf_tiles = st.columns(4)
+    sf_tiles[0].metric("Total dispatches", sf.total_events if sf.total_dates else "—")
+    sf_tiles[1].metric(
+        "Fix rate", f"{sf.fix_rate:.0%}" if sf.total_events else "—"
+    )
+    sf_tiles[2].metric(
+        "Post-autonomy fix",
+        f"{sf.post_autonomy_fix_rate:.0%}"
+        if sf.post_autonomy_fix_rate is not None else "—",
+    )
+    sf_tiles[3].metric(
+        "MTTR (hrs)", f"{sf.mttr_hours:.1f}" if sf.mttr_hours is not None else "—"
+    )
+    if sf.top_failure_modes:
+        st.caption(
+            "Top failure modes: "
+            + ", ".join(f"{mode}({n})" for mode, n in sf.top_failure_modes)
+        )
+    if sf.events_per_date:
+        st.dataframe(
+            pd.DataFrame(
+                sf.events_per_date, columns=["Date", "Events", "Auto-fixed"]
+            ),
+            use_container_width=True, hide_index=True,
+        )
+
+    # ── CI Watch ─────────────────────────────────────────────────────────
+    st.markdown("**CI Watch**")
+    ci = snap.ci_watch
+    ci_tiles = st.columns(3)
+    ci_tiles[0].metric("Total dispatches", ci.total_events if ci.total_dates else "—")
+    ci_tiles[1].metric(
+        "Fix rate", f"{ci.fix_rate:.0%}" if ci.total_events else "—"
+    )
+    ci_tiles[2].metric(
+        "Rerun success rate",
+        f"{ci.rerun_success_rate:.0%}" if ci.total_events else "—",
+    )
+    if ci.per_repo:
+        st.dataframe(
+            pd.DataFrame(
+                sorted(ci.per_repo.items(), key=lambda kv: kv[1], reverse=True),
+                columns=["Repo", "Events"],
+            ),
+            use_container_width=True, hide_index=True,
+        )
+    if ci.events_per_date:
+        st.dataframe(
+            pd.DataFrame(
+                ci.events_per_date, columns=["Date", "Events", "Auto-fixed"]
+            ),
+            use_container_width=True, hide_index=True,
+        )
+
+    # ── Canary Drill Health ──────────────────────────────────────────────
+    st.markdown("**Canary Drill Health**")
+    canary = snap.canary
+    canary_tiles = st.columns(3)
+    canary_tiles[0].metric(
+        "SF last drill",
+        f"{canary.sf_watch_age_days:.1f}d ago"
+        if canary.sf_watch_age_days is not None else "—",
+    )
+    canary_tiles[1].metric(
+        "CI last drill",
+        f"{canary.ci_watch_age_days:.1f}d ago"
+        if canary.ci_watch_age_days is not None else "—",
+    )
+    if canary.total_expected_drills:
+        canary_tiles[2].metric("Reliability", f"{canary.reliability:.0%}")
+    else:
+        canary_tiles[2].metric("Reliability", "—")
+        st.caption(
+            "Canary drills not yet expected — the weekly synthetic-drill "
+            "cadence (config#2223) starts 2026-07-23."
+        )
+
+    st.divider()
+
+
+_render_efficacy_section()
 
 
 def _render_integrity_banner() -> None:

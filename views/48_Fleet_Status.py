@@ -15,7 +15,7 @@ loader reads (25 s cache TTL).
 Status semantics + the planes composed live in ``fleet_status.py`` (pure,
 frozen-clock-tested); input gathering in ``loaders/fleet_status_loader.py``.
 Rows deep-link into the existing detail pages (Pipeline Status, Artifact
-Freshness, Backlog Groom, Saturday SF Watch) — this page is the triage
+Freshness, Backlog Groom, Watch Status) — this page is the triage
 index, not a rebuild of those surfaces.
 """
 
@@ -52,7 +52,7 @@ _URL_BY_SLUG = {
     "pipeline-status": "pipeline-status",  # standalone st.Page, pinned slug
     "artifact-freshness": "host_observability?tab=Artifact+Freshness",
     "backlog-groom": "host_system_health?tab=Backlog+Groom",
-    "saturday-sf-watch": "host_system_health?tab=Saturday+SF+Watch",
+    "saturday-sf-watch": "host_system_health?tab=Watch+Status",
 }
 
 
