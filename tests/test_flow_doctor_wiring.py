@@ -276,8 +276,20 @@ class TestLibVersionPin:
             "nousergon_lib import alias still works via the shim)"
         )
         assert "@main" not in text, "nousergon-lib must be pinned to a tag, not @main"
-        assert "@v0.107.0" in text, (
-            "nousergon-lib should pin to v0.107.0 (nousergon-lib#185: "
+        assert "@v0.111.0" in text, (
+            "nousergon-lib should pin to v0.111.0 (alpha-engine-config-I2430, "
+            "4th recurrence of the config#1115/#2372 pipeline-status registry "
+            "drift class: nousergon-lib#188 [v0.108.0] registers 7 Saturday-SF "
+            "gate/health-degraded states — PublishLibPinGateDegraded / "
+            "PublishPipelineContractGateDegraded / NotifyCompleteGatesDegraded / "
+            "NotifyCompleteHealthDegraded / NotifyCompleteGatesAndHealthDegraded "
+            "/ PublishReportCardDegraded / PublishDirectorDegraded — and "
+            "nousergon-lib#194 [v0.111.0] registers ThinkTankCoverage "
+            "[alpha-engine-config-I2467's Think Tank coverage-fill Lambda]; "
+            "both needed to clear "
+            "test_pipeline_status_registry_drift.py::"
+            "test_every_substantive_state_has_registry_entry[Saturday-json_path0]). "
+            "Earlier: v0.107.0 (nousergon-lib#185: "
             "pipeline_status.registry's AggregateCosts ArchivePageRef follows "
             "this repo's LLM Cost/Usage -> API/Plan tab rename, "
             "host_cost_usage?tab=LLM+Cost -> ?tab=API; keeps "

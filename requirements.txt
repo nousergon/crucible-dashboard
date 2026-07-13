@@ -87,8 +87,13 @@ krepis>=0.10.0
 # AggregateCosts ArchivePageRef follows this repo's LLM Cost/Usage -> API/Plan
 # tab rename (host_cost_usage?tab=LLM+Cost -> ?tab=API) -- keeps
 # tests/test_registry_page_targets.py::test_every_archive_page_ref_resolves
-# green. gate:dependency -- held until nousergon-lib#185 merges + auto-tags.
-nousergon-lib[flow-doctor] @ git+https://github.com/nousergon/nousergon-lib@v0.107.0
+# green.
+# v0.111.0 (2026-07-13, alpha-engine-config-I2430, 4th recurrence of the
+# config#1115/#2372 drift class): pins past nousergon-lib#188 (v0.108.0,
+# registers 7 Saturday-SF gate/health-degraded states) and #194 (v0.111.0,
+# registers ThinkTankCoverage) -- both needed to clear
+# tests/test_pipeline_status_registry_drift.py::test_every_substantive_state_has_registry_entry[Saturday-json_path0].
+nousergon-lib[flow-doctor] @ git+https://github.com/nousergon/nousergon-lib@v0.111.0
 
 # crucible-dash-api (config#1973 phase 9-B): read-only FastAPI over the
 # results view-model, consumed same-box by the /dash Next.js frontend.
