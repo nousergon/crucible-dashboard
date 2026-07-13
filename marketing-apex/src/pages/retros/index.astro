@@ -3,7 +3,7 @@ import { getCollection } from 'astro:content';
 import Base from '../../layouts/Base.astro';
 
 const retros = (await getCollection('retros')).sort(
-  (a, b) => a.data.order - b.data.order
+  (a, b) => b.data.date.localeCompare(a.data.date)
 );
 ---
 
@@ -22,10 +22,10 @@ const retros = (await getCollection('retros')).sort(
       class of bug doesn't recur.
     </p>
     <p class="text-sm md:text-base text-zinc-400 leading-relaxed italic">
-      The public set is curated as case studies, not a chronological feed —
-      across trading, ML modeling, data contracts, evaluation, security, and
-      client reliability. The private interview kit holds deeper retros with
-      full code paths and naive first attempts.
+      The public set is a curated selection, not every incident — listed
+      newest first, across trading, ML modeling, data contracts, evaluation,
+      security, and client reliability. The private interview kit holds
+      deeper retros with full code paths and naive first attempts.
     </p>
   </section>
 

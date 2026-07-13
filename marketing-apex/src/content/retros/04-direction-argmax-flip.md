@@ -3,7 +3,6 @@ title: 'Direction argmax flip — the book flipped on zero new information'
 date: '2026-07-06'
 severity: 'P1'
 domain: 'Model logic'
-order: 4
 summary: >-
   Predicted direction was derived from a probability threshold that didn't
   match the label's true base rate, so ordinary day-to-day noise could flip

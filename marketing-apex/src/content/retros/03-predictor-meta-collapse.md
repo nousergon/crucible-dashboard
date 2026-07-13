@@ -3,7 +3,6 @@ title: 'Predictor meta-model collapse — 27 UP / 0 DOWN'
 date: '2026-04-28'
 severity: 'P1'
 domain: 'ML model'
-order: 3
 summary: >-
   A weekly retrain produced a degenerate output distribution. Root cause was
   placeholder constants in production training data; the fix moved validation

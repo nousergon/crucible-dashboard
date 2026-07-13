@@ -3,7 +3,6 @@ title: 'EOD pipeline recovery — 50 minutes to 4.5 minutes'
 date: '2026-05-01'
 severity: 'P2'
 domain: 'Infrastructure'
-order: 2
 summary: >-
   Three independent issues stacked into a 10× runtime regression. Closing them
   the same day cut runtime by an order of magnitude and propagated a defensive

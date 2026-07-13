@@ -3,7 +3,6 @@ title: 'avg_volume_20d units mismatch — 901 of 903 tickers silently failed a l
 date: '2026-05-25'
 severity: 'P1'
 domain: 'Data contracts'
-order: 5
 summary: >-
   A feature column was written as a normalized ratio and read as raw share
   volume. Nothing crashed for months — the scanner just quietly rejected
