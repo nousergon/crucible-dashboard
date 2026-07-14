@@ -1,0 +1,107 @@
+streamlit>=1.40
+pandas>=2.0
+plotly>=5.18
+# setuptools floor for PYSEC-2026-3447 (newly disclosed; CI's pip-audit gate
+# started failing 2026-07-14 against the default 79.0.1 bundled by the
+# GH Actions Python 3.11 image). Not a build-backend requirement here — direct
+# pin exists solely to satisfy the security-audit gate.
+setuptools>=83.0.0
+# boto3 floor 1.36: the Morning Signal Content Schedule editor
+# (loaders/morning_signal_schedule.py) uses S3 conditional writes
+# (put_object IfMatch / IfNoneMatch) for lost-update protection; the loader
+# also carries a compare-then-put fallback if the installed botocore
+# predates them, but the pinned floor makes the conditional path the norm.
+boto3>=1.36
+pyyaml>=6.0
+# streamlit-calendar: FullCalendar component backing the Morning Signal
+# Content Schedule page (views/45_Morning_Signal_Schedule.py) — month
+# calendar with event chips + dateClick/eventClick callbacks. The page
+# degrades with an explicit st.error (not a crash) if the component is
+# missing from the venv.
+streamlit-calendar>=1.2
+# yfinance: 15-min delayed quote for the live Holdings modal's "Day return"
+# (live/loaders/s3_loader.py::load_live_day_return) so it shows TODAY's % change
+# rather than the last EOD snapshot. Fail-soft to the snapshot if unavailable.
+yfinance>=0.2.40
+# anthropic: Phase-2 morning-brief consumer (config#664 / L4574) — builds the
+# rerun-driven, four-gate-throttled morning brief with Haiku (claude-haiku-4-5)
+# on the Live Portfolio page (live/morning_brief.py). The API key is read from
+# st.secrets["anthropic"]["ANTHROPIC_API_KEY"] (NOT os.environ — see
+# tests/test_no_secret_environ_reads.py); when the key or SDK is absent the
+# brief card degrades to a friendly notice (fail-soft, no hard render dependency).
+anthropic>=0.40
+# krepis (config#1722, 2026-07-05): views/36_Claude_Code_Usage.py imports
+# krepis.usage_pacing.reset_window for the reset-aligned weekly window math,
+# replacing the local _current_week_window that used to be duplicated with
+# alpha-engine-config's scripts/groom_budget.py (config#1351 / config#1721).
+# Public, MIT, plain PyPI package (`pip install krepis`) — NOT nousergon-lib
+# (git-tag-pinned below); the two are unrelated packages. Floor matches the
+# pin alpha-engine-config uses for the same module (currently on PyPI at
+# 0.10.2).
+krepis>=0.10.0
+# nousergon-lib (renamed from alpha-engine-lib at v0.60.0) provides
+# setup_logging used by app.py + health_checker.py
+# to attach the FlowDoctorHandler when FLOW_DOCTOR_ENABLED=1, the
+# transparency.substrate_health checker invoked by the Sat SF's
+# WeeklySubstrateHealthCheck state (added in alpha-engine-data 2026-05),
+# and (v0.28.0, 2026-05-24) alpha_engine_lib.pipeline_status — the SF
+# execution-state projection consumed by pages/25_Pipeline_Status.py for
+# the pipeline-reporting-revamp arc (ROADMAP L3050).
+# The [flow-doctor] extra pulls flow-doctor; no other extras are needed
+# (dashboard reads S3, not ArcticDB). Public since 2026-05-03. NOTE: the
+# extra MUST be hyphenated — setuptools normalizes pyproject's `flow_doctor`
+# to `Provides-Extra: flow-doctor`, and older pip (e.g. the box's 22.3.1)
+# does NOT normalize underscore->hyphen, so `[flow_doctor]` silently fails
+# to resolve the extra (leaving a stale flow-doctor) while `[flow-doctor]`
+# resolves on every pip version (PEP 685 canonical form).
+# v0.43.0 (2026-05-29): transparency adds the non-fatal `degraded` status —
+# activates artifact-completion Phase 1a/1c. The substrate-health check runs
+# from this venv (Sat/EOD SF `pip install -r requirements.txt` then
+# `python -m alpha_engine_lib.transparency`), and the updated
+# transparency_inventory.yaml (pipeline_execution non_fatal + agent_decisions
+# non_fatal_statuses) ships in the wheel — so this bump is the activation.
+# v0.57.1 (2026-06-09): pipeline_status.registry gains the ModelZooRotation
+# (L4544/L4571) + LibPinDriftCheck (L4517) + RunDailyNews SF states (+ their
+# WaitFor* companions) — clears the page-25 "Registry drift" cells for them.
+# v0.59.6 (2026-06-16): pipeline_status.registry gains the config#1083 model-zoo
+# fan-out states (ResolveZooSpecs / TrainSpecDispatch / ModelZooSelect /
+# PublishModelZooFailureImmediate) — clears the remaining page-25 drift cells
+# (config#1115).
+# v0.60.1 (2026-06-18): SSM-authoritative flow-doctor secret seed when deployed —
+# overwrites a stale sourced FLOW_DOCTOR_GITHUB_TOKEN with the live SSM value so the
+# github_issue notifier stops 403ing (config#1148).
+# v0.59.7 (2026-06-16): pipeline_status.registry gains the EOD PostMarketArcticAppend
+# state (+ WaitForPostMarketArcticAppend companion) — clears the last EOD-SF drift
+# cell (config#1120).
+# v0.73.0 (2026-06-28): fleet re-pin off the flow-doctor release candidate
+# (config#647 step 3). lib <= v0.67.0 hard-pinned the flow_doctor extra to
+# `flow-doctor[diagnosis,s3]==0.6.0rc6`; v0.68.0 delegated the extra to
+# `krepis[flow_doctor]`, and krepis v0.5.0 floors `flow-doctor>=0.6.0,<0.7`.
+# So this bump moves the dashboard's flow-doctor off rc6 onto the 0.6.0 final
+# that shipped via flow-doctor#34 (tag v0.6.0, on PyPI). v0.73.0 is a strict
+# superset of the pipeline_status/transparency APIs referenced above.
+# v0.79.0 (2026-07-01): EPIC config#1483 consumer cutover (config#1531) --
+# loaders/outcome_store.py imports nousergon_lib.quant.horizons
+# (HorizonPolicy / DEFAULT_POLICY, pure stdlib, no extra needed) to read the
+# long-format score_performance_outcomes store instead of hardcoding wide
+# horizon-suffixed score_performance column literals; the burn-down guard
+# test imports nousergon_lib.quant.horizon_guard (the shared ratchet
+# primitive lifted to the lib on the second adoption, nousergon-lib#149,
+# 0.78.0). v0.79.0 is a strict superset of both (and of everything below).
+# v0.107.0 (2026-07-11, nousergon-lib#185): pipeline_status.registry's
+# AggregateCosts ArchivePageRef follows this repo's LLM Cost/Usage -> API/Plan
+# tab rename (host_cost_usage?tab=LLM+Cost -> ?tab=API) -- keeps
+# tests/test_registry_page_targets.py::test_every_archive_page_ref_resolves
+# green.
+# v0.111.0 (2026-07-13, alpha-engine-config-I2430, 4th recurrence of the
+# config#1115/#2372 drift class): pins past nousergon-lib#188 (v0.108.0,
+# registers 7 Saturday-SF gate/health-degraded states) and #194 (v0.111.0,
+# registers ThinkTankCoverage) -- both needed to clear
+# tests/test_pipeline_status_registry_drift.py::test_every_substantive_state_has_registry_entry[Saturday-json_path0].
+nousergon-lib[flow-doctor] @ git+https://github.com/nousergon/nousergon-lib@v0.111.0
+
+# crucible-dash-api (config#1973 phase 9-B): read-only FastAPI over the
+# results view-model, consumed same-box by the /dash Next.js frontend.
+fastapi>=0.115
+uvicorn>=0.30
+httpx>=0.27          # fastapi TestClient transport (tests/test_dash_api.py)
