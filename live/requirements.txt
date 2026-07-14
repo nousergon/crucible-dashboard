@@ -1,5 +1,5 @@
 streamlit>=1.40
-pandas>=2.0
+pandas>=3.0.3
 plotly>=5.18
 boto3>=1.34
 pyyaml>=6.0

@@ -1,5 +1,5 @@
 streamlit>=1.40
-pandas>=2.0
+pandas>=3.0.3
 plotly>=5.18
 # setuptools floor for PYSEC-2026-3447 (newly disclosed; CI's pip-audit gate
 # started failing 2026-07-14 against the default 79.0.1 bundled by the
