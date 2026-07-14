@@ -25,6 +25,10 @@ Complementary to **Watch Status** (failure-event timeline + aggregate efficacy
 for the SF Watch and CI Watch resilience agents) — this page is the per-run
 activity log for the groom pipeline.
 
+Complexity tiers: low/mid run on Sonnet (dedicated queue), high runs on Sonnet
+(separate high-only queue) — both leverage Sonnet's reasoning depth with
+dedicated attention budgets per tier.
+
 **Slot decisions strip (config#1933 demand-driven dispatch / config#1935):**
 above the run history, a per-slot/per-day chip strip sourced from
 ``s3://alpha-engine-research/groom/decisions/{date}/{slot}.json`` — the
@@ -343,14 +347,14 @@ if sel_eff.get("usage_matched"):
               help="Share of raw tokens that were cache reads (high = good).")
     hr = sel_eff.get("hard_rate")
     e6.metric("Hard-outcome rate", f"{hr*100:.0f}%" if hr is not None else "—",
-              help="(closes + PRs) / engaged — comment-only runs skew low on Opus.")
+              help="(closes + PRs) / engaged — comment-only runs skew low on verify-heavy tiers.")
     r1, r2, r3 = st.columns(3)
     dr = sel_eff.get("disposition_rate")
     r1.metric("Disposition rate", f"{dr*100:.0f}%" if dr is not None else "—",
               help="Engaged / queued — coverage quality.")
     cr2 = sel_eff.get("comment_rate")
     r2.metric("Comment-only rate", f"{cr2*100:.0f}%" if cr2 is not None else "—",
-              help="Commented / engaged — high on verify-heavy Opus runs.")
+              help="Commented / engaged — high on verify-heavy (high-tier) runs.")
     uf = sel_eff.get("untouched_frac")
     r3.metric("Untouched rate", f"{uf*100:.0f}%" if uf is not None else "—",
               help="Untouched / queued — should stay near 0.")
