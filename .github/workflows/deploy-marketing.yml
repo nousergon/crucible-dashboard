@@ -70,7 +70,7 @@ jobs:
       dev: ${{ steps.decide.outputs.dev }}
       telos: ${{ steps.decide.outputs.telos }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dorny/paths-filter@v3
         id: filter
         if: github.event_name == 'push'
@@ -168,7 +168,7 @@ jobs:
     steps:
       - name: Checkout
         if: matrix.changed == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Node
         if: matrix.changed == 'true'
