@@ -102,6 +102,6 @@ nousergon-lib[flow-doctor] @ git+https://github.com/nousergon/nousergon-lib@v0.1
 
 # crucible-dash-api (config#1973 phase 9-B): read-only FastAPI over the
 # results view-model, consumed same-box by the /dash Next.js frontend.
-fastapi>=0.115
+fastapi>=0.139.0
 uvicorn>=0.30
 httpx>=0.27          # fastapi TestClient transport (tests/test_dash_api.py)
