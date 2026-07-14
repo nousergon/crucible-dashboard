@@ -1,6 +1,11 @@
 streamlit>=1.40
 pandas>=2.0
 plotly>=5.18
+# setuptools floor for PYSEC-2026-3447 (newly disclosed; CI's pip-audit gate
+# started failing 2026-07-14 against the default 79.0.1 bundled by the
+# GH Actions Python 3.11 image). Not a build-backend requirement here — direct
+# pin exists solely to satisfy the security-audit gate.
+setuptools>=83.0.0
 # boto3 floor 1.36: the Morning Signal Content Schedule editor
 # (loaders/morning_signal_schedule.py) uses S3 conditional writes
 # (put_object IfMatch / IfNoneMatch) for lost-update protection; the loader
