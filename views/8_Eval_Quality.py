@@ -30,6 +30,7 @@ from loaders.eval_loader import (
     load_recent_eval_artifacts_for_review,
     load_recent_evals_for_spotcheck,
     load_reviewed_ids,
+    load_rubric_text,
     save_calibration_review,
     save_spotcheck_flag,
 )
