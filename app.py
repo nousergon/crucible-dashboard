@@ -439,7 +439,7 @@ def _build_navigation():
                 "views/3_Analysis.py", title="Analysis", icon="📊",
                 url_path="analysis",
             ),
-            page("host_eval_backtester.py", "Eval & Backtester", "⚖"),
+            page("host_eval_backtester.py", "Evaluator", "⚖"),
             page("43_Distillation_Corpus.py", "Distillation Corpus", "🔬"),
         ],
         "⚗️ Experiments": [
