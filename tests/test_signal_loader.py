@@ -3,7 +3,6 @@
 These test the pure data-transformation functions (no S3/Streamlit dependencies).
 """
 
-import pandas as pd
 import pytest
 
 from loaders.signal_loader import (

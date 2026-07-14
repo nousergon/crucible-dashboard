@@ -1,11 +1,9 @@
 """Tests for loaders/s3_loader.py — core S3 I/O, parsing, error tracking."""
 
 import json
-import sys
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
-import pytest
 
 # All tests import s3_loader inside a config mock context to match
 # the pattern in test_s3_loader.py and avoid module-level config errors.
