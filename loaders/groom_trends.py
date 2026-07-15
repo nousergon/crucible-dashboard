@@ -104,7 +104,15 @@ def decision_table_rows(
         counts = raw.get("counts") or {}
         launched, deferred = _decision_boxes_summary(boxes)
         n_launched = sum(1 for b in boxes if b.get("launch"))
-        if boxes and n_launched:
+        skip_reason = raw.get("skip_reason")
+        if skip_reason:
+            # config-I2540: the dispatcher ran but never reached a launch
+            # decision (e.g. demand_all_failed — GitHub enumeration broke).
+            # Distinct from a demand-based full skip AND from a missing
+            # record: the scheduler DID invoke the Lambda.
+            status = f"🔴 {skip_reason}"
+            deferred = deferred or str(raw.get("error") or "—")
+        elif boxes and n_launched:
             status = f"🟢 launched {n_launched}"
         elif boxes:
             status = "⚪ all deferred"
