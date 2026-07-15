@@ -3,7 +3,7 @@ Signal data loading and flattening utilities for the Alpha Engine Dashboard.
 Wraps s3_loader functions to provide structured DataFrames from signals.json.
 """
 
-from datetime import date, datetime
+from datetime import date
 
 import pandas as pd
 import streamlit as st
