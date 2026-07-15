@@ -57,7 +57,6 @@ import streamlit as st
 
 from nousergon_lib.pipeline_status import (
     PIPELINE_LABELS,
-    PipelineExecutionSummary,
     PipelineRun,
     RunStatus,
     TaskStatus,

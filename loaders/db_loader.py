@@ -5,7 +5,6 @@ Downloads research.db from S3 to /tmp and queries it via sqlite3.
 
 import logging
 import sqlite3
-import os
 
 import pandas as pd
 import streamlit as st
