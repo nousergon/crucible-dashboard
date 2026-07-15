@@ -517,8 +517,15 @@ def _build_navigation():
             # PR #92; contract in loaders/morning_signal_schedule.py).
             page("45_Morning_Signal_Schedule.py", "Content Schedule", "🗓"),
         ],
-        "📚 Reference": [
-            page("host_reference.py", "Reference", "📚"),
+        # Renamed from "📚 Reference" (config#2588): now also hosts the
+        # browsable private-docs system-doc corpus (System State /
+        # Architecture Doc / Experiments Log / Generated Status tabs), not
+        # just the original Architecture/Signal Lifecycle/RAG Inventory
+        # trio — "Library" is the term Brian used and better fits the wider
+        # scope. Filename/key stay host_reference.py / host_reference (no
+        # deep-links pin the old "Reference" label).
+        "📚 Library": [
+            page("host_reference.py", "Library", "📚"),
         ],
     })
 
