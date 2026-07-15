@@ -211,7 +211,7 @@ st.caption(
     "explicitly (a met threshold is 'Data ready', not an active loop). The "
     "per-run promoted/blocked record is the backtester's apply-audit "
     "artifact (`config/apply_audit/latest.json`, first emit 2026-07-11) — "
-    "surfaced on the Eval & Backtester Feedback Loop tab."
+    "surfaced on the Analysis page's Self-Tuning tab."
 )
 
 n_score_perf = table_counts.get("score_performance", 0)
