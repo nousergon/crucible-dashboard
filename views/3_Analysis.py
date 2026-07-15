@@ -33,7 +33,7 @@ from charts.accuracy_chart import (
     make_alpha_distribution_chart,
     make_regime_alpha_chart,
 )
-from charts.attribution_chart import make_attribution_chart, make_weight_history_chart
+from charts.attribution_chart import make_attribution_chart
 from components import backtester_significance as bsig
 from components import sweep_distribution as sweepdist
 from loaders.db_loader import get_macro_snapshots, get_score_performance
@@ -48,7 +48,6 @@ from loaders.s3_loader import (
     load_executor_params_history,
     load_research_params,
     load_scoring_weights,
-    load_scoring_weights_history,
 )
 from shared.formatters import format_pct
 
