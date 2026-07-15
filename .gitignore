@@ -1,5 +1,12 @@
 *design*.md
 
+# CLAUDE.md is kept local-only fleet-wide across alpha-engine repos
+# (Brian decision, 2026-03-22 — see sibling repos alpha-engine,
+# alpha-engine-research, alpha-engine-backtester): it tends to carry
+# infrastructure detail (deploy sequences, service topology, instance
+# config) that shouldn't be public. Untracked on purpose; never commit.
+CLAUDE.md
+
 # Config — canonical source is SSM Parameter Store at
 # /alpha-engine/dashboard/{config.yaml,live-config.yaml}. boot-pull.sh
 # hydrates these from SSM on every run. The local files exist only
