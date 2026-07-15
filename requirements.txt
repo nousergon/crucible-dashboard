@@ -98,16 +98,18 @@ krepis>=0.10.0
 # registers 7 Saturday-SF gate/health-degraded states) and #194 (v0.111.0,
 # registers ThinkTankCoverage) -- both needed to clear
 # tests/test_pipeline_status_registry_drift.py::test_every_substantive_state_has_registry_entry[Saturday-json_path0].
-# v0.115.0 (alpha-engine-config#2557, nousergon-lib#207): pipeline_status
+# v0.116.0 (alpha-engine-config#2557, nousergon-lib#207): pipeline_status
 # registry's EvalJudgeSubmitFirstSaturday/EvalJudgeSubmitWeekly/
 # EvalJudgeProcess/EvalRollingMean ArchivePageRefs follow this repo's
 # host_eval_backtester?tab=Eval+Quality -> evaluator collapse (the vestigial
 # single-tab host wrapper was deleted; 8_Eval_Quality.py is now a standalone
 # st.Page at url_path="evaluator") -- keeps
 # tests/test_registry_page_targets.py::test_every_archive_page_ref_resolves
-# green. Lockstep: nousergon-lib#207 must merge + publish before this pin
-# resolves cleanly.
-nousergon-lib[flow-doctor] @ git+https://github.com/nousergon/nousergon-lib@v0.115.0
+# green. #207 landed the registry change AND (per its own
+# pyproject-version-bump-check guard on src/ changes) a version bump to
+# 0.116.0 in the same PR -- v0.115.0 predates that bump and does not carry
+# the fix; pin must be 0.116.0, not 0.115.0.
+nousergon-lib[flow-doctor] @ git+https://github.com/nousergon/nousergon-lib@v0.116.0
 
 # crucible-dash-api (config#1973 phase 9-B): read-only FastAPI over the
 # results view-model, consumed same-box by the /dash Next.js frontend.
