@@ -439,7 +439,17 @@ def _build_navigation():
                 "views/3_Analysis.py", title="Analysis", icon="📊",
                 url_path="analysis",
             ),
-            page("host_eval_backtester.py", "Evaluator", "⚖"),
+            # url_path pinned to "evaluator" — host_eval_backtester.py was a
+            # render_host() wrapper around exactly one sub-view (8_Eval_Quality),
+            # pure UI chrome (single-option segmented_control nesting Calibrate
+            # 2 layers deep) — collapsed to a standalone page (config#2557).
+            # nousergon-lib's pipeline_status registry deep-links 4
+            # ArchivePageRef entries at this slug (lib v0.115.0+); guarded by
+            # tests/test_registry_page_targets.py.
+            st.Page(
+                "views/8_Eval_Quality.py", title="Evaluator", icon="⚖",
+                url_path="evaluator",
+            ),
             page("43_Distillation_Corpus.py", "Distillation Corpus", "🔬"),
         ],
         "⚗️ Experiments": [
