@@ -16,11 +16,10 @@ produced by alpha-engine-config ``scripts/collect_usage.py`` (hourly launchd on
 the laptop; run-scoped ``source='groom'`` from the GHA groom; run-scoped
 ``source='watch'`` from the Fleet-SF/CI Watch agent runs — config#1899).
 
-The "% of weekly ceiling" gauge uses an empirically-calibrated constant, read
-from the SSoT ``config/usage_pacing.json`` (config#2043) — recalibrate via
-alpha-engine-config's ``scripts/set_usage_pacing_config.py``, cross-referencing
-``/usage``. Falls back to a hardcoded constant below if that S3 object is
-unavailable.
+Usage pacing was dismantled 2026-07-14 (config#2555 + data#831): the pacing
+gate no longer enforces a ceiling, but the view retains the historical
+reset-cycle framing for measurement continuity. The ceiling gauge is
+informational only; no gate consumes it.
 """
 from __future__ import annotations
 
@@ -38,11 +37,10 @@ from krepis.usage_pacing import reset_window
 
 from loaders.s3_loader import load_claude_code_usage, load_usage_pacing_config
 
-# SSoT (config#2043): s3://alpha-engine-research/config/usage_pacing.json,
-# written by alpha-engine-config's scripts/set_usage_pacing_config.py and also
-# read by that repo's groom_budget.py + the alpha-engine-data usage-pace-alert
-# Lambda, so all three consumers stay bit-for-bit in sync. The constants below
-# are FALLBACK ONLY (used iff the S3 object is missing/unparseable).
+# Historical pacing config (config#2043): s3://alpha-engine-research/config/usage_pacing.json
+# was dismantled 2026-07-14 (config#2555 + data#831); the object is retained as data only.
+# The constants below are FALLBACK ONLY, used when the S3 object is missing/unparseable.
+# View remains reset-cycle-aligned for measurement continuity, but no gate enforces the ceiling.
 _FALLBACK_WEEKLY_WET_CEILING = 850_000_000
 _PT = ZoneInfo("America/Los_Angeles")
 _FALLBACK_WEEKLY_RESET_ANCHOR = datetime(2026, 7, 12, 21, 0)   # PT, naive — Sunday 9pm PT
@@ -110,8 +108,8 @@ ac1.metric("This week's WET (Anthropic only)", f"{ant_week_wet/1e6:,.0f}M",
                 f"{all_week_wet/1e6:,.0f}M. Rolling-7d: {roll/1e6:,.0f}M.")
 ac2.metric("% of weekly ceiling", f"{pct*100:,.0f}%",
            help=f"This week's Anthropic-only WET / {WEEKLY_WET_CEILING/1e6:,.0f}M "
-                f"({_ceiling_source}; recalibrate via alpha-engine-config's "
-                "set_usage_pacing_config.py, cross-referencing /usage).")
+                f"({_ceiling_source}). Usage pacing dismantled 2026-07-14 — "
+                "ceiling is informational only (no gate enforces it).")
 ac3.metric("Resets in", f"{hrs_to_reset:,.0f}h",
            help=f"Next weekly reset {next_reset:%Y-%m-%d %H:%M} PT (every 7 days).")
 st.progress(min(pct, 1.0),

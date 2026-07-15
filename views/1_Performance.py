@@ -36,10 +36,8 @@ from loaders.s3_loader import (
     load_config,
     load_eod_pnl,
     load_eod_report,
-    load_signals_json,
     load_trades_full,
 )
-from loaders.signal_loader import signals_to_df
 from charts.nav_chart import make_nav_chart
 from charts.alpha_chart import make_alpha_chart
 from charts.portfolio_chart import make_sector_allocation_chart
@@ -51,7 +49,6 @@ from shared.accuracy_metrics import (
 )
 from shared.position_pnl import (
     compute_position_lifecycles,
-    enrich_positions,
     parse_positions_snapshot,
 )
 from shared.attribution import (

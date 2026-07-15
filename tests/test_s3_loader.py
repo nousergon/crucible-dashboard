@@ -9,10 +9,7 @@ fallback logic. No actual S3 calls — all boto3 interactions are mocked.
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-from datetime import datetime
 
-import pandas as pd
-import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
