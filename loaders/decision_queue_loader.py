@@ -33,6 +33,19 @@ Auth: the groom PAT from SSM ``/alpha-engine/groom/github_pat`` (cross-repo
 issues r/w — the same identity the groom board-sync uses), falling back to
 ``FLOW_DOCTOR_GITHUB_TOKEN``/``GH_TOKEN`` env or ``gh auth token`` for local
 dev. GitHub is reached via ``urllib`` (NOT ``gh`` — proxy-TLS constraint).
+
+alpha-engine-config-I2560: ``_list_gated_issues``/``_list_gated_prs`` read
+``it["labels"]`` off the object itself (only to exclude ``SESSION_LABEL``
+items), never trusting ``?labels=``-filtered list membership alone — the
+same fleet-wide invariant the sibling ``gate_*_sweep.py`` scripts document
+(ARCHITECTURE.md #94). The write side never re-derives gate state from list
+membership either: ``post_ruling``/``kill_issue``/``defer_issue`` are
+unconditional, human-triggered actions (not predicates over stale list
+data), and ``_resolve_pr_gate_followup`` already re-fetches the live PR
+immediately before its ready-flip PATCH/GraphQL call — i.e. the issue's
+optional hardening (a fresh direct-object read right before a gate-clearing
+write) is already standard practice here, not merely for GET-then-decide
+disposition logic.
 """
 
 from __future__ import annotations

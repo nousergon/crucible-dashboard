@@ -984,6 +984,52 @@ def known_slots_from_records(decision_keys: list[str]) -> list[str]:
     return sorted(slots)
 
 
+# ---------------------------------------------------------------------------
+# Groom disposition-quality audit (config#2153 weekly sampled audit)
+# ---------------------------------------------------------------------------
+
+_GROOM_AUDIT_PREFIX = "groom/audit/"
+_GROOM_AUDIT_KEY_RE = re.compile(r"^groom/audit/\d{4}-\d{2}-\d{2}\.json$")
+
+
+@st.cache_data(ttl=_ttl("research"))
+def list_groom_audit_keys(limit: int = 8) -> list[str]:
+    """Return ``groom/audit/{date}.json`` keys, newest first.
+
+    Written weekly by ``groom_disposition_audit.py`` (config#2153) on the
+    Haiku low-only box — the CORRECTNESS check on terminal dispositions
+    (were the closes/gates/downgrades right?), complementary to the per-run
+    coverage artifacts above. Empty list on listing error (page renders the
+    missing-audit state, never a stack trace).
+    """
+    bucket = _research_bucket()
+    try:
+        client = get_s3_client()
+        paginator = client.get_paginator("list_objects_v2")
+        keys: list[str] = []
+        for page in paginator.paginate(Bucket=bucket, Prefix=_GROOM_AUDIT_PREFIX):
+            for obj in page.get("Contents", []):
+                k = obj.get("Key", "")
+                if _GROOM_AUDIT_KEY_RE.match(k):
+                    keys.append(k)
+        keys.sort(reverse=True)
+        return keys[:limit]
+    except Exception as e:
+        logger.error("Failed to list groom audit keys: %s", e)
+        _record_s3_error(bucket, _GROOM_AUDIT_PREFIX, type(e).__name__, str(e))
+        return []
+
+
+@st.cache_data(ttl=_ttl("research"))
+def load_groom_audit(key: str) -> dict | None:
+    """Load one disposition-audit artifact (schema_version 1: date,
+    window_days, samples, pass_count, fail_count, error_count, actions).
+    None on missing key / parse error / non-dict payload.
+    """
+    data = _fetch_s3_json(_research_bucket(), key)
+    return data if isinstance(data, dict) else None
+
+
 _GROOM_USAGE_PREFIX = "claude_code_usage/groom/"
 
 

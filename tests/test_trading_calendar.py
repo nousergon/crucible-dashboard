@@ -1,5 +1,4 @@
 """Unit tests for trading_calendar — NYSE holiday and trading day checks."""
-import pytest
 from datetime import date
 
 from trading_calendar import is_trading_day, next_trading_day, NYSE_HOLIDAYS
