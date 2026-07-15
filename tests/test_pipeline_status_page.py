@@ -74,7 +74,6 @@ class TestSlugContract:
 
 from nousergon_lib.pipeline_status import (  # noqa: E402
     PipelineExecutionSummary,
-    PipelineRun,
     RunStatus,
 )
 
