@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import datetime
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -30,7 +29,6 @@ import streamlit as st
 
 from loaders.db_loader import (
     get_investment_thesis,
-    get_predictor_outcomes,
     get_score_history,
     get_score_performance,
 )
@@ -39,7 +37,6 @@ from loaders.s3_loader import (
     load_eod_pnl,
     load_order_book_summary,
     load_predictions_json,
-    load_signals_json,
     load_trades_full,
     predictor_horizon_days,
     predictor_label_domain,

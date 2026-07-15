@@ -7,7 +7,6 @@ Streamlit calls need a live runtime) — page wiring is asserted against
 source text instead.
 """
 
-import json
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
