@@ -246,3 +246,37 @@ class TestTierPalette:
         # every tier has a fixed hex that filtering must not reassign.
         assert set(TIER_ORDER) == set(TIER_COLOR)
         assert len(set(TIER_COLOR.values())) == len(TIER_COLOR)
+
+
+class TestSkipReasonRecords:
+    NOW = datetime(2026, 7, 14, 20, 0, tzinfo=timezone.utc)
+
+    def test_skip_reason_record_renders_distinct_status(self):
+        # config-I2540: dispatcher ran but enumeration failed — must render
+        # distinctly from both "⚪ full skip" (demand-based) and
+        # "⚠️ NO RECORD" (scheduler outage).
+        raw = {
+            "schema_version": 2, "trigger": "demand-all",
+            "schedule": "0 19 * * *", "skip_reason": "demand_all_failed",
+            "decisions": [], "error": "github down",
+            "decided_at": "2026-07-14T19:00:35+00:00",
+        }
+        rows = decision_table_rows(
+            [("groom/decisions/2026-07-14/trigger-1900.json", raw, [])],
+            known_slots=KNOWN, now=self.NOW, days=1,
+        )
+        row = next(r for r in rows if r["Slot"] == "trigger-1900")
+        assert row["Status"] == "🔴 demand_all_failed"
+        assert "github down" in row["Deferred"]
+
+    def test_empty_decisions_without_skip_reason_stays_full_skip(self):
+        raw = {"schema_version": 2, "trigger": "demand-all",
+               "schedule": "0 19 * * *", "decisions": [],
+               "counts": {"low": 1, "mid": 2, "high": 3},
+               "decided_at": "2026-07-14T19:00:35+00:00"}
+        rows = decision_table_rows(
+            [("groom/decisions/2026-07-14/trigger-1900.json", raw, [])],
+            known_slots=KNOWN, now=self.NOW, days=1,
+        )
+        row = next(r for r in rows if r["Slot"] == "trigger-1900")
+        assert row["Status"] == "⚪ full skip"
