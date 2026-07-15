@@ -1,5 +1,4 @@
 """Unit tests for health_checker — data staleness and pipeline health checks."""
-import pytest
 from unittest.mock import patch, MagicMock
 from datetime import date, datetime, timezone, timedelta
 
@@ -8,7 +7,6 @@ from health_checker import (
     format_report,
     _last_modified_age,
     _find_latest_prefix,
-    THRESHOLDS,
 )
 
 
