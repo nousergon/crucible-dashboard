@@ -204,24 +204,3 @@ def compute_efficiency(
         "usage_key": usage["key"] if usage else None,
         "alerts": alerts,
     }
-
-
-def format_efficiency_row(eff: dict[str, Any]) -> dict[str, str]:
-    """Compact strings for the run-history table."""
-    wet_s = f"{eff['wet']/1e6:.1f}M" if eff.get("wet") is not None else "—"
-    wpe = eff.get("wet_per_engaged")
-    wpe_s = f"{wpe/1e3:.0f}K" if wpe is not None else "—"
-    thr = eff.get("throughput")
-    thr_s = f"{thr:.2f}" if thr is not None else "—"
-    cache = eff.get("cache_read_pct")
-    cache_s = f"{cache:.0f}%" if cache is not None else "—"
-    flags = "⚠️ " + ", ".join(eff["alerts"]) if eff.get("alerts") else "✅"
-    if not eff.get("usage_matched"):
-        flags = "—" if not eff.get("alerts") else flags
-    return {
-        "WET": wet_s,
-        "WET/eng": wpe_s,
-        "iss/min": thr_s,
-        "Cache": cache_s,
-        "Efficiency": flags,
-    }
