@@ -181,15 +181,14 @@ def _render_slot_decisions_strip(
     if any(r["Status"] == "⚠️ NO RECORD" for r in rows):
         st.error(
             "⚠️ NO RECORD row(s) above: no decision record for a due "
-            "scheduled slot. Three known causes, all currently record-less: "
-            "(a) scheduler outage — the Lambda never invoked; (b) pre-boot "
-            "PACE-GATE SKIP — fires BEFORE enumeration and pings Telegram "
-            "silently (config-I2461 gotcha class); (c) enumeration failure "
-            "(`demand_all_failed`). Disambiguate in CloudWatch: "
-            "`/aws/lambda/alpha-engine-scheduled-groom-dispatcher`, filter "
-            '"pace gate" / "demand trigger". Making skips (b)/(c) write '
-            "records too is config#2540 — once shipped, this alert means "
-            "OUTAGE unambiguously."
+            "scheduled slot — the dispatcher Lambda never invoked "
+            "(scheduler outage is the primary suspect; check CloudWatch "
+            "for `alpha-engine-scheduled-groom-dispatcher`). Every path "
+            "that RUNS now writes a record: launches and demand deferrals "
+            "always did, enumeration failures write `skip_reason` records "
+            "(config#2540), and the pre-boot pace gate — the old silent "
+            "record-less skip — was dismantled 2026-07-14 with the rest "
+            "of usage pacing."
         )
     if unreadable:
         st.warning(
