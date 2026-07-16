@@ -1,18 +1,18 @@
 # Standard fleet Dependabot config (weekly, grouped minor+patch) — alpha-engine-config-I2525
-# Majors are grouped into their own PR, split from minor/patch — alpha-engine-config-I2734
-#
-# NOTE: Dependabot requires a unique (package-ecosystem, directory, target-branch)
-# combination across `updates` entries, so majors can't live in a second entry on
-# a different (monthly) schedule for the same directory — that collides with the
-# minor/patch entry ("Ecosystem '<x>' has overlapping directories"). Instead, each
-# ecosystem below is a single weekly entry with two groups: minor/patch updates and
-# major updates land in separate PRs, both on the weekly cadence.
+# Majors are surfaced as ONE grouped PR per ecosystem, throttled by a 30-day
+# major-version cooldown — alpha-engine-config-I2734. NOTE: Dependabot requires a
+# unique (package-ecosystem, directory, target-branch) per update config, so the
+# I2734 intent CANNOT be a second per-ecosystem block on its own monthly schedule
+# (that shape is invalid and disables ALL updates for the repo). The `majors`
+# group + `cooldown.semver-major-days: 30` below is the closest legal expression.
 version: 2
 updates:
   - package-ecosystem: pip
     directory: "/"
     schedule:
       interval: weekly
+    cooldown:
+      semver-major-days: 30
     groups:
       minor-and-patch:
         update-types:
@@ -34,6 +34,8 @@ updates:
       - "/marketing-vires"
     schedule:
       interval: weekly
+    cooldown:
+      semver-major-days: 30
     groups:
       minor-and-patch:
         update-types:
@@ -51,6 +53,10 @@ updates:
       - dependency-name: "typescript"
         update-types: ["version-update:semver-major"]
 
+  # NOTE: no cooldown here — Dependabot rejects cooldown.semver-major-days for
+  # the github-actions ecosystem (semver cooldown keys are per-ecosystem; pip
+  # supports them, actions does not — validated live 2026-07-16). The majors
+  # group alone carries the I2734 grouping intent for actions.
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
