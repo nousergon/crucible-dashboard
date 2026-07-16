@@ -1,0 +1,15 @@
+[Unit]
+Description=Daily substrate health check — 22:30 UTC Mon-Fri, after postclose (ne-postclose-trading-pipeline) normally completes
+Requires=substrate-health-daily.service
+
+[Timer]
+Unit=substrate-health-daily.service
+# 22:30 UTC Mon-Fri (~14:30/15:30 PT depending on DST) — reconcile normally
+# finishes well before this (daemon shutdown ~1:00 PM PT triggers postclose),
+# so daily-cadence transparency rows exist by the time this runs.
+OnCalendar=Mon..Fri *-*-* 22:30:00 UTC
+Persistent=true
+RandomizedDelaySec=0
+
+[Install]
+WantedBy=timers.target
