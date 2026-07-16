@@ -29,7 +29,7 @@ yfinance>=1.5.1
 # st.secrets["anthropic"]["ANTHROPIC_API_KEY"] (NOT os.environ — see
 # tests/test_no_secret_environ_reads.py); when the key or SDK is absent the
 # brief card degrades to a friendly notice (fail-soft, no hard render dependency).
-anthropic>=0.40
+anthropic>=0.116.0
 # krepis (config#1722, 2026-07-05): views/36_Claude_Code_Usage.py imports
 # krepis.usage_pacing.reset_window for the reset-aligned weekly window math,
 # replacing the local _current_week_window that used to be duplicated with
