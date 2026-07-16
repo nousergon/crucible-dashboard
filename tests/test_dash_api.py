@@ -43,6 +43,31 @@ _EOD = pd.DataFrame({
 })
 
 
+_OBR_HISTORY = [
+    {
+        "calendar_date": "2026-07-14",
+        "tickers": [
+            {
+                "ticker": "AAPL", "held": True, "terminal_state": "approved_entry",
+                "research": {"signal": "ENTER", "score": 0.82, "conviction": 0.7, "sector_rating": "A"},
+                "optimizer": {"current_weight": 0.0, "target_weight": 0.05},
+                "decision_chain": [{"stage": "research", "result": "pass", "pricing_source": "ibkr"}],
+            },
+            {
+                "ticker": "TSLA", "held": False, "terminal_state": "predictor_vetoed",
+                "research": {"signal": "ENTER", "score": 0.4, "conviction": 0.3, "sector_rating": "C"},
+                "optimizer": {"current_weight": 0.0, "target_weight": 0.0},
+            },
+            {
+                "ticker": "MSFT", "held": True, "terminal_state": "held",
+                "research": {"signal": "HOLD", "score": 0.6, "conviction": 0.5, "sector_rating": "B"},
+                "optimizer": {"current_weight": 0.04, "target_weight": 0.04},
+            },
+        ],
+    },
+]
+
+
 def _patched(**over):
     defaults = {
         "load_report_card": lambda: _CARD,
@@ -50,6 +75,7 @@ def _patched(**over):
         "load_backtest_file": lambda d, f: None,
         "load_eod_pnl": lambda: _EOD,
         "load_ci_verdicts": lambda repos: {r: {"conclusion": "success"} for r in repos},
+        "load_order_book_rationale_history": lambda n_recent=14: _OBR_HISTORY,
     }
     defaults.update(over)
     return patch.multiple(api, **defaults)
@@ -173,6 +199,28 @@ class TestEndpoints:
             resp = client.get("/api/verdicts")
         assert resp.status_code == 200
         assert resp.json() == []
+
+    def test_decisions_curated_to_enter_exit_reduce_with_thesis(self):
+        with _patched():
+            body = client.get("/api/decisions").json()
+        # Only the realized-action ticker survives — the vetoed and the
+        # held-unchanged ticker are ops-detail, structurally excluded.
+        assert [r["ticker"] for r in body] == ["AAPL"]
+        row = body[0]
+        assert row["action"] == "ENTER"
+        assert row["date"] == "2026-07-14"
+        assert set(row["thesis"]) == {"signal", "score", "conviction", "sector_rating"}
+        # No position sizes, no decision chain, no pricing source, no raw
+        # terminal_state — the ops-detail fields never reach this response.
+        assert "decision_chain" not in row and "optimizer" not in row
+        assert "current_weight" not in row["thesis"] and "target_weight" not in row["thesis"]
+
+    def test_decisions_hard_loader_failure_is_503(self):
+        def boom(n_recent=14):
+            raise RuntimeError("s3 unreachable")
+        with _patched(load_order_book_rationale_history=boom):
+            resp = client.get("/api/decisions")
+        assert resp.status_code == 503
 
     def test_trust_carries_legs_and_findings(self):
         with _patched():

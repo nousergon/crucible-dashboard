@@ -478,6 +478,58 @@ def experiment_tile_verdicts(card: dict | None) -> list[dict]:
     return rows
 
 
+# Terminal states that are a realized book ACTION — the only states the
+# prosumer Decisions page shows (Brian's 2026-07-14 Option-A ruling,
+# config#2404). Every other terminal state (held, no_action*,
+# predictor_vetoed, risk_blocked) is ops-detail and structurally excluded
+# below, not left to frontend discipline — mirrors EXPERIMENT_TILES/
+# OPS_TILES above.
+_DECISION_ACTION_LABEL: dict[str, str] = {
+    "approved_entry": "ENTER",
+    "urgent_exit": "EXIT",
+    "reduce": "REDUCE",
+}
+
+
+def decision_rows(history: list[dict] | None) -> list[dict]:
+    """Prosumer-curated book decisions: recent ENTER/EXIT/REDUCE + thesis.
+
+    Source: ``order_book_rationale`` (alpha-engine executor, per-ticker
+    daily decision record) — an ops-detail artifact carrying veto states,
+    decision chains, pricing sources, and position sizes. Brian's
+    2026-07-14 Option-A ruling on config#2404's §9.2 audience-split
+    question curates it to realized position CHANGES + thesis only:
+    held/no-action/vetoed/blocked tickers are dropped entirely, and each
+    surviving row carries only the research thesis (signal, score,
+    conviction, sector rating) — no decision_chain, no pricing_source, no
+    current/target weight.
+    """
+    rows: list[dict] = []
+    for artifact in history or []:
+        if not isinstance(artifact, dict):
+            continue
+        date = artifact.get("calendar_date", ABSENT)
+        for t in artifact.get("tickers") or []:
+            if not isinstance(t, dict):
+                continue
+            action = _DECISION_ACTION_LABEL.get(t.get("terminal_state"))
+            if action is None:
+                continue
+            research = t.get("research") or {}
+            rows.append({
+                "date": date,
+                "ticker": t.get("ticker", ABSENT),
+                "action": action,
+                "thesis": {
+                    "signal": research.get("signal", ABSENT),
+                    "score": _num(research.get("score")),
+                    "conviction": _num(research.get("conviction")),
+                    "sector_rating": research.get("sector_rating", ABSENT),
+                },
+            })
+    return sorted(rows, key=lambda r: r["date"], reverse=True)
+
+
 # ---------------------------------------------------------------------------
 # Trust battery (config#1958 — the /dash trust surface)
 # ---------------------------------------------------------------------------

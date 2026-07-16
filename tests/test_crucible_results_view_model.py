@@ -285,3 +285,50 @@ class TestAudienceSplit:
         ]}}}
         rows = vm.experiment_tile_verdicts(card)
         assert rows[0]["reason"] == "all graded components within bands"
+
+
+class TestDecisionRows:
+    """Prosumer Decisions page curation (config#2404, Brian's Option-A ruling)."""
+
+    _TICKERS = [
+        {"ticker": "AAPL", "terminal_state": "approved_entry",
+         "research": {"signal": "ENTER", "score": 0.82, "conviction": 0.7, "sector_rating": "A"},
+         "optimizer": {"current_weight": 0.0, "target_weight": 0.05},
+         "decision_chain": [{"stage": "research", "result": "pass", "pricing_source": "ibkr"}]},
+        {"ticker": "NVDA", "terminal_state": "urgent_exit",
+         "research": {"signal": "EXIT", "score": -0.5, "conviction": 0.6, "sector_rating": "B"}},
+        {"ticker": "AMD", "terminal_state": "reduce",
+         "research": {"signal": "REDUCE", "score": 0.1, "conviction": 0.2, "sector_rating": "C"}},
+        {"ticker": "TSLA", "terminal_state": "predictor_vetoed",
+         "research": {"signal": "ENTER", "score": 0.4, "conviction": 0.3, "sector_rating": "C"}},
+        {"ticker": "GME", "terminal_state": "risk_blocked",
+         "research": {"signal": "ENTER", "score": 0.9, "conviction": 0.9, "sector_rating": "F"}},
+        {"ticker": "MSFT", "terminal_state": "held",
+         "research": {"signal": "HOLD", "score": 0.6, "conviction": 0.5, "sector_rating": "B"}},
+        {"ticker": "AMZN", "terminal_state": "no_action_optimizer_dropped",
+         "research": {"signal": "ENTER", "score": 0.7, "conviction": 0.6, "sector_rating": "A"}},
+    ]
+
+    def test_only_enter_exit_reduce_survive(self):
+        rows = vm.decision_rows([{"calendar_date": "2026-07-14", "tickers": self._TICKERS}])
+        assert {r["ticker"] for r in rows} == {"AAPL", "NVDA", "AMD"}
+        assert {r["action"] for r in rows} == {"ENTER", "EXIT", "REDUCE"}
+
+    def test_no_ops_detail_leaks_into_a_row(self):
+        rows = vm.decision_rows([{"calendar_date": "2026-07-14", "tickers": self._TICKERS}])
+        row = next(r for r in rows if r["ticker"] == "AAPL")
+        assert set(row) == {"date", "ticker", "action", "thesis"}
+        assert set(row["thesis"]) == {"signal", "score", "conviction", "sector_rating"}
+
+    def test_most_recent_date_first(self):
+        history = [
+            {"calendar_date": "2026-07-10", "tickers": [self._TICKERS[0]]},
+            {"calendar_date": "2026-07-14", "tickers": [self._TICKERS[1]]},
+        ]
+        rows = vm.decision_rows(history)
+        assert [r["date"] for r in rows] == ["2026-07-14", "2026-07-10"]
+
+    def test_empty_and_none_history(self):
+        assert vm.decision_rows(None) == []
+        assert vm.decision_rows([]) == []
+        assert vm.decision_rows([{"calendar_date": "2026-07-14", "tickers": []}]) == []
