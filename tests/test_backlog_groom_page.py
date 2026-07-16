@@ -423,3 +423,42 @@ class TestRedesignSurfaces:
         src = self._src()
         assert "TIER_COLOR" in src
         assert "TIER_ORDER" in src
+
+
+class TestModelColumnAndScorecard:
+    """config-I2746: since the 2026-07-13 high-tier cutover (config#2409)
+    tier no longer implies model — the console must surface model per run
+    (Run history) and per-(model, tier) aggregate performance (Model
+    scorecard), both derived from already-loaded run/eff data (no new S3
+    reads)."""
+
+    def _src(self):
+        return (REPO_ROOT / "views" / "42_Backlog_Groom.py").read_text()
+
+    def test_run_history_has_model_column(self):
+        src = self._src()
+        assert '"Model": short_model_name(run.get("model"))' in src
+
+    def test_model_scorecard_section_present_below_run_history(self):
+        src = self._src()
+        assert "Model scorecard" in src
+        history_pos = src.index("Run history")
+        scorecard_pos = src.index("Model scorecard")
+        assert history_pos < scorecard_pos
+
+    def test_model_scorecard_reuses_loaded_runs_no_new_s3_reads(self):
+        src = self._src()
+        assert "model_scorecard_rows(" in src
+        # Must slice the already-loaded runs (loaded_runs), not re-list/re-load.
+        assert "loaded_runs[:_HISTORY_N]" in src
+
+    def test_model_scorecard_caption_notes_queue_composition_confound(self):
+        src = self._src()
+        caption_section = src[src.index("Model scorecard"):]
+        assert "confound" in caption_section.lower()
+        assert "config-I2730" in caption_section
+
+    def test_page_imports_scorecard_helpers_from_groom_efficiency(self):
+        src = self._src()
+        assert "model_scorecard_rows" in src
+        assert "short_model_name" in src
