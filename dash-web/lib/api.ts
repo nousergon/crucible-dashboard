@@ -144,6 +144,20 @@ export interface AttributionRow {
   fdr_significant: boolean;
 }
 
+export interface DecisionThesis {
+  signal: string;
+  score: number | null;
+  conviction: number | null;
+  sector_rating: string;
+}
+
+export interface DecisionRow {
+  date: string;
+  ticker: string;
+  action: "ENTER" | "EXIT" | "REDUCE";
+  thesis: DecisionThesis;
+}
+
 export const api = {
   experiment: () => get<Experiment>("/api/experiment"),
   intraday: () => get<IntradayPoint[]>("/api/intraday"),
@@ -157,4 +171,5 @@ export const api = {
   trust: () => get<{ legs: TrustLeg[]; findings: Finding[] }>("/api/trust"),
   execution: () => get<Execution>("/api/execution"),
   attribution: () => get<AttributionRow[]>("/api/attribution"),
+  decisions: () => get<DecisionRow[]>("/api/decisions"),
 };

@@ -34,6 +34,7 @@ from loaders.s3_loader import (
     load_eod_pnl,
     load_intraday_nav,
     load_intraday_nav_series,
+    load_order_book_rationale_history,
     load_report_card,
     raise_s3_access_errors,
 )
@@ -178,6 +179,19 @@ def execution() -> dict:
         "exit_rules": vm.exit_type_rows(exit_timing),
         "shadow_classification": vm.shadow_classification_rows(shadow_book),
     }
+
+
+@app.get("/api/decisions")
+def decisions() -> list[dict]:
+    """Prosumer-curated book decisions: recent ENTER/EXIT/REDUCE + thesis.
+
+    Brian's 2026-07-14 Option-A ruling (config#2404) on the §9.2 audience
+    split applied to ``order_book_rationale`` — ops states
+    (predictor_vetoed, risk_blocked, no_action_*), decision chains,
+    pricing sources, and position sizes are structurally excluded here,
+    same as the tile-key split enforced by /api/tiles above.
+    """
+    return vm.decision_rows(_guard(load_order_book_rationale_history, 14))
 
 
 @app.get("/api/trust")
