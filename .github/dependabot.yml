@@ -1,34 +1,26 @@
 # Standard fleet Dependabot config (weekly, grouped minor+patch) — alpha-engine-config-I2525
-# Majors are grouped into a single monthly PR per ecosystem — alpha-engine-config-I2734
+# Majors are surfaced as ONE grouped PR per ecosystem, throttled by a 30-day
+# major-version cooldown — alpha-engine-config-I2734. NOTE: Dependabot requires a
+# unique (package-ecosystem, directory, target-branch) per update config, so the
+# I2734 intent CANNOT be a second per-ecosystem block on its own monthly schedule
+# (that shape is invalid and disables ALL updates for the repo). The `majors`
+# group + `cooldown.semver-major-days: 30` below is the closest legal expression.
 version: 2
 updates:
   - package-ecosystem: pip
     directory: "/"
     schedule:
       interval: weekly
+    cooldown:
+      semver-major-days: 30
     groups:
       minor-and-patch:
         update-types:
           - minor
           - patch
-    ignore:
-      - dependency-name: "*"
-        update-types:
-          - "version-update:semver-major"
-
-  - package-ecosystem: pip
-    directory: "/"
-    schedule:
-      interval: monthly
-    groups:
       majors:
         update-types:
           - major
-    ignore:
-      - dependency-name: "*"
-        update-types:
-          - "version-update:semver-minor"
-          - "version-update:semver-patch"
 
   - package-ecosystem: npm
     directories:
@@ -42,36 +34,13 @@ updates:
       - "/marketing-vires"
     schedule:
       interval: weekly
+    cooldown:
+      semver-major-days: 30
     groups:
       minor-and-patch:
         update-types:
           - minor
           - patch
-    ignore:
-      # @astrojs/check (latest 0.9.9) peers on typescript "^5 || ^6"; a TS
-      # semver-major (7.x) breaks `npm ci` with ERESOLVE across the Astro
-      # marketing sites (marketing-metron/#431 + marketing-telos/#432 both
-      # reddened main-branch marketing-ci, 2026-07-16). Hold TypeScript on
-      # 6.x until @astrojs/check ships TS7 peer support, then lift this.
-      - dependency-name: "typescript"
-        update-types: ["version-update:semver-major"]
-      - dependency-name: "*"
-        update-types:
-          - "version-update:semver-major"
-
-  - package-ecosystem: npm
-    directories:
-      - "/dash-web"
-      - "/marketing"
-      - "/marketing-apex"
-      - "/marketing-dev"
-      - "/marketing-finance"
-      - "/marketing-metron"
-      - "/marketing-telos"
-      - "/marketing-vires"
-    schedule:
-      interval: monthly
-    groups:
       majors:
         update-types:
           - major
@@ -83,36 +52,18 @@ updates:
       # 6.x until @astrojs/check ships TS7 peer support, then lift this.
       - dependency-name: "typescript"
         update-types: ["version-update:semver-major"]
-      - dependency-name: "*"
-        update-types:
-          - "version-update:semver-minor"
-          - "version-update:semver-patch"
 
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: weekly
+    cooldown:
+      semver-major-days: 30
     groups:
       minor-and-patch:
         update-types:
           - minor
           - patch
-    ignore:
-      - dependency-name: "*"
-        update-types:
-          - "version-update:semver-major"
-
-  - package-ecosystem: github-actions
-    directory: "/"
-    schedule:
-      interval: monthly
-    groups:
       majors:
         update-types:
           - major
-    ignore:
-      - dependency-name: "*"
-        update-types:
-          - "version-update:semver-minor"
-          - "version-update:semver-patch"
-
