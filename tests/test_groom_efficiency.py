@@ -7,7 +7,9 @@ import pytest
 from loaders.groom_efficiency import (
     compute_efficiency,
     match_usage_for_run,
+    model_scorecard_rows,
     parse_usage_key_timestamp,
+    short_model_name,
     usage_record_from_doc,
 )
 
@@ -115,3 +117,105 @@ def test_compute_efficiency_falls_back_to_usage_join_pre_schema5():
     eff = compute_efficiency(run, [], usage)
     assert eff["wet"] == 400_000.0
     assert eff["wet_per_engaged"] == 100_000.0
+
+
+# ── config-I2746: Model column + Model scorecard ────────────────────────────
+
+
+class TestShortModelName:
+    def test_strips_claude_prefix_opus(self):
+        assert short_model_name("claude-opus-4-8") == "opus-4-8"
+
+    def test_strips_claude_prefix_sonnet(self):
+        assert short_model_name("claude-sonnet-5") == "sonnet-5"
+
+    def test_passthrough_when_no_claude_prefix(self):
+        assert short_model_name("gpt-4o") == "gpt-4o"
+
+    def test_dash_on_missing(self):
+        assert short_model_name(None) == "—"
+        assert short_model_name("") == "—"
+
+
+class TestModelScorecardRows:
+    def _run(self, *, model="claude-opus-4-8", issue_filter="high-only",
+              issues=None, elapsed_min=30, processed=None, total_issues=None,
+              stop_reason=None):
+        issues = issues if issues is not None else []
+        return {
+            "model": model,
+            "issue_filter": issue_filter,
+            "issues": issues,
+            "elapsed_min": elapsed_min,
+            "processed": processed if processed is not None else len(issues),
+            "total_issues": total_issues if total_issues is not None else len(issues),
+            "stop_reason": stop_reason,
+        }
+
+    def _issues(self, closed=0, prs=0, commented=0, untouched=0):
+        out = []
+        out += [{"disposition": "closed"}] * closed
+        out += [{"disposition": "pr_opened"}] * prs
+        out += [{"disposition": "commented"}] * commented
+        out += [{"disposition": "untouched"}] * untouched
+        return out
+
+    def test_groups_by_model_and_tier_and_aggregates(self):
+        run1 = self._run(issues=self._issues(closed=1, commented=1),
+                          elapsed_min=30)
+        eff1 = {"engaged": 2, "wet": 1_000_000.0}
+        run2 = self._run(issues=self._issues(prs=1, commented=2),
+                          elapsed_min=45)
+        eff2 = {"engaged": 3, "wet": 2_000_000.0}
+        rows = model_scorecard_rows([(run1, eff1), (run2, eff2)])
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["Model"] == "opus-4-8"
+        assert row["Tier"] == "high-only"
+        assert row["Runs"] == 2
+        assert row["Touches"] == 5
+        assert row["Hard-outcome rate"] == "40%"   # 2 hard / 5 touches
+        assert row["Comment-only %"] == "60%"       # 3 commented / 5 touches
+        assert row["Untouched %"] == "0%"
+        assert row["Total WET"] == "3.0M"
+        assert row["WET/hard"] == "1500K"           # 3.0M / 2 hard, in K
+        assert row["Crashes"] == 0
+        assert row["Min/issue"] == "15.0"           # 75 elapsed / 5 processed
+
+    def test_excludes_degenerate_zero_engaged_runs(self):
+        run = self._run(issues=self._issues(commented=1))
+        eff = {"engaged": 0, "wet": 500_000.0}
+        assert model_scorecard_rows([(run, eff)]) == []
+
+    def test_renders_dash_when_wet_unmeasured_not_crash(self):
+        # Gotcha: pre-2026-07-07 artifacts (or an unmatched usage join) carry
+        # no run_wet — must render "—", never crash on the None.
+        run = self._run(model="claude-sonnet-5", issue_filter="mid-only",
+                         issues=self._issues(closed=1))
+        eff = {"engaged": 1, "wet": None}
+        rows = model_scorecard_rows([(run, eff)])
+        assert rows[0]["Total WET"] == "—"
+        assert rows[0]["WET/hard"] == "—"
+
+    def test_counts_crash_abort_stop_reason(self):
+        run = self._run(issues=[], stop_reason="crash: instance reclaimed mid-run")
+        eff = {"engaged": 1, "wet": None}
+        rows = model_scorecard_rows([(run, eff)])
+        assert rows[0]["Crashes"] == 1
+
+    def test_untouched_pct_uses_queued_not_touches(self):
+        run = self._run(issues=self._issues(closed=1, untouched=1),
+                         total_issues=2)
+        eff = {"engaged": 1, "wet": None}
+        rows = model_scorecard_rows([(run, eff)])
+        # 1 untouched / 2 queued, NOT 1 untouched / 1 touch
+        assert rows[0]["Untouched %"] == "50%"
+
+    def test_sorted_by_model_then_tier(self):
+        run_sonnet = self._run(model="claude-sonnet-5", issue_filter="high-only",
+                                issues=self._issues(closed=1))
+        run_opus = self._run(model="claude-opus-4-8", issue_filter="high-only",
+                              issues=self._issues(closed=1))
+        eff = {"engaged": 1, "wet": None}
+        rows = model_scorecard_rows([(run_sonnet, eff), (run_opus, eff)])
+        assert [r["Model"] for r in rows] == ["opus-4-8", "sonnet-5"]
