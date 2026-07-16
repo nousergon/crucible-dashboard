@@ -9,4 +9,4 @@ requests>=2.31
 # loaders/s3_loader.py::load_live_day_return — 15-min delayed quote for the
 # modal's live "Day return". (Deploy installs root requirements.txt; mirrored
 # here for local/dev parity.)
-yfinance>=0.2.40
+yfinance>=1.5.1
