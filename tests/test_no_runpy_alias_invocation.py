@@ -42,9 +42,20 @@ _RUNPY_ALIAS_RE = re.compile(r"-m\s+alpha_engine_lib\.")
 # 0.81.1's __main__ delegate is belt-and-suspenders, not the canonical path).
 # Box scripts must invoke the real module: ``-m krepis.<module>``.
 # Exemption: modules that are REAL in nousergon-lib (not shims) may be listed
-# here — none in this repo's box scripts today.
+# here.
+#
+# ``nousergon_lib.transparency`` (alpha-engine-config-I2722): substrate
+# health checker re-homed from ne-postclose-trading-pipeline's
+# DailySubstrateHealthCheck SF Task onto this repo's
+# infrastructure/substrate_health_check_daily.sh systemd-timer script.
+# Verified NOT a krepis re-export shim — src/nousergon_lib/transparency.py
+# in nousergon-lib (pinned here at v0.96.0) is a full implementation
+# (inventory-driven S3/CloudWatch/SQLite substrate checker), never
+# extracted to krepis. The identical `-m nousergon_lib.transparency
+# --cadence daily --alert` invocation ran unmodified as the SF Task's SSM
+# command for the same reason before this PR.
 _RUNPY_NL_SHIM_RE = re.compile(r"-m\s+nousergon_lib\.")
-_REAL_NL_MODULE_EXEMPTIONS: tuple[str, ...] = ()
+_REAL_NL_MODULE_EXEMPTIONS: tuple[str, ...] = ("nousergon_lib.transparency",)
 
 # Any functional import of the deprecated alias — bare ``import alpha_engine_lib``
 # or ``from alpha_engine_lib import ...`` — NOT a ``-m`` runpy invocation (that

@@ -18,6 +18,8 @@ import { rebaseWindow, type Range } from "@/lib/rebase";
 const AXIS = { fontSize: 11, fill: "rgb(138 147 158)" };
 const RANGES: Range[] = ["1D", "1W", "1M", "3M", "ALL"];
 
+type ChartRow = { x: string; Portfolio: number; SPY: number | null };
+
 /** Cumulative return vs SPY with trailing-window ranges — one axis,
  * benchmark always co-plotted (GIPS-flavored presentation, plan §8.3).
  * 1D renders the daemon's intraday path; other ranges slice + rebase the
@@ -40,8 +42,9 @@ export function EquityChart({
   }
 
   const isIntraday = range === "1D";
-  const series = isIntraday ? intraday : rebaseWindow(data, range);
-  const xKey = isIntraday ? "time" : "date";
+  const series: ChartRow[] = isIntraday
+    ? intraday.map((p) => ({ x: p.time, Portfolio: p.Portfolio, SPY: p.SPY }))
+    : rebaseWindow(data, range).map((p) => ({ x: p.date, Portfolio: p.Portfolio, SPY: p.SPY }));
 
   return (
     <div>
@@ -68,7 +71,7 @@ export function EquityChart({
             <LineChart data={series} margin={{ top: 8, right: 12, bottom: 4, left: 0 }}>
               <CartesianGrid stroke="rgb(44 50 60)" strokeDasharray="0" vertical={false} />
               <XAxis
-                dataKey={xKey}
+                dataKey="x"
                 tick={AXIS}
                 tickLine={false}
                 axisLine={{ stroke: "rgb(44 50 60)" }}
@@ -83,8 +86,8 @@ export function EquityChart({
                   borderRadius: 6,
                   fontSize: 12,
                 }}
-                formatter={(value: number, name: string) => [`${value?.toFixed(2)}%`, name]}
-                labelFormatter={(label: string) => (isIntraday ? `${label.slice(0, 16)} ET` : label)}
+                formatter={(value, name) => [`${typeof value === "number" ? value.toFixed(2) : value}%`, name]}
+                labelFormatter={(label) => (isIntraday ? `${String(label).slice(0, 16)} ET` : label)}
               />
               <Legend wrapperStyle={{ fontSize: 12 }} />
               <Line type="monotone" dataKey="SPY" stroke="rgb(138 147 158)" strokeWidth={2} dot={false} connectNulls />

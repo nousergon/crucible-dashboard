@@ -374,7 +374,12 @@ class TestNavRegistration:
         assert "Morning Signal" in app_src
 
     def test_requirements_pin_streamlit_calendar_and_boto3_floor(self):
-        reqs = (REPO_ROOT / "requirements.txt").read_text()
+        # config#2357 (2026-07-14, operator ruling 2026-07-13): the floor
+        # syntax this test cares about lives in requirements.in now —
+        # requirements.txt is the uv-compiled, fully `==`-pinned lock
+        # generated FROM requirements.in, so the floor string no longer
+        # appears there verbatim.
+        reqs = (REPO_ROOT / "requirements.in").read_text()
         assert "streamlit-calendar>=" in reqs
         assert "boto3>=1.36" in reqs
 

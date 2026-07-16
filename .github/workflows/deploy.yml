@@ -40,7 +40,7 @@ jobs:
 
     steps:
       - name: Configure AWS credentials via OIDC
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: arn:aws:iam::711398986525:role/github-actions-lambda-deploy
           aws-region: us-east-1
@@ -71,9 +71,42 @@ jobs:
 
       - name: Wait for SSM command to finish
         run: |
-          aws ssm wait command-executed \
-            --instance-id ${DASHBOARD_INSTANCE_ID} \
-            --command-id "${{ steps.send.outputs.command_id }}"
+          set -uo pipefail
+          # The AWS-CLI `ssm wait command-executed` waiter is a FIXED budget of
+          # 20 attempts x 5s = 100s, NOT configurable by any flag. The dashboard
+          # build on the box crosses ~100s, so the waiter gave up while the
+          # command was still InProgress and reported a FALSE-RED on a deploy
+          # that actually kept running (and succeeded) on the box
+          # (2026-07-16, run 29505183706 — config#2720). Poll for a genuine
+          # TERMINAL SSM status instead, bounded by the job's own
+          # timeout-minutes, so the workflow's wait is never shorter than the
+          # deploy's real runtime. Fail-loud: a terminal Failed/Cancelled/
+          # TimedOut, or exhausting the budget without ever reaching terminal,
+          # exits non-zero — nothing is made quieter.
+          DEADLINE=$(( $(date +%s) + 540 ))   # 9 min, inside timeout-minutes: 10
+          while :; do
+            # get-command-invocation can briefly 404 (InvocationDoesNotExist)
+            # right after send-command; treat any read hiccup as non-terminal.
+            STATUS=$(aws ssm get-command-invocation \
+              --instance-id ${DASHBOARD_INSTANCE_ID} \
+              --command-id "${{ steps.send.outputs.command_id }}" \
+              --query 'Status' --output text 2>/dev/null || echo "Pending")
+            case "$STATUS" in
+              Success)
+                echo "SSM command reached terminal status: Success"
+                exit 0 ;;
+              Failed|Cancelled|TimedOut)
+                echo "::error::SSM command reached terminal status: $STATUS"
+                exit 1 ;;
+              *)
+                : ;;  # Pending / InProgress / Delayed — keep waiting
+            esac
+            if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+              echo "::error::SSM command did not reach a terminal state within the wait budget (last status: $STATUS)"
+              exit 1
+            fi
+            sleep 5
+          done
 
       - name: Fetch deploy output
         if: always()

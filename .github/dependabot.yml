@@ -1,16 +1,27 @@
 # Standard fleet Dependabot config (weekly, grouped minor+patch) — alpha-engine-config-I2525
-# Majors ride separate individual PRs deliberately (scrutiny before merge).
+# Majors are surfaced as ONE grouped PR per ecosystem, throttled by a 30-day
+# major-version cooldown — alpha-engine-config-I2734. NOTE: Dependabot requires a
+# unique (package-ecosystem, directory, target-branch) per update config, so the
+# I2734 intent CANNOT be a second per-ecosystem block on its own monthly schedule
+# (that shape is invalid and disables ALL updates for the repo). The `majors`
+# group + `cooldown.semver-major-days: 30` below is the closest legal expression.
 version: 2
 updates:
   - package-ecosystem: pip
     directory: "/"
     schedule:
       interval: weekly
+    cooldown:
+      semver-major-days: 30
     groups:
       minor-and-patch:
         update-types:
           - minor
           - patch
+      majors:
+        update-types:
+          - major
+
   - package-ecosystem: npm
     directories:
       - "/dash-web"
@@ -23,11 +34,16 @@ updates:
       - "/marketing-vires"
     schedule:
       interval: weekly
+    cooldown:
+      semver-major-days: 30
     groups:
       minor-and-patch:
         update-types:
           - minor
           - patch
+      majors:
+        update-types:
+          - major
     ignore:
       # @astrojs/check (latest 0.9.9) peers on typescript "^5 || ^6"; a TS
       # semver-major (7.x) breaks `npm ci` with ERESOLVE across the Astro
@@ -36,13 +52,23 @@ updates:
       # 6.x until @astrojs/check ships TS7 peer support, then lift this.
       - dependency-name: "typescript"
         update-types: ["version-update:semver-major"]
-      # next 16 requires Node >=20.9; the dash-web deploy box's Node major
-      # is not yet confirmed >=20.9 (config#2711). A major auto-merged here
-      # builds fine in CI (GitHub-hosted runner) but can still fail the
-      # separate on-box `next build` at deploy time. Hold until the box is
-      # confirmed/upgraded and the Next 16 migration is done deliberately.
+      # next 16 (already merged onto dash-web, #460) required Node >=20.9;
+      # the dash-web deploy box's Node major was not pinned to any single
+      # source of truth, so a Dependabot major that's green in CI (GitHub-
+      # hosted runner) could still silently fail the separate on-box `next
+      # build` at deploy time (config#2711 — exactly what happened with
+      # #460). dash-web/.nvmrc is now that source of truth (parity target:
+      # Node 22) and infrastructure/deploy-on-merge.sh fails loud on
+      # mismatch, but a FUTURE next major can still need a newer Node major
+      # than the box has — hold future next majors for deliberate review
+      # rather than auto-merging.
       - dependency-name: "next"
         update-types: ["version-update:semver-major"]
+
+  # NOTE: no cooldown here — Dependabot rejects cooldown.semver-major-days for
+  # the github-actions ecosystem (semver cooldown keys are per-ecosystem; pip
+  # supports them, actions does not — validated live 2026-07-16). The majors
+  # group alone carries the I2734 grouping intent for actions.
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
@@ -52,3 +78,6 @@ updates:
         update-types:
           - minor
           - patch
+      majors:
+        update-types:
+          - major
