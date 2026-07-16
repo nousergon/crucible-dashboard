@@ -56,9 +56,9 @@ distro==1.9.0
     # via anthropic
 docstring-parser==0.18.0
     # via anthropic
-fastapi==0.139.0
+fastapi==0.139.2
     # via -r requirements.in
-flow-doctor==0.8.5
+flow-doctor[diagnosis,s3]==0.8.5
     # via krepis
 gitdb==4.0.12
     # via gitpython
@@ -97,7 +97,7 @@ jsonschema==4.26.0
     # via altair
 jsonschema-specifications==2025.9.1
     # via jsonschema
-krepis==0.13.0
+krepis[flow-doctor]==0.14.0
     # via
     #   -r requirements.in
     #   nousergon-lib
@@ -113,7 +113,7 @@ narwhals==2.24.0
     # via
     #   altair
     #   plotly
-nousergon-lib @ git+https://github.com/nousergon/nousergon-lib@7333c8ce3cfc27bd0a8bc9dfcc7c06c7f79c6b95
+nousergon-lib[flow-doctor] @ git+https://github.com/nousergon/nousergon-lib@v0.116.0
     # via -r requirements.in
 numpy==2.5.1
     # via
@@ -199,8 +199,6 @@ rpds-py==2026.6.3
     #   referencing
 s3transfer==0.19.1
     # via boto3
-setuptools==83.0.0
-    # via -r requirements.in
 six==1.17.0
     # via python-dateutil
 smmap==5.0.3
@@ -227,14 +225,11 @@ typing-extensions==4.16.0
     # via
     #   altair
     #   anthropic
-    #   anyio
     #   beautifulsoup4
     #   fastapi
     #   flow-doctor
     #   pydantic
     #   pydantic-core
-    #   referencing
-    #   starlette
     #   streamlit
     #   typing-inspection
 typing-inspection==0.4.2
