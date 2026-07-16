@@ -59,6 +59,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from loaders.groom_efficiency import (  # noqa: E402
     compute_efficiency,
     match_usage_for_run,
+    model_scorecard_rows,
+    short_model_name,
 )
 from loaders.groom_trends import (  # noqa: E402
     TIER_COLOR,
@@ -376,6 +378,7 @@ for k, run, eff in loaded_runs[:_HISTORY_N]:
     history_rows.append({
         "Run": _run_label(k),
         "Kind": "🔧 sweep" if run_kind == "sweep" else "🧹 coverage",
+        "Model": short_model_name(run.get("model")),
         "Tier": run.get("issue_filter", "—"),
         "Coverage": ("—" if run_kind == "sweep" else
                      f"{run.get('processed', len(run_issues))}/{run.get('total_issues', len(run_issues))}"),
@@ -411,6 +414,38 @@ if history_rows:
     )
 else:
     st.caption("No readable run artifacts in the recent window.")
+
+# ── Model scorecard — per-(model, issue_filter) rollup over the same
+# trailing runs shown in Run history above (config-I2746). Since the
+# 2026-07-13 high-tier cutover (config#2409) tier no longer implies model,
+# so "how is Sonnet doing on high vs how Opus was?" needs its own surface
+# rather than ad-hoc S3 scripting (done manually 2026-07-16 for
+# config-I2730). Pure aggregation over already-loaded run/eff data — no
+# new S3 reads. ───────────────────────────────────────────────────────────
+st.subheader("Model scorecard")
+_scorecard_rows = model_scorecard_rows(
+    [(run, eff) for _k, run, eff in loaded_runs[:_HISTORY_N]]
+)
+if _scorecard_rows:
+    st.caption(
+        f"Per-(model, tier) rollup across the trailing {_HISTORY_N} runs "
+        "shown in Run history above (rolling window, not a permanent "
+        "ledger) — degenerate wind-downs (`engaged == 0`) excluded. "
+        "**Cross-cutover comparisons are confounded by queue "
+        "composition**: a model's hard-outcome rate partly reflects which "
+        "issues happened to be queued during its window, not model "
+        "quality alone — see config-I2730, the current consumer of this "
+        "view, for the caveat in practice."
+    )
+    st.dataframe(
+        pd.DataFrame(_scorecard_rows),
+        use_container_width=True,
+        hide_index=True,
+    )
+else:
+    st.caption(
+        "No real runs (`engaged > 0`) in the trailing window to score."
+    )
 
 col_sel, col_meta = st.columns([1, 3])
 with col_sel:
