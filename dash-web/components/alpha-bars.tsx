@@ -69,9 +69,12 @@ export function AlphaBars({
                   borderRadius: 6,
                   fontSize: 12,
                 }}
-                formatter={(value: number) => [`${value >= 0 ? "+" : ""}${value.toFixed(2)}%`, "alpha"]}
-                labelFormatter={(label: string, payload) =>
-                  `${label.slice(0, 10)} · ${payload?.[0]?.payload?.n_days ?? "?"} session(s)`
+                formatter={(value) => {
+                  const num = typeof value === "number" ? value : Number(value);
+                  return [`${num >= 0 ? "+" : ""}${num.toFixed(2)}%`, "alpha"];
+                }}
+                labelFormatter={(label, payload) =>
+                  `${String(label).slice(0, 10)} · ${payload?.[0]?.payload?.n_days ?? "?"} session(s)`
                 }
               />
               <Bar dataKey="alpha_pct" radius={[2, 2, 0, 0]}>

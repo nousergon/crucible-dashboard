@@ -1,6 +1,4 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
 
 /* Semantic tokens (metron/web convention: RGB channels so Tailwind opacity
    modifiers work). Single deliberate dark theme — a quant terminal surface;
@@ -15,6 +13,19 @@
   --c-negative: 230 103 103;/* P&L red       #e66767 */
   --c-accent: 87 143 227;   /* steel blue    #578fe3 */
   --c-warn: 250 178 25;     /* watch amber   #fab219 */
+}
+
+@theme inline {
+  --color-paper: rgb(var(--c-paper));
+  --color-surface: rgb(var(--c-surface));
+  --color-ink: rgb(var(--c-ink));
+  --color-muted: rgb(var(--c-muted));
+  --color-line: rgb(var(--c-line));
+  --color-positive: rgb(var(--c-positive));
+  --color-negative: rgb(var(--c-negative));
+  --color-accent: rgb(var(--c-accent));
+  --color-warn: rgb(var(--c-warn));
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 body {
