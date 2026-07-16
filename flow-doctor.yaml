@@ -32,9 +32,15 @@ notify:
   - type: s3
     bucket: alpha-engine-research
     subsystem: dashboard
+# DynamoDB-backed dedup store (alpha-engine-config#2418): the dashboard's
+# health_checker.py and app.py run as separate process/instance invocations
+# over time, so /tmp SQLite never persists between them — dedup_cooldown_minutes
+# below silently no-ops and every recurrence re-alerts. DynamoDB is shared,
+# durable state that actually survives across invocations.
 store:
-  type: sqlite
-  path: /tmp/flow_doctor.db
+  type: dynamodb
+  table_name: flow-doctor-store
+  region: us-east-1
 dedup_cooldown_minutes: 60
 dependencies:
   - boot-pull
