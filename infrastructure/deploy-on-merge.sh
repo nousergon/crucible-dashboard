@@ -270,6 +270,23 @@ log "restarted crucible-dash-api.service"
 # next build are the expensive steps; unit self-provision mirrors 3b/3c.
 WEB_DIR="$REPO_DIR/dash-web"
 if [ -d "$WEB_DIR" ]; then
+    # Node-parity guard (config#2711): CI builds dash-web against the major
+    # pinned in dash-web/.nvmrc, but this box's `npm`/`node` on PATH was
+    # never tied to that same source of truth — a CI-green major (e.g. next
+    # 15->16, which needs Node >=20.9) can still silently fail or misbuild
+    # here if the box runs a different major. Fail loud BEFORE the build so
+    # a mismatch surfaces as a clear deploy error instead of a silent or
+    # confusing on-box build failure.
+    if [ -f "$WEB_DIR/.nvmrc" ]; then
+        REQUIRED_NODE_MAJOR="$(tr -dc '0-9' < "$WEB_DIR/.nvmrc")"
+        BOX_NODE_VERSION="$(sudo -u ec2-user node --version 2>/dev/null || true)"
+        BOX_NODE_MAJOR="$(printf '%s' "$BOX_NODE_VERSION" | sed -n 's/^v\([0-9]\+\)\..*/\1/p')"
+        if [ -z "$BOX_NODE_MAJOR" ]; then
+            fail "dash-web Node-parity guard: could not determine box node --version (got '$BOX_NODE_VERSION') — install Node or fix PATH for ec2-user"
+        elif [ "$BOX_NODE_MAJOR" != "$REQUIRED_NODE_MAJOR" ]; then
+            fail "dash-web Node-parity guard: box runs node $BOX_NODE_VERSION (major $BOX_NODE_MAJOR) but dash-web/.nvmrc requires major $REQUIRED_NODE_MAJOR — upgrade the box's Node to $REQUIRED_NODE_MAJOR.x, or if the box is intentionally staying put, edit dash-web/.nvmrc (and CI's setup-node step, which reads the same file) to match the box's actual major"
+        fi
+    fi
     if paths_changed "${CURRENT_SHA}~1" "$CURRENT_SHA" dash-web/ || [ ! -d "$WEB_DIR/.next" ]; then
         log "dash-web changed (or unbuilt) — npm ci + next build"
         sudo -u ec2-user bash -c "cd '$WEB_DIR' && npm ci --no-audit --no-fund && npm run build" >>"$LOG" 2>&1             || fail "dash-web npm build"

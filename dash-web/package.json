@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "description": "Crucible /dash — the experiment-results surface (config#1973, plan §9.4). Next.js frontend over crucible-dash-api; mirrors metron/web conventions.",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "next dev -p 3002",
     "build": "next build",
