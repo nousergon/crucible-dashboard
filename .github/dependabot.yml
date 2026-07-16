@@ -36,6 +36,13 @@ updates:
       # 6.x until @astrojs/check ships TS7 peer support, then lift this.
       - dependency-name: "typescript"
         update-types: ["version-update:semver-major"]
+      # next 16 requires Node >=20.9; the dash-web deploy box's Node major
+      # is not yet confirmed >=20.9 (config#2711). A major auto-merged here
+      # builds fine in CI (GitHub-hosted runner) but can still fail the
+      # separate on-box `next build` at deploy time. Hold until the box is
+      # confirmed/upgraded and the Next 16 migration is done deliberately.
+      - dependency-name: "next"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
