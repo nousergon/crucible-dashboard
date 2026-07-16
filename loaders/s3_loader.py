@@ -1942,6 +1942,57 @@ def load_predictor_training_state() -> dict:
     }
 
 
+def list_predictor_training_dates() -> list[str]:
+    """Return available predictor training-summary dates, newest first.
+
+    Lists flat ``predictor/metrics/training_summary_{date}.json`` objects in the
+    research bucket (producer: alpha-engine-predictor ``training/train_handler.py``
+    ``_write_training_summary`` — the per-cycle base-retrain summary, which IS the
+    dumped training ``result`` dict; the weekly training email is rendered from
+    the same object). Under config#856 only the training EMAIL was slimmed to a
+    summary + console deep-link; this artifact still carries the full payload.
+    Excludes the ``training_summary_latest.json`` champion-pointer sidecar (its
+    ``latest`` stem never matches ``ISO_DATE_PATTERN``). Returns [] on any failure.
+    """
+    bucket = _research_bucket()
+    prefix = f"{_PREDICTOR_METRICS_PREFIX}/"
+    marker = "training_summary_"
+    try:
+        client = get_s3_client()
+        paginator = client.get_paginator("list_objects_v2")
+        dates: set[str] = set()
+        for page in paginator.paginate(Bucket=bucket, Prefix=f"{prefix}{marker}"):
+            for obj in page.get("Contents", []):
+                k = obj.get("Key", "")
+                stem = k[len(prefix):]
+                if stem.startswith(marker) and stem.endswith(".json"):
+                    seg = stem[len(marker):-len(".json")]
+                    if ISO_DATE_PATTERN.match(seg):
+                        dates.add(seg)
+        return sorted(dates, reverse=True)
+    except Exception as e:
+        logger.error("Failed to list predictor training_summary dates: %s", e)
+        _record_s3_error(bucket, prefix, type(e).__name__, str(e))
+        return []
+
+
+def load_predictor_training_summary(date_str: str) -> dict | None:
+    """Load a dated predictor ``training_summary_{date}.json`` from S3.
+
+    The per-cycle base-retrain summary written by every Saturday training run
+    (``predictor/metrics/training_summary_{date}.json``) — the dumped training
+    ``result`` dict (IC gates, promotion verdict, walk-forward folds, feature
+    importance, calibration). This is the artifact the weekly training email
+    (slimmed to summary + console deep-link under config#856) deep-links to via
+    ``…/predictor-training?date=YYYY-MM-DD``. Returns None on any failure.
+    """
+    data = _fetch_s3_json(
+        _research_bucket(),
+        f"{_PREDICTOR_METRICS_PREFIX}/training_summary_{date_str}.json",
+    )
+    return data if isinstance(data, dict) else None
+
+
 def predictor_horizon_days(default: int = 21) -> int:
     """Convenience: read the predictor's current training horizon from
     the manifest. Default reflects the active production state post
