@@ -565,3 +565,41 @@ class TestPostRulingPrFollowup:
                             lambda *a, **k: calls.append(a))
         post_ruling("r/repo", 9, "Option A")
         assert calls == []
+
+
+class TestGithubTokenAuthPath:
+    """config-I2785: App installation token first, operator PAT fallback.
+
+    The 2026-07-16 GitHub partial outage (config-I2784) 503'd user-token REST
+    while App tokens were unaffected — the ordering under test here is the
+    incident's structural fix, so it must not silently invert."""
+
+    def test_prefers_app_installation_token(self, monkeypatch):
+        from nousergon_lib import github_app
+
+        monkeypatch.setattr(github_app, "installation_token", lambda **kw: "ghs_app")
+        pat_calls = []
+        monkeypatch.setattr(dq_module, "_pat_token",
+                            lambda: pat_calls.append(1) or "pat")
+        assert dq_module.github_token() == "ghs_app"
+        assert pat_calls == []  # PAT never consulted while the App path serves
+
+    def test_falls_back_to_pat_on_mint_failure(self, monkeypatch):
+        from nousergon_lib import github_app
+
+        def boom(**kw):
+            raise github_app.GitHubAppTokenError("mint failed")
+
+        monkeypatch.setattr(github_app, "installation_token", boom)
+        monkeypatch.setattr(dq_module, "_pat_token", lambda: "pat_fallback")
+        assert dq_module.github_token() == "pat_fallback"
+
+    def test_returns_none_when_both_paths_fail(self, monkeypatch):
+        from nousergon_lib import github_app
+
+        def boom(**kw):
+            raise github_app.GitHubAppTokenError("mint failed")
+
+        monkeypatch.setattr(github_app, "installation_token", boom)
+        monkeypatch.setattr(dq_module, "_pat_token", lambda: None)
+        assert dq_module.github_token() is None
