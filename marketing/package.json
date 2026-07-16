@@ -23,8 +23,8 @@
   },
   "devDependencies": {
     "@astrojs/check": "^0.9.9",
-    "@biomejs/biome": "^2.4.15",
-    "hugo-extended": "^0.159.1",
+    "@biomejs/biome": "^2.5.4",
+    "hugo-extended": "^0.164.0",
     "typescript": "^6.0.3"
   },
   "overrides": {
