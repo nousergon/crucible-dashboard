@@ -16,7 +16,7 @@ import json
 import logging
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import boto3
@@ -2660,3 +2660,64 @@ def list_champion_leaderboard_dates() -> list[str]:
 def load_champion_leaderboard(date: str) -> dict | None:
     """One champion-gate leaderboard build."""
     return download_s3_json(_research_bucket(), f"{_CHAMPION_LEADERBOARD_PREFIX}{date}.json")
+
+
+# ---------------------------------------------------------------------------
+# Daily closes — L1 cross-source agreement annotations (config#2458 / L4)
+# ---------------------------------------------------------------------------
+# Producer: nousergon-data collectors/daily_closes.py, additively annotated
+# by collectors/cross_source_observer.py (nousergon-data#728, SHIPPED
+# 2026-07-10) with xsource_status/xsource_flagged/xsource_agreement_bps/
+# xsource_provenance. 7-day S3 lifecycle (intermediate state — the
+# canonical home is the ArcticDB universe library), same as the
+# health_checker.py freshness probe for this same prefix.
+
+_DAILY_CLOSES_PREFIX = "staging/daily_closes/"
+_DAILY_CLOSES_LOOKBACK_DAYS = 10  # covers the 7-day lifecycle + a long weekend
+
+
+@st.cache_data(ttl=_ttl("research"))
+def load_daily_closes(date_str: str) -> pd.DataFrame:
+    """Load one day's daily_closes parquet (``staging/daily_closes/{date}.parquet``).
+
+    Returns an empty DataFrame if the object is absent (past its 7-day
+    lifecycle, weekend/holiday, or pre-deploy) or fails to parse — callers
+    must not treat empty as "all clean", only as "no data to show".
+    """
+    raw = _s3_get_object(_research_bucket(), f"{_DAILY_CLOSES_PREFIX}{date_str}.parquet")
+    if raw is None:
+        return pd.DataFrame()
+    try:
+        return pd.read_parquet(io.BytesIO(raw))
+    except Exception as e:
+        logger.warning("daily_closes parquet parse failed for %s: %s", date_str, e)
+        _record_s3_error(_research_bucket(), f"{_DAILY_CLOSES_PREFIX}{date_str}.parquet", "ParquetParseError", str(e))
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=_ttl("research"))
+def load_latest_daily_closes(lookback_days: int = _DAILY_CLOSES_LOOKBACK_DAYS) -> pd.DataFrame:
+    """Load the most recent available daily_closes parquet, walking back up
+    to *lookback_days* calendar days (mirrors health_checker.py's same
+    walk-back for this prefix — Fri's file is >1 calendar day back on a
+    Sat/Sun read). Empty DataFrame if nothing is found in the window."""
+    for back in range(lookback_days):
+        candidate = (datetime.now(timezone.utc).date() - timedelta(days=back)).isoformat()
+        df = load_daily_closes(candidate)
+        if not df.empty:
+            return df
+    return pd.DataFrame()
+
+
+@st.cache_data(ttl=_ttl("research"))
+def load_daily_closes_row(date_str: str, ticker: str) -> dict | None:
+    """Return the single daily_closes row for *ticker* on *date_str* as a
+    dict (including any ``xsource_*`` columns present), or None if the
+    partition is absent or has no row for that ticker."""
+    df = load_daily_closes(date_str)
+    if df.empty or "ticker" not in df.columns:
+        return None
+    matches = df[df["ticker"] == ticker]
+    if matches.empty:
+        return None
+    return matches.iloc[0].to_dict()
