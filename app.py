@@ -430,6 +430,16 @@ def _build_navigation():
                 "views/35_Model_Zoo.py", title="Model Zoo", icon="🦓",
                 url_path="model-zoo",
             ),
+            # url_path pinned to "predictor-training" — the weekly training
+            # summary email (config#856, slimmed to headline + link) deep-links
+            # to …/predictor-training?date=YYYY-MM-DD (the training cycle's
+            # trading-day key). Guarded by tests/test_predictor_training_page.py.
+            # (Standalone — same rationale as model-zoo/eod-report: folding it
+            # into a host would move the slug onto the host.)
+            st.Page(
+                "views/36_Predictor_Training.py", title="Predictor Training",
+                icon="🏋️", url_path="predictor-training",
+            ),
         ],
         "🧪 Backtester & Eval": [
             # url_path pinned to "analysis" — weekly backtester+eval digest email
