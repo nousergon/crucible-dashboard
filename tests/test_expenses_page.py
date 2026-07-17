@@ -75,6 +75,15 @@ class TestRegistration:
         assert "load_expense_report" in page_src
         assert "provider_table_rows" in page_src
 
+    def test_page_renders_gha_public_private_breakdown(self):
+        # Guardrail against a real 2026-07-17 incident: a repo's public/private
+        # GHA minutes were misclassified from a billing pull instead of a live
+        # visibility check, leading to an unnecessary self-hosted-runner build
+        # for 6 actually-public repos. This section is the console-side fix.
+        page_src = PAGE.read_text()
+        assert "gha_by_repo" in page_src
+        assert "public vs private" in page_src.lower()
+
 
 class TestFormatting:
     def test_usd(self):

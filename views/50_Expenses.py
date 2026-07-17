@@ -108,6 +108,36 @@ if over:
     names = ", ".join(f"**{p.get('label', p.get('key'))}**" for p in over)
     st.error(f"Trending OVER budget/quota this month: {names} — detail in the table below.")
 
+# --- GHA public vs private breakdown -------------------------------------------
+# Guardrail against a real 2026-07-17 incident: a repo's public/private
+# GitHub Actions minutes were misclassified (inferred from appearing in a
+# billing pull rather than checking actual visibility), leading to an
+# unnecessary self-hosted-runner build for 6 actually-public repos. Public
+# repos get GHA free/unlimited — only PRIVATE-repo minutes draw the included
+# quota. This table surfaces every repo's live-verified visibility + minutes
+# so a misclassification is visible at a glance, not inferred.
+gha_rows = [p for p in doc.get("providers", []) if p.get("key", "").startswith("github_")
+            and p.get("detail", {}).get("gha_by_repo")]
+if gha_rows:
+    st.subheader("GitHub Actions — public vs private", divider="gray")
+    st.caption(
+        "Public repos get GHA hosted runners free and unlimited — only "
+        "PRIVATE-repo minutes draw the included-minutes quota. Visibility is "
+        "checked live against the GitHub API each collector run, not inferred."
+    )
+    g1, g2 = st.columns(2)
+    total_private = sum(p["detail"].get("gha_private_minutes", 0) for p in gha_rows)
+    total_public = sum(p["detail"].get("gha_public_minutes", 0) for p in gha_rows)
+    g1.metric("Private-repo minutes (quota-relevant)", f"{total_private:,.0f}")
+    g2.metric("Public-repo minutes (free)", f"{total_public:,.0f}")
+    repo_records = [
+        {"account": p.get("label", p.get("key")), **r}
+        for p in gha_rows
+        for r in p["detail"]["gha_by_repo"]
+    ]
+    repo_table = pd.DataFrame(repo_records).sort_values("minutes", ascending=False)
+    st.dataframe(repo_table, use_container_width=True, hide_index=True)
+
 # --- per-provider table -------------------------------------------------------
 st.subheader("Providers", divider="gray")
 table = pd.DataFrame(provider_table_rows(doc))
