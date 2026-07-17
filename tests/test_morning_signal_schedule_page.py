@@ -10,6 +10,7 @@ Streamlit calls need a live runtime, so it is never imported here).
 """
 
 import json
+import re
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -381,7 +382,12 @@ class TestNavRegistration:
         # appears there verbatim.
         reqs = (REPO_ROOT / "requirements.in").read_text()
         assert "streamlit-calendar>=" in reqs
-        assert "boto3>=1.36" in reqs
+        # Floor must stay >= 1.36 (S3 conditional-write support); parse the
+        # declared floor instead of string-matching it so routine floor bumps
+        # (e.g. Dependabot) don't break the guard.
+        m = re.search(r"^boto3>=(\d+)\.(\d+)", reqs, flags=re.MULTILINE)
+        assert m, "boto3 floor missing from requirements.in"
+        assert (int(m.group(1)), int(m.group(2))) >= (1, 36)
 
     def test_page_uses_calendar_component_and_loaders(self):
         src = (
