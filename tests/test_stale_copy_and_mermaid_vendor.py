@@ -22,7 +22,7 @@ REPO_ROOT = Path(__file__).parent.parent
 
 
 class TestSaturdaySfWatchFullAutonomyCopy:
-    SRC = (REPO_ROOT / "views" / "37_Saturday_SF_Watch.py").read_text()
+    SRC = (REPO_ROOT / "views" / "37_Watch_Status.py").read_text()
 
     def test_observe_mode_m1_docstring_framing_removed(self):
         assert "**OBSERVE mode** (M1)" not in self.SRC

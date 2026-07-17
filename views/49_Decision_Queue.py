@@ -2,14 +2,19 @@
 Decision Queue — Alpha Engine (private console)
 
 The PRIMARY review surface for the human-gated backlog pool (config#1926).
-Every open issue carrying ``gate:operator`` / ``gate:decision`` across the
-four backlog repos renders as one card, oldest first, with the structured
-``**Ask:**`` block (config#1923) and one-tap ruling buttons. A ruling posts
-the operator-decision comment and strips the gate label — the next tier
-groom (3x/day) executes it. The operator's tap is the authorization; the
-groom fleet is the hands.
+Every open issue OR PR carrying ``gate:operator`` / ``gate:decision`` /
+``gate:device`` (config#2431: widened to PRs + gate:device — all three are
+equally human-only, no S3/API check substitutes for an operator action, a
+product decision, or physically validating hardware) across the four
+backlog repos (issues) plus every code repo (PRs) renders as one card,
+oldest first, with the structured ``**Ask:**`` block (config#1923) and
+one-tap ruling buttons. A ruling posts the operator-decision comment and
+strips the gate label; for a PR, it ALSO flips a fully-unblocked draft ready
+for review immediately (config#2431) rather than waiting on a groom pass to
+notice. The next tier groom (3x/day) executes any remaining work. The
+operator's tap is the authorization; the groom fleet is the hands.
 
-Write scope: the GitHub issue tracker ONLY (ARCHITECTURE.md carve-out).
+Write scope: the GitHub issue/PR tracker ONLY (ARCHITECTURE.md carve-out).
 This page never writes S3 config, SSM params, or any trading state.
 """
 
@@ -36,21 +41,25 @@ from loaders.decision_queue_loader import (  # noqa: E402
 _GATE_BADGE = {
     "gate:operator": "🔧 operator action",
     "gate:decision": "⚖️ decision",
+    "gate:device": "🔬 device check",
 }
 
 st.title("🗳 Decision Queue")
 st.caption(
-    "Human-gated backlog items, oldest first — one tap posts your ruling to "
-    "the issue and de-gates it; the next tier groom executes. "
-    "(config#1923/#1926; write scope = issue tracker only)"
+    "Human-gated issues AND PRs, oldest first — one tap posts your ruling "
+    "and de-gates it; a fully-unblocked draft PR flips ready immediately, "
+    "the next tier groom executes any remaining work. "
+    "(config#1923/#1926/#2421; write scope = issue/PR tracker only)"
 )
 
 if github_token() is None:
     st.error(
-        "No GitHub token available — SSM `/alpha-engine/groom/github_pat` is "
-        "unreadable from this box (dashboard-role needs `ssm:GetParameter` on "
-        "it — `iam/alpha-engine-dashboard-role/alpha-engine-dashboard-groom-pat-read.json`) "
-        "and no env fallback is set. The queue cannot load."
+        "No GitHub token available — App-token mint failed (SSM "
+        "`/alpha-engine/groom/github_app_*`, config-I2785), the groom-PAT "
+        "fallback at `/alpha-engine/groom/github_pat` is unreadable "
+        "(`alpha-engine-dashboard-role` needs `ssm:GetParameter` on both — "
+        "the live `alpha-engine-ssm-read` inline policy's `/alpha-engine/*` "
+        "grant covers them), and no env fallback is set. The queue cannot load."
     )
     st.stop()
 
@@ -59,12 +68,12 @@ if "dq_done" not in st.session_state:
     st.session_state.dq_done = {}  # key -> outcome string
 
 
-def _act(item_key: str, outcome: str, fn, *args) -> None:
+def _act(item_key: str, outcome: str, fn, *args, **kwargs) -> None:
     """Run a write action exactly once per item per session; fail LOUD."""
     if item_key in st.session_state.dq_done:
         return
     try:
-        fn(*args)
+        fn(*args, **kwargs)
     except Exception as exc:  # surface the API error on the page, never silent
         st.error(f"{item_key}: write failed — {exc}")
         return
@@ -104,9 +113,11 @@ for item in pending:
     key = item["key"]
     with st.container(border=True):
         left, right = st.columns([5, 1])
+        kind_badge = "🔀 PR" if item["is_pr"] else "📋 issue"
         left.markdown(
             f"**[{key}]({item['url']})** — {item['title']}  \n"
-            f"{_GATE_BADGE.get(item['gate'], item['gate'])} · open **{item['age_days']}d**"
+            f"{kind_badge} · {_GATE_BADGE.get(item['gate'], item['gate'])} · "
+            f"open **{item['age_days']}d**"
         )
         if item["summary"]:
             st.markdown(f"📋 {item['summary']}")
@@ -144,7 +155,8 @@ for item in pending:
                 label = f"{prefix}{letter}) {text[:50]}{suffix}"
                 if opt_cols[i].button(label, key=f"opt-{key}-{letter}"):
                     _act(key, f"ruled {letter}", post_ruling,
-                         item["repo"], item["number"], f"Option {letter}")
+                         item["repo"], item["number"], f"Option {letter}",
+                         is_pr=item["is_pr"])
                     st.rerun()
 
         action_cols = st.columns(3)
@@ -168,5 +180,6 @@ for item in pending:
                 detail = st.text_input("Ruling / rationale (one line)", key=f"txt-{key}")
                 if st.form_submit_button("Post ruling → de-gate"):
                     _act(key, "ruled free-form", post_ruling,
-                         item["repo"], item["number"], "Ruling", detail)
+                         item["repo"], item["number"], "Ruling", detail,
+                         is_pr=item["is_pr"])
                     st.rerun()

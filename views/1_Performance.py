@@ -34,12 +34,12 @@ import streamlit as st
 from loaders.s3_loader import (
     list_eod_report_dates,
     load_config,
+    load_daily_closes_row,
     load_eod_pnl,
     load_eod_report,
-    load_signals_json,
     load_trades_full,
 )
-from loaders.signal_loader import signals_to_df
+from data_integrity_status import format_provenance_annotation
 from charts.nav_chart import make_nav_chart
 from charts.alpha_chart import make_alpha_chart
 from charts.portfolio_chart import make_sector_allocation_chart
@@ -51,7 +51,6 @@ from shared.accuracy_metrics import (
 )
 from shared.position_pnl import (
     compute_position_lifecycles,
-    enrich_positions,
     parse_positions_snapshot,
 )
 from shared.attribution import (
@@ -547,6 +546,19 @@ if _prov:
         "Alpha) is not yet settled; it re-finalizes automatically on the next "
         "EOD run."
     )
+
+# L1 cross-source provenance annotation for the SPY close this report's
+# SPY Return is derived from (config#2458 / market-value-integrity L4).
+# SPY is nousergon-data's bounded high-value cross-check ticker
+# (collectors/cross_source_observer.py DEFAULT_CROSS_CHECK_TICKERS) — the
+# only name that reliably gets a real 2nd-source AGREED/QUARANTINED
+# verdict rather than SINGLE_SOURCE_PROVISIONAL. Absent row/annotation
+# (pre-L1 date, or the observer missed this cell) degrades to no caption —
+# never a fabricated "clean" claim.
+_spy_row = load_daily_closes_row(as_of, "SPY")
+_spy_prov = format_provenance_annotation(_spy_row, ticker="SPY")
+if _spy_prov:
+    st.caption(f"L1 provenance — {_spy_prov}")
 
 st.divider()
 

@@ -44,10 +44,16 @@ class TestFeedbackLoopAbsorbed:
     def test_page_deleted(self):
         assert not (VIEWS / "12_Feedback_Loop.py").exists()
 
-    def test_eval_host_keeps_registry_deep_link_target(self):
-        # nousergon-lib v0.96.0 deep-links host_eval_backtester?tab=Eval+Quality.
-        src = (VIEWS / "host_eval_backtester.py").read_text()
-        assert '("Eval Quality", "8_Eval_Quality.py")' in src
+    def test_eval_quality_keeps_registry_deep_link_target(self):
+        # nousergon-lib v0.115.0+ deep-links the plain "evaluator" slug
+        # (host_eval_backtester?tab=Eval+Quality collapsed away — config#2557,
+        # 8_Eval_Quality.py registered directly at url_path="evaluator";
+        # see tests/test_registry_page_targets.py for the live-resolution
+        # guard against the installed lib registry).
+        assert not (VIEWS / "host_eval_backtester.py").exists()
+        app_src = (REPO_ROOT / "app.py").read_text()
+        assert 'url_path="evaluator"' in app_src
+        src = (VIEWS / "8_Eval_Quality.py").read_text()
         assert "12_Feedback_Loop.py" not in src
 
     def test_analysis_has_self_tuning_tab(self):

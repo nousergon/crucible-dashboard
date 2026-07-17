@@ -9,13 +9,14 @@ Naming conventions:
   - _fetch_*  — internal helpers that combine S3 I/O + parsing
 """
 
+import contextvars
 import functools
 import io
 import json
 import logging
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import boto3
@@ -26,6 +27,66 @@ import yaml
 from shared.constants import DEFAULT_CACHE_TTL_SECONDS, ISO_DATE_PATTERN
 
 logger = logging.getLogger(__name__)
+
+
+class S3AccessError(Exception):
+    """Raised for a non-NoSuchKey S3 ClientError (config#2339) when the
+    caller has opted into strict mode (see raise_s3_access_errors below).
+
+    Distinguishes "the object legitimately doesn't exist" (NoSuchKey — stays
+    honest-ABSENT, returns None) from "S3 refused/failed the request for a
+    reason unrelated to the object's existence" (AccessDenied, malformed
+    request, retries-exhausted throttling, etc.) — the latter is an
+    operational failure that must not be silently rendered as empty data.
+    """
+
+    def __init__(self, message: str, *, error_type: str, bucket: str, key: str):
+        super().__init__(message)
+        self.error_type = error_type
+        self.bucket = bucket
+        self.key = key
+
+
+# _STRICT_S3_ERRORS (config#2339): the ~40 Streamlit console call sites into
+# this module were all written against the historical "None on ANY S3
+# failure, including AccessDenied" contract — several (e.g. views 2/6) have
+# their own get_recent_s3_errors()-based degrade UI for exactly that
+# contract, and none of them expect this module to ever raise. dash_api's
+# `_guard`, on the other hand, needs a hard AccessDenied to become an actual
+# exception it can map to a 503 — the whole point of config#2339 (the
+# console's swallow-to-None + telemetry mitigation already exists and is
+# staying; only the API surface was lying about health).
+#
+# Both dash_api and the Streamlit console call the SAME shared loader
+# functions (e.g. load_report_card, load_eod_pnl) — there is no separate
+# code path to hang a "strict" kwarg off without threading it through every
+# loader in the chain (several of which are @st.cache_data-memoized, where
+# an extra kwarg would also perturb the cache key). A ContextVar opt-in
+# scoped to the call is the minimal-blast-radius way to give dash_api's
+# `_guard` strict behavior while leaving every existing Streamlit call site
+# byte-for-byte unchanged (default: swallow to None + record, same as
+# before this fix).
+_STRICT_S3_ERRORS: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "_STRICT_S3_ERRORS", default=False
+)
+
+
+class raise_s3_access_errors:
+    """Context manager: within this block, non-NoSuchKey S3 ClientErrors
+    propagate as S3AccessError instead of being swallowed to None. Used by
+    dash_api._guard so a real IAM/AccessDenied failure becomes a 503 instead
+    of an honest-looking empty response. Reentrant-safe (restores the prior
+    value on exit, so nested use — e.g. one guarded loader calling another
+    internally — behaves correctly)."""
+
+    def __enter__(self):
+        self._token = _STRICT_S3_ERRORS.set(True)
+        return self
+
+    def __exit__(self, *exc_info):
+        _STRICT_S3_ERRORS.reset(self._token)
+        return False
+
 
 # ---------------------------------------------------------------------------
 # S3 error tracking
@@ -137,7 +198,19 @@ _S3_RETRY_BACKOFF_BASE = 1.0  # seconds
 def _s3_get_object(bucket: str, key: str) -> bytes | None:
     """Raw GetObject call with retry for transient errors.
 
-    Returns the response body bytes or None on error.
+    Returns the response body bytes on success, or None when the object is
+    legitimately absent (NoSuchKey — honest-ABSENT, not an error) OR (the
+    default, back-compat mode) any other failure.
+
+    Under raise_s3_access_errors() (config#2339 — dash_api._guard opts in),
+    raises S3AccessError instead of returning None for any OTHER
+    non-retryable ClientError — most notably AccessDenied: an IAM-gap
+    failure is an operational fault, not "no data", and must not be
+    indistinguishable from a 404 to a caller that needs to tell the
+    difference. Outside strict mode, every existing Streamlit console call
+    site keeps its original contract unchanged: None + a recorded entry in
+    get_recent_s3_errors(), no exception.
+
     Retries on ConnectionError, TimeoutError, and throttling (503/SlowDown).
     Does NOT retry on NoSuchKey or AccessDenied (non-transient).
     """
@@ -169,6 +242,11 @@ def _s3_get_object(bucket: str, key: str) -> bytes | None:
                 "S3 ClientError for %s/%s: %s (non-retryable)", bucket, key, error_code,
             )
             _record_s3_error(bucket, key, f"ClientError:{error_code}", str(e))
+            if _STRICT_S3_ERRORS.get():
+                raise S3AccessError(
+                    f"S3 {error_code} for {bucket}/{key}: {e}",
+                    error_type=f"ClientError:{error_code}", bucket=bucket, key=key,
+                ) from e
             return None
         except (ConnectionError, TimeoutError) as e:
             last_error = e
@@ -200,8 +278,14 @@ def _s3_get_object(bucket: str, key: str) -> bytes | None:
 def _fetch_s3_json(bucket: str, key: str) -> dict | list | None:
     """Fetch an S3 object and parse as JSON with unified error tracking.
 
-    Returns None on missing key or any failure (errors are logged and recorded).
-    Delegates S3 I/O to _s3_get_object so error handling is not duplicated.
+    Returns None on missing key (honest-ABSENT), a JSON-parse failure, or
+    (default mode) any other S3 failure — errors are logged and recorded
+    either way. Delegates S3 I/O to _s3_get_object so error handling is not
+    duplicated — in particular, under raise_s3_access_errors() (config#2339,
+    dash_api._guard) _s3_get_object raises S3AccessError for a non-NoSuchKey
+    ClientError (e.g. AccessDenied) instead of returning None, and that
+    propagates through here unswallowed so the caller can distinguish
+    "absent" from "errored".
     """
     raw = _s3_get_object(bucket, key)
     if raw is None:
@@ -217,14 +301,22 @@ def _fetch_s3_json(bucket: str, key: str) -> dict | list | None:
 def with_s3_error_tracking(fallback: Any = None):
     """Decorator that wraps a function with S3 error logging and tracking.
 
-    On any exception, logs the error, records it via _record_s3_error
-    (using the function name as context), and returns *fallback*.
+    On S3AccessError (config#2339 — a real operational failure, e.g. an IAM
+    AccessDenied), logs, records via _record_s3_error, and RE-RAISES rather
+    than swallowing — this is the taxonomy dash_api's `_guard` needs to turn
+    an IAM gap into a 503 instead of a silent empty/default 200. On any
+    other exception, behavior is unchanged: log, record, and return
+    *fallback* (used for genuinely best-effort call sites).
     """
     def decorator(fn):
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
             try:
                 return fn(*args, **kwargs)
+            except S3AccessError as e:
+                logger.error("%s failed: %s", fn.__name__, e, exc_info=True)
+                _record_s3_error(e.bucket, e.key, e.error_type, str(e))
+                raise
             except Exception as e:
                 context = fn.__name__
                 logger.error("%s failed: %s", context, e, exc_info=True)
@@ -890,6 +982,52 @@ def known_slots_from_records(decision_keys: list[str]) -> list[str]:
         if m:
             slots.add(m.group("slot"))
     return sorted(slots)
+
+
+# ---------------------------------------------------------------------------
+# Groom disposition-quality audit (config#2153 weekly sampled audit)
+# ---------------------------------------------------------------------------
+
+_GROOM_AUDIT_PREFIX = "groom/audit/"
+_GROOM_AUDIT_KEY_RE = re.compile(r"^groom/audit/\d{4}-\d{2}-\d{2}\.json$")
+
+
+@st.cache_data(ttl=_ttl("research"))
+def list_groom_audit_keys(limit: int = 8) -> list[str]:
+    """Return ``groom/audit/{date}.json`` keys, newest first.
+
+    Written weekly by ``groom_disposition_audit.py`` (config#2153) on the
+    Haiku low-only box — the CORRECTNESS check on terminal dispositions
+    (were the closes/gates/downgrades right?), complementary to the per-run
+    coverage artifacts above. Empty list on listing error (page renders the
+    missing-audit state, never a stack trace).
+    """
+    bucket = _research_bucket()
+    try:
+        client = get_s3_client()
+        paginator = client.get_paginator("list_objects_v2")
+        keys: list[str] = []
+        for page in paginator.paginate(Bucket=bucket, Prefix=_GROOM_AUDIT_PREFIX):
+            for obj in page.get("Contents", []):
+                k = obj.get("Key", "")
+                if _GROOM_AUDIT_KEY_RE.match(k):
+                    keys.append(k)
+        keys.sort(reverse=True)
+        return keys[:limit]
+    except Exception as e:
+        logger.error("Failed to list groom audit keys: %s", e)
+        _record_s3_error(bucket, _GROOM_AUDIT_PREFIX, type(e).__name__, str(e))
+        return []
+
+
+@st.cache_data(ttl=_ttl("research"))
+def load_groom_audit(key: str) -> dict | None:
+    """Load one disposition-audit artifact (schema_version 1: date,
+    window_days, samples, pass_count, fail_count, error_count, actions).
+    None on missing key / parse error / non-dict payload.
+    """
+    data = _fetch_s3_json(_research_bucket(), key)
+    return data if isinstance(data, dict) else None
 
 
 _GROOM_USAGE_PREFIX = "claude_code_usage/groom/"
@@ -1804,6 +1942,57 @@ def load_predictor_training_state() -> dict:
     }
 
 
+def list_predictor_training_dates() -> list[str]:
+    """Return available predictor training-summary dates, newest first.
+
+    Lists flat ``predictor/metrics/training_summary_{date}.json`` objects in the
+    research bucket (producer: alpha-engine-predictor ``training/train_handler.py``
+    ``_write_training_summary`` — the per-cycle base-retrain summary, which IS the
+    dumped training ``result`` dict; the weekly training email is rendered from
+    the same object). Under config#856 only the training EMAIL was slimmed to a
+    summary + console deep-link; this artifact still carries the full payload.
+    Excludes the ``training_summary_latest.json`` champion-pointer sidecar (its
+    ``latest`` stem never matches ``ISO_DATE_PATTERN``). Returns [] on any failure.
+    """
+    bucket = _research_bucket()
+    prefix = f"{_PREDICTOR_METRICS_PREFIX}/"
+    marker = "training_summary_"
+    try:
+        client = get_s3_client()
+        paginator = client.get_paginator("list_objects_v2")
+        dates: set[str] = set()
+        for page in paginator.paginate(Bucket=bucket, Prefix=f"{prefix}{marker}"):
+            for obj in page.get("Contents", []):
+                k = obj.get("Key", "")
+                stem = k[len(prefix):]
+                if stem.startswith(marker) and stem.endswith(".json"):
+                    seg = stem[len(marker):-len(".json")]
+                    if ISO_DATE_PATTERN.match(seg):
+                        dates.add(seg)
+        return sorted(dates, reverse=True)
+    except Exception as e:
+        logger.error("Failed to list predictor training_summary dates: %s", e)
+        _record_s3_error(bucket, prefix, type(e).__name__, str(e))
+        return []
+
+
+def load_predictor_training_summary(date_str: str) -> dict | None:
+    """Load a dated predictor ``training_summary_{date}.json`` from S3.
+
+    The per-cycle base-retrain summary written by every Saturday training run
+    (``predictor/metrics/training_summary_{date}.json``) — the dumped training
+    ``result`` dict (IC gates, promotion verdict, walk-forward folds, feature
+    importance, calibration). This is the artifact the weekly training email
+    (slimmed to summary + console deep-link under config#856) deep-links to via
+    ``…/predictor-training?date=YYYY-MM-DD``. Returns None on any failure.
+    """
+    data = _fetch_s3_json(
+        _research_bucket(),
+        f"{_PREDICTOR_METRICS_PREFIX}/training_summary_{date_str}.json",
+    )
+    return data if isinstance(data, dict) else None
+
+
 def predictor_horizon_days(default: int = 21) -> int:
     """Convenience: read the predictor's current training horizon from
     the manifest. Default reflects the active production state post
@@ -2036,7 +2225,7 @@ def _drop_implausible_cost_rows(df: pd.DataFrame) -> pd.DataFrame:
     Mirrors the producer-side guard in alpha-engine-research's
     ``scripts/aggregate_costs._is_plausible_cost_row``. Belt-and-suspenders
     so historical pollution (the 2026-05-13 ~$1014 spike from a unit-test
-    run with real AWS creds) doesn't render on the LLM Cost page until
+    run with real AWS creds) doesn't render on the API page until
     the producer-side rewrite of that day's parquet lands.
 
     Drops rows where ``run_id`` doesn't start with an ISO date, or any
@@ -2404,3 +2593,131 @@ def load_autoapply_config_meta() -> dict:
         except Exception:
             out[name] = {"present": False}
     return out
+
+
+# --- Champion/challenger promotion loop (config#2364/#2367/#2369) ---------
+#
+# The gated weekly promotion/demotion engine (crucible-backtester
+# optimizer/champion_promotion.py) writes:
+#   config/producer_champion.json                        (live pointer)
+#   config/apply_audit/producer_champion/{date}.json      (weekly audit, +latest.json)
+#   research/producer_leaderboard_champion_gate/{date}.json (gate-input history)
+# The leaderboard key was renamed off a colliding path 2026-07-13 (config#2452)
+# -- DISTINCT from research/producer_leaderboard/ above, which is crucible-
+# research's own (differently-scored) producer ablation.
+
+_CHAMPION_POINTER_KEY = "config/producer_champion.json"
+_CHAMPION_AUDIT_PREFIX = "config/apply_audit/producer_champion/"
+_CHAMPION_LEADERBOARD_PREFIX = "research/producer_leaderboard_champion_gate/"
+
+
+@st.cache_data(ttl=_ttl("signals"))
+def load_champion_pointer() -> dict | None:
+    """Load the live champion pointer -- schema v1: ``{schema_version,
+    champion, promoted_at, promotion_source}``. None until the first
+    promotion/demotion or operator-bootstrap write (pre-bootstrap default is
+    'agentic', mirroring executor/champion.py's own default) -- an honest
+    absence, never guessed at here."""
+    return download_s3_json(_research_bucket(), _CHAMPION_POINTER_KEY)
+
+
+@st.cache_data(ttl=_ttl("signals"))
+def list_champion_audit_dates() -> list[str]:
+    """Sorted dates for the weekly champion-promotion audit history. Written
+    UNCONDITIONALLY every Saturday evaluate.py run regardless of outcome
+    (config#2054 liveness-proxy posture) -- this listing IS the promotion
+    loop's own freshness signal."""
+    return _list_dated_json_keys(_CHAMPION_AUDIT_PREFIX)
+
+
+@st.cache_data(ttl=_ttl("signals"))
+def load_champion_audit(date: str) -> dict | None:
+    """One weekly champion-promotion audit record (contracts/
+    producer_champion_audit.schema.json v1): outcome/champion_before/
+    champion_after/challenger_matured_cohorts/sn_lift_vs_champion/
+    consecutive_wins/cooldown_until/blocked_by."""
+    return download_s3_json(_research_bucket(), f"{_CHAMPION_AUDIT_PREFIX}{date}.json")
+
+
+@st.cache_data(ttl=_ttl("signals"))
+def load_champion_audit_latest() -> dict | None:
+    """Latest champion-promotion audit record -- same shape as
+    ``load_champion_audit``, fetched directly at the ``latest.json`` mirror
+    key rather than via ``list_champion_audit_dates()``."""
+    return download_s3_json(_research_bucket(), f"{_CHAMPION_AUDIT_PREFIX}latest.json")
+
+
+@st.cache_data(ttl=_ttl("research"))
+def list_champion_leaderboard_dates() -> list[str]:
+    """Sorted build dates for the champion-gate leaderboard -- the promotion
+    engine's own weekly sector-neutral 21d lift history for the challenger
+    arm (schema: ``{"weekly_points": [...]}``, distinct from the producer/
+    scanner ablation leaderboards above)."""
+    return _list_dated_json_keys(_CHAMPION_LEADERBOARD_PREFIX)
+
+
+@st.cache_data(ttl=_ttl("research"))
+def load_champion_leaderboard(date: str) -> dict | None:
+    """One champion-gate leaderboard build."""
+    return download_s3_json(_research_bucket(), f"{_CHAMPION_LEADERBOARD_PREFIX}{date}.json")
+
+
+# ---------------------------------------------------------------------------
+# Daily closes — L1 cross-source agreement annotations (config#2458 / L4)
+# ---------------------------------------------------------------------------
+# Producer: nousergon-data collectors/daily_closes.py, additively annotated
+# by collectors/cross_source_observer.py (nousergon-data#728, SHIPPED
+# 2026-07-10) with xsource_status/xsource_flagged/xsource_agreement_bps/
+# xsource_provenance. 7-day S3 lifecycle (intermediate state — the
+# canonical home is the ArcticDB universe library), same as the
+# health_checker.py freshness probe for this same prefix.
+
+_DAILY_CLOSES_PREFIX = "staging/daily_closes/"
+_DAILY_CLOSES_LOOKBACK_DAYS = 10  # covers the 7-day lifecycle + a long weekend
+
+
+@st.cache_data(ttl=_ttl("research"))
+def load_daily_closes(date_str: str) -> pd.DataFrame:
+    """Load one day's daily_closes parquet (``staging/daily_closes/{date}.parquet``).
+
+    Returns an empty DataFrame if the object is absent (past its 7-day
+    lifecycle, weekend/holiday, or pre-deploy) or fails to parse — callers
+    must not treat empty as "all clean", only as "no data to show".
+    """
+    raw = _s3_get_object(_research_bucket(), f"{_DAILY_CLOSES_PREFIX}{date_str}.parquet")
+    if raw is None:
+        return pd.DataFrame()
+    try:
+        return pd.read_parquet(io.BytesIO(raw))
+    except Exception as e:
+        logger.warning("daily_closes parquet parse failed for %s: %s", date_str, e)
+        _record_s3_error(_research_bucket(), f"{_DAILY_CLOSES_PREFIX}{date_str}.parquet", "ParquetParseError", str(e))
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=_ttl("research"))
+def load_latest_daily_closes(lookback_days: int = _DAILY_CLOSES_LOOKBACK_DAYS) -> pd.DataFrame:
+    """Load the most recent available daily_closes parquet, walking back up
+    to *lookback_days* calendar days (mirrors health_checker.py's same
+    walk-back for this prefix — Fri's file is >1 calendar day back on a
+    Sat/Sun read). Empty DataFrame if nothing is found in the window."""
+    for back in range(lookback_days):
+        candidate = (datetime.now(timezone.utc).date() - timedelta(days=back)).isoformat()
+        df = load_daily_closes(candidate)
+        if not df.empty:
+            return df
+    return pd.DataFrame()
+
+
+@st.cache_data(ttl=_ttl("research"))
+def load_daily_closes_row(date_str: str, ticker: str) -> dict | None:
+    """Return the single daily_closes row for *ticker* on *date_str* as a
+    dict (including any ``xsource_*`` columns present), or None if the
+    partition is absent or has no row for that ticker."""
+    df = load_daily_closes(date_str)
+    if df.empty or "ticker" not in df.columns:
+        return None
+    matches = df[df["ticker"] == ticker]
+    if matches.empty:
+        return None
+    return matches.iloc[0].to_dict()

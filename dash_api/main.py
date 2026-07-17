@@ -6,6 +6,17 @@ Next.js client's fixtures mirror. Errors never fabricate data: an absent
 upstream artifact yields the view-model's honest-ABSENT rows, and a hard
 loader failure returns 503 with the exception name (fail-loud, never a
 silent empty 200).
+
+This 503 contract depends on the loader layer actually raising instead of
+swallowing operational failures to None/fallback — see loaders/s3_loader.py
+S3AccessError + raise_s3_access_errors() (config#2339). Before that fix, a
+non-NoSuchKey S3 ClientError (most notably AccessDenied — this box's
+most-recurring failure class) was indistinguishable from honest-ABSENT by
+the time it reached `_guard` below, so an IAM gap rendered as a 200 with
+"no data" instead of a 503. `_guard` opts every loader call into strict
+mode; the ~40 Streamlit console call sites into the same shared loaders do
+NOT opt in, so their existing degrade-to-ABSENT + get_recent_s3_errors()
+telemetry (console views 2/6) is unaffected by this contract.
 """
 from __future__ import annotations
 
@@ -23,7 +34,9 @@ from loaders.s3_loader import (
     load_eod_pnl,
     load_intraday_nav,
     load_intraday_nav_series,
+    load_order_book_rationale_history,
     load_report_card,
+    raise_s3_access_errors,
 )
 from loaders.trust_battery_loader import load_ci_verdicts
 from results import view_model as vm
@@ -39,9 +52,17 @@ app = FastAPI(
 
 
 def _guard(fn, *args, **kwargs):
-    """Run a loader/builder; convert hard failures to 503 (never empty 200)."""
+    """Run a loader/builder; convert hard failures to 503 (never empty 200).
+
+    Runs the loader under raise_s3_access_errors() (config#2339) so a
+    non-NoSuchKey S3 ClientError (e.g. AccessDenied) surfaces as
+    S3AccessError instead of being swallowed to None deep in the loader —
+    otherwise this except clause would never see it and an IAM-gap failure
+    would render as an honest-looking 200 "no data" response.
+    """
     try:
-        return fn(*args, **kwargs)
+        with raise_s3_access_errors():
+            return fn(*args, **kwargs)
     except Exception as exc:  # noqa: BLE001 — surfaced as an explicit 503, not swallowed
         logger.error("dash-api upstream failure in %s: %s", getattr(fn, "__name__", fn), exc)
         raise HTTPException(status_code=503, detail=f"{type(exc).__name__}: {exc}") from exc
@@ -158,6 +179,19 @@ def execution() -> dict:
         "exit_rules": vm.exit_type_rows(exit_timing),
         "shadow_classification": vm.shadow_classification_rows(shadow_book),
     }
+
+
+@app.get("/api/decisions")
+def decisions() -> list[dict]:
+    """Prosumer-curated book decisions: recent ENTER/EXIT/REDUCE + thesis.
+
+    Brian's 2026-07-14 Option-A ruling (config#2404) on the §9.2 audience
+    split applied to ``order_book_rationale`` — ops states
+    (predictor_vetoed, risk_blocked, no_action_*), decision chains,
+    pricing sources, and position sizes are structurally excluded here,
+    same as the tile-key split enforced by /api/tiles above.
+    """
+    return vm.decision_rows(_guard(load_order_book_rationale_history, 14))
 
 
 @app.get("/api/trust")

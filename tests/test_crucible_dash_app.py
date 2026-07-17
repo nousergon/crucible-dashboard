@@ -82,7 +82,9 @@ class TestInfraWiring:
 
         # §2b-2e installer gates: any_file_state_stale over explicit
         # src:dst pairs, not a `paths_changed ... ~1` commit-range gate.
-        installer_block = script[script.index("# ── 2b."):script.index("# ── 3. Restart")]
+        # Anchor on the "# ── 3." prefix, not a full title — main renames
+        # section-3 headings independently of this test's concern.
+        installer_block = script[script.index("# ── 2b."):script.index("# ── 3.")]
         assert installer_block.count("any_file_state_stale") == 4
         assert "CURRENT_SHA}~1" not in installer_block
 

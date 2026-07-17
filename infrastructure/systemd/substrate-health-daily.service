@@ -1,0 +1,20 @@
+[Unit]
+Description=Daily-cadence transparency substrate health check (re-homed from ne-postclose-trading-pipeline's DailySubstrateHealthCheck chain, alpha-engine-config-I2722)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ec2-user
+Group=ec2-user
+WorkingDirectory=/home/ec2-user/alpha-engine-dashboard
+ExecStart=/home/ec2-user/alpha-engine-dashboard/infrastructure/substrate_health_check_daily.sh
+StandardOutput=journal
+StandardError=journal
+# Mirrors the SF's executionTimeout=180s script budget; extra headroom since
+# there's no separate SSM delivery-timeout layer bounding this path.
+TimeoutStartSec=300
+RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target

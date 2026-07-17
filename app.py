@@ -430,6 +430,16 @@ def _build_navigation():
                 "views/35_Model_Zoo.py", title="Model Zoo", icon="🦓",
                 url_path="model-zoo",
             ),
+            # url_path pinned to "predictor-training" — the weekly training
+            # summary email (config#856, slimmed to headline + link) deep-links
+            # to …/predictor-training?date=YYYY-MM-DD (the training cycle's
+            # trading-day key). Guarded by tests/test_predictor_training_page.py.
+            # (Standalone — same rationale as model-zoo/eod-report: folding it
+            # into a host would move the slug onto the host.)
+            st.Page(
+                "views/36_Predictor_Training.py", title="Predictor Training",
+                icon="🏋️", url_path="predictor-training",
+            ),
         ],
         "🧪 Backtester & Eval": [
             # url_path pinned to "analysis" — weekly backtester+eval digest email
@@ -439,7 +449,17 @@ def _build_navigation():
                 "views/3_Analysis.py", title="Analysis", icon="📊",
                 url_path="analysis",
             ),
-            page("host_eval_backtester.py", "Eval & Backtester", "⚖"),
+            # url_path pinned to "evaluator" — host_eval_backtester.py was a
+            # render_host() wrapper around exactly one sub-view (8_Eval_Quality),
+            # pure UI chrome (single-option segmented_control nesting Calibrate
+            # 2 layers deep) — collapsed to a standalone page (config#2557).
+            # nousergon-lib's pipeline_status registry deep-links 4
+            # ArchivePageRef entries at this slug (lib v0.115.0+); guarded by
+            # tests/test_registry_page_targets.py.
+            st.Page(
+                "views/8_Eval_Quality.py", title="Evaluator", icon="⚖",
+                url_path="evaluator",
+            ),
             page("43_Distillation_Corpus.py", "Distillation Corpus", "🔬"),
         ],
         "⚗️ Experiments": [
@@ -495,6 +515,11 @@ def _build_navigation():
             ),
             page("host_observability.py", "Observability", "⏱"),
             page("host_cost_usage.py", "Cost & Usage", "💰"),
+            # Market-value integrity rollup tile (config#2458, L4 of
+            # alpha-engine-config#1277): L1 cross-source agreement ONLY
+            # today — see the page's own caption/expander for what L2/L3
+            # (not shipped) would add.
+            page("50_Data_Integrity.py", "Data Integrity", "🧬"),
             # Intraday Surveillance retired (console-IA phase 2a, config#1987):
             # the live NAV strip/curve duplicated the public live page (same
             # shared intraday_live module); its raw daemon-snapshot expanders
@@ -507,8 +532,15 @@ def _build_navigation():
             # PR #92; contract in loaders/morning_signal_schedule.py).
             page("45_Morning_Signal_Schedule.py", "Content Schedule", "🗓"),
         ],
-        "📚 Reference": [
-            page("host_reference.py", "Reference", "📚"),
+        # Renamed from "📚 Reference" (config#2588): now also hosts the
+        # browsable private-docs system-doc corpus (System State /
+        # Architecture Doc / Experiments Log / Generated Status tabs), not
+        # just the original Architecture/Signal Lifecycle/RAG Inventory
+        # trio — "Library" is the term Brian used and better fits the wider
+        # scope. Filename/key stay host_reference.py / host_reference (no
+        # deep-links pin the old "Reference" label).
+        "📚 Library": [
+            page("host_reference.py", "Library", "📚"),
         ],
     })
 

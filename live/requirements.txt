@@ -1,7 +1,7 @@
 streamlit>=1.40
 pandas>=2.0
 plotly>=5.18
-boto3>=1.34
+boto3>=1.43.50
 pyyaml>=6.0
 # Direct import in loaders/s3_loader.py::load_company_names (SEC ticker→name
 # map). Always present transitively via streamlit; pinned here for hygiene.
@@ -9,4 +9,4 @@ requests>=2.31
 # loaders/s3_loader.py::load_live_day_return — 15-min delayed quote for the
 # modal's live "Day return". (Deploy installs root requirements.txt; mirrored
 # here for local/dev parity.)
-yfinance>=0.2.40
+yfinance>=1.5.1

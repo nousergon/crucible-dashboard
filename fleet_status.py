@@ -90,7 +90,7 @@ POSTCLOSE_DUE_LAG = timedelta(hours=2)
 # Freshness-monitor Lambda runs every 15 min.
 FRESHNESS_HEARTBEAT_STALE_S = 25 * 60.0
 FRESHNESS_HEARTBEAT_DEAD_S = 60 * 60.0
-# Groom cadence is 3×/day (2 Sonnet + 1 Opus) — recency tiers.
+# Groom cadence is 3×/day (2 Sonnet low/mid + 1 Sonnet high) — recency tiers.
 GROOM_MARKER_STALE = timedelta(hours=4)
 GROOM_IDLE_OK = timedelta(hours=10)
 GROOM_IDLE_WARN = timedelta(hours=30)

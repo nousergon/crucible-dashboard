@@ -138,6 +138,14 @@ def disposition_counts(issues: list[dict[str, Any]]) -> dict[str, int]:
     return {d: sum(1 for i in issues if i.get("disposition") == d) for d in keys}
 
 
+def short_model_name(model: str | None) -> str:
+    """``claude-opus-4-8`` -> ``opus-4-8`` — drop the vendor prefix so the Run
+    history table and Model scorecard (config-I2746) stay narrow."""
+    if not model:
+        return "—"
+    return model.removeprefix("claude-") if model.startswith("claude-") else model
+
+
 def compute_efficiency(
     run: dict[str, Any],
     issues: list[dict[str, Any]],
@@ -206,22 +214,67 @@ def compute_efficiency(
     }
 
 
-def format_efficiency_row(eff: dict[str, Any]) -> dict[str, str]:
-    """Compact strings for the run-history table."""
-    wet_s = f"{eff['wet']/1e6:.1f}M" if eff.get("wet") is not None else "—"
-    wpe = eff.get("wet_per_engaged")
-    wpe_s = f"{wpe/1e3:.0f}K" if wpe is not None else "—"
-    thr = eff.get("throughput")
-    thr_s = f"{thr:.2f}" if thr is not None else "—"
-    cache = eff.get("cache_read_pct")
-    cache_s = f"{cache:.0f}%" if cache is not None else "—"
-    flags = "⚠️ " + ", ".join(eff["alerts"]) if eff.get("alerts") else "✅"
-    if not eff.get("usage_matched"):
-        flags = "—" if not eff.get("alerts") else flags
-    return {
-        "WET": wet_s,
-        "WET/eng": wpe_s,
-        "iss/min": thr_s,
-        "Cache": cache_s,
-        "Efficiency": flags,
-    }
+def model_scorecard_rows(
+    runs: list[tuple[dict[str, Any], dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    """Aggregate ``(run, eff)`` pairs — the same tuples already built for Run
+    history, ``eff`` from ``compute_efficiency`` — into one row per
+    ``(model, issue_filter)`` group (config-I2746).
+
+    Degenerate wind-downs (``eff["engaged"] == 0``) are excluded entirely —
+    they're not real coverage attempts. Mixed-filter runs (``high+mid+low``)
+    are grouped by the literal ``issue_filter`` string rather than attempting
+    per-tier attribution (can't be split from per-issue records). Runs with
+    no measured WET (pre-2026-07-07 schema, or an unmatched usage join) don't
+    contribute to the WET aggregates — group totals render ``"—"`` rather
+    than crash or silently understate cost per hard outcome.
+    """
+    groups: dict[tuple[str, str], dict[str, Any]] = {}
+    for run, eff in runs:
+        engaged = eff.get("engaged") or 0
+        if engaged == 0:
+            continue
+        model = short_model_name(run.get("model"))
+        tier = run.get("issue_filter") or "—"
+        g = groups.setdefault((model, tier), {
+            "runs": 0, "touches": 0, "hard": 0, "commented": 0,
+            "untouched": 0, "queued": 0, "wet_sum": 0.0, "wet_hard": 0,
+            "wet_runs": 0, "crashes": 0, "elapsed": 0, "processed": 0,
+        })
+        issues = run.get("issues") or []
+        counts = disposition_counts(issues)
+        hard = counts["closed"] + counts["pr_opened"]
+        g["runs"] += 1
+        g["touches"] += engaged
+        g["hard"] += hard
+        g["commented"] += counts["commented"]
+        g["untouched"] += counts["untouched"]
+        g["queued"] += int(run.get("total_issues") or len(issues) or 0)
+        wet = eff.get("wet")
+        if wet is not None:
+            g["wet_sum"] += wet
+            g["wet_hard"] += hard
+            g["wet_runs"] += 1
+        if "crash" in str(run.get("stop_reason") or "").lower():
+            g["crashes"] += 1
+        g["elapsed"] += int(run.get("elapsed_min") or 0)
+        g["processed"] += int(run.get("processed") or len(issues) or 0)
+
+    rows: list[dict[str, Any]] = []
+    for (model, tier), g in groups.items():
+        touches = g["touches"]
+        rows.append({
+            "Model": model,
+            "Tier": tier,
+            "Runs": g["runs"],
+            "Touches": touches,
+            "Hard-outcome rate": f"{100 * g['hard'] / touches:.0f}%" if touches else "—",
+            "Comment-only %": f"{100 * g['commented'] / touches:.0f}%" if touches else "—",
+            "Untouched %": f"{100 * g['untouched'] / g['queued']:.0f}%" if g["queued"] else "—",
+            "Total WET": f"{g['wet_sum'] / 1e6:.1f}M" if g["wet_runs"] else "—",
+            "WET/hard": f"{g['wet_sum'] / g['wet_hard'] / 1e3:.0f}K" if g["wet_hard"] else "—",
+            "Crashes": g["crashes"],
+            "Min/issue": f"{g['elapsed'] / g['processed']:.1f}" if g["processed"] else "—",
+        })
+    rows.sort(key=lambda r: (r["Model"], r["Tier"]))
+    return rows

@@ -147,8 +147,73 @@ REQUIREMENTS_STAMP="/etc/dashboard-deploy/requirements.txt.installed"
 if [ -f ".venv/bin/pip" ] && [ -f "requirements.txt" ]; then
     if file_state_stale "$REQUIREMENTS_STAMP" "requirements.txt"; then
         log "requirements.txt differs from last-installed stamp — pip install"
-        sudo -u ec2-user .venv/bin/pip install --quiet -r requirements.txt 2>>"$LOG" \
-            || fail "pip install requirements.txt"
+        # requirements.txt is a uv-compiled lockfile. It is compiled in CI
+        # (GH runner, currently Python 3.12) but INSTALLED here against the
+        # box venv — if the two interpreters differ, a version that resolves
+        # cleanly for the compiler can be un-installable here (Requires-Python
+        # >=3.11 pins like numpy 2.4.6 / pandas 3.0.3 ship no <3.11 wheel).
+        # Log the venv interpreter up front so a mismatch is visible in the
+        # SSM/CI output rather than inferred (2026-07-17 numpy/pandas parity
+        # incident: config#1592-sibling — a hand-patched numpy pin masked that
+        # pandas 3.0.3 carries the same >=3.11 floor; the real failure lived
+        # only in $LOG on the box, invisible to CI/ci-watch).
+        log "venv python -> $(sudo -u ec2-user .venv/bin/python --version 2>&1)"
+
+        # TMPDIR fix (config#2792/#2736, 2026-07-17): pip has NO dedicated
+        # option for its build/download scratch space — it always uses
+        # tempfile.gettempdir(), i.e. $TMPDIR or /tmp. On this box, /tmp is a
+        # 957MB tmpfs (small, RAM-backed, and shared with unrelated
+        # box-resident state — morning-signal scratch files, research.db,
+        # etc.), while / has 16G+ free. A full-closure install of this lock
+        # (pandas/pyarrow/numpy/pillow/streamlit all downloading+building
+        # concurrently) can overflow that 957M tmpfs and fail with
+        # `OSError: [Errno 28] No space left on device` even though the real
+        # root disk never gets close to full. This was mistaken for "box pip
+        # 22.3.1 / Python 3.11 can't install the new uv lockfile" (config#2736)
+        # — live SSM reproduction on i-09b539c844515d549 disproved that: the
+        # IDENTICAL install, with pip 22.3.1 on Python 3.11.14 unchanged,
+        # succeeds cleanly once TMPDIR points at a directory on the root
+        # filesystem instead of the tmpfs. Point pip's scratch dir at the
+        # root filesystem so its space use is bounded by the 16G+ free there,
+        # not the 957M tmpfs.
+        PIP_TMPDIR="$REPO_DIR/.pip-tmp"
+        rm -rf "$PIP_TMPDIR"
+        sudo -u ec2-user mkdir -p "$PIP_TMPDIR" || fail "mkdir pip tmpdir $PIP_TMPDIR"
+
+        # Pre-pip fail-loud disk guards. Two distinct, both-real risk classes:
+        #   (a) the CURRENT failure mode — TMPDIR's own filesystem (now the
+        #       root fs via PIP_TMPDIR above) fills. Checked against
+        #       PIP_TMPDIR specifically (not assumed to be "/") so this stays
+        #       correct if TMPDIR is ever repointed elsewhere.
+        #   (b) the OLD/dormant failure mode — root "/" itself fills
+        #       (config#2227 class). Still checked directly since PIP_TMPDIR
+        #       living on "/" today doesn't guarantee it always will.
+        # Threshold 90% mirrors config#2227's disk-alarm threshold. Message
+        # is self-classifying from SSM stdout alone (config#2792) — no
+        # console-spelunking needed to tell "disk full" from "resolver error".
+        for guard_path in "$PIP_TMPDIR" "/"; do
+            guard_pcent="$(df --output=pcent "$guard_path" 2>/dev/null | tail -1 | tr -dc '0-9')"
+            guard_mount="$(df --output=target "$guard_path" 2>/dev/null | tail -1 | tr -d ' ')"
+            if [ -n "$guard_pcent" ] && [ "$guard_pcent" -ge 90 ]; then
+                fail "DISK FULL — ${guard_pcent}% used on ${guard_mount:-$guard_path}, deploy aborted before pip (config#2227/#2792/#2736 class; a rerun cannot heal this without freeing space)"
+            fi
+        done
+
+        # Capture pip's combined output (drop --quiet: we KEEP the detail),
+        # tee the tail to stdout on failure so the REAL pip error reaches SSM
+        # StandardOutputContent (and thus CI + ci-watch), never buried in $LOG.
+        # Fail-loud: a real failure is made LOUDER here, never quieter.
+        PIP_OUT=$(sudo -u ec2-user env TMPDIR="$PIP_TMPDIR" .venv/bin/pip install -r requirements.txt 2>&1)
+        PIP_RC=$?
+        printf '%s\n' "$PIP_OUT" >>"$LOG"
+        rm -rf "$PIP_TMPDIR"
+        if [ $PIP_RC -ne 0 ]; then
+            log "pip install FAILED (rc=$PIP_RC) — last 40 lines of pip output:"
+            printf '%s\n' "$PIP_OUT" | tail -40
+            fail "pip install requirements.txt"
+        fi
+        # Record what was just installed so the next run's state-compare
+        # gate (config#2338) is against reality, not a commit range.
         mkdir -p "$(dirname "$REQUIREMENTS_STAMP")" || fail "mkdir requirements stamp dir"
         cp requirements.txt "$REQUIREMENTS_STAMP" || fail "update requirements.txt stamp"
     fi
@@ -294,7 +359,29 @@ if any_file_state_stale \
     log "re-installed box-health/hygiene"
 fi
 
-# ── 3. Restart both streamlit services (we are root) ───────────────────────
+# ── 3. Self-provision dashboard and nous-ergon-live unit files ──────────────
+# Both services ship in the repo; install/refresh them on unit-file diff
+# (or first deploy) so they can never drift from the repo copy — same
+# idempotent pattern as crucible-dash/dash-api/dash-web (§3b-3d).
+DASHBOARD_UNIT_SRC="$REPO_DIR/infrastructure/dashboard.service"
+DASHBOARD_UNIT_DST="/etc/systemd/system/dashboard.service"
+if [ ! -f "$DASHBOARD_UNIT_DST" ] || ! cmp -s "$DASHBOARD_UNIT_SRC" "$DASHBOARD_UNIT_DST"; then
+    cp "$DASHBOARD_UNIT_SRC" "$DASHBOARD_UNIT_DST" 2>>"$LOG" || fail "install dashboard unit"
+    systemctl daemon-reload 2>>"$LOG" || fail "daemon-reload for dashboard"
+    systemctl enable dashboard 2>>"$LOG" || fail "enable dashboard"
+    log "installed/refreshed dashboard.service unit"
+fi
+
+LIVE_UNIT_SRC="$REPO_DIR/live/infrastructure/nous-ergon-live.service"
+LIVE_UNIT_DST="/etc/systemd/system/nous-ergon-live.service"
+if [ ! -f "$LIVE_UNIT_DST" ] || ! cmp -s "$LIVE_UNIT_SRC" "$LIVE_UNIT_DST"; then
+    cp "$LIVE_UNIT_SRC" "$LIVE_UNIT_DST" 2>>"$LOG" || fail "install nous-ergon-live unit"
+    systemctl daemon-reload 2>>"$LOG" || fail "daemon-reload for nous-ergon-live"
+    systemctl enable nous-ergon-live 2>>"$LOG" || fail "enable nous-ergon-live"
+    log "installed/refreshed nous-ergon-live.service unit"
+fi
+
+# ── 3a. Restart both streamlit services (we are root) ──────────────────────
 # Both services run from this same repo. Two-second stagger avoids a
 # simultaneous blip on console + live site.
 systemctl restart dashboard 2>>"$LOG" || fail "restart dashboard"
@@ -304,6 +391,7 @@ systemctl restart nous-ergon-live 2>>"$LOG" || fail "restart nous-ergon-live"
 log "restarted nous-ergon-live.service"
 
 # ── 3b. Crucible /dash service (config#1957) — idempotent self-provision ────
+# Same pattern as the dashboard/nous-ergon-live units above (§3).
 # The unit ships in this repo; install/refresh it on unit-file diff (or first
 # deploy) so the service can never drift from the repo copy — mirrors the CF
 # Pages project self-provision precedent (#328): a new box or a unit change
@@ -339,6 +427,23 @@ log "restarted crucible-dash-api.service"
 # next build are the expensive steps; unit self-provision mirrors 3b/3c.
 WEB_DIR="$REPO_DIR/dash-web"
 if [ -d "$WEB_DIR" ]; then
+    # Node-parity guard (config#2711): CI builds dash-web against the major
+    # pinned in dash-web/.nvmrc, but this box's `npm`/`node` on PATH was
+    # never tied to that same source of truth — a CI-green major (e.g. next
+    # 15->16, which needs Node >=20.9) can still silently fail or misbuild
+    # here if the box runs a different major. Fail loud BEFORE the build so
+    # a mismatch surfaces as a clear deploy error instead of a silent or
+    # confusing on-box build failure.
+    if [ -f "$WEB_DIR/.nvmrc" ]; then
+        REQUIRED_NODE_MAJOR="$(tr -dc '0-9' < "$WEB_DIR/.nvmrc")"
+        BOX_NODE_VERSION="$(sudo -u ec2-user node --version 2>/dev/null || true)"
+        BOX_NODE_MAJOR="$(printf '%s' "$BOX_NODE_VERSION" | sed -n 's/^v\([0-9]\+\)\..*/\1/p')"
+        if [ -z "$BOX_NODE_MAJOR" ]; then
+            fail "dash-web Node-parity guard: could not determine box node --version (got '$BOX_NODE_VERSION') — install Node or fix PATH for ec2-user"
+        elif [ "$BOX_NODE_MAJOR" != "$REQUIRED_NODE_MAJOR" ]; then
+            fail "dash-web Node-parity guard: box runs node $BOX_NODE_VERSION (major $BOX_NODE_MAJOR) but dash-web/.nvmrc requires major $REQUIRED_NODE_MAJOR — upgrade the box's Node to $REQUIRED_NODE_MAJOR.x, or if the box is intentionally staying put, edit dash-web/.nvmrc (and CI's setup-node step, which reads the same file) to match the box's actual major"
+        fi
+    fi
     if paths_changed "${CURRENT_SHA}~1" "$CURRENT_SHA" dash-web/ || [ ! -d "$WEB_DIR/.next" ]; then
         log "dash-web changed (or unbuilt) — npm ci + next build"
         sudo -u ec2-user bash -c "cd '$WEB_DIR' && npm ci --no-audit --no-fund && npm run build" >>"$LOG" 2>&1             || fail "dash-web npm build"

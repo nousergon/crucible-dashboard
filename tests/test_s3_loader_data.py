@@ -10,10 +10,9 @@ import io
 import json
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
-import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -238,6 +237,92 @@ class TestLoadModeHistory:
         with patch.object(loader, "_s3_get_object", return_value=None):
             result = loader.load_mode_history()
         assert result == []
+
+
+def _parquet_bytes(df: pd.DataFrame) -> bytes:
+    buf = io.BytesIO()
+    df.to_parquet(buf)
+    return buf.getvalue()
+
+
+class TestLoadDailyCloses:
+    """Tests for load_daily_closes / load_latest_daily_closes /
+    load_daily_closes_row (config#2458 — L1 provenance surfacing)."""
+
+    def test_load_daily_closes_valid_parquet(self):
+        loader = _get_loader()
+        df = pd.DataFrame([
+            {"ticker": "SPY", "Close": 734.30, "xsource_status": "agreed",
+             "xsource_flagged": False, "xsource_agreement_bps": 0.14,
+             "xsource_provenance": "SPY@2026-07-13: polygon=734.30 yfinance=734.31 agree@0.14bps"},
+        ])
+        with patch.object(loader, "_s3_get_object", return_value=_parquet_bytes(df)):
+            result = loader.load_daily_closes("2026-07-13")
+        assert isinstance(result, pd.DataFrame)
+        assert len(result) == 1
+        assert result.iloc[0]["xsource_status"] == "agreed"
+
+    def test_load_daily_closes_missing_returns_empty(self):
+        loader = _get_loader()
+        with patch.object(loader, "_s3_get_object", return_value=None):
+            result = loader.load_daily_closes("2026-07-13")
+        assert isinstance(result, pd.DataFrame)
+        assert result.empty
+
+    def test_load_daily_closes_malformed_returns_empty(self):
+        loader = _get_loader()
+        with patch.object(loader, "_s3_get_object", return_value=b"not a parquet file"):
+            result = loader.load_daily_closes("2026-07-13")
+        assert isinstance(result, pd.DataFrame)
+        assert result.empty
+
+    def test_load_latest_daily_closes_walks_back_to_first_available(self):
+        loader = _get_loader()
+        df = pd.DataFrame([{"ticker": "SPY", "Close": 734.30}])
+        from datetime import datetime as _dt, timezone as _tz
+        yesterday = (_dt.now(_tz.utc).date())
+        # 2 calendar days back has data; today/yesterday are absent (e.g. a
+        # weekend/holiday gap) — the walk-back must find it.
+        target_key = f"staging/daily_closes/{(yesterday - pd.Timedelta(days=2)).isoformat()}.parquet"
+
+        def fake_get_object(bucket, key):
+            return _parquet_bytes(df) if key == target_key else None
+
+        with patch.object(loader, "_s3_get_object", side_effect=fake_get_object):
+            result = loader.load_latest_daily_closes(lookback_days=5)
+        assert not result.empty
+        assert result.iloc[0]["ticker"] == "SPY"
+
+    def test_load_latest_daily_closes_empty_when_nothing_in_window(self):
+        loader = _get_loader()
+        with patch.object(loader, "_s3_get_object", return_value=None):
+            result = loader.load_latest_daily_closes(lookback_days=3)
+        assert result.empty
+
+    def test_load_daily_closes_row_returns_matching_ticker(self):
+        loader = _get_loader()
+        df = pd.DataFrame([
+            {"ticker": "SPY", "Close": 734.30, "xsource_status": "agreed"},
+            {"ticker": "AAPL", "Close": 210.11, "xsource_status": "single_source_provisional"},
+        ])
+        with patch.object(loader, "_s3_get_object", return_value=_parquet_bytes(df)):
+            result = loader.load_daily_closes_row("2026-07-13", "SPY")
+        assert result is not None
+        assert result["ticker"] == "SPY"
+        assert result["Close"] == 734.30
+
+    def test_load_daily_closes_row_missing_ticker_returns_none(self):
+        loader = _get_loader()
+        df = pd.DataFrame([{"ticker": "AAPL", "Close": 210.11}])
+        with patch.object(loader, "_s3_get_object", return_value=_parquet_bytes(df)):
+            result = loader.load_daily_closes_row("2026-07-13", "SPY")
+        assert result is None
+
+    def test_load_daily_closes_row_missing_partition_returns_none(self):
+        loader = _get_loader()
+        with patch.object(loader, "_s3_get_object", return_value=None):
+            result = loader.load_daily_closes_row("2026-07-13", "SPY")
+        assert result is None
 
 
 class TestConfigEnvOverride:

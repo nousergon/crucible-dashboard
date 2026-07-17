@@ -298,7 +298,7 @@ class TestNavRegistration:
         # backlog even though decision records are a separate, always-
         # present-or-loudly-missing source (config#1935 step 6).
         src = (REPO_ROOT / "views" / "42_Backlog_Groom.py").read_text()
-        strip_call_pos = src.index("_render_slot_decisions_strip()")
+        strip_call_pos = src.index("_render_slot_decisions_strip(_decision_records")
         stop_pos = src.index("st.stop()")
         assert strip_call_pos < stop_pos
 
@@ -315,3 +315,150 @@ class TestNavRegistration:
         # not crash or render blank.
         src = (REPO_ROOT / "views" / "42_Backlog_Groom.py").read_text()
         assert "cold start" in src.lower() or "cold-start" in src.lower()
+
+
+class TestListGroomAuditKeys:
+    """groom/audit/{date}.json — weekly disposition-quality audit
+    (config#2153), surfaced on the page as of the 2026-07-14 redesign."""
+
+    def _client(self, keys):
+        page = {"Contents": [{"Key": k} for k in keys]}
+        paginator = MagicMock()
+        paginator.paginate.return_value = [page]
+        client = MagicMock()
+        client.get_paginator.return_value = paginator
+        return client
+
+    def test_lists_newest_first_and_filters_non_audit_keys(self):
+        keys = [
+            "groom/audit/2026-07-03.json",
+            "groom/audit/2026-07-10.json",
+            "groom/audit/notes.txt",          # ignored (not date.json)
+            "groom/audit/2026-07-10.json.bak",  # ignored (bad shape)
+        ]
+        with patch.object(s3_loader, "_research_bucket", return_value="b"), \
+                patch.object(s3_loader, "get_s3_client", return_value=self._client(keys)):
+            assert s3_loader.list_groom_audit_keys() == [
+                "groom/audit/2026-07-10.json",
+                "groom/audit/2026-07-03.json",
+            ]
+
+    def test_respects_limit(self):
+        keys = [f"groom/audit/2026-07-{d:02d}.json" for d in range(1, 12)]
+        with patch.object(s3_loader, "_research_bucket", return_value="b"), \
+                patch.object(s3_loader, "get_s3_client", return_value=self._client(keys)):
+            assert len(s3_loader.list_groom_audit_keys(limit=3)) == 3
+
+    def test_empty_on_error(self):
+        client = MagicMock()
+        client.get_paginator.side_effect = RuntimeError("boom")
+        with patch.object(s3_loader, "_research_bucket", return_value="b"), \
+                patch.object(s3_loader, "get_s3_client", return_value=client), \
+                patch.object(s3_loader, "_record_s3_error"):
+            assert s3_loader.list_groom_audit_keys() == []
+
+
+class TestLoadGroomAudit:
+    def test_returns_dict_on_valid_json(self):
+        payload = {"schema_version": 1, "date": "2026-07-10",
+                   "pass_count": 9, "fail_count": 1, "error_count": 0}
+        with patch.object(s3_loader, "_research_bucket", return_value="b"), \
+                patch.object(s3_loader, "_s3_get_object",
+                             return_value=json.dumps(payload).encode()):
+            assert s3_loader.load_groom_audit("groom/audit/2026-07-10.json") == payload
+
+    def test_returns_none_on_missing(self):
+        with patch.object(s3_loader, "_research_bucket", return_value="b"), \
+                patch.object(s3_loader, "_s3_get_object", return_value=None):
+            assert s3_loader.load_groom_audit("groom/audit/2026-07-10.json") is None
+
+
+class TestRedesignSurfaces:
+    """2026-07-14 readability redesign: decision TABLE (not chips), a
+    trailing-window health roll-up, cross-run trends, and the
+    disposition-quality audit — pinned the same source-text way the rest
+    of this file pins page wiring."""
+
+    def _src(self):
+        return (REPO_ROOT / "views" / "42_Backlog_Groom.py").read_text()
+
+    def test_decisions_render_as_table_with_backlog_counts(self):
+        # The dispatcher's counts {low,mid,high} — the single most
+        # informative field in the decision record — must be rendered,
+        # via the pure decision_table_rows transform.
+        src = self._src()
+        assert "decision_table_rows" in src
+        assert "Actionable low-complexity issues at decision time" in src
+
+    def test_health_rollup_present(self):
+        src = self._src()
+        assert "Groom health" in src
+        assert "window_kpis" in src
+        assert "Floor breaches" in src
+        assert "Undispositioned" in src
+
+    def test_trends_present(self):
+        src = self._src()
+        assert "Trends" in src
+        assert "demand_trend_rows" in src
+        assert "runs_trend_rows" in src
+        assert "scatter_chart" in src
+        assert "line_chart" in src
+
+    def test_audit_surface_present(self):
+        src = self._src()
+        assert "list_groom_audit_keys" in src
+        assert "load_groom_audit" in src
+        assert "Disposition-quality audit" in src
+
+    def test_v9_queue_shape_fields_surfaced(self):
+        src = self._src()
+        for field in ("undispositioned", "dropped_at_cap", "gated_excluded",
+                      "max_turns_chunks", "fresh_skipped"):
+            assert field in src, field
+
+    def test_tier_colors_fixed_never_cycled(self):
+        # Chart series colors are assigned per tier in fixed order —
+        # filtering must not repaint survivors.
+        src = self._src()
+        assert "TIER_COLOR" in src
+        assert "TIER_ORDER" in src
+
+
+class TestModelColumnAndScorecard:
+    """config-I2746: since the 2026-07-13 high-tier cutover (config#2409)
+    tier no longer implies model — the console must surface model per run
+    (Run history) and per-(model, tier) aggregate performance (Model
+    scorecard), both derived from already-loaded run/eff data (no new S3
+    reads)."""
+
+    def _src(self):
+        return (REPO_ROOT / "views" / "42_Backlog_Groom.py").read_text()
+
+    def test_run_history_has_model_column(self):
+        src = self._src()
+        assert '"Model": short_model_name(run.get("model"))' in src
+
+    def test_model_scorecard_section_present_below_run_history(self):
+        src = self._src()
+        assert "Model scorecard" in src
+        history_pos = src.index("Run history")
+        scorecard_pos = src.index("Model scorecard")
+        assert history_pos < scorecard_pos
+
+    def test_model_scorecard_reuses_loaded_runs_no_new_s3_reads(self):
+        src = self._src()
+        assert "model_scorecard_rows(" in src
+        # Must slice the already-loaded runs (loaded_runs), not re-list/re-load.
+        assert "loaded_runs[:_HISTORY_N]" in src
+
+    def test_model_scorecard_caption_notes_queue_composition_confound(self):
+        src = self._src()
+        caption_section = src[src.index("Model scorecard"):]
+        assert "confound" in caption_section.lower()
+        assert "config-I2730" in caption_section
+
+    def test_page_imports_scorecard_helpers_from_groom_efficiency(self):
+        src = self._src()
+        assert "model_scorecard_rows" in src
+        assert "short_model_name" in src

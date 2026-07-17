@@ -8,7 +8,6 @@ MUST honor the ``?date=`` query param. A drift here silently breaks every
 emailed link — mirrors the EOD Report / Model Zoo / Analysis page guards.
 """
 
-import json
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch

@@ -43,6 +43,31 @@ _EOD = pd.DataFrame({
 })
 
 
+_OBR_HISTORY = [
+    {
+        "calendar_date": "2026-07-14",
+        "tickers": [
+            {
+                "ticker": "AAPL", "held": True, "terminal_state": "approved_entry",
+                "research": {"signal": "ENTER", "score": 0.82, "conviction": 0.7, "sector_rating": "A"},
+                "optimizer": {"current_weight": 0.0, "target_weight": 0.05},
+                "decision_chain": [{"stage": "research", "result": "pass", "pricing_source": "ibkr"}],
+            },
+            {
+                "ticker": "TSLA", "held": False, "terminal_state": "predictor_vetoed",
+                "research": {"signal": "ENTER", "score": 0.4, "conviction": 0.3, "sector_rating": "C"},
+                "optimizer": {"current_weight": 0.0, "target_weight": 0.0},
+            },
+            {
+                "ticker": "MSFT", "held": True, "terminal_state": "held",
+                "research": {"signal": "HOLD", "score": 0.6, "conviction": 0.5, "sector_rating": "B"},
+                "optimizer": {"current_weight": 0.04, "target_weight": 0.04},
+            },
+        ],
+    },
+]
+
+
 def _patched(**over):
     defaults = {
         "load_report_card": lambda: _CARD,
@@ -50,6 +75,7 @@ def _patched(**over):
         "load_backtest_file": lambda d, f: None,
         "load_eod_pnl": lambda: _EOD,
         "load_ci_verdicts": lambda repos: {r: {"conclusion": "success"} for r in repos},
+        "load_order_book_rationale_history": lambda n_recent=14: _OBR_HISTORY,
     }
     defaults.update(over)
     return patch.multiple(api, **defaults)
@@ -111,6 +137,90 @@ class TestEndpoints:
             resp = client.get("/api/verdicts")
         assert resp.status_code == 503
         assert "RuntimeError" in resp.json()["detail"]
+
+    def test_s3_access_denied_is_503_with_error_taxonomy(self):
+        # config#2339 acceptance: a real S3AccessError (what s3_loader now
+        # raises for a non-NoSuchKey ClientError under _guard's strict mode)
+        # must map to a 503 carrying an error taxonomy — not the pre-fix
+        # behavior of a swallowed None rendering as an honest-looking 200.
+        from loaders.s3_loader import S3AccessError
+
+        def boom():
+            raise S3AccessError(
+                "S3 AccessDenied for research-bucket/evaluator/latest/report_card.json",
+                error_type="ClientError:AccessDenied",
+                bucket="research-bucket",
+                key="evaluator/latest/report_card.json",
+            )
+        with _patched(load_report_card=boom):
+            resp = client.get("/api/verdicts")
+        assert resp.status_code == 503
+        detail = resp.json()["detail"]
+        assert "S3AccessError" in detail
+        assert "AccessDenied" in detail
+
+    def test_no_such_key_stays_200_absent_via_real_loader_path(self):
+        # config#2339 acceptance, exercised one level below the boto3
+        # boundary (patching _s3_get_object itself, the same proven-stable
+        # interception point every other s3_loader test in this repo uses —
+        # see tests/test_s3_loader_core.py's TestFetchS3Json/TestDownloadS3*):
+        # NoSuchKey through the REAL loaders.s3_loader.load_report_card ->
+        # download_s3_json -> _fetch_s3_json chain, run under _guard's
+        # strict mode, must still come back as honest-ABSENT (200), never a
+        # 503 — strict mode only changes behavior for non-NoSuchKey
+        # ClientErrors, and this proves that end to end through the real
+        # (non-stubbed) loader call chain.
+        #
+        # Patches land on api.load_report_card's OWN __globals__ (the
+        # module dict the function actually resolves _s3_get_object /
+        # get_latest_prefix from at call time), not a fresh
+        # `import loaders.s3_loader`. Some other test file in this suite
+        # (e.g. test_process_archive.py, test_artifact_freshness_page.py)
+        # calls importlib.reload(s3_loader) for its own isolation needs —
+        # that replaces every function object in sys.modules
+        # ['loaders.s3_loader'] with a new one, but dash_api.main's
+        # `from loaders.s3_loader import load_report_card` (bound at
+        # dash_api.main's own import time) keeps pointing at the
+        # pre-reload function object forever after. So `api.load_report_card
+        # is sys.modules['loaders.s3_loader'].load_report_card` can be
+        # False depending on test order — going through
+        # api.load_report_card.__globals__ instead is correct regardless.
+        s3_loader_globals = api.load_report_card.__globals__
+
+        with patch.dict(s3_loader_globals, {
+            "_s3_get_object": lambda bucket, key: None,
+            "get_latest_prefix": lambda bucket, prefix: None,
+        }):
+            # _s3_get_object -> None is exactly NoSuchKey's outcome (see
+            # _s3_get_object's own docstring); get_latest_prefix -> None
+            # short-circuits load_report_card's date resolution to the same
+            # "nothing published yet" honest-ABSENT path without needing a
+            # live bucket config.
+            resp = client.get("/api/verdicts")
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    def test_decisions_curated_to_enter_exit_reduce_with_thesis(self):
+        with _patched():
+            body = client.get("/api/decisions").json()
+        # Only the realized-action ticker survives — the vetoed and the
+        # held-unchanged ticker are ops-detail, structurally excluded.
+        assert [r["ticker"] for r in body] == ["AAPL"]
+        row = body[0]
+        assert row["action"] == "ENTER"
+        assert row["date"] == "2026-07-14"
+        assert set(row["thesis"]) == {"signal", "score", "conviction", "sector_rating"}
+        # No position sizes, no decision chain, no pricing source, no raw
+        # terminal_state — the ops-detail fields never reach this response.
+        assert "decision_chain" not in row and "optimizer" not in row
+        assert "current_weight" not in row["thesis"] and "target_weight" not in row["thesis"]
+
+    def test_decisions_hard_loader_failure_is_503(self):
+        def boom(n_recent=14):
+            raise RuntimeError("s3 unreachable")
+        with _patched(load_order_book_rationale_history=boom):
+            resp = client.get("/api/decisions")
+        assert resp.status_code == 503
 
     def test_trust_carries_legs_and_findings(self):
         with _patched():

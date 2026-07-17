@@ -77,13 +77,18 @@ def test_order_book_removed_from_research_host():
 
 
 def test_optimizer_tabs_removed_from_eval_host():
-    # The eval host was renamed host_eval_backtester (the optimizer surfaces
-    # left), and the stale host_eval_optimizer.py must be gone.
-    assert (VIEWS / "host_eval_backtester.py").exists()
+    # host_eval_backtester.py (the eval host the optimizer surfaces had
+    # already left) was itself collapsed — it wrapped exactly one sub-view,
+    # pure UI chrome (config#2557) — so 8_Eval_Quality.py is now registered
+    # directly. Guard that the optimizer tabs never drifted back in, and
+    # that the retired host wrapper + the older stale host_eval_optimizer.py
+    # both stay gone.
+    assert not (VIEWS / "host_eval_backtester.py").exists()
     assert not (VIEWS / "host_eval_optimizer.py").exists()
-    files = [f for _, f in _host_tabs("host_eval_backtester.py")]
-    assert "30_Optimizer_Risk.py" not in files
-    assert "32_Optimizer_Decision.py" not in files
+    eval_quality_src = (VIEWS / "8_Eval_Quality.py").read_text()
+    assert "30_Optimizer_Risk.py" not in eval_quality_src
+    assert "32_Optimizer_Decision.py" not in eval_quality_src
     app = (REPO_ROOT / "app.py").read_text()
-    assert 'page("host_eval_backtester.py"' in app
+    assert 'page("host_eval_backtester.py"' not in app
+    assert 'views/8_Eval_Quality.py"' in app
     assert "host_eval_optimizer.py" not in app

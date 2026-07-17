@@ -1,24 +1,54 @@
 """Load + act on the human-gated backlog pool (Decision Queue, config#1926).
 
-The console's ONE write scope: the GitHub issue tracker. Rulings made on the
-Decision Queue page post an operator-decision comment and strip the ``gate:*``
-label so the next tier groom executes the ruling — the console never writes
-S3 config, SSM trading params, or any trading state (ARCHITECTURE.md
-carve-out, config#1926).
+The console's ONE write scope: the GitHub issue/PR tracker. Rulings made on
+the Decision Queue page post an operator-decision comment and strip the
+``gate:*`` label so the next tier groom executes the ruling — the console
+never writes S3 config, SSM trading params, or any trading state
+(ARCHITECTURE.md carve-out, config#1926).
 
-Read side: open issues carrying ``gate:operator`` / ``gate:decision`` across
-the four backlog repos, oldest-first, with the structured ``**Ask:**`` block
-(config#1923 contract) parsed from the newest gating comment — including the
-``**Summary:**`` / ``**SOTA:**`` / ``**Delta:**`` fields the groom prompts
-began emitting alongside Ask/Options/Consequence (config#1923 extension),
-generalizing the "every recommendation names the SOTA approach and the
-delta" rule into the gate contract. All three degrade to ``None`` on older
-or unframed comments — the parser never requires them.
+Read side: open issues AND PRs carrying ``gate:operator`` / ``gate:decision``
+/ ``gate:device`` (config#2431: widened from operator/decision only — a
+``gate:device`` item is JUST as human-only by definition, no S3/API check can
+substitute for physically validating hardware) across the four backlog repos
+(issues) plus ``CODE_REPOS`` (PRs — these gates were never scoped to the
+backlog repos in the first place; the underlying labels already exist
+fleet-wide on PRs today), oldest-first, with the structured ``**Ask:**``
+block (config#1923 contract) parsed from the newest gating comment —
+including the ``**Summary:**`` / ``**SOTA:**`` / ``**Delta:**`` fields the
+groom prompts began emitting alongside Ask/Options/Consequence (config#1923
+extension), generalizing the "every recommendation names the SOTA approach
+and the delta" rule into the gate contract. All three degrade to ``None`` on
+older or unframed comments — the parser never requires them.
 
-Auth: the groom PAT from SSM ``/alpha-engine/groom/github_pat`` (cross-repo
-issues r/w — the same identity the groom board-sync uses), falling back to
-``FLOW_DOCTOR_GITHUB_TOKEN``/``GH_TOKEN`` env or ``gh auth token`` for local
-dev. GitHub is reached via ``urllib`` (NOT ``gh`` — proxy-TLS constraint).
+config#2431 write-side extension: a ruling on a PR item now also RESOLVES
+the gate mechanically — beyond the comment + label-strip every gate already
+got, a draft PR with no OTHER ``gate:*`` label remaining is flipped
+ready-for-review via GraphQL's ``markPullRequestReadyForReview`` (no plain
+REST PATCH exists for this field, and the proxy-TLS constraint below forbids
+shelling to ``gh pr ready`` the way the sweep scripts do). "The result of the
+Decision Queue should resolve the gate" — Brian, 2026-07-13: ruling on the
+console is now sufficient, no separate manual PR-hunting pass required.
+
+Auth (config-I2785): ne-groomer App installation token first (minted via
+``nousergon_lib.github_app`` from SSM ``/alpha-engine/groom/github_app_*`` —
+the identity that rode through the 2026-07-16 GitHub user-token REST outage,
+config-I2784, untouched), falling back to the groom PAT from SSM
+``/alpha-engine/groom/github_pat``, then ``FLOW_DOCTOR_GITHUB_TOKEN``/
+``GH_TOKEN`` env or ``gh auth token`` for local dev. GitHub is reached via
+``urllib`` (NOT ``gh`` — proxy-TLS constraint).
+
+alpha-engine-config-I2560: ``_list_gated_issues``/``_list_gated_prs`` read
+``it["labels"]`` off the object itself (only to exclude ``SESSION_LABEL``
+items), never trusting ``?labels=``-filtered list membership alone — the
+same fleet-wide invariant the sibling ``gate_*_sweep.py`` scripts document
+(ARCHITECTURE.md #94). The write side never re-derives gate state from list
+membership either: ``post_ruling``/``kill_issue``/``defer_issue`` are
+unconditional, human-triggered actions (not predicates over stale list
+data), and ``_resolve_pr_gate_followup`` already re-fetches the live PR
+immediately before its ready-flip PATCH/GraphQL call — i.e. the issue's
+optional hardening (a fresh direct-object read right before a gate-clearing
+write) is already standard practice here, not merely for GET-then-decide
+disposition logic.
 """
 
 from __future__ import annotations
@@ -46,7 +76,24 @@ BACKLOG_REPOS = [
     "nousergon/vires-ops",
     "nousergon/telos-ops",
 ]
-HUMAN_GATE_LABELS = ("gate:operator", "gate:decision")
+# Mirrors alpha-engine-config/scripts/gate_pr_actions.CODE_REPOS verbatim
+# (config#2431) — PRs across these repos are ALSO scanned for the same
+# human-only gate labels. Duplicated (not imported) since this is a
+# different repo/deploy surface; kept in sync by inspection, same posture
+# as gate_pr_actions.py's own contract test against groom_driver.CODE_REPOS.
+CODE_REPOS = [
+    "nousergon/alpha-engine-config", "nousergon/metron-ops",
+    "nousergon/crucible-executor", "nousergon/nousergon-data",
+    "nousergon/crucible-predictor", "nousergon/crucible-research",
+    "nousergon/crucible-backtester", "nousergon/crucible-dashboard",
+    "nousergon/crucible-evaluator", "nousergon/nousergon-lib",
+    "nousergon/nousergon-docs", "nousergon/metron",
+    "nousergon/vires", "nousergon/vires-ops",
+    "nousergon/telos", "nousergon/telos-ops",
+]
+# config#2431: gate:device added — just as human-only as operator/decision
+# (no S3/API check substitutes for physically validating hardware).
+HUMAN_GATE_LABELS = ("gate:operator", "gate:decision", "gate:device")
 SESSION_LABEL = "triage:session"
 _GROOM_PAT_SSM_PARAM = "/alpha-engine/groom/github_pat"
 _REGION = os.environ.get("AWS_REGION", "us-east-1")
@@ -78,6 +125,7 @@ class DecisionItem:
     summary: str | None = None  # plain-English context (config#1923 extension)
     sota: str | None = None  # the institutional-grade / SOTA approach
     delta: str | None = None  # how the recommended option differs from SOTA
+    is_pr: bool = False  # config#2431: True for a CODE_REPOS PR item
 
     @property
     def key(self) -> str:
@@ -115,18 +163,70 @@ def _token_from_env() -> str | None:
         return None
 
 
+def _token_from_app() -> str | None:
+    """ne-groomer App installation token — the resilient bot identity.
+
+    config-I2785: the 2026-07-16 GitHub partial outage (config-I2784) 503'd
+    every cipher813 user-token REST call for ~an hour while App installation
+    tokens were unaffected — so the App identity is the primary auth path and
+    the operator PAT is the fallback, not the reverse.
+    ``nousergon_lib.github_app`` caches and self-refreshes the minted token
+    (5-min margin under the 60-min expiry), so calling per request is cheap.
+    """
+    try:
+        from nousergon_lib.github_app import GitHubAppTokenError, installation_token
+    except ImportError as exc:  # lib pin predates the module — PAT path still works
+        logger.warning("decision_queue: nousergon_lib.github_app unavailable: %s", exc)
+        return None
+    try:
+        return installation_token(region=_REGION)
+    except GitHubAppTokenError as exc:
+        logger.warning("decision_queue: App-token mint failed — PAT fallback: %s", exc)
+        return None
+
+
 @st.cache_resource(ttl=3600)
-def github_token() -> str | None:
-    """Groom PAT from SSM (the declared write identity), env/gh fallback."""
+def _pat_token() -> str | None:
+    """Operator-PAT fallback: SSM groom PAT, then env/gh for local dev."""
     return _token_from_ssm() or _token_from_env()
+
+
+_auth_path_last_logged: str | None = None
+
+
+def _log_auth_path(path: str) -> None:
+    """One INFO line per auth-path transition (not per request) — the
+    I2785 acceptance criterion is knowing WHICH identity served, without
+    a log line on all ~30 fan-out calls of every page load."""
+    global _auth_path_last_logged
+    if path != _auth_path_last_logged:
+        logger.info("decision_queue: GitHub auth path → %s", path)
+        _auth_path_last_logged = path
+
+
+def github_token() -> str | None:
+    """App installation token first (config-I2785), operator PAT fallback.
+
+    Deliberately NOT ``st.cache_resource``-cached at this level: installation
+    tokens expire hourly, and the lib layer already caches + re-mints with a
+    safety margin — a 3600s streamlit cache here could serve a dead token.
+    Only the PAT fallback (stable secret) keeps the streamlit-level cache.
+    """
+    tok = _token_from_app()
+    if tok is not None:
+        _log_auth_path("app-installation-token")
+        return tok
+    _log_auth_path("groom-pat-fallback")
+    return _pat_token()
 
 
 def _request(method: str, url: str, payload: dict | None = None) -> Any:
     token = github_token()
     if not token:
         raise RuntimeError(
-            "No GitHub token — SSM /alpha-engine/groom/github_pat unreadable "
-            "(dashboard-role needs ssm:GetParameter on it) and no env fallback."
+            "No GitHub token — App-token mint failed (SSM /alpha-engine/groom/"
+            "github_app_*), groom PAT unreadable (SSM .../github_pat), and no "
+            "env fallback. dashboard-role needs ssm:GetParameter on both."
         )
     data = json.dumps(payload).encode() if payload is not None else None
     req = urllib.request.Request(
@@ -271,7 +371,33 @@ def _list_gated_issues(repo: str, label: str) -> list[dict]:
     return out
 
 
-def _build_decision_item(repo: str, label: str, it: dict, now: datetime) -> DecisionItem:
+def _list_gated_prs(repo: str, label: str) -> list[dict]:
+    """Paginate one repo/label's open, non-parked PRs (config#2431) — the
+    mirror image of ``_list_gated_issues``'s ``"pull_request" not in it``
+    filter."""
+    out: list[dict] = []
+    page = 1
+    while True:
+        batch = _request(
+            "GET",
+            f"{_API}/repos/{repo}/issues?state=open&labels={urllib.parse.quote(label)}"
+            f"&per_page=100&page={page}&sort=created&direction=asc",
+        ) or []
+        for it in batch:
+            if "pull_request" not in it:
+                continue
+            label_names = {l["name"] for l in it["labels"]}
+            if SESSION_LABEL in label_names:
+                continue
+            out.append(it)
+        if len(batch) < 100:
+            break
+        page += 1
+    return out
+
+
+def _build_decision_item(repo: str, label: str, it: dict, now: datetime,
+                         *, is_pr: bool = False) -> DecisionItem:
     created = datetime.fromisoformat(it["created_at"].replace("Z", "+00:00"))
     comment_body = _newest_gate_comment(repo, it["number"])
     ask, options, recommended = parse_ask_block(comment_body)
@@ -284,6 +410,7 @@ def _build_decision_item(repo: str, label: str, it: dict, now: datetime) -> Deci
         excerpt=None if ask else (comment_body or it.get("body") or "")[:600],
         body=it.get("body") or "",
         summary=summary, sota=sota, delta=delta,
+        is_pr=is_pr,
     )
 
 
@@ -308,31 +435,42 @@ def load_decision_queue() -> dict:
     today = now.date()
     # An issue carrying BOTH human gates would otherwise get its comment
     # thread fetched twice — dedupe by (repo, number) BEFORE the network
-    # fan-out, not after, so we never double-pay for a shared issue.
+    # fan-out, not after, so we never double-pay for a shared issue. (repo,
+    # number) is a safe key even across the issue/PR scans below — GitHub
+    # issues and PRs share one number sequence per repo, so a PR can never
+    # collide with an issue of the same number.
     seen: set[tuple[str, int]] = set()
-    to_build: list[tuple[str, str, dict]] = []
+    to_build: list[tuple[str, str, dict, bool]] = []
     snoozed: list[dict] = []
+
+    def _queue(repo: str, label: str, it: dict, *, is_pr: bool) -> None:
+        key = (repo, it["number"])
+        if key in seen:
+            return
+        seen.add(key)
+        until = reexam_snoozed_until(it.get("body") or "", today)
+        if until:
+            snoozed.append({
+                "key": f"{repo}#{it['number']}", "until": until,
+                "title": it["title"], "url": it["html_url"],
+            })
+            return
+        to_build.append((repo, label, it, is_pr))
+
     for repo in BACKLOG_REPOS:
         for label in HUMAN_GATE_LABELS:
             for it in _list_gated_issues(repo, label):
-                key = (repo, it["number"])
-                if key in seen:
-                    continue
-                seen.add(key)
-                until = reexam_snoozed_until(it.get("body") or "", today)
-                if until:
-                    snoozed.append({
-                        "key": f"{repo}#{it['number']}", "until": until,
-                        "title": it["title"], "url": it["html_url"],
-                    })
-                    continue
-                to_build.append((repo, label, it))
+                _queue(repo, label, it, is_pr=False)
+    for repo in CODE_REPOS:
+        for label in HUMAN_GATE_LABELS:
+            for it in _list_gated_prs(repo, label):
+                _queue(repo, label, it, is_pr=True)
 
     items: list[DecisionItem] = []
     if to_build:
         with ThreadPoolExecutor(max_workers=min(8, len(to_build))) as pool:
-            futures = [pool.submit(_build_decision_item, repo, label, it, now)
-                       for repo, label, it in to_build]
+            futures = [pool.submit(_build_decision_item, repo, label, it, now, is_pr=is_pr)
+                       for repo, label, it, is_pr in to_build]
             items = [f.result() for f in futures]
 
     items.sort(key=lambda i: -i.age_days)
@@ -356,6 +494,50 @@ def _remove_gate_labels(repo: str, number: int) -> None:
                 raise
 
 
+def _mark_pr_ready(repo: str, number: int) -> None:
+    """Flip a draft PR to ready-for-review (config#2431). No plain REST PATCH
+    exists for this field — GraphQL only — and the proxy-TLS constraint
+    forbids shelling to ``gh pr ready`` the way the sweep scripts do, so this
+    goes through the same ``_request`` urllib path as everything else."""
+    pr = _request("GET", f"{_API}/repos/{repo}/pulls/{number}") or {}
+    node_id = pr.get("node_id")
+    if not node_id:
+        logger.warning("decision_queue: could not fetch node_id for %s#%d — "
+                       "cannot flip ready", repo, number)
+        return
+    query = ("mutation($id: ID!) { markPullRequestReadyForReview("
+             "input: {pullRequestId: $id}) { pullRequest { id } } }")
+    _request("POST", f"{_API}/graphql", {"query": query, "variables": {"id": node_id}})
+
+
+def _resolve_pr_gate_followup(repo: str, number: int) -> None:
+    """After a ruling has ALREADY removed this item's human gate label(s):
+    if it's a draft PR with no OTHER ``gate:*`` label still blocking it,
+    flip it ready (config#2431 — "the result of the Decision Queue should
+    resolve the gate"). Re-fetches the LIVE PR (not a stale pre-ruling
+    snapshot) so a concurrently-added label or a manual ready-flip is never
+    raced. Never raises — a failed follow-up just leaves the PR draft for a
+    human or the next sweep pass to retry; the ruling itself already landed.
+    """
+    try:
+        pr = _request("GET", f"{_API}/repos/{repo}/pulls/{number}") or {}
+    except Exception as exc:
+        logger.warning("decision_queue: PR follow-up fetch failed for %s#%d: %s",
+                       repo, number, exc)
+        return
+    if not pr.get("draft"):
+        return
+    remaining = [l["name"] for l in pr.get("labels", []) if l["name"].startswith("gate:")]
+    if remaining:
+        logger.info("decision_queue: %s#%d stays draft — still gated by %s",
+                    repo, number, remaining)
+        return
+    try:
+        _mark_pr_ready(repo, number)
+    except Exception as exc:
+        logger.warning("decision_queue: ready-flip failed for %s#%d: %s", repo, number, exc)
+
+
 # Write actions deliberately do NOT clear_queue_cache()/force a reload: the
 # view's `dq_done` session-state guard already hides the acted-on item
 # instantly on the immediate st.rerun(), so a synchronous full re-fetch of
@@ -365,12 +547,17 @@ def _remove_gate_labels(repo: str, number: int) -> None:
 # the 300s TTL — bounding, not eliminating, cross-session staleness.
 
 
-def post_ruling(repo: str, number: int, option: str, detail: str = "") -> None:
-    """Ruling → comment + de-gate. The next tier groom executes."""
+def post_ruling(repo: str, number: int, option: str, detail: str = "", *,
+                is_pr: bool = False) -> None:
+    """Ruling → comment + de-gate (+ PR follow-up, config#2431). The next
+    tier groom executes any remaining work; a fully-unblocked draft PR is
+    flipped ready immediately rather than waiting on a groom pass to notice."""
     when = datetime.now(timezone.utc).date().isoformat()
     _request("POST", f"{_API}/repos/{repo}/issues/{number}/comments",
              {"body": ruling_comment(option, detail, when)})
     _remove_gate_labels(repo, number)
+    if is_pr:
+        _resolve_pr_gate_followup(repo, number)
 
 
 def kill_issue(repo: str, number: int, detail: str = "") -> None:
