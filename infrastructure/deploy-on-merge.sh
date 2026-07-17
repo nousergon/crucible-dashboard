@@ -90,8 +90,29 @@ if [ -f ".venv/bin/pip" ] && [ -f "requirements.txt" ]; then
     # requirements.txt diff detection — pip install only on actual change.
     if paths_changed "${CURRENT_SHA}~1" "$CURRENT_SHA" requirements.txt; then
         log "requirements.txt changed — pip install"
-        sudo -u ec2-user .venv/bin/pip install --quiet -r requirements.txt 2>>"$LOG" \
-            || fail "pip install requirements.txt"
+        # requirements.txt is a uv-compiled lockfile. It is compiled in CI
+        # (GH runner, currently Python 3.12) but INSTALLED here against the
+        # box venv — if the two interpreters differ, a version that resolves
+        # cleanly for the compiler can be un-installable here (Requires-Python
+        # >=3.11 pins like numpy 2.4.6 / pandas 3.0.3 ship no <3.11 wheel).
+        # Log the venv interpreter up front so a mismatch is visible in the
+        # SSM/CI output rather than inferred (2026-07-17 numpy/pandas parity
+        # incident: config#1592-sibling — a hand-patched numpy pin masked that
+        # pandas 3.0.3 carries the same >=3.11 floor; the real failure lived
+        # only in $LOG on the box, invisible to CI/ci-watch).
+        log "venv python -> $(sudo -u ec2-user .venv/bin/python --version 2>&1)"
+        # Capture pip's combined output (drop --quiet: we KEEP the detail),
+        # tee the tail to stdout on failure so the REAL pip error reaches SSM
+        # StandardOutputContent (and thus CI + ci-watch), never buried in $LOG.
+        # Fail-loud: a real failure is made LOUDER here, never quieter.
+        PIP_OUT=$(sudo -u ec2-user .venv/bin/pip install -r requirements.txt 2>&1)
+        PIP_RC=$?
+        printf '%s\n' "$PIP_OUT" >>"$LOG"
+        if [ $PIP_RC -ne 0 ]; then
+            log "pip install FAILED (rc=$PIP_RC) — last 40 lines of pip output:"
+            printf '%s\n' "$PIP_OUT" | tail -40
+            fail "pip install requirements.txt"
+        fi
     fi
     # NOTE: nousergon-lib (renamed from alpha-engine-lib at v0.60.0) is
     # TAG-pinned in requirements.txt (@vX.Y.Z), not @main, so the
