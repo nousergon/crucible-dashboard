@@ -43,13 +43,17 @@ certifi==2026.6.17
     #   httpx
     #   requests
 cffi==2.1.0
-    # via curl-cffi
+    # via
+    #   cryptography
+    #   curl-cffi
 charset-normalizer==3.4.9
     # via requests
 click==8.4.2
     # via
     #   streamlit
     #   uvicorn
+cryptography==49.0.0
+    # via pyjwt
 curl-cffi==0.15.0
     # via yfinance
 distro==1.9.0
@@ -113,7 +117,7 @@ narwhals==2.24.0
     # via
     #   altair
     #   plotly
-nousergon-lib[flow-doctor] @ git+https://github.com/nousergon/nousergon-lib@v0.116.0
+nousergon-lib[flow-doctor,github_app] @ git+https://github.com/nousergon/nousergon-lib@v0.124.0
     # via -r requirements.in
 numpy==2.5.1
     # via
@@ -163,6 +167,8 @@ pydeck==0.9.3
     # via streamlit
 pygments==2.20.0
     # via rich
+pyjwt[crypto]==2.13.0
+    # via nousergon-lib
 python-dateutil==2.9.0.post0
     # via
     #   botocore

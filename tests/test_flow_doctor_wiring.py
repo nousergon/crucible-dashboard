@@ -310,8 +310,16 @@ class TestLibVersionPin:
             "nousergon_lib import alias still works via the shim)"
         )
         assert "@main" not in text, "nousergon-lib must be pinned to a tag, not @main"
-        assert "@v0.116.0" in text, (
-            "nousergon-lib should pin to v0.116.0 (alpha-engine-config#2557, "
+        assert "@v0.124.0" in text, (
+            "nousergon-lib should pin to v0.124.0 (alpha-engine-config-I2785, "
+            "nousergon-lib#220: adds nousergon_lib.github_app + the "
+            "[github_app] extra — loaders/decision_queue_loader.py now "
+            "authenticates GitHub as the ne-groomer App installation token "
+            "first (the identity untouched by the 2026-07-16 user-token REST "
+            "outage, config-I2784), keeping the groom PAT only as fallback; "
+            "v0.123.x and earlier do not carry the module, which degrades the "
+            "loader to PAT-only via its ImportError guard. "
+            "Earlier: v0.116.0 (alpha-engine-config#2557, "
             "nousergon-lib#207: pipeline_status registry's "
             "EvalJudgeSubmitFirstSaturday/EvalJudgeSubmitWeekly/"
             "EvalJudgeProcess/EvalRollingMean ArchivePageRefs follow this "

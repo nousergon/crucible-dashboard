@@ -109,7 +109,12 @@ krepis>=0.14.0
 # pyproject-version-bump-check guard on src/ changes) a version bump to
 # 0.116.0 in the same PR -- v0.115.0 predates that bump and does not carry
 # the fix; pin must be 0.116.0, not 0.115.0.
-nousergon-lib[flow-doctor] @ git+https://github.com/nousergon/nousergon-lib@v0.116.0
+# v0.124.0 (config-I2785, nousergon-lib#220): adds nousergon_lib.github_app +
+# the [github_app] extra (PyJWT[crypto]) -- the Decision Queue loader now
+# authenticates GitHub as the ne-groomer App installation (resilient bot
+# identity; the 2026-07-16 user-token REST outage config-I2784 didn't touch
+# App tokens), keeping the groom PAT only as fallback.
+nousergon-lib[flow-doctor,github_app] @ git+https://github.com/nousergon/nousergon-lib@v0.124.0
 
 # crucible-dash-api (config#1973 phase 9-B): read-only FastAPI over the
 # results view-model, consumed same-box by the /dash Next.js frontend.

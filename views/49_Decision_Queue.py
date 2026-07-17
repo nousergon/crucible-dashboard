@@ -54,10 +54,12 @@ st.caption(
 
 if github_token() is None:
     st.error(
-        "No GitHub token available — SSM `/alpha-engine/groom/github_pat` is "
-        "unreadable from this box (dashboard-role needs `ssm:GetParameter` on "
-        "it — `iam/alpha-engine-dashboard-role/alpha-engine-dashboard-groom-pat-read.json`) "
-        "and no env fallback is set. The queue cannot load."
+        "No GitHub token available — App-token mint failed (SSM "
+        "`/alpha-engine/groom/github_app_*`, config-I2785), the groom-PAT "
+        "fallback at `/alpha-engine/groom/github_pat` is unreadable "
+        "(`alpha-engine-dashboard-role` needs `ssm:GetParameter` on both — "
+        "the live `alpha-engine-ssm-read` inline policy's `/alpha-engine/*` "
+        "grant covers them), and no env fallback is set. The queue cannot load."
     )
     st.stop()
 

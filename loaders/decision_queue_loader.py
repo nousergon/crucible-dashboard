@@ -29,10 +29,13 @@ shelling to ``gh pr ready`` the way the sweep scripts do). "The result of the
 Decision Queue should resolve the gate" — Brian, 2026-07-13: ruling on the
 console is now sufficient, no separate manual PR-hunting pass required.
 
-Auth: the groom PAT from SSM ``/alpha-engine/groom/github_pat`` (cross-repo
-issues r/w — the same identity the groom board-sync uses), falling back to
-``FLOW_DOCTOR_GITHUB_TOKEN``/``GH_TOKEN`` env or ``gh auth token`` for local
-dev. GitHub is reached via ``urllib`` (NOT ``gh`` — proxy-TLS constraint).
+Auth (config-I2785): ne-groomer App installation token first (minted via
+``nousergon_lib.github_app`` from SSM ``/alpha-engine/groom/github_app_*`` —
+the identity that rode through the 2026-07-16 GitHub user-token REST outage,
+config-I2784, untouched), falling back to the groom PAT from SSM
+``/alpha-engine/groom/github_pat``, then ``FLOW_DOCTOR_GITHUB_TOKEN``/
+``GH_TOKEN`` env or ``gh auth token`` for local dev. GitHub is reached via
+``urllib`` (NOT ``gh`` — proxy-TLS constraint).
 
 alpha-engine-config-I2560: ``_list_gated_issues``/``_list_gated_prs`` read
 ``it["labels"]`` off the object itself (only to exclude ``SESSION_LABEL``
@@ -160,18 +163,70 @@ def _token_from_env() -> str | None:
         return None
 
 
+def _token_from_app() -> str | None:
+    """ne-groomer App installation token — the resilient bot identity.
+
+    config-I2785: the 2026-07-16 GitHub partial outage (config-I2784) 503'd
+    every cipher813 user-token REST call for ~an hour while App installation
+    tokens were unaffected — so the App identity is the primary auth path and
+    the operator PAT is the fallback, not the reverse.
+    ``nousergon_lib.github_app`` caches and self-refreshes the minted token
+    (5-min margin under the 60-min expiry), so calling per request is cheap.
+    """
+    try:
+        from nousergon_lib.github_app import GitHubAppTokenError, installation_token
+    except ImportError as exc:  # lib pin predates the module — PAT path still works
+        logger.warning("decision_queue: nousergon_lib.github_app unavailable: %s", exc)
+        return None
+    try:
+        return installation_token(region=_REGION)
+    except GitHubAppTokenError as exc:
+        logger.warning("decision_queue: App-token mint failed — PAT fallback: %s", exc)
+        return None
+
+
 @st.cache_resource(ttl=3600)
-def github_token() -> str | None:
-    """Groom PAT from SSM (the declared write identity), env/gh fallback."""
+def _pat_token() -> str | None:
+    """Operator-PAT fallback: SSM groom PAT, then env/gh for local dev."""
     return _token_from_ssm() or _token_from_env()
+
+
+_auth_path_last_logged: str | None = None
+
+
+def _log_auth_path(path: str) -> None:
+    """One INFO line per auth-path transition (not per request) — the
+    I2785 acceptance criterion is knowing WHICH identity served, without
+    a log line on all ~30 fan-out calls of every page load."""
+    global _auth_path_last_logged
+    if path != _auth_path_last_logged:
+        logger.info("decision_queue: GitHub auth path → %s", path)
+        _auth_path_last_logged = path
+
+
+def github_token() -> str | None:
+    """App installation token first (config-I2785), operator PAT fallback.
+
+    Deliberately NOT ``st.cache_resource``-cached at this level: installation
+    tokens expire hourly, and the lib layer already caches + re-mints with a
+    safety margin — a 3600s streamlit cache here could serve a dead token.
+    Only the PAT fallback (stable secret) keeps the streamlit-level cache.
+    """
+    tok = _token_from_app()
+    if tok is not None:
+        _log_auth_path("app-installation-token")
+        return tok
+    _log_auth_path("groom-pat-fallback")
+    return _pat_token()
 
 
 def _request(method: str, url: str, payload: dict | None = None) -> Any:
     token = github_token()
     if not token:
         raise RuntimeError(
-            "No GitHub token — SSM /alpha-engine/groom/github_pat unreadable "
-            "(dashboard-role needs ssm:GetParameter on it) and no env fallback."
+            "No GitHub token — App-token mint failed (SSM /alpha-engine/groom/"
+            "github_app_*), groom PAT unreadable (SSM .../github_pat), and no "
+            "env fallback. dashboard-role needs ssm:GetParameter on both."
         )
     data = json.dumps(payload).encode() if payload is not None else None
     req = urllib.request.Request(
