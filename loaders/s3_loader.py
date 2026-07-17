@@ -2426,6 +2426,19 @@ def load_usage_pacing_config() -> dict | None:
     return download_s3_json(_research_bucket(), "config/usage_pacing.json")
 
 
+@st.cache_data(ttl=900)
+def load_expense_report() -> dict | None:
+    """All-provider monthly expense rollup (``expenses/latest.json``) — one row
+    per external service (AWS, Anthropic API, OpenRouter, DeepSeek, Neon,
+    GitHub org+user, flat subscriptions) with MTD spend, projected month-end,
+    and over/under pacing vs the budgets SSoT
+    (``config/expense_budgets.json``). Producer: alpha-engine-data
+    ``infrastructure/lambdas/expense-collector`` (twice daily, 00:15/12:15
+    UTC); per-period history accumulates under ``expenses/monthly/``. None
+    until the collector's first run."""
+    return download_s3_json(_research_bucket(), "expenses/latest.json")
+
+
 # ---------------------------------------------------------------------------
 # Research Think Tank (data++) — config#1579
 # ---------------------------------------------------------------------------
