@@ -7,6 +7,7 @@ from shared.view_host import render_host
 
 render_host(
     [
+        ("Expenses", "50_Expenses.py"),
         ("API", "23_LLM_Cost.py"),  # gitleaks:allow — tab label, not a credential
         ("Plan", "36_LLM_Usage.py"),
     ],
