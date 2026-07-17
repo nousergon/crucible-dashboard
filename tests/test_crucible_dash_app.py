@@ -55,6 +55,48 @@ class TestInfraWiring:
         assert "systemctl restart crucible-dash" in script
         assert "8504/dash/_stcore/health" in script       # health gate
 
+    def test_requirements_nginx_installer_gates_are_state_compared(self):
+        # config#2338: a deploy that never executes (SSM delivery failure)
+        # must not permanently skip the missed commit's requirements/nginx/
+        # installer changes. These gates used to diff `${CURRENT_SHA}~1..
+        # ${CURRENT_SHA}` (a single-commit window that a missed deploy blows
+        # right past); they must now state-compare the repo file against the
+        # box's installed/live copy instead, mirroring the §3b-3d unit
+        # pattern (cmp repo vs /etc/systemd/system/*.service) which is
+        # self-healing by construction regardless of how many deploys were
+        # skipped.
+        script = (REPO_ROOT / "infrastructure" / "deploy-on-merge.sh").read_text()
+
+        assert "file_state_stale" in script
+        assert "any_file_state_stale" in script
+
+        # requirements.txt: stamp-file state-compare, not a HEAD~1 diff.
+        req_block = script[script.index('REQUIREMENTS_STAMP='):script.index("# ── 2. Reload nginx")]
+        assert 'file_state_stale "$REQUIREMENTS_STAMP" "requirements.txt"' in req_block
+        assert "CURRENT_SHA}~1" not in req_block
+
+        # nginx.conf: cmp repo copy directly against the live nginx conf.
+        nginx_block = script[script.index('NGINX_CONF_REPO='):script.index("# ── 2b.")]
+        assert 'file_state_stale "$NGINX_CONF_LIVE" "$NGINX_CONF_REPO"' in nginx_block
+        assert "CURRENT_SHA}~1" not in nginx_block
+
+        # §2b-2e installer gates: any_file_state_stale over explicit
+        # src:dst pairs, not a `paths_changed ... ~1` commit-range gate.
+        # Anchor on the "# ── 3." prefix, not a full title — main renames
+        # section-3 headings independently of this test's concern.
+        installer_block = script[script.index("# ── 2b."):script.index("# ── 3.")]
+        assert installer_block.count("any_file_state_stale") == 4
+        assert "CURRENT_SHA}~1" not in installer_block
+
+    def test_dash_web_build_gate_unaffected_by_state_compare_migration(self):
+        # config#2338 scoped the fix to requirements/nginx/installer gates
+        # only; the dash-web build gate is a separate cost tradeoff (npm ci +
+        # next build is expensive) and keeps its existing commit-range gate
+        # plus its own missing-build fallback.
+        script = (REPO_ROOT / "infrastructure" / "deploy-on-merge.sh").read_text()
+        assert 'paths_changed "${CURRENT_SHA}~1" "$CURRENT_SHA" dash-web/' in script
+        assert '[ ! -d "$WEB_DIR/.next" ]' in script
+
     def test_dash_port_registered_and_collision_free(self):
         # config#1972 Part A: box_health.sh's port map is still a
         # hand-maintained comment + SERVICES/PORTS arrays, not a derived

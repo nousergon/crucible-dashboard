@@ -64,6 +64,19 @@ fail() { log "FAIL $*"; exit 1; }
 # NOT silently treated as "no change" — it's logged loudly and treated as
 # "assume changed", since re-running an idempotent installer unnecessarily
 # is far cheaper than silently skipping a needed reinstall.
+#
+# NOTE (config#2338): paths_changed() itself is fine, but every call site
+# below used to diff `${CURRENT_SHA}~1..${CURRENT_SHA}` — i.e. "what changed
+# in THIS merge's single commit step". If a deploy never executes (SSM
+# delivery failure, config#2227 signature — detected in deploy.yml but not
+# healed), the *next* deploy's `~1..HEAD` window still only covers its own
+# single step and permanently skips whatever the missed commit touched. The
+# §3b-3d unit blocks below never had this problem because they don't diff
+# commit ranges at all — they `cmp` the repo file directly against the live
+# installed copy, so it doesn't matter how many deploys were missed; the gate
+# just asks "does live state match repo state right now". file_state_stale()
+# generalizes that same pattern for the requirements/nginx/installer gates
+# that used to be commit-range-gated.
 paths_changed() {
     local old_sha="$1" new_sha="$2"
     shift 2
@@ -78,6 +91,43 @@ paths_changed() {
     printf '%s\n' "$diff_out" | grep -q '^[+-]'
 }
 
+# file_state_stale DST SRC [SRC...]
+#
+# State-compare gate (config#2338): returns 0 (true — "stale, needs action")
+# if DST is missing, or if DST's content doesn't match SRC (first arg after
+# DST). Additional SRC args are only used for existence-checking (see
+# any_src_missing below) — deploy-on-merge always compares content 1:1 for
+# scripts/units, one file at a time, so callers loop over file pairs rather
+# than passing multiple SRCs to a single call. Same `cmp -s` primitive the
+# §3b-3d unit blocks already use, factored out so the requirements/nginx/
+# installer gates below can use it too. This is self-healing by construction:
+# it never looks at *how many* commits were skipped, only whether the box's
+# current state matches the repo's current state.
+file_state_stale() {
+    local dst="$1" src="$2"
+    [ ! -f "$dst" ] || ! cmp -s "$src" "$dst"
+}
+
+# any_file_state_stale SRC:DST [SRC:DST...]
+#
+# Returns 0 (true) if ANY of the given "src:dst" pairs is stale per
+# file_state_stale. Used by the §2b-2e installer gates, which each manage
+# several files (a script + N systemd units) — if any one of them drifts
+# from the repo, the whole idempotent installer re-runs (matching what the
+# installer itself does: it re-copies everything unconditionally once
+# invoked).
+any_file_state_stale() {
+    local pair src dst
+    for pair in "$@"; do
+        src="${pair%%:*}"
+        dst="${pair#*:}"
+        if file_state_stale "$dst" "$src"; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 log "=== deploy-on-merge started — target=$TARGET_SHA ==="
 
 cd "$REPO_DIR" || fail "cd $REPO_DIR"
@@ -86,10 +136,17 @@ log "repo HEAD -> $CURRENT_SHA"
 log "$(sudo -u ec2-user git log --oneline -1)"
 
 # ── 1. Refresh deps (as the owning user) ────────────────────────────────────
+# State-compare (config#2338), not commit-range diff: a stamp file records
+# the requirements.txt content that was installed last time this block ran.
+# If a deploy is skipped/fails, the stamp simply stays stale — the NEXT
+# deploy compares the repo's current requirements.txt against the stamp
+# (not against `HEAD~1`), so it doesn't matter how many commits were missed
+# in between. Steady-state (stamp already matches repo) stays a single
+# `cmp -s` — no pip invocation at all.
+REQUIREMENTS_STAMP="/etc/dashboard-deploy/requirements.txt.installed"
 if [ -f ".venv/bin/pip" ] && [ -f "requirements.txt" ]; then
-    # requirements.txt diff detection — pip install only on actual change.
-    if paths_changed "${CURRENT_SHA}~1" "$CURRENT_SHA" requirements.txt; then
-        log "requirements.txt changed — pip install"
+    if file_state_stale "$REQUIREMENTS_STAMP" "requirements.txt"; then
+        log "requirements.txt differs from last-installed stamp — pip install"
         # requirements.txt is a uv-compiled lockfile. It is compiled in CI
         # (GH runner, currently Python 3.12) but INSTALLED here against the
         # box venv — if the two interpreters differ, a version that resolves
@@ -155,6 +212,10 @@ if [ -f ".venv/bin/pip" ] && [ -f "requirements.txt" ]; then
             printf '%s\n' "$PIP_OUT" | tail -40
             fail "pip install requirements.txt"
         fi
+        # Record what was just installed so the next run's state-compare
+        # gate (config#2338) is against reality, not a commit range.
+        mkdir -p "$(dirname "$REQUIREMENTS_STAMP")" || fail "mkdir requirements stamp dir"
+        cp requirements.txt "$REQUIREMENTS_STAMP" || fail "update requirements.txt stamp"
     fi
     # NOTE: nousergon-lib (renamed from alpha-engine-lib at v0.60.0) is
     # TAG-pinned in requirements.txt (@vX.Y.Z), not @main, so the
@@ -167,7 +228,12 @@ if [ -f ".venv/bin/pip" ] && [ -f "requirements.txt" ]; then
 fi
 
 # ── 2. Reload nginx if infrastructure/nginx.conf changed ──────────────────
-# Same conditional-on-diff pattern as the requirements.txt block above.
+# State-compare (config#2338), not commit-range diff: the live file at
+# NGINX_CONF_LIVE IS the "installed copy" (same role as the systemd unit
+# DSTs in §3b-3d below), so we cmp the repo copy directly against it instead
+# of diffing `HEAD~1..HEAD`. A missed deploy just leaves the live file stale
+# by however many commits — this gate doesn't care, it only asks whether the
+# live file matches the repo file right now.
 # nginx.conf is the source of truth for the routing layer (server_name +
 # proxy_pass + sub_filter rules); previously a config edit required
 # manually SSH'ing in to copy + reload. Now the fast-path auto-applies it.
@@ -177,7 +243,7 @@ fi
 NGINX_CONF_REPO="$REPO_DIR/infrastructure/nginx.conf"
 NGINX_CONF_LIVE="/etc/nginx/conf.d/nousergon.conf"
 if [ -f "$NGINX_CONF_REPO" ]; then
-    if paths_changed "${CURRENT_SHA}~1" "$CURRENT_SHA" infrastructure/nginx.conf; then
+    if file_state_stale "$NGINX_CONF_LIVE" "$NGINX_CONF_REPO"; then
         log "infrastructure/nginx.conf changed — staging + validating"
         # Stage to a tmp file, validate via nginx -t, then atomic-rename
         # into place. nginx -t against the staged file catches syntax
@@ -213,12 +279,20 @@ fi
 # call was migrated alpha_engine_lib.alerts -> nousergon_lib.alerts in the repo,
 # but the installed /usr/local/bin copy stayed on the old name and crashed
 # (`_AliasLoader` has no `get_code`) — so a real "episode missing" event went
-# unpaged (morning-signal#77). Same conditional-on-diff pattern as nginx above:
-# re-run the idempotent installer ONLY when the wrapper, its installer, or its
-# units changed in this merge.
-WATCHDOG_PATHS="infrastructure/morning-signal-watchdog.sh infrastructure/install-morning-signal-watchdog.sh infrastructure/systemd/morning-signal-watchdog.service infrastructure/systemd/morning-signal-watchdog.timer"
-if paths_changed "${CURRENT_SHA}~1" "$CURRENT_SHA" $WATCHDOG_PATHS; then
-    log "morning-signal watchdog wrapper/units changed — re-installing"
+# unpaged (morning-signal#77).
+#
+# State-compare (config#2338), not commit-range diff: compare each
+# repo-tracked source file directly against its installed on-box copy (same
+# src:dst pairs install-morning-signal-watchdog.sh itself copies) instead of
+# diffing `HEAD~1..HEAD`. A missed deploy leaves the installed copies stale
+# by however many commits — irrelevant here, since the gate only checks
+# "does the box currently match the repo", same as §3b-3d below.
+WATCHDOG_INFRA="$REPO_DIR/infrastructure"
+if any_file_state_stale \
+    "$WATCHDOG_INFRA/morning-signal-watchdog.sh:/usr/local/bin/morning-signal-watchdog.sh" \
+    "$WATCHDOG_INFRA/systemd/morning-signal-watchdog.service:/etc/systemd/system/morning-signal-watchdog.service" \
+    "$WATCHDOG_INFRA/systemd/morning-signal-watchdog.timer:/etc/systemd/system/morning-signal-watchdog.timer"; then
+    log "morning-signal watchdog wrapper/units differ from installed copies — re-installing"
     bash "$REPO_DIR/infrastructure/install-morning-signal-watchdog.sh" >>"$LOG" 2>&1 \
         || fail "install-morning-signal-watchdog.sh"
     log "re-installed morning-signal watchdog"
@@ -227,26 +301,36 @@ fi
 # ── 2c. Re-install morning-signal core units if they changed ───────────────
 # The morning-signal service/timer/drop-ins + the generate-only recovery
 # wrapper are box-provisioned out of the repo tree by install-morning-signal.sh
-# (they used to be unmanaged box-only units — morning-signal#79). Same
-# conditional-on-diff auto-deploy as the watchdog block above so a unit edit
-# (e.g. the Requires=->Wants= daily-news fix, morning-signal#78) actually
-# reaches the box instead of silently drifting.
-MS_UNIT_PATHS="infrastructure/systemd/morning-signal.service infrastructure/systemd/morning-signal.timer infrastructure/systemd/morning-signal.service.d infrastructure/install-morning-signal.sh infrastructure/morning-signal-recover.sh"
-if paths_changed "${CURRENT_SHA}~1" "$CURRENT_SHA" $MS_UNIT_PATHS; then
-    log "morning-signal core units/recovery wrapper changed — re-installing"
+# (they used to be unmanaged box-only units — morning-signal#79).
+#
+# State-compare (config#2338): same src:dst pairs install-morning-signal.sh
+# copies, checked directly against the box instead of via `HEAD~1..HEAD`.
+MS_INFRA="$REPO_DIR/infrastructure"
+if any_file_state_stale \
+    "$MS_INFRA/systemd/morning-signal.service:/etc/systemd/system/morning-signal.service" \
+    "$MS_INFRA/systemd/morning-signal.timer:/etc/systemd/system/morning-signal.timer" \
+    "$MS_INFRA/systemd/morning-signal.service.d/10-after-news.conf:/etc/systemd/system/morning-signal.service.d/10-after-news.conf" \
+    "$MS_INFRA/systemd/morning-signal.service.d/10-memory.conf:/etc/systemd/system/morning-signal.service.d/10-memory.conf" \
+    "$MS_INFRA/morning-signal-recover.sh:/usr/local/bin/morning-signal-recover.sh"; then
+    log "morning-signal core units/recovery wrapper differ from installed copies — re-installing"
     bash "$REPO_DIR/infrastructure/install-morning-signal.sh" >>"$LOG" 2>&1 \
         || fail "install-morning-signal.sh"
     log "re-installed morning-signal core units"
 fi
 
 # ── 2d. Re-install morning-signal OSS bakeoff units if they changed ────────
-# The weekly Phase B shadow-bakeoff (config#1659) timer/service, same
-# conditional-on-diff auto-deploy as 2b/2c above -- including on FIRST
-# introduction, since a brand-new file counts as a diff (`+` lines), so this
-# also handles the initial rollout without a manual on-box step.
-BAKEOFF_UNIT_PATHS="infrastructure/systemd/morning-signal-bakeoff.service infrastructure/systemd/morning-signal-bakeoff.timer infrastructure/install-morning-signal-bakeoff.sh"
-if paths_changed "${CURRENT_SHA}~1" "$CURRENT_SHA" $BAKEOFF_UNIT_PATHS; then
-    log "morning-signal bakeoff units changed — re-installing"
+# The weekly Phase B shadow-bakeoff (config#1659) timer/service.
+#
+# State-compare (config#2338): a not-yet-installed dst (first rollout) is
+# "stale" by definition (file_state_stale treats a missing dst as stale),
+# so this still self-provisions on first introduction with no manual step —
+# same as the old diff-vs-parent gate did for brand-new files, but now also
+# self-heals if a rollout deploy was missed entirely.
+BAKEOFF_INFRA="$REPO_DIR/infrastructure"
+if any_file_state_stale \
+    "$BAKEOFF_INFRA/systemd/morning-signal-bakeoff.service:/etc/systemd/system/morning-signal-bakeoff.service" \
+    "$BAKEOFF_INFRA/systemd/morning-signal-bakeoff.timer:/etc/systemd/system/morning-signal-bakeoff.timer"; then
+    log "morning-signal bakeoff units differ from installed copies — re-installing"
     bash "$REPO_DIR/infrastructure/install-morning-signal-bakeoff.sh" >>"$LOG" 2>&1 \
         || fail "install-morning-signal-bakeoff.sh"
     log "re-installed morning-signal bakeoff units"
@@ -255,11 +339,21 @@ fi
 # ── 2e. Re-install box-health/hygiene watchdog if its script/units changed ──
 # box_health.sh + box_hygiene.sh + their units + the journald size cap are
 # /usr/local/bin + /etc provisioned OUT of the repo tree by
-# install-box-health.sh (config#2227). Same conditional-on-diff auto-deploy as
-# 2b-2d — including on first introduction (new files count as a diff).
-BOX_HEALTH_PATHS="infrastructure/box_health.sh infrastructure/box_hygiene.sh infrastructure/install-box-health.sh infrastructure/systemd/box-health.service infrastructure/systemd/box-health.timer infrastructure/systemd/box-hygiene.service infrastructure/systemd/box-hygiene.timer infrastructure/systemd/journald-size-cap.conf"
-if paths_changed "${CURRENT_SHA}~1" "$CURRENT_SHA" $BOX_HEALTH_PATHS; then
-    log "box-health/hygiene script or units changed — re-installing"
+# install-box-health.sh (config#2227).
+#
+# State-compare (config#2338): same src:dst pairs install-box-health.sh
+# copies (including the journald drop-in, which install-box-health.sh itself
+# already state-compares internally before restarting journald).
+BOX_HEALTH_INFRA="$REPO_DIR/infrastructure"
+if any_file_state_stale \
+    "$BOX_HEALTH_INFRA/box_health.sh:/usr/local/bin/box_health.sh" \
+    "$BOX_HEALTH_INFRA/box_hygiene.sh:/usr/local/bin/box_hygiene.sh" \
+    "$BOX_HEALTH_INFRA/systemd/box-health.service:/etc/systemd/system/box-health.service" \
+    "$BOX_HEALTH_INFRA/systemd/box-health.timer:/etc/systemd/system/box-health.timer" \
+    "$BOX_HEALTH_INFRA/systemd/box-hygiene.service:/etc/systemd/system/box-hygiene.service" \
+    "$BOX_HEALTH_INFRA/systemd/box-hygiene.timer:/etc/systemd/system/box-hygiene.timer" \
+    "$BOX_HEALTH_INFRA/systemd/journald-size-cap.conf:/etc/systemd/journald.conf.d/size-cap.conf"; then
+    log "box-health/hygiene script or units differ from installed copies — re-installing"
     bash "$REPO_DIR/infrastructure/install-box-health.sh" >>"$LOG" 2>&1 \
         || fail "install-box-health.sh"
     log "re-installed box-health/hygiene"
