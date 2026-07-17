@@ -187,50 +187,85 @@ if [ -f "$PYVER_SSOT_FILE" ] && [ -f "$REPO_DIR/.venv/bin/python" ]; then
         NEW_PY_BIN="/usr/bin/${PY_DNF_PKG}"
         [ -x "$NEW_PY_BIN" ] || fail "Python-parity self-heal: $NEW_PY_BIN not found after dnf install"
 
-        # 2. Build the new venv at a FRESH path (never in-place over the live
-        # .venv — an interrupted in-place rebuild would leave the running
-        # services pointed at a half-installed interpreter).
-        NEW_VENV_PATH="$REPO_DIR/.venv-${SSOT_PYVER_MAJOR_MINOR}-$(date +%s)"
-        sudo -u ec2-user "$NEW_PY_BIN" -m venv "$NEW_VENV_PATH" >>"$LOG" 2>&1 \
-            || fail "python-parity self-heal: venv create at $NEW_VENV_PATH"
-        sudo -u ec2-user "$NEW_VENV_PATH/bin/pip" install --upgrade pip >>"$LOG" 2>&1 \
-            || fail "python-parity self-heal: pip upgrade in new venv"
+        # 2. Stop the 4 Python-venv-backed services BEFORE touching .venv
+        # (config#2835 postmortem: a venv's console-script shebangs are
+        # ABSOLUTE paths baked in by `venv`/`pip install` at the path the
+        # venv was BUILT at. The old flow built the venv at a staging path
+        # then `mv`'d it into place — every shebang (streamlit, uvicorn,
+        # pip, ...) kept pointing at the now-deleted staging path, so systemd
+        # exec failed with a misleading ENOENT. The fix: build+install the
+        # venv directly at its FINAL path ($REPO_DIR/.venv, never relocated
+        # after install) so no shebang is ever wrong. That requires the venv
+        # to not exist at the final path while we build, hence stopping
+        # services first — this is now brief PLANNED downtime, not a live
+        # swap out from under running processes.)
+        systemctl stop dashboard nous-ergon-live crucible-dash crucible-dash-api 2>>"$LOG" \
+            || fail "python-parity self-heal: stop services before venv rebuild"
+        log "stopped dashboard, nous-ergon-live, crucible-dash, crucible-dash-api for venv rebuild"
+
+        # 3. Preserve the old venv for rollback, then build+install the new
+        # venv DIRECTLY at the final $REPO_DIR/.venv path (no relocation).
+        OLD_VENV_BACKUP="$REPO_DIR/.venv-prev-$(date +%s)"
+        mv "$REPO_DIR/.venv" "$OLD_VENV_BACKUP" || fail "python-parity self-heal: mv old .venv aside"
+
+        # _rollback_venv: restore the preserved old venv and restart services
+        # on it. Called on ANY failure from here on — a failed swap must
+        # never leave the box crash-looping on a broken/partial venv
+        # (config#2835 defect 2: the old flow's post-swap health-gate
+        # failure called `fail` directly, WITHOUT restoring the preserved
+        # old venv, leaving all 4 services crash-looping for ~25 minutes).
+        _rollback_venv() {
+            log "ROLLBACK python-parity self-heal: restoring $OLD_VENV_BACKUP -> $REPO_DIR/.venv"
+            rm -rf "$REPO_DIR/.venv"
+            if ! mv "$OLD_VENV_BACKUP" "$REPO_DIR/.venv"; then
+                log "FAIL python-parity self-heal: rollback mv itself failed — box has NO venv at $REPO_DIR/.venv, manual intervention required NOW"
+                return 1
+            fi
+            systemctl restart dashboard nous-ergon-live crucible-dash crucible-dash-api 2>>"$LOG"
+            wait_for_health "$CONSOLE_URL" "dashboard (console) [post-rollback]" \
+                && wait_for_health "$LIVE_URL" "nous-ergon-live [post-rollback]" \
+                && wait_for_health "$DASH_URL" "crucible-dash [post-rollback]" \
+                && wait_for_health "$DASH_API_URL" "crucible-dash-api [post-rollback]"
+        }
+
+        sudo -u ec2-user "$NEW_PY_BIN" -m venv "$REPO_DIR/.venv" >>"$LOG" 2>&1 \
+            || { _rollback_venv; fail "python-parity self-heal: venv create at $REPO_DIR/.venv (rolled back to previous venv)"; }
+        sudo -u ec2-user "$REPO_DIR/.venv/bin/pip" install --upgrade pip >>"$LOG" 2>&1 \
+            || { _rollback_venv; fail "python-parity self-heal: pip upgrade in new venv (rolled back to previous venv)"; }
 
         NEW_VENV_PIP_TMPDIR="$REPO_DIR/.pip-tmp-parity-heal"
         rm -rf "$NEW_VENV_PIP_TMPDIR"
         sudo -u ec2-user mkdir -p "$NEW_VENV_PIP_TMPDIR" \
-            || fail "python-parity self-heal: mkdir $NEW_VENV_PIP_TMPDIR"
+            || { _rollback_venv; fail "python-parity self-heal: mkdir $NEW_VENV_PIP_TMPDIR (rolled back to previous venv)"; }
         sudo -u ec2-user env TMPDIR="$NEW_VENV_PIP_TMPDIR" \
-            "$NEW_VENV_PATH/bin/pip" install -r "$REPO_DIR/requirements.txt" >>"$LOG" 2>&1 \
-            || fail "python-parity self-heal: pip install into new venv"
+            "$REPO_DIR/.venv/bin/pip" install -r "$REPO_DIR/requirements.txt" >>"$LOG" 2>&1 \
+            || { _rollback_venv; fail "python-parity self-heal: pip install into new venv (rolled back to previous venv)"; }
         rm -rf "$NEW_VENV_PIP_TMPDIR"
+        log "built venv directly at final path $REPO_DIR/.venv on $SSOT_PYVER_MAJOR_MINOR — no relocation, shebangs are correct by construction (old venv preserved at $OLD_VENV_BACKUP for rollback)"
 
-        # 3. Atomic swap: rename old venv aside, rename new venv into place.
-        # Both renames are on the same filesystem (both under $REPO_DIR), so
-        # each `mv` is atomic; the window between the two mv's is the only
-        # brief moment .venv doesn't exist, which is why services are
-        # restarted immediately after, not before.
-        OLD_VENV_BACKUP="$REPO_DIR/.venv-prev-$(date +%s)"
-        mv "$REPO_DIR/.venv" "$OLD_VENV_BACKUP" || fail "python-parity self-heal: mv old .venv aside"
-        mv "$NEW_VENV_PATH" "$REPO_DIR/.venv" || fail "python-parity self-heal: mv new venv into place"
-        log "swapped .venv to $SSOT_PYVER_MAJOR_MINOR (old venv preserved at $OLD_VENV_BACKUP for rollback)"
-
-        # 4. Restart the 3 Python-venv-backed services (dashboard,
+        # 4. Restart the 4 Python-venv-backed services (dashboard,
         # nous-ergon-live, crucible-dash + its crucible-dash-api sibling;
         # crucible-dash-web is Node/Next.js, not Python — untouched here).
-        systemctl restart dashboard 2>>"$LOG" || fail "python-parity self-heal: restart dashboard"
-        systemctl restart nous-ergon-live 2>>"$LOG" || fail "python-parity self-heal: restart nous-ergon-live"
-        systemctl restart crucible-dash 2>>"$LOG" || fail "python-parity self-heal: restart crucible-dash"
-        systemctl restart crucible-dash-api 2>>"$LOG" || fail "python-parity self-heal: restart crucible-dash-api"
+        systemctl restart dashboard 2>>"$LOG" || { _rollback_venv; fail "python-parity self-heal: restart dashboard (rolled back to previous venv)"; }
+        systemctl restart nous-ergon-live 2>>"$LOG" || { _rollback_venv; fail "python-parity self-heal: restart nous-ergon-live (rolled back to previous venv)"; }
+        systemctl restart crucible-dash 2>>"$LOG" || { _rollback_venv; fail "python-parity self-heal: restart crucible-dash (rolled back to previous venv)"; }
+        systemctl restart crucible-dash-api 2>>"$LOG" || { _rollback_venv; fail "python-parity self-heal: restart crucible-dash-api (rolled back to previous venv)"; }
         log "restarted dashboard, nous-ergon-live, crucible-dash, crucible-dash-api on new venv"
 
         # 5. Reuse the script's existing health-gate (§4) immediately, so a
         # bad interpreter swap is caught and visible NOW rather than only at
-        # the end of the script after other work has also run.
-        wait_for_health "$CONSOLE_URL" "dashboard (console) [python-parity swap]" || fail "python-parity self-heal: console health after swap"
-        wait_for_health "$LIVE_URL" "nous-ergon-live [python-parity swap]" || fail "python-parity self-heal: live health after swap"
-        wait_for_health "$DASH_URL" "crucible-dash [python-parity swap]" || fail "python-parity self-heal: crucible-dash health after swap"
-        wait_for_health "$DASH_API_URL" "crucible-dash-api [python-parity swap]" || fail "python-parity self-heal: crucible-dash-api health after swap"
+        # the end of the script after other work has also run. On failure,
+        # AUTO-ROLLBACK (defect 2) instead of leaving the broken venv live.
+        if ! wait_for_health "$CONSOLE_URL" "dashboard (console) [python-parity swap]" \
+            || ! wait_for_health "$LIVE_URL" "nous-ergon-live [python-parity swap]" \
+            || ! wait_for_health "$DASH_URL" "crucible-dash [python-parity swap]" \
+            || ! wait_for_health "$DASH_API_URL" "crucible-dash-api [python-parity swap]"; then
+            if _rollback_venv; then
+                fail "python-parity self-heal: post-swap health gate failed on $SSOT_PYVER_MAJOR_MINOR venv — ROLLED BACK to previous venv successfully, all 4 services healthy again on old venv"
+            else
+                fail "python-parity self-heal: post-swap health gate failed on $SSOT_PYVER_MAJOR_MINOR venv AND rollback also failed — box may have NO working venv, manual intervention required NOW"
+            fi
+        fi
         log "OK   Python-parity self-heal: all 4 services healthy on $SSOT_PYVER_MAJOR_MINOR"
 
         # requirements.txt is already installed fresh into the new venv

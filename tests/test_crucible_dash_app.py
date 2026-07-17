@@ -88,6 +88,58 @@ class TestInfraWiring:
         assert installer_block.count("any_file_state_stale") == 4
         assert "CURRENT_SHA}~1" not in installer_block
 
+    def test_python_parity_self_heal_venv_built_at_final_path_no_relocation(self):
+        # config#2835: the 2026-07-17 outage happened because the self-heal
+        # built the new venv at a STAGING path, pip-installed into it there
+        # (baking staging-path shebangs into every console script), then
+        # `mv`'d it into place — the shebangs then pointed at a deleted
+        # path. The fix is to never pip-install into a venv and then
+        # relocate it: the venv must be created directly at its final path.
+        script = (REPO_ROOT / "infrastructure" / "deploy-on-merge.sh").read_text()
+        heal_block = script[script.index("Python-parity self-heal: box venv is"):
+                             script.index("# ── 1. Refresh deps")]
+
+        # The venv must be created and pip-installed at $REPO_DIR/.venv
+        # directly (the FINAL path) — not at a separate "new venv" staging
+        # variable that later gets `mv`'d into place.
+        assert '"$NEW_PY_BIN" -m venv "$REPO_DIR/.venv"' in heal_block
+        assert '"$REPO_DIR/.venv/bin/pip" install' in heal_block
+
+        # No mv of a freshly-built/installed venv INTO the final .venv path
+        # — that pattern is exactly the shebang-breaking relocation bug.
+        # (Moving the OLD venv OUT to a backup path is fine and expected.)
+        assert 'mv "$NEW_VENV_PATH" "$REPO_DIR/.venv"' not in heal_block
+        assert "NEW_VENV_PATH" not in heal_block
+
+    def test_python_parity_self_heal_has_rollback_on_failed_health_gate(self):
+        # config#2835 defect 2: the old flow's post-swap health-gate failure
+        # called `fail` directly WITHOUT restoring the preserved old venv,
+        # leaving all 4 services crash-looping on the broken venv for ~25
+        # minutes. A rollback path must exist and must be invoked on the
+        # post-swap health-gate failure branch, not just logged about.
+        script = (REPO_ROOT / "infrastructure" / "deploy-on-merge.sh").read_text()
+        heal_block = script[script.index("Python-parity self-heal: box venv is"):
+                             script.index("# ── 1. Refresh deps")]
+
+        assert "_rollback_venv()" in heal_block, "no rollback function defined in the self-heal block"
+
+        # The preserved old venv must actually get restored on rollback.
+        rollback_start = heal_block.index("_rollback_venv() {")
+        rollback_fn = heal_block[rollback_start:
+                                  rollback_start + heal_block[rollback_start:].index("\n        }")]
+        assert 'mv "$OLD_VENV_BACKUP" "$REPO_DIR/.venv"' in rollback_fn
+        assert "systemctl restart dashboard nous-ergon-live crucible-dash crucible-dash-api" in rollback_fn
+        assert rollback_fn.count("wait_for_health") == 4, \
+            "rollback must re-verify health on all 4 services before considering itself successful"
+
+        # The post-swap health-gate failure branch must actually call the
+        # rollback — not just `fail` on its own, and not just mention
+        # rollback in a comment.
+        post_swap_gate = heal_block[heal_block.index("# 5. Reuse the script's existing health-gate"):]
+        assert "_rollback_venv" in post_swap_gate
+        assert 'fail "python-parity self-heal: post-swap health gate failed' in post_swap_gate
+        assert "ROLLED BACK to previous venv successfully" in post_swap_gate
+
     def test_dash_web_build_gate_unaffected_by_state_compare_migration(self):
         # config#2338 scoped the fix to requirements/nginx/installer gates
         # only; the dash-web build gate is a separate cost tradeoff (npm ci +
