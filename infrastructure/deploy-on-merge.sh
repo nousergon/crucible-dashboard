@@ -101,13 +101,55 @@ if [ -f ".venv/bin/pip" ] && [ -f "requirements.txt" ]; then
         # pandas 3.0.3 carries the same >=3.11 floor; the real failure lived
         # only in $LOG on the box, invisible to CI/ci-watch).
         log "venv python -> $(sudo -u ec2-user .venv/bin/python --version 2>&1)"
+
+        # TMPDIR fix (config#2792/#2736, 2026-07-17): pip has NO dedicated
+        # option for its build/download scratch space — it always uses
+        # tempfile.gettempdir(), i.e. $TMPDIR or /tmp. On this box, /tmp is a
+        # 957MB tmpfs (small, RAM-backed, and shared with unrelated
+        # box-resident state — morning-signal scratch files, research.db,
+        # etc.), while / has 16G+ free. A full-closure install of this lock
+        # (pandas/pyarrow/numpy/pillow/streamlit all downloading+building
+        # concurrently) can overflow that 957M tmpfs and fail with
+        # `OSError: [Errno 28] No space left on device` even though the real
+        # root disk never gets close to full. This was mistaken for "box pip
+        # 22.3.1 / Python 3.11 can't install the new uv lockfile" (config#2736)
+        # — live SSM reproduction on i-09b539c844515d549 disproved that: the
+        # IDENTICAL install, with pip 22.3.1 on Python 3.11.14 unchanged,
+        # succeeds cleanly once TMPDIR points at a directory on the root
+        # filesystem instead of the tmpfs. Point pip's scratch dir at the
+        # root filesystem so its space use is bounded by the 16G+ free there,
+        # not the 957M tmpfs.
+        PIP_TMPDIR="$REPO_DIR/.pip-tmp"
+        rm -rf "$PIP_TMPDIR"
+        sudo -u ec2-user mkdir -p "$PIP_TMPDIR" || fail "mkdir pip tmpdir $PIP_TMPDIR"
+
+        # Pre-pip fail-loud disk guards. Two distinct, both-real risk classes:
+        #   (a) the CURRENT failure mode — TMPDIR's own filesystem (now the
+        #       root fs via PIP_TMPDIR above) fills. Checked against
+        #       PIP_TMPDIR specifically (not assumed to be "/") so this stays
+        #       correct if TMPDIR is ever repointed elsewhere.
+        #   (b) the OLD/dormant failure mode — root "/" itself fills
+        #       (config#2227 class). Still checked directly since PIP_TMPDIR
+        #       living on "/" today doesn't guarantee it always will.
+        # Threshold 90% mirrors config#2227's disk-alarm threshold. Message
+        # is self-classifying from SSM stdout alone (config#2792) — no
+        # console-spelunking needed to tell "disk full" from "resolver error".
+        for guard_path in "$PIP_TMPDIR" "/"; do
+            guard_pcent="$(df --output=pcent "$guard_path" 2>/dev/null | tail -1 | tr -dc '0-9')"
+            guard_mount="$(df --output=target "$guard_path" 2>/dev/null | tail -1 | tr -d ' ')"
+            if [ -n "$guard_pcent" ] && [ "$guard_pcent" -ge 90 ]; then
+                fail "DISK FULL — ${guard_pcent}% used on ${guard_mount:-$guard_path}, deploy aborted before pip (config#2227/#2792/#2736 class; a rerun cannot heal this without freeing space)"
+            fi
+        done
+
         # Capture pip's combined output (drop --quiet: we KEEP the detail),
         # tee the tail to stdout on failure so the REAL pip error reaches SSM
         # StandardOutputContent (and thus CI + ci-watch), never buried in $LOG.
         # Fail-loud: a real failure is made LOUDER here, never quieter.
-        PIP_OUT=$(sudo -u ec2-user .venv/bin/pip install -r requirements.txt 2>&1)
+        PIP_OUT=$(sudo -u ec2-user env TMPDIR="$PIP_TMPDIR" .venv/bin/pip install -r requirements.txt 2>&1)
         PIP_RC=$?
         printf '%s\n' "$PIP_OUT" >>"$LOG"
+        rm -rf "$PIP_TMPDIR"
         if [ $PIP_RC -ne 0 ]; then
             log "pip install FAILED (rc=$PIP_RC) — last 40 lines of pip output:"
             printf '%s\n' "$PIP_OUT" | tail -40

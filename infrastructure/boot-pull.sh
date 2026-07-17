@@ -110,13 +110,49 @@ for repo in "${REPOS[@]}"; do
            [ "$PREV_SHA" != "$NEW_SHA" ] && [ -f "requirements.txt" ] && [ -f ".venv/bin/pip" ]; then
             if git diff "$PREV_SHA" "$NEW_SHA" -- requirements.txt | grep -q "^[+-]"; then
                 log "GATE $repo — requirements.txt changed, running pip install"
-                if .venv/bin/pip install --quiet -r requirements.txt >> "$LOG" 2>&1; then
+
+                # TMPDIR fix (config#2792/#2736, 2026-07-17, mirrors
+                # deploy-on-merge.sh): pip has no dedicated scratch-space
+                # option — it always uses tempfile.gettempdir(), i.e. $TMPDIR
+                # or /tmp. This box's /tmp is a 957MB tmpfs shared across ALL
+                # repos in this loop, while / has 16G+ free. A full-closure
+                # install can overflow that small tmpfs with
+                # `OSError: [Errno 28] No space left on device` even though
+                # the real root disk stays healthy — live SSM reproduction on
+                # i-09b539c844515d549 confirmed the identical install
+                # succeeds once TMPDIR points at the root filesystem instead.
+                # Scoped per-repo (not one shared dir) so two loop iterations
+                # can never collide.
+                PIP_TMPDIR="${repo}/.pip-tmp"
+                rm -rf "$PIP_TMPDIR"
+                mkdir -p "$PIP_TMPDIR"
+
+                # Pre-pip fail-loud disk guards — same two risk classes as
+                # deploy-on-merge.sh: (a) TMPDIR's own filesystem filling
+                # (the current failure mode), (b) root "/" filling (the
+                # config#2227 class, still real if PIP_TMPDIR ever moves off
+                # "/"). Self-classifying from $LOG alone.
+                GUARD_FAIL=0
+                for guard_path in "$PIP_TMPDIR" "/"; do
+                    guard_pcent="$(df --output=pcent "$guard_path" 2>/dev/null | tail -1 | tr -dc '0-9')"
+                    guard_mount="$(df --output=target "$guard_path" 2>/dev/null | tail -1 | tr -d ' ')"
+                    if [ -n "$guard_pcent" ] && [ "$guard_pcent" -ge 90 ]; then
+                        log "FAIL $repo — DISK FULL — ${guard_pcent}% used on ${guard_mount:-$guard_path}, pip install aborted before running (config#2227/#2792/#2736 class; a rerun cannot heal this without freeing space)"
+                        GUARD_FAIL=1
+                    fi
+                done
+
+                if [ "$GUARD_FAIL" -eq 1 ]; then
+                    PULL_FAILURES=$((PULL_FAILURES + 1))
+                    FAILED_REPOS+=("$repo (disk-full)")
+                elif TMPDIR="$PIP_TMPDIR" .venv/bin/pip install --quiet -r requirements.txt >> "$LOG" 2>&1; then
                     log "OK   $repo — deps updated"
                 else
                     log "FAIL $repo — pip install failed"
                     PULL_FAILURES=$((PULL_FAILURES + 1))
                     FAILED_REPOS+=("$repo (pip)")
                 fi
+                rm -rf "$PIP_TMPDIR"
             fi
         fi
 
