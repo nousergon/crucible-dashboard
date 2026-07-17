@@ -36,6 +36,25 @@ DASH_WEB_URL="http://localhost:3002/dash"
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$LOG"; }
 fail() { log "FAIL $*"; exit 1; }
 
+# wait_for_health URL LABEL — poll a health endpoint for up to 30s. Defined
+# early (moved up from §4) so the §0 Python-parity self-heal below can reuse
+# it post-restart without duplicating the polling loop.
+wait_for_health() {
+    local url="$1"
+    local label="$2"
+    local n=0
+    while [ $n -lt 30 ]; do
+        if curl -fsS --max-time 2 "$url" >/dev/null 2>&1; then
+            log "OK   $label — health passed at t=${n}s"
+            return 0
+        fi
+        sleep 1
+        n=$((n + 1))
+    done
+    log "FAIL $label — health check timed out after 30s"
+    return 1
+}
+
 # paths_changed OLD_SHA NEW_SHA -- path [path...]
 #
 # Returns 0 (true) if `git diff OLD_SHA NEW_SHA -- paths...` shows any real
@@ -135,6 +154,98 @@ CURRENT_SHA=$(sudo -u ec2-user git rev-parse HEAD)
 log "repo HEAD -> $CURRENT_SHA"
 log "$(sudo -u ec2-user git log --oneline -1)"
 
+# ── 0. Python-version SSoT self-heal (config#2791) ──────────────────────────
+# .python-version is the single declared Python version this repo builds
+# against (CI's `test` job now reads the same file — mirrors the dash-web
+# Node/.nvmrc parity guard, config#2711/PR#450). Unlike the Node guard (which
+# only FAILS on mismatch), this is a self-heal: an interpreter drift on this
+# box is fixable in-place (install the missing minor via dnf, rebuild the
+# venv, swap it in atomically) rather than requiring a human to SSH in.
+# Idempotent: no-ops once the box venv already matches the SSoT.
+PYVER_SSOT_FILE="$REPO_DIR/.python-version"
+if [ -f "$PYVER_SSOT_FILE" ] && [ -f "$REPO_DIR/.venv/bin/python" ]; then
+    SSOT_PYVER="$(tr -d '[:space:]' < "$PYVER_SSOT_FILE")"
+    SSOT_PYVER_MAJOR_MINOR="$(printf '%s' "$SSOT_PYVER" | grep -oE '^[0-9]+\.[0-9]+')"
+    BOX_VENV_PYVER="$(sudo -u ec2-user "$REPO_DIR/.venv/bin/python" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || true)"
+    if [ -z "$SSOT_PYVER_MAJOR_MINOR" ]; then
+        log "WARN Python-parity self-heal: could not parse major.minor from $PYVER_SSOT_FILE (got '$SSOT_PYVER') — skipping"
+    elif [ -z "$BOX_VENV_PYVER" ]; then
+        log "WARN Python-parity self-heal: could not determine box venv's Python version — skipping"
+    elif [ "$BOX_VENV_PYVER" = "$SSOT_PYVER_MAJOR_MINOR" ]; then
+        log "OK   Python-parity self-heal: box venv already on $BOX_VENV_PYVER, matches SSoT $SSOT_PYVER_MAJOR_MINOR — no-op"
+    else
+        log "Python-parity self-heal: box venv is $BOX_VENV_PYVER, SSoT ($PYVER_SSOT_FILE) requires $SSOT_PYVER_MAJOR_MINOR — rebuilding venv"
+
+        # 1. Install the target interpreter via dnf if not already present
+        # (AL2023 amazonlinux repo carries pythonX.Y packages directly).
+        PY_DNF_PKG="python${SSOT_PYVER_MAJOR_MINOR}"
+        if ! command -v "/usr/bin/${PY_DNF_PKG}" >/dev/null 2>&1; then
+            log "installing $PY_DNF_PKG via dnf"
+            dnf install -y "${PY_DNF_PKG}" >>"$LOG" 2>&1 \
+                || fail "dnf install $PY_DNF_PKG"
+        fi
+        NEW_PY_BIN="/usr/bin/${PY_DNF_PKG}"
+        [ -x "$NEW_PY_BIN" ] || fail "Python-parity self-heal: $NEW_PY_BIN not found after dnf install"
+
+        # 2. Build the new venv at a FRESH path (never in-place over the live
+        # .venv — an interrupted in-place rebuild would leave the running
+        # services pointed at a half-installed interpreter).
+        NEW_VENV_PATH="$REPO_DIR/.venv-${SSOT_PYVER_MAJOR_MINOR}-$(date +%s)"
+        sudo -u ec2-user "$NEW_PY_BIN" -m venv "$NEW_VENV_PATH" >>"$LOG" 2>&1 \
+            || fail "python-parity self-heal: venv create at $NEW_VENV_PATH"
+        sudo -u ec2-user "$NEW_VENV_PATH/bin/pip" install --upgrade pip >>"$LOG" 2>&1 \
+            || fail "python-parity self-heal: pip upgrade in new venv"
+
+        NEW_VENV_PIP_TMPDIR="$REPO_DIR/.pip-tmp-parity-heal"
+        rm -rf "$NEW_VENV_PIP_TMPDIR"
+        sudo -u ec2-user mkdir -p "$NEW_VENV_PIP_TMPDIR" \
+            || fail "python-parity self-heal: mkdir $NEW_VENV_PIP_TMPDIR"
+        sudo -u ec2-user env TMPDIR="$NEW_VENV_PIP_TMPDIR" \
+            "$NEW_VENV_PATH/bin/pip" install -r "$REPO_DIR/requirements.txt" >>"$LOG" 2>&1 \
+            || fail "python-parity self-heal: pip install into new venv"
+        rm -rf "$NEW_VENV_PIP_TMPDIR"
+
+        # 3. Atomic swap: rename old venv aside, rename new venv into place.
+        # Both renames are on the same filesystem (both under $REPO_DIR), so
+        # each `mv` is atomic; the window between the two mv's is the only
+        # brief moment .venv doesn't exist, which is why services are
+        # restarted immediately after, not before.
+        OLD_VENV_BACKUP="$REPO_DIR/.venv-prev-$(date +%s)"
+        mv "$REPO_DIR/.venv" "$OLD_VENV_BACKUP" || fail "python-parity self-heal: mv old .venv aside"
+        mv "$NEW_VENV_PATH" "$REPO_DIR/.venv" || fail "python-parity self-heal: mv new venv into place"
+        log "swapped .venv to $SSOT_PYVER_MAJOR_MINOR (old venv preserved at $OLD_VENV_BACKUP for rollback)"
+
+        # 4. Restart the 3 Python-venv-backed services (dashboard,
+        # nous-ergon-live, crucible-dash + its crucible-dash-api sibling;
+        # crucible-dash-web is Node/Next.js, not Python — untouched here).
+        systemctl restart dashboard 2>>"$LOG" || fail "python-parity self-heal: restart dashboard"
+        systemctl restart nous-ergon-live 2>>"$LOG" || fail "python-parity self-heal: restart nous-ergon-live"
+        systemctl restart crucible-dash 2>>"$LOG" || fail "python-parity self-heal: restart crucible-dash"
+        systemctl restart crucible-dash-api 2>>"$LOG" || fail "python-parity self-heal: restart crucible-dash-api"
+        log "restarted dashboard, nous-ergon-live, crucible-dash, crucible-dash-api on new venv"
+
+        # 5. Reuse the script's existing health-gate (§4) immediately, so a
+        # bad interpreter swap is caught and visible NOW rather than only at
+        # the end of the script after other work has also run.
+        wait_for_health "$CONSOLE_URL" "dashboard (console) [python-parity swap]" || fail "python-parity self-heal: console health after swap"
+        wait_for_health "$LIVE_URL" "nous-ergon-live [python-parity swap]" || fail "python-parity self-heal: live health after swap"
+        wait_for_health "$DASH_URL" "crucible-dash [python-parity swap]" || fail "python-parity self-heal: crucible-dash health after swap"
+        wait_for_health "$DASH_API_URL" "crucible-dash-api [python-parity swap]" || fail "python-parity self-heal: crucible-dash-api health after swap"
+        log "OK   Python-parity self-heal: all 4 services healthy on $SSOT_PYVER_MAJOR_MINOR"
+
+        # requirements.txt is already installed fresh into the new venv
+        # above (it must be, to build a working venv at all) — skip §1's
+        # state-compare-gated pip install this run so we don't redundantly
+        # reinstall into the venv we just built, and record the stamp §1
+        # compares against (same path as REQUIREMENTS_STAMP below) so the
+        # next deploy's state-compare reflects reality.
+        mkdir -p /etc/dashboard-deploy || fail "python-parity self-heal: mkdir stamp dir"
+        cp "$REPO_DIR/requirements.txt" /etc/dashboard-deploy/requirements.txt.installed \
+            || fail "python-parity self-heal: update requirements stamp"
+        SKIP_REQUIREMENTS_INSTALL=1
+    fi
+fi
+
 # ── 1. Refresh deps (as the owning user) ────────────────────────────────────
 # State-compare (config#2338), not commit-range diff: a stamp file records
 # the requirements.txt content that was installed last time this block ran.
@@ -144,7 +255,7 @@ log "$(sudo -u ec2-user git log --oneline -1)"
 # in between. Steady-state (stamp already matches repo) stays a single
 # `cmp -s` — no pip invocation at all.
 REQUIREMENTS_STAMP="/etc/dashboard-deploy/requirements.txt.installed"
-if [ -f ".venv/bin/pip" ] && [ -f "requirements.txt" ]; then
+if [ "${SKIP_REQUIREMENTS_INSTALL:-0}" != "1" ] && [ -f ".venv/bin/pip" ] && [ -f "requirements.txt" ]; then
     if file_state_stale "$REQUIREMENTS_STAMP" "requirements.txt"; then
         log "requirements.txt differs from last-installed stamp — pip install"
         # requirements.txt is a uv-compiled lockfile. It is compiled in CI
@@ -465,21 +576,8 @@ fi
 # ── 4. Health check ─────────────────────────────────────────────────────────
 # Streamlit's /_stcore/health returns 200 OK with body "ok" once the
 # server is ready. Give it up to 30s per service to bind the port.
-wait_for_health() {
-    local url="$1"
-    local label="$2"
-    local n=0
-    while [ $n -lt 30 ]; do
-        if curl -fsS --max-time 2 "$url" >/dev/null 2>&1; then
-            log "OK   $label — health passed at t=${n}s"
-            return 0
-        fi
-        sleep 1
-        n=$((n + 1))
-    done
-    log "FAIL $label — health check timed out after 30s"
-    return 1
-}
+# (wait_for_health itself is defined near the top of this script, above §0,
+# so the Python-parity self-heal can reuse it post-restart.)
 
 wait_for_health "$CONSOLE_URL" "dashboard (console)" || fail "console health"
 wait_for_health "$LIVE_URL" "nous-ergon-live" || fail "live health"
