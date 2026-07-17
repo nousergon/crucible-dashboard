@@ -119,7 +119,14 @@ narwhals==2.24.0
     #   plotly
 nousergon-lib[flow-doctor,github_app] @ git+https://github.com/nousergon/nousergon-lib@v0.124.0
     # via -r requirements.in
-numpy==2.5.1
+# numpy 2.5.x requires Python >=3.12 but the dashboard box venv runs 3.11
+# (PR#421's lockfile was compiled on a 3.12 resolver — the 2026-07-17 #468
+# merge-deploy was the first requirements-touching deploy since, and pip
+# failed on-box). 2.4.6 installs on 3.11 AND CI's 3.12. Remove this ceiling
+# when the box venv moves to 3.12 (tracked parity issue; mirrors the Node-22
+# cutover config-I2711) — recompile the lockfile with a --python-version
+# matching the box until then.
+numpy==2.4.6
     # via
     #   pandas
     #   pydeck
