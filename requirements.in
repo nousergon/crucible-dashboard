@@ -11,7 +11,7 @@ setuptools>=83.0.0
 # (put_object IfMatch / IfNoneMatch) for lost-update protection; the loader
 # also carries a compare-then-put fallback if the installed botocore
 # predates them, but the pinned floor makes the conditional path the norm.
-boto3>=1.36
+boto3>=1.43.50
 pyyaml>=6.0
 # streamlit-calendar: FullCalendar component backing the Morning Signal
 # Content Schedule page (views/45_Morning_Signal_Schedule.py) — month
@@ -29,7 +29,7 @@ yfinance>=1.5.1
 # st.secrets["anthropic"]["ANTHROPIC_API_KEY"] (NOT os.environ — see
 # tests/test_no_secret_environ_reads.py); when the key or SDK is absent the
 # brief card degrades to a friendly notice (fail-soft, no hard render dependency).
-anthropic>=0.116.0
+anthropic>=0.117.0
 # krepis (config#1722, 2026-07-05): views/36_Claude_Code_Usage.py imports
 # krepis.usage_pacing.reset_window for the reset-aligned weekly window math,
 # replacing the local _current_week_window that used to be duplicated with
