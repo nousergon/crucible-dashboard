@@ -1,11 +1,19 @@
 # marketing-vires/ — Vires product landing page
 
-Source for **`fitness.nousergon.ai`** — the Vires marketing landing + **beta waitlist**
-(the fitness *category* URL serves its single product's page for now).
-**`vires.nousergon.ai` is NOT this site** — it is an A record to the EC2 box running
-the actual Vires app (Brian's installed PWA; since 2026-06-27). Do not attach
-vires.nousergon.ai to this Pages project: doing so hijacks the app URL at the edge
-(happened briefly 2026-07-02).
+Source for **`vires.nousergon.ai`** — the Vires marketing landing + **beta waitlist**,
+served at the product's own domain root (reversed 2026-07-18; previously lived at
+`fitness.nousergon.ai`, with `vires.nousergon.ai` reserved for the live app — see
+below for why that changed). `fitness.nousergon.ai` is now a redirect to
+`vires.nousergon.ai`.
+
+The live Vires app (Brian's installed PWA; since 2026-06-27) shares this domain at
+**`vires.nousergon.ai/app`** — a Cloudflare Worker (`vires-app-proxy` in
+`nous-ergon-ops`) forwards that path prefix to the app's own EC2 origin
+(`vires-app.nousergon.ai`); everything else on the domain is this Pages project.
+This only works because the app itself is namespaced under `/app` (Vite `base`,
+FastAPI routers — `nousergon/vires`). Do not attach this Pages project to
+`vires.nousergon.ai` without that namespacing in place: that's the mistake that
+briefly hijacked the app URL at the edge on 2026-07-02, before the namespacing existed.
 Sibling of `marketing/` (Crucible), `marketing-apex/` (lab landing), and
 `marketing-metron/` (Metron) — same Astro 6 + Tailwind 4 + Biome baseline, and the
 waitlist capture mirrors `marketing-metron/` exactly (D1 + Pages Function + optional
