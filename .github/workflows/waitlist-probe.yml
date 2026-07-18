@@ -1,12 +1,19 @@
 name: waitlist-probe
 
 # Synthetic end-to-end probe for the beta-waitlist capture path on the product
-# marketing sites (metron.nousergon.ai, fitness.nousergon.ai). A launch-day
+# marketing sites (metron.nousergon.ai, vires.nousergon.ai). A launch-day
 # manual test only proves launch-day health; this probe re-verifies the live
 # path daily so a silent regression can't eat signups for days — which already
 # happened once: a repo-root `wrangler pages deploy` shipped the static site
 # WITHOUT the Pages Functions and the Metron waitlist returned 405 from
 # 2026-06-28 until 2026-07-02 (see deploy-marketing.yml header).
+#
+# Topology (URL swap 2026-07-18): vires.nousergon.ai now serves BOTH the
+# marketing/waitlist site (root) and the live Vires app (/app*, Worker-routed
+# via vires-app-proxy to its own EC2 origin) — see marketing-vires/README.md.
+# fitness.nousergon.ai, the OLD marketing domain, now redirects to
+# vires.nousergon.ai; the `fitness-redirect` job below asserts that redirect
+# stays live so the old bookmarked/linked URL never silently 404s.
 #
 # How the probe works — and why it is side-effect-free:
 #   1. GET the landing page: asserts 200 + the waitlist form marker is present
@@ -44,7 +51,7 @@ jobs:
           - site: metron
             base: https://metron.nousergon.ai
           - site: vires
-            base: https://fitness.nousergon.ai # vires.nousergon.ai is the APP, not the marketing site
+            base: https://vires.nousergon.ai # app lives under /app on this same host; fitness.nousergon.ai redirects here
     steps:
       - name: Landing page serves the waitlist form
         run: |
@@ -81,10 +88,38 @@ jobs:
         run: |
           echo "**${{ matrix.site }}** (${{ matrix.base }}) probe: ${{ job.status }}" >> "$GITHUB_STEP_SUMMARY"
 
+  # Independent check: fitness.nousergon.ai (the OLD Vires marketing domain,
+  # pre URL-topology-swap) must keep 3xx-redirecting to vires.nousergon.ai —
+  # catches an accidental redirect-rule removal/DNS detach that would silently
+  # 404 every old bookmarked/linked fitness.nousergon.ai URL.
+  fitness-redirect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: fitness.nousergon.ai redirects to vires.nousergon.ai
+        run: |
+          out=$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' --max-time 30 "https://fitness.nousergon.ai/")
+          code="${out%% *}"
+          location="${out#* }"
+          echo "fitness.nousergon.ai/ -> status=$code location=$location"
+          case "$code" in
+            301|302|307|308)
+              ;;
+            *)
+              echo "::error::fitness.nousergon.ai/ returned HTTP $code (expected a 301/302/307/308 redirect to vires.nousergon.ai)"
+              exit 1
+              ;;
+          esac
+          host=$(echo "$location" | sed -E 's#^[a-zA-Z]+://##; s#[/:].*$##')
+          if [ "$host" != "vires.nousergon.ai" ]; then
+            echo "::error::fitness.nousergon.ai/ redirected to '$location' (host '$host'), expected host vires.nousergon.ai"
+            exit 1
+          fi
+          echo "redirect OK ($code -> $location)"
+
   # Telegram + Fleet CI Watch dispatch, only for real (main-ref) probe failures —
   # same gating convention as ci.yml's notify-main-failure.
   notify-failure:
-    needs: [probe]
+    needs: [probe, fitness-redirect]
     if: ${{ failure() && github.ref == 'refs/heads/main' }}
     uses: nousergon/nousergon-lib/.github/workflows/notify-ci-failure.yml@main
     secrets: inherit
