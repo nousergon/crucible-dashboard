@@ -107,7 +107,7 @@ for repo in "${REPOS[@]}"; do
         # filling the shared t3.small's disk. The daily-news wrapper owns its
         # slim deps; boot-pull still git-syncs the repo (reset --hard above).
         if [ "$repo" != "/home/ec2-user/alpha-engine-data" ] && \
-           [ "$PREV_SHA" != "$NEW_SHA" ] && [ -f "requirements.txt" ] && [ -f ".venv/bin/pip" ]; then
+           [ "$PREV_SHA" != "$NEW_SHA" ] && [ -f "requirements.txt" ] && [ -x ".venv/bin/python" ]; then
             if git diff "$PREV_SHA" "$NEW_SHA" -- requirements.txt | grep -q "^[+-]"; then
                 log "GATE $repo — requirements.txt changed, running pip install"
 
@@ -145,7 +145,7 @@ for repo in "${REPOS[@]}"; do
                 if [ "$GUARD_FAIL" -eq 1 ]; then
                     PULL_FAILURES=$((PULL_FAILURES + 1))
                     FAILED_REPOS+=("$repo (disk-full)")
-                elif TMPDIR="$PIP_TMPDIR" .venv/bin/pip install --quiet -r requirements.txt >> "$LOG" 2>&1; then
+                elif TMPDIR="$PIP_TMPDIR" .venv/bin/python -m pip install --quiet -r requirements.txt >> "$LOG" 2>&1; then
                     log "OK   $repo — deps updated"
                 else
                     log "FAIL $repo — pip install failed"

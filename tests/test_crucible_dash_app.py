@@ -103,13 +103,59 @@ class TestInfraWiring:
         # directly (the FINAL path) — not at a separate "new venv" staging
         # variable that later gets `mv`'d into place.
         assert '"$NEW_PY_BIN" -m venv "$REPO_DIR/.venv"' in heal_block
-        assert '"$REPO_DIR/.venv/bin/pip" install' in heal_block
+        # pip is invoked via the interpreter (`python -m pip`), never the
+        # `.venv/bin/pip` console-script wrapper — see
+        # test_pip_invoked_via_interpreter_not_console_script for why.
+        assert '"$REPO_DIR/.venv/bin/python" -m pip install' in heal_block
 
         # No mv of a freshly-built/installed venv INTO the final .venv path
         # — that pattern is exactly the shebang-breaking relocation bug.
         # (Moving the OLD venv OUT to a backup path is fine and expected.)
         assert 'mv "$NEW_VENV_PATH" "$REPO_DIR/.venv"' not in heal_block
         assert "NEW_VENV_PATH" not in heal_block
+
+    def test_pip_invoked_via_interpreter_not_console_script(self):
+        # config#2938 (2026-07-18 Deploy false-red, run 29654297139): the §1
+        # dep-refresh invoked pip through the `.venv/bin/pip` console-script
+        # wrapper, whose absolute-path `#!` shebang is baked in at venv-build
+        # time. On a box whose venv had a stale/relocated wrapper the file
+        # still EXISTED (so the old `-f ".venv/bin/pip"` guard passed) but
+        # `env` could not execve it: `env: '.venv/bin/pip': No such file or
+        # directory` (rc=127), failing every deploy that changed
+        # requirements.txt. The pip MODULE in site-packages is unaffected, so
+        # the robust invocation is `.venv/bin/python -m pip`, which uses the
+        # working interpreter directly and is immune to wrapper-shebang drift.
+        # Guard the whole class: no bare `.venv/bin/pip` EXECUTION anywhere,
+        # and the §1 gate keys on the interpreter, not the wrapper file.
+        # Repo-wide chokepoint: NO box-side shell script may invoke the bare
+        # `.venv/bin/pip` wrapper (only `.venv/bin/python -m pip`). This is the
+        # structural guard, not a per-call-site patch — it fails CI if any
+        # future script reintroduces the fragile wrapper anywhere.
+        def strip_comments(text):
+            return "\n".join(
+                ln for ln in text.splitlines() if not ln.lstrip().startswith("#")
+            )
+
+        offenders = []
+        for sh in sorted((REPO_ROOT / "infrastructure").glob("*.sh")):
+            code = strip_comments(sh.read_text())
+            if ".venv/bin/pip" in code:
+                offenders.append(sh.name)
+        assert not offenders, (
+            "these scripts invoke the fragile .venv/bin/pip console-script "
+            f"wrapper instead of .venv/bin/python -m pip: {offenders}"
+        )
+
+        # deploy-on-merge.sh specifically must gate §1 on the interpreter and
+        # run the requirements install via the interpreter.
+        deploy_code = strip_comments(
+            (REPO_ROOT / "infrastructure" / "deploy-on-merge.sh").read_text()
+        )
+        assert '[ -x ".venv/bin/python" ]' in deploy_code, (
+            "the §1 dep-refresh gate must test the venv interpreter is "
+            "executable, not the presence of the .venv/bin/pip wrapper file"
+        )
+        assert ".venv/bin/python -m pip install -r requirements.txt" in deploy_code
 
     def test_python_parity_self_heal_has_rollback_on_failed_health_gate(self):
         # config#2835 defect 2: the old flow's post-swap health-gate failure
