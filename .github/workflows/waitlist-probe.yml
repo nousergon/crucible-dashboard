@@ -1,0 +1,90 @@
+name: waitlist-probe
+
+# Synthetic end-to-end probe for the beta-waitlist capture path on the product
+# marketing sites (metron.nousergon.ai, fitness.nousergon.ai). A launch-day
+# manual test only proves launch-day health; this probe re-verifies the live
+# path daily so a silent regression can't eat signups for days — which already
+# happened once: a repo-root `wrangler pages deploy` shipped the static site
+# WITHOUT the Pages Functions and the Metron waitlist returned 405 from
+# 2026-06-28 until 2026-07-02 (see deploy-marketing.yml header).
+#
+# How the probe works — and why it is side-effect-free:
+#   1. GET the landing page: asserts 200 + the waitlist form marker is present
+#      (catches a broken static deploy / DNS / Pages project detach).
+#   2. POST a fixed canary email (waitlist-canary@nousergon.ai, source
+#      "synthetic-probe") to /api/waitlist. The function INSERT OR IGNOREs on
+#      the email primary key, so after the first-ever insert this is a no-op
+#      row-wise AND sends no confirmation email (new-signups-only) — yet it
+#      still executes the D1 write, so it exercises routing -> Pages Function
+#      -> D1 binding end-to-end. Failure modes it catches: 405 = functions not
+#      deployed (the 2026-06-28 outage mode), 500 = D1 binding/DB broken,
+#      non-JSON/ok:false = anything else off the happy path.
+#
+# Alerting: on a main-ref failure the shared notify-ci-failure workflow fires
+# (Telegram + Fleet CI Watch agent dispatch) — same path as post-merge CI reds,
+# so waitlist breakage flows into the standard overseer/alert-drain machinery.
+# The latest run on the Actions page is the "is it healthy right now" surface;
+# console tile follow-up tracked in alpha-engine-config.
+
+on:
+  schedule:
+    - cron: "15 10 * * *" # daily 10:15 UTC = 06:15 ET, ahead of the ET morning
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - site: metron
+            base: https://metron.nousergon.ai
+          - site: vires
+            base: https://fitness.nousergon.ai # vires.nousergon.ai is the APP, not the marketing site
+    steps:
+      - name: Landing page serves the waitlist form
+        run: |
+          code=$(curl -sS -o /tmp/landing.html -w '%{http_code}' --max-time 30 "${{ matrix.base }}/")
+          if [ "$code" != "200" ]; then
+            echo "::error::${{ matrix.site }} landing GET returned HTTP $code (expected 200)"
+            exit 1
+          fi
+          if ! grep -qiE 'waitlist|join the beta' /tmp/landing.html; then
+            echo "::error::${{ matrix.site }} landing loaded but the waitlist form marker is missing"
+            exit 1
+          fi
+          echo "landing OK (200, form marker present)"
+
+      - name: Capture path end-to-end (canary POST)
+        run: |
+          body=$(curl -sS --max-time 30 -o /tmp/resp.json -w '%{http_code}' \
+            -X POST "${{ matrix.base }}/api/waitlist" \
+            -H 'content-type: application/json' \
+            -d '{"email":"waitlist-canary@nousergon.ai","source":"synthetic-probe"}')
+          echo "status=$body response=$(cat /tmp/resp.json)"
+          if [ "$body" != "200" ]; then
+            echo "::error::${{ matrix.site }} waitlist POST returned HTTP $body (405 = Pages Functions not deployed; 500 = D1 write failed)"
+            exit 1
+          fi
+          if ! grep -q '"ok"[[:space:]]*:[[:space:]]*true' /tmp/resp.json; then
+            echo "::error::${{ matrix.site }} waitlist POST returned 200 but body was not ok:true"
+            exit 1
+          fi
+          echo "capture path OK (200 ok:true — D1 write path exercised)"
+
+      - name: Run summary
+        if: always()
+        run: |
+          echo "**${{ matrix.site }}** (${{ matrix.base }}) probe: ${{ job.status }}" >> "$GITHUB_STEP_SUMMARY"
+
+  # Telegram + Fleet CI Watch dispatch, only for real (main-ref) probe failures —
+  # same gating convention as ci.yml's notify-main-failure.
+  notify-failure:
+    needs: [probe]
+    if: ${{ failure() && github.ref == 'refs/heads/main' }}
+    uses: nousergon/nousergon-lib/.github/workflows/notify-ci-failure.yml@main
+    secrets: inherit
