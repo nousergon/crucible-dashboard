@@ -11,7 +11,9 @@ name: deploy-marketing
 #   marketing-apex   -> nousergon-marketing -> nousergon.ai
 #   marketing        -> nousergon-crucible  -> crucible.nousergon.ai
 #   marketing-metron -> nousergon-metron    -> metron.nousergon.ai
-#   marketing-vires  -> nousergon-vires     -> fitness.nousergon.ai (vires.nousergon.ai = the live Vires APP, never attach it here)
+#   marketing-vires  -> nousergon-vires     -> vires.nousergon.ai (root only — /app* is
+#                                              Worker-routed to the live Vires APP's own
+#                                              origin; fitness.nousergon.ai redirects here)
 #   marketing-finance-> nousergon-finance   -> finance.nousergon.ai
 #   marketing-dev    -> nousergon-dev       -> dev.nousergon.ai
 #   marketing-telos  -> nousergon-telos     -> telos.nousergon.ai (/dash via Worker)
