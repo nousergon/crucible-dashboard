@@ -27,7 +27,7 @@ cd /home/ec2-user/morning-signal || { echo "ERROR: morning-signal checkout missi
 # Refresh to latest main (best-effort, like the service's ExecStartPre=-).
 git fetch origin --quiet || echo "WARN: git fetch failed — running last-good code" >&2
 git reset --hard origin/main || echo "WARN: git reset failed — running last-good code" >&2
-/home/ec2-user/morning-signal/.venv/bin/pip install -e . --quiet || echo "WARN: pip install failed — running last-good deps" >&2
+/home/ec2-user/morning-signal/.venv/bin/python -m pip install -e . --quiet || echo "WARN: pip install failed — running last-good deps" >&2
 
 echo "morning-signal-recover: generating (no daily-news sweep) ..."
 exec /home/ec2-user/morning-signal/.venv/bin/python generate_episode.py generate "$@"

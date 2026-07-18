@@ -230,7 +230,7 @@ if [ -f "$PYVER_SSOT_FILE" ] && [ -f "$REPO_DIR/.venv/bin/python" ]; then
 
         sudo -u ec2-user "$NEW_PY_BIN" -m venv "$REPO_DIR/.venv" >>"$LOG" 2>&1 \
             || { _rollback_venv; fail "python-parity self-heal: venv create at $REPO_DIR/.venv (rolled back to previous venv)"; }
-        sudo -u ec2-user "$REPO_DIR/.venv/bin/pip" install --upgrade pip >>"$LOG" 2>&1 \
+        sudo -u ec2-user "$REPO_DIR/.venv/bin/python" -m pip install --upgrade pip >>"$LOG" 2>&1 \
             || { _rollback_venv; fail "python-parity self-heal: pip upgrade in new venv (rolled back to previous venv)"; }
 
         NEW_VENV_PIP_TMPDIR="$REPO_DIR/.pip-tmp-parity-heal"
@@ -238,7 +238,7 @@ if [ -f "$PYVER_SSOT_FILE" ] && [ -f "$REPO_DIR/.venv/bin/python" ]; then
         sudo -u ec2-user mkdir -p "$NEW_VENV_PIP_TMPDIR" \
             || { _rollback_venv; fail "python-parity self-heal: mkdir $NEW_VENV_PIP_TMPDIR (rolled back to previous venv)"; }
         sudo -u ec2-user env TMPDIR="$NEW_VENV_PIP_TMPDIR" \
-            "$REPO_DIR/.venv/bin/pip" install -r "$REPO_DIR/requirements.txt" >>"$LOG" 2>&1 \
+            "$REPO_DIR/.venv/bin/python" -m pip install -r "$REPO_DIR/requirements.txt" >>"$LOG" 2>&1 \
             || { _rollback_venv; fail "python-parity self-heal: pip install into new venv (rolled back to previous venv)"; }
         rm -rf "$NEW_VENV_PIP_TMPDIR"
         log "built venv directly at final path $REPO_DIR/.venv on $SSOT_PYVER_MAJOR_MINOR — no relocation, shebangs are correct by construction (old venv preserved at $OLD_VENV_BACKUP for rollback)"
@@ -290,7 +290,17 @@ fi
 # in between. Steady-state (stamp already matches repo) stays a single
 # `cmp -s` — no pip invocation at all.
 REQUIREMENTS_STAMP="/etc/dashboard-deploy/requirements.txt.installed"
-if [ "${SKIP_REQUIREMENTS_INSTALL:-0}" != "1" ] && [ -f ".venv/bin/pip" ] && [ -f "requirements.txt" ]; then
+# Gate on the venv INTERPRETER being executable, not on the presence of the
+# `.venv/bin/pip` console-script wrapper. That wrapper carries an absolute-path
+# `#!` shebang baked in by `venv`/`pip` at build time (config#2835 class); if
+# the venv was ever relocated or the wrapper otherwise went stale, the file
+# still EXISTS (so a `-f` test passes) but `env` fails to execve it with
+# `env: '.venv/bin/pip': No such file or directory` (rc=127) — the exact
+# 2026-07-18 Deploy false-red (run 29654297139, config#2938 krepis bump). The
+# pip MODULE in site-packages is unaffected, so we invoke pip as
+# `.venv/bin/python -m pip` below (shebang-immune) and only need the
+# interpreter itself to be runnable here.
+if [ "${SKIP_REQUIREMENTS_INSTALL:-0}" != "1" ] && [ -x ".venv/bin/python" ] && [ -f "requirements.txt" ]; then
     if file_state_stale "$REQUIREMENTS_STAMP" "requirements.txt"; then
         log "requirements.txt differs from last-installed stamp — pip install"
         # requirements.txt is a uv-compiled lockfile. It is compiled in CI
@@ -349,7 +359,7 @@ if [ "${SKIP_REQUIREMENTS_INSTALL:-0}" != "1" ] && [ -f ".venv/bin/pip" ] && [ -
         # tee the tail to stdout on failure so the REAL pip error reaches SSM
         # StandardOutputContent (and thus CI + ci-watch), never buried in $LOG.
         # Fail-loud: a real failure is made LOUDER here, never quieter.
-        PIP_OUT=$(sudo -u ec2-user env TMPDIR="$PIP_TMPDIR" .venv/bin/pip install -r requirements.txt 2>&1)
+        PIP_OUT=$(sudo -u ec2-user env TMPDIR="$PIP_TMPDIR" .venv/bin/python -m pip install -r requirements.txt 2>&1)
         PIP_RC=$?
         printf '%s\n' "$PIP_OUT" >>"$LOG"
         rm -rf "$PIP_TMPDIR"
