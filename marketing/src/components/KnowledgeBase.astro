@@ -1,0 +1,125 @@
+---
+/**
+ * Public Knowledge Base panel — public-safe rollup of the RAG corpus.
+ *
+ * Reads the build-time-committed mirror of `rag/manifest/latest.json`
+ * (`../data/rag-manifest.json`), refreshed by the scheduled
+ * `.github/workflows/refresh-rag-manifest.yml` workflow (config#908, per
+ * Brian's 2026-07-17 operator ruling: a producer-side public-read copy
+ * fetched at build time, not a build-time read of the private bucket via
+ * injected AWS creds).
+ *
+ * Renders only the aggregate fields the manifest schema (nousergon-data
+ * rag/pipelines/emit_manifest.py, schema_version 1.1.0) is designed to
+ * expose publicly: by-source document/chunk counts, embedding model +
+ * dimension, ticker coverage rollup, last-ingest timestamp. Deliberately
+ * excludes per-ticker doc lists, individual document titles, and chunk
+ * content — those stay on the private dashboard per the disclosure
+ * boundary in `~/Development/CLAUDE.md`.
+ */
+import manifest from '../data/rag-manifest.json';
+
+// Friendly display labels for doc_type keys. Unknown/future doc_types still
+// render (falls back to the raw key) so a new ingestion source doesn't
+// silently disappear from the panel.
+const SOURCE_LABELS: Record<string, string> = {
+  '10-K': '10-K',
+  '10-Q': '10-Q',
+  '8-K': '8-K',
+  earnings_transcript: 'Earnings transcripts',
+  news: 'News',
+  thesis_news: 'Theses — news',
+  thesis_research: 'Theses — research',
+  thesis_score: 'Theses — score',
+  thesis_signal: 'Theses — signal',
+};
+
+const sourceOrder = Object.keys(manifest.by_source).sort((a, b) => {
+  const la = SOURCE_LABELS[a] ?? a;
+  const lb = SOURCE_LABELS[b] ?? b;
+  return la.localeCompare(lb);
+});
+
+function fmt(n: number): string {
+  return n.toLocaleString('en-US');
+}
+
+const lastIngest = manifest.ingestion.last_run_ts
+  ? new Date(manifest.ingestion.last_run_ts).toLocaleString('en-US', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      timeZoneName: 'short',
+    })
+  : 'unknown';
+---
+
+<section class="max-w-4xl mx-auto px-6 pb-16">
+  <h2 class="text-xs font-semibold uppercase tracking-wider text-sky-400 mb-3">
+    Knowledge base
+  </h2>
+  <p class="text-sm text-zinc-400 mb-5 leading-relaxed">
+    The RAG corpus the research agents read from &mdash; aggregate counts
+    only, refreshed each Saturday alongside the freshness pipeline. Per-ticker
+    document lists and chunk content stay private.
+  </p>
+
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+    <div class="border border-white/10 rounded-lg bg-zinc-950/40 px-4 py-3">
+      <div class="text-lg font-semibold text-zinc-100">{fmt(manifest.totals.documents)}</div>
+      <div class="text-xs text-zinc-500">documents</div>
+    </div>
+    <div class="border border-white/10 rounded-lg bg-zinc-950/40 px-4 py-3">
+      <div class="text-lg font-semibold text-zinc-100">{fmt(manifest.totals.chunks)}</div>
+      <div class="text-xs text-zinc-500">chunks</div>
+    </div>
+    <div class="border border-white/10 rounded-lg bg-zinc-950/40 px-4 py-3">
+      <div class="text-lg font-semibold text-zinc-100">{fmt(manifest.totals.tickers)}</div>
+      <div class="text-xs text-zinc-500">tickers</div>
+    </div>
+    <div class="border border-white/10 rounded-lg bg-zinc-950/40 px-4 py-3">
+      <div class="text-lg font-semibold text-zinc-100">
+        {fmt(manifest.by_ticker_coverage.p50_docs_per_ticker)}
+      </div>
+      <div class="text-xs text-zinc-500">median docs / ticker</div>
+    </div>
+  </div>
+
+  <div class="overflow-x-auto mb-6">
+    <table class="w-full text-sm text-left border border-white/10 rounded-lg overflow-hidden">
+      <thead class="bg-white/[0.03] text-zinc-400 text-xs uppercase tracking-wider">
+        <tr>
+          <th class="px-4 py-2 font-medium">Source</th>
+          <th class="px-4 py-2 font-medium text-right">Documents</th>
+          <th class="px-4 py-2 font-medium text-right">Tickers</th>
+          <th class="px-4 py-2 font-medium text-right">Chunks</th>
+        </tr>
+      </thead>
+      <tbody class="text-zinc-200">
+        {
+          sourceOrder.map((key) => {
+            const row = manifest.by_source[key as keyof typeof manifest.by_source];
+            return (
+              <tr class="border-t border-white/5 hover:bg-white/[0.02] transition">
+                <td class="px-4 py-2">{SOURCE_LABELS[key] ?? key}</td>
+                <td class="px-4 py-2 text-right">{fmt(row.documents)}</td>
+                <td class="px-4 py-2 text-right">{fmt(row.tickers)}</td>
+                <td class="px-4 py-2 text-right">{fmt(row.chunks)}</td>
+              </tr>
+            );
+          })
+        }
+      </tbody>
+    </table>
+  </div>
+
+  <p class="text-xs text-zinc-500">
+    Embedding: <code class="text-sky-300">{manifest.embedding.model}</code> ({manifest.embedding.dimension}d)
+    &middot; Coverage: {fmt(manifest.by_ticker_coverage.tickers_with_any_doc)} tickers with at least one document
+    (p25 {manifest.by_ticker_coverage.p25_docs_per_ticker} / p50 {manifest.by_ticker_coverage.p50_docs_per_ticker} / p75{' '}
+    {manifest.by_ticker_coverage.p75_docs_per_ticker} docs)
+    &middot; Last ingest: {lastIngest}
+  </p>
+</section>
