@@ -443,72 +443,43 @@ with tab_spotcheck:
                         _flag("looks_wrong")
 
 
-# ── Calibrate tab (ROADMAP L480 SOTA reframe) ─────────────────────────────
+# ── Calibrate tab (ROADMAP L480, simplified 2026-07-13 per Brian) ─────────
 #
-# Two-step judge-anchored review with anchoring-bias isolation:
-#   Step 1 — operator scores the artifact BLIND (rubric only)
-#   Step 2 — LLM judge's scores reveal; operator can revise + explain
-# Step-1 vs LLM kappa = the un-anchored calibration estimate.
-# Step-2 revisions surface systematic LLM-judge failure modes.
-#
-# Active sampling: artifacts ranked by band-midpoint distance (closer
-# to 3 → higher info per minute), stratified by (rubric, agent) so
-# coverage stays balanced. Submitted reviews persist to
-# `decision_artifacts/_calibration/{today}/reviews.jsonl` — durable
-# substrate a future weekly evaluator computes Cohen's kappa from.
+# Single-step blind review: rubric anchors + agent output + a 1-5 rating
+# per dimension, one submit, done. No reveal/revise step, no batch-size or
+# lookback knobs — those add operator decisions that don't change the
+# metric (κ(blind, llm) only needs blind_score paired with the already-
+# known llm_score) and Brian explicitly asked for zero extra nonsense.
+# Fixed daily batch of 5, active-sampling-ranked (same heuristic as
+# before — band-midpoint distance, highest-information cases first).
+# Submitted reviews persist to
+# `decision_artifacts/_calibration/{today}/reviews.jsonl`.
+
+
+_CALIBRATE_BATCH_SIZE = 5
+_CALIBRATE_LOOKBACK_DAYS = 30
 
 
 with tab_calibrate:
     st.subheader("Judge Calibration Review")
-    st.info(
-        "**Optional deep-dive** (ROADMAP L480 re-scoped 2026-05-29). Primary "
-        "judge validation is now automated outcome-IC + the read-only "
-        "**Spot-check** tab — this blind-κ flow is retained for a rigorous "
-        "human-anchored estimate but is no longer required.",
-        icon="ℹ️",
-    )
     st.caption(
-        "Two-step judge-anchored review of LLM-as-judge scores. "
-        "**Step 1 (blind):** score the agent output yourself before "
-        "seeing the LLM judge's scores. **Step 2 (reveal):** compare, "
-        "revise if needed, leave a note on disagreements. The Step-1 "
-        "scores are the un-anchored calibration anchor; revisions tag "
-        "systematic LLM-judge failure modes. ROADMAP L480."
+        "Score each dimension 1-5 against the rubric anchors below, blind "
+        "of the LLM judge's verdict. That's it — no reveal step, no follow-up."
     )
-
-    cal_cols = st.columns([1, 1, 2])
-    n_per_batch = cal_cols[0].number_input(
-        "Batch size", min_value=1, max_value=20, value=5, step=1,
-        help="Number of artifacts to surface per refresh.",
-    )
-    lookback = cal_cols[1].number_input(
-        "Lookback days", min_value=7, max_value=180, value=30, step=7,
-        help="How far back to draw the active-sampling candidate pool from.",
-    )
-    if cal_cols[2].button("🔄 Refresh queue", help="Re-poll S3 + recompute uncertainty ranks."):
-        st.cache_data.clear()
-        st.rerun()
 
     reviewed_ids = load_reviewed_ids()
     batch = load_recent_eval_artifacts_for_review(
-        n=int(n_per_batch),
-        lookback_days=int(lookback),
+        n=_CALIBRATE_BATCH_SIZE,
+        lookback_days=_CALIBRATE_LOOKBACK_DAYS,
         reviewed_ids=tuple(reviewed_ids),
     )
 
     if not batch:
         st.info(
-            f"No unreviewed eval artifacts in the last {lookback}d. "
-            f"({len(reviewed_ids)} review(s) already submitted across all dates.) "
-            "Refresh after the next Saturday SF Research cycle to surface more."
+            "No unreviewed eval artifacts right now — check back after the "
+            "next Saturday SF Research cycle."
         )
     else:
-        st.caption(
-            f"**{len(batch)}** artifact(s) ranked by uncertainty "
-            f"(band-midpoint distance, lowest = highest priority). "
-            f"{len(reviewed_ids)} review(s) already submitted."
-        )
-
         for art in batch:
             rid = art["_review_id"]
             agent_id = art.get("judged_agent_id", "—")
@@ -517,99 +488,45 @@ with tab_calibrate:
             judge_model = art.get("judge_model", "—")
             eval_date = art["_eval_date"]
             dim_scores = art.get("dimension_scores") or []
-            overall_reasoning = art.get("overall_reasoning", "")
-            uncertainty = art.get("_uncertainty", float("inf"))
 
-            with st.expander(
-                f"**{agent_id}** · {eval_date} · rubric `{rubric_id}` v{rubric_version} "
-                f"· uncertainty={uncertainty:.2f}",
-                expanded=False,
-            ):
-                step_key = f"cal_step__{rid}"
-                blind_scores_key = f"cal_blind__{rid}"
-                step = st.session_state.get(step_key, "blind")
+            submitted_key = f"cal_submitted__{rid}"
+            if st.session_state.get(submitted_key):
+                continue  # drops off-screen immediately after submit
 
-                st.caption(
-                    f"Judge model: `{judge_model}` · run_id: `{art.get('run_id', '—')}`. "
-                    "Score each dimension 1-5 on the rubric before revealing the LLM's verdict."
-                )
+            with st.container(border=True):
+                st.markdown(f"**{agent_id}** · {eval_date}")
 
-                if step == "blind":
-                    with st.form(key=f"cal_blind_form__{rid}"):
-                        st.markdown("**Step 1 — Blind scoring**")
-                        st.caption(
-                            "Score each dimension 1-5 on what you think the agent's output "
-                            "deserves. You'll see the LLM judge's scores after submitting."
-                        )
-                        blind_scores: dict[str, int] = {}
-                        for dim in dim_scores:
-                            dim_name = dim.get("dimension", "")
-                            blind_scores[dim_name] = st.slider(
-                                f"`{dim_name}`",
-                                min_value=1, max_value=5, value=3, step=1,
-                                key=f"cal_blind_slider__{rid}__{dim_name}",
-                            )
-                        if st.form_submit_button("Reveal LLM scores →"):
-                            st.session_state[blind_scores_key] = blind_scores
-                            st.session_state[step_key] = "revealed"
-                            st.rerun()
+                rubric_text = load_rubric_text(rubric_id)
+                with st.expander(f"Rubric — `{rubric_id}` v{rubric_version}", expanded=True):
+                    if rubric_text:
+                        st.text(rubric_text)
+                    else:
+                        st.caption("_Rubric text unavailable — scoring from dimension names only._")
 
-                elif step == "revealed":
-                    blind_scores = st.session_state.get(blind_scores_key, {})
-                    st.markdown("**Step 2 — Compare + revise**")
-                    st.caption(
-                        "Your blind score is locked in. Compare against the LLM judge's "
-                        "scores below; revise the **final** score only if the LLM's reasoning "
-                        "changes your mind. Blind-vs-LLM agreement is the load-bearing "
-                        "calibration signal; revisions tag systematic LLM failure modes."
-                    )
+                judged = load_judged_artifact(art.get("judged_artifact_s3_key"))
+                with st.expander("Agent output (what's being judged)", expanded=True):
+                    if judged and judged.get("agent_output") is not None:
+                        st.json(judged["agent_output"], expanded=False)
+                    else:
+                        st.caption("_Agent output unavailable._")
 
-                    revisions: list[dict] = []
+                with st.form(key=f"cal_form__{rid}"):
+                    blind_scores: dict[str, int] = {}
                     for dim in dim_scores:
                         dim_name = dim.get("dimension", "")
-                        llm_score = dim.get("score")
-                        llm_reasoning = dim.get("reasoning", "")
-                        blind = blind_scores.get(dim_name)
-                        agree = (blind is not None) and (int(llm_score) == int(blind))
-                        st.markdown(
-                            f"**`{dim_name}`** · your blind: **{blind}** · LLM: **{llm_score}** "
-                            f"{'✅' if agree else '⚠️ disagree'}"
+                        blind_scores[dim_name] = st.slider(
+                            f"`{dim_name}`", min_value=1, max_value=5, value=3, step=1,
+                            key=f"cal_slider__{rid}__{dim_name}",
                         )
-                        st.caption(f"_LLM reasoning:_ {llm_reasoning}")
-                        final_score = st.slider(
-                            "Final score (after seeing LLM)",
-                            min_value=1, max_value=5,
-                            value=int(blind) if blind is not None else 3,
-                            step=1,
-                            key=f"cal_final_slider__{rid}__{dim_name}",
-                        )
-                        revision_note = ""
-                        if final_score != blind:
-                            revision_note = st.text_input(
-                                f"Why did you revise `{dim_name}`?",
-                                key=f"cal_revision__{rid}__{dim_name}",
-                            )
-                        revisions.append({
-                            "dimension": dim_name,
-                            "llm_score": llm_score,
-                            "blind_score": blind,
-                            "blind_agree": agree,
-                            "final_score": int(final_score),
-                            "revised": final_score != blind,
-                            "revision_note": revision_note or None,
-                        })
-
-                    if overall_reasoning:
-                        st.caption(f"**LLM overall reasoning:** {overall_reasoning}")
-
-                    overall_note_key = f"cal_overall_note__{rid}"
-                    overall_note = st.text_area(
-                        "Overall note (optional) — anything the dimension-level scores miss?",
-                        key=overall_note_key,
-                    )
-
-                    submit_col, redo_col = st.columns([1, 1])
-                    if submit_col.button("✓ Submit review", key=f"cal_submit__{rid}"):
+                    if st.form_submit_button("✓ Submit"):
+                        per_dimension = [
+                            {
+                                "dimension": dim.get("dimension", ""),
+                                "llm_score": dim.get("score"),
+                                "blind_score": blind_scores.get(dim.get("dimension", "")),
+                            }
+                            for dim in dim_scores
+                        ]
                         review_record = {
                             "review_id": rid,
                             "eval_date": eval_date,
@@ -618,41 +535,19 @@ with tab_calibrate:
                             "rubric_id": rubric_id,
                             "rubric_version": rubric_version,
                             "judge_model": judge_model,
-                            "uncertainty": uncertainty,
                             "reviewer": "operator",
-                            "per_dimension": revisions,
-                            "overall_note": overall_note or None,
+                            "per_dimension": per_dimension,
                             "source_eval_s3_key": art.get("_s3_key"),
                         }
-                        ok = save_calibration_review(review_record)
-                        if ok:
-                            st.session_state[step_key] = "submitted"
+                        if save_calibration_review(review_record):
+                            st.session_state[submitted_key] = True
                             st.cache_data.clear()
                             st.rerun()
                         else:
                             st.error("Save failed — check Cloudwatch logs / S3 perms.")
-                    if redo_col.button(
-                        "↶ Re-do blind step", key=f"cal_redo__{rid}",
-                        help="Reset to Step 1 — useful if you want a clean blind re-score.",
-                    ):
-                        st.session_state.pop(blind_scores_key, None)
-                        st.session_state[step_key] = "blind"
-                        st.rerun()
-
-                elif step == "submitted":
-                    st.success("✓ Review submitted. Refresh queue to load next batch.")
 
     if reviewed_ids:
-        st.divider()
-        st.markdown("#### Calibration corpus")
-        st.caption(
-            f"**{len(reviewed_ids)}** review(s) submitted across all dates. "
-            "Kappa-compute (Cohen's κ + Krippendorff's α) deferred to a "
-            "follow-up weekly evaluator stage once corpus depth justifies it "
-            "(~≥30 reviews per (rubric, dimension) cell). The persisted JSONL "
-            "records carry blind_score, final_score, llm_score, and revision "
-            "notes — everything kappa needs."
-        )
+        st.caption(f"{len(reviewed_ids)} review(s) submitted so far.")
 
 # ── Data tab ──────────────────────────────────────────────────────────────
 
