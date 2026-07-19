@@ -163,7 +163,8 @@ def _held_tickers(pos) -> set[str]:
 
 # ---------------------------------------------------------------------------
 # Morning Brief (Phase-2 consumer, config#664) — Overview card. Rerun-driven:
-# the four-gate cadence inside decides whether to call Haiku or reuse cache.
+# the four-gate cadence inside decides whether to call the brief LLM (OpenRouter
+# / DeepSeek V4 Flash) or reuse cache.
 # ---------------------------------------------------------------------------
 render_morning_brief_card(held_tickers=_held_tickers(positions))
 
