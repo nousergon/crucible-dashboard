@@ -35,6 +35,10 @@ _PINNED_SECRETS = frozenset(
         "EDGAR_IDENTITY",
         "TELEGRAM_BOT_TOKEN",
         "TELEGRAM_CHAT_ID",
+        # alpha-engine-config-I2997 (2026-07-19): live/morning_brief.py's
+        # OpenRouter migration — pinned so a future regression can't
+        # os.environ.get/getenv this one either.
+        "OPENROUTER_API_KEY",
     ]
 )
 
