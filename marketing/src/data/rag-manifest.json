@@ -1,0 +1,562 @@
+{
+  "generated_at": "2026-07-19T01:40:44.925128+00:00",
+  "schema_version": "1.1.0",
+  "totals": {
+    "documents": 22650,
+    "chunks": 265182,
+    "tickers": 1616
+  },
+  "by_source": {
+    "10-K": {
+      "documents": 1497,
+      "tickers": 776,
+      "chunks": 46012
+    },
+    "10-Q": {
+      "documents": 5349,
+      "tickers": 891,
+      "chunks": 174486
+    },
+    "8-K": {
+      "documents": 10849,
+      "tickers": 903,
+      "chunks": 39356
+    },
+    "news": {
+      "documents": 3949,
+      "tickers": 1564,
+      "chunks": 3949
+    },
+    "thesis_news": {
+      "documents": 221,
+      "tickers": 63,
+      "chunks": 429
+    },
+    "thesis_research": {
+      "documents": 221,
+      "tickers": 63,
+      "chunks": 386
+    },
+    "thesis_score": {
+      "documents": 132,
+      "tickers": 63,
+      "chunks": 132
+    },
+    "thesis_signal": {
+      "documents": 432,
+      "tickers": 122,
+      "chunks": 432
+    }
+  },
+  "by_ticker_coverage": {
+    "tickers_with_any_doc": 1616,
+    "p25_docs_per_ticker": 1,
+    "p50_docs_per_ticker": 16,
+    "p75_docs_per_ticker": 21
+  },
+  "embedding": {
+    "model": "voyage-3-lite",
+    "dimension": 512
+  },
+  "ingestion": {
+    "last_run_ts": "2026-07-19T00:32:15.716429+00:00",
+    "by_source_last_ts": {
+      "10-K": "2026-07-18T15:56:23.805482+00:00",
+      "10-Q": "2026-07-18T15:56:24.702333+00:00",
+      "8-K": "2026-07-18T18:51:06.278935+00:00",
+      "news": "2026-07-19T00:32:15.716429+00:00",
+      "thesis_news": "2026-03-31T17:51:46.445317+00:00",
+      "thesis_research": "2026-03-31T17:51:48.547672+00:00",
+      "thesis_score": "2026-03-31T17:57:51.654055+00:00",
+      "thesis_signal": "2026-07-18T19:08:51.828606+00:00"
+    },
+    "by_date_source": [
+      {
+        "date": "2026-07-19",
+        "doc_type": "news",
+        "documents": 1544,
+        "chunks": 1544
+      },
+      {
+        "date": "2026-07-18",
+        "doc_type": "10-K",
+        "documents": 1331,
+        "chunks": 40882
+      },
+      {
+        "date": "2026-07-18",
+        "doc_type": "10-Q",
+        "documents": 4735,
+        "chunks": 154445
+      },
+      {
+        "date": "2026-07-18",
+        "doc_type": "8-K",
+        "documents": 9834,
+        "chunks": 35757
+      },
+      {
+        "date": "2026-07-18",
+        "doc_type": "thesis_signal",
+        "documents": 26,
+        "chunks": 26
+      },
+      {
+        "date": "2026-07-11",
+        "doc_type": "8-K",
+        "documents": 4,
+        "chunks": 14
+      },
+      {
+        "date": "2026-07-11",
+        "doc_type": "news",
+        "documents": 221,
+        "chunks": 221
+      },
+      {
+        "date": "2026-07-03",
+        "doc_type": "10-K",
+        "documents": 6,
+        "chunks": 190
+      },
+      {
+        "date": "2026-07-03",
+        "doc_type": "10-Q",
+        "documents": 18,
+        "chunks": 524
+      },
+      {
+        "date": "2026-07-03",
+        "doc_type": "8-K",
+        "documents": 33,
+        "chunks": 102
+      },
+      {
+        "date": "2026-07-03",
+        "doc_type": "news",
+        "documents": 190,
+        "chunks": 190
+      },
+      {
+        "date": "2026-07-03",
+        "doc_type": "thesis_signal",
+        "documents": 41,
+        "chunks": 41
+      },
+      {
+        "date": "2026-06-27",
+        "doc_type": "10-K",
+        "documents": 3,
+        "chunks": 26
+      },
+      {
+        "date": "2026-06-27",
+        "doc_type": "10-Q",
+        "documents": 12,
+        "chunks": 220
+      },
+      {
+        "date": "2026-06-27",
+        "doc_type": "8-K",
+        "documents": 33,
+        "chunks": 120
+      },
+      {
+        "date": "2026-06-27",
+        "doc_type": "news",
+        "documents": 235,
+        "chunks": 235
+      },
+      {
+        "date": "2026-06-27",
+        "doc_type": "thesis_signal",
+        "documents": 23,
+        "chunks": 23
+      },
+      {
+        "date": "2026-06-19",
+        "doc_type": "10-K",
+        "documents": 3,
+        "chunks": 242
+      },
+      {
+        "date": "2026-06-19",
+        "doc_type": "10-Q",
+        "documents": 7,
+        "chunks": 17
+      },
+      {
+        "date": "2026-06-19",
+        "doc_type": "8-K",
+        "documents": 7,
+        "chunks": 20
+      },
+      {
+        "date": "2026-06-19",
+        "doc_type": "news",
+        "documents": 233,
+        "chunks": 233
+      },
+      {
+        "date": "2026-06-19",
+        "doc_type": "thesis_signal",
+        "documents": 25,
+        "chunks": 25
+      },
+      {
+        "date": "2026-06-13",
+        "doc_type": "8-K",
+        "documents": 7,
+        "chunks": 39
+      },
+      {
+        "date": "2026-06-13",
+        "doc_type": "news",
+        "documents": 290,
+        "chunks": 290
+      },
+      {
+        "date": "2026-06-13",
+        "doc_type": "thesis_signal",
+        "documents": 26,
+        "chunks": 26
+      },
+      {
+        "date": "2026-06-06",
+        "doc_type": "10-K",
+        "documents": 2,
+        "chunks": 12
+      },
+      {
+        "date": "2026-06-06",
+        "doc_type": "10-Q",
+        "documents": 8,
+        "chunks": 80
+      },
+      {
+        "date": "2026-06-06",
+        "doc_type": "8-K",
+        "documents": 17,
+        "chunks": 64
+      },
+      {
+        "date": "2026-06-06",
+        "doc_type": "news",
+        "documents": 306,
+        "chunks": 306
+      },
+      {
+        "date": "2026-06-06",
+        "doc_type": "thesis_signal",
+        "documents": 22,
+        "chunks": 22
+      },
+      {
+        "date": "2026-05-30",
+        "doc_type": "10-K",
+        "documents": 4,
+        "chunks": 181
+      },
+      {
+        "date": "2026-05-30",
+        "doc_type": "10-Q",
+        "documents": 13,
+        "chunks": 959
+      },
+      {
+        "date": "2026-05-30",
+        "doc_type": "8-K",
+        "documents": 22,
+        "chunks": 64
+      },
+      {
+        "date": "2026-05-30",
+        "doc_type": "news",
+        "documents": 243,
+        "chunks": 243
+      },
+      {
+        "date": "2026-05-30",
+        "doc_type": "thesis_signal",
+        "documents": 23,
+        "chunks": 23
+      },
+      {
+        "date": "2026-05-23",
+        "doc_type": "10-K",
+        "documents": 12,
+        "chunks": 308
+      },
+      {
+        "date": "2026-05-23",
+        "doc_type": "10-Q",
+        "documents": 49,
+        "chunks": 1636
+      },
+      {
+        "date": "2026-05-23",
+        "doc_type": "8-K",
+        "documents": 111,
+        "chunks": 471
+      },
+      {
+        "date": "2026-05-23",
+        "doc_type": "news",
+        "documents": 256,
+        "chunks": 256
+      },
+      {
+        "date": "2026-05-23",
+        "doc_type": "thesis_signal",
+        "documents": 26,
+        "chunks": 26
+      },
+      {
+        "date": "2026-05-16",
+        "doc_type": "10-K",
+        "documents": 2,
+        "chunks": 18
+      },
+      {
+        "date": "2026-05-16",
+        "doc_type": "10-Q",
+        "documents": 6,
+        "chunks": 40
+      },
+      {
+        "date": "2026-05-16",
+        "doc_type": "8-K",
+        "documents": 14,
+        "chunks": 43
+      },
+      {
+        "date": "2026-05-16",
+        "doc_type": "news",
+        "documents": 219,
+        "chunks": 219
+      },
+      {
+        "date": "2026-05-16",
+        "doc_type": "thesis_signal",
+        "documents": 10,
+        "chunks": 10
+      },
+      {
+        "date": "2026-05-13",
+        "doc_type": "10-K",
+        "documents": 10,
+        "chunks": 248
+      },
+      {
+        "date": "2026-05-13",
+        "doc_type": "10-Q",
+        "documents": 31,
+        "chunks": 1366
+      },
+      {
+        "date": "2026-05-13",
+        "doc_type": "8-K",
+        "documents": 65,
+        "chunks": 222
+      },
+      {
+        "date": "2026-05-13",
+        "doc_type": "news",
+        "documents": 212,
+        "chunks": 212
+      },
+      {
+        "date": "2026-05-13",
+        "doc_type": "thesis_signal",
+        "documents": 15,
+        "chunks": 15
+      },
+      {
+        "date": "2026-05-09",
+        "doc_type": "10-K",
+        "documents": 7,
+        "chunks": 261
+      },
+      {
+        "date": "2026-05-09",
+        "doc_type": "10-Q",
+        "documents": 20,
+        "chunks": 755
+      },
+      {
+        "date": "2026-05-09",
+        "doc_type": "8-K",
+        "documents": 33,
+        "chunks": 106
+      },
+      {
+        "date": "2026-05-09",
+        "doc_type": "thesis_signal",
+        "documents": 14,
+        "chunks": 14
+      },
+      {
+        "date": "2026-05-06",
+        "doc_type": "10-K",
+        "documents": 16,
+        "chunks": 795
+      },
+      {
+        "date": "2026-05-06",
+        "doc_type": "10-Q",
+        "documents": 63,
+        "chunks": 2297
+      },
+      {
+        "date": "2026-05-06",
+        "doc_type": "8-K",
+        "documents": 132,
+        "chunks": 470
+      },
+      {
+        "date": "2026-05-06",
+        "doc_type": "thesis_signal",
+        "documents": 20,
+        "chunks": 20
+      },
+      {
+        "date": "2026-05-02",
+        "doc_type": "10-K",
+        "documents": 8,
+        "chunks": 449
+      },
+      {
+        "date": "2026-05-02",
+        "doc_type": "10-Q",
+        "documents": 29,
+        "chunks": 1377
+      },
+      {
+        "date": "2026-05-02",
+        "doc_type": "8-K",
+        "documents": 47,
+        "chunks": 141
+      },
+      {
+        "date": "2026-05-02",
+        "doc_type": "thesis_signal",
+        "documents": 13,
+        "chunks": 13
+      },
+      {
+        "date": "2026-04-30",
+        "doc_type": "10-K",
+        "documents": 12,
+        "chunks": 361
+      },
+      {
+        "date": "2026-04-30",
+        "doc_type": "10-Q",
+        "documents": 39,
+        "chunks": 1173
+      },
+      {
+        "date": "2026-04-30",
+        "doc_type": "8-K",
+        "documents": 73,
+        "chunks": 248
+      },
+      {
+        "date": "2026-04-30",
+        "doc_type": "thesis_signal",
+        "documents": 14,
+        "chunks": 14
+      },
+      {
+        "date": "2026-04-25",
+        "doc_type": "10-K",
+        "documents": 11,
+        "chunks": 264
+      },
+      {
+        "date": "2026-04-25",
+        "doc_type": "10-Q",
+        "documents": 32,
+        "chunks": 1264
+      },
+      {
+        "date": "2026-04-25",
+        "doc_type": "8-K",
+        "documents": 86,
+        "chunks": 321
+      },
+      {
+        "date": "2026-04-25",
+        "doc_type": "thesis_signal",
+        "documents": 13,
+        "chunks": 13
+      },
+      {
+        "date": "2026-04-20",
+        "doc_type": "10-K",
+        "documents": 23,
+        "chunks": 715
+      },
+      {
+        "date": "2026-04-20",
+        "doc_type": "10-Q",
+        "documents": 101,
+        "chunks": 2746
+      },
+      {
+        "date": "2026-04-20",
+        "doc_type": "8-K",
+        "documents": 256,
+        "chunks": 900
+      },
+      {
+        "date": "2026-04-20",
+        "doc_type": "thesis_signal",
+        "documents": 36,
+        "chunks": 36
+      },
+      {
+        "date": "2026-03-31",
+        "doc_type": "8-K",
+        "documents": 75,
+        "chunks": 254
+      },
+      {
+        "date": "2026-03-31",
+        "doc_type": "thesis_news",
+        "documents": 221,
+        "chunks": 429
+      },
+      {
+        "date": "2026-03-31",
+        "doc_type": "thesis_research",
+        "documents": 221,
+        "chunks": 386
+      },
+      {
+        "date": "2026-03-31",
+        "doc_type": "thesis_score",
+        "documents": 132,
+        "chunks": 132
+      },
+      {
+        "date": "2026-03-31",
+        "doc_type": "thesis_signal",
+        "documents": 85,
+        "chunks": 85
+      },
+      {
+        "date": "2026-03-25",
+        "doc_type": "10-K",
+        "documents": 47,
+        "chunks": 1060
+      },
+      {
+        "date": "2026-03-25",
+        "doc_type": "10-Q",
+        "documents": 186,
+        "chunks": 5587
+      }
+    ]
+  }
+}

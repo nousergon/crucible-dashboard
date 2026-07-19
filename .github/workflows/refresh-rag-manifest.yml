@@ -1,0 +1,123 @@
+name: refresh-rag-manifest
+
+# Refreshes the public Knowledge Base panel's build-time data source
+# (marketing/src/data/rag-manifest.json) from the producer artifact
+# s3://alpha-engine-research/rag/manifest/latest.json (config#908).
+#
+# Why a committed mirror instead of a build-time fetch of the private
+# bucket: per Brian's 2026-07-17 operator ruling on config#908 (Option A),
+# a producer-side public-read copy fetched over HTTPS/committed-by-CI is
+# preferred over injecting long-lived AWS creds into the Cloudflare Pages
+# build environment — the manifest schema is designed public-safe (no
+# per-ticker doc lists, titles, or chunk content; see
+# nousergon-data/rag/pipelines/emit_manifest.py), so a plain committed
+# JSON snapshot is the lowest-blast-radius way to serve it to the static
+# build. This workflow opens a PR rather than pushing straight to main —
+# every other content change in this repo lands via PR, and it lets
+# marketing-ci.yml (astro check/build) gate a bad manifest before deploy.
+#
+# AWS auth: OIDC -> github-actions-lambda-deploy (the same role
+# marketing/deploy.yml already uses for the SSM dashboard deploy) — reuses
+# existing trust, no new role. NOTE: as of this workflow's introduction that
+# role does not yet grant s3:GetObject on rag/manifest/* — see the
+# companion nousergon-data PR (infrastructure/iam/github-actions-lambda-deploy.json)
+# that adds it. Until an operator applies that IAM change
+# (infrastructure/iam/apply.sh — requires iam:PutRolePolicy, which no CI
+# role holds), the "Fetch manifest from S3" step below will fail with
+# AccessDenied; this workflow is otherwise ready to run as soon as that
+# lands.
+#
+# Schedule: Saturdays 10:30 UTC — 90 min after the ne-weekly-freshness-
+# pipeline's 09:00 UTC trigger (see marketing/src/pages/architecture.astro's
+# Saturday diagram), giving the RAG ingestion + emit_manifest step time to
+# finish before this fetches latest.json.
+
+on:
+  schedule:
+    - cron: "30 10 * * SAT"
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: refresh-rag-manifest
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::711398986525:role/github-actions-lambda-deploy
+          aws-region: us-east-1
+
+      - name: Fetch manifest from S3
+        run: |
+          aws s3 cp s3://alpha-engine-research/rag/manifest/latest.json \
+            marketing/src/data/rag-manifest.json
+
+      - name: Validate fetched manifest (public-safe schema only)
+        run: |
+          python3 - <<'PY'
+          import json
+          with open("marketing/src/data/rag-manifest.json") as f:
+              manifest = json.load(f)
+          required = {"schema_version", "totals", "by_source", "by_ticker_coverage", "embedding", "ingestion"}
+          missing = required - manifest.keys()
+          if missing:
+              raise SystemExit(f"manifest missing expected top-level keys: {missing}")
+          # Disclosure-boundary guard: the manifest must never carry per-ticker
+          # doc lists, document titles, or chunk content (config#908). Those
+          # keys should never appear in a schema emitted by
+          # nousergon-data/rag/pipelines/emit_manifest.py, but this check fails
+          # loud rather than silently publishing a schema regression.
+          forbidden = {"documents", "chunks", "titles", "tickers_detail", "chunk_content"}
+          found = forbidden & manifest.keys()
+          if found:
+              raise SystemExit(f"manifest contains disallowed private-detail keys: {found}")
+          print(f"OK: schema_version={manifest['schema_version']}, "
+                f"documents={manifest['totals']['documents']}, "
+                f"chunks={manifest['totals']['chunks']}")
+          PY
+
+      - name: Format (biome, matches marketing-ci.yml)
+        working-directory: marketing
+        run: |
+          npm ci
+          npx biome format --write src/data/rag-manifest.json
+
+      - name: Open PR if the manifest changed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- marketing/src/data/rag-manifest.json; then
+            echo "no drift — manifest unchanged, nothing to open"
+            exit 0
+          fi
+          BRANCH="bot/refresh-rag-manifest-$(date -u +%Y%m%d)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add marketing/src/data/rag-manifest.json
+          git commit -m "chore(marketing): refresh RAG manifest snapshot ($(date -u +%Y-%m-%d))"
+          git push -u origin "$BRANCH"
+          gh pr create \
+            --title "chore(marketing): refresh RAG manifest snapshot ($(date -u +%Y-%m-%d))" \
+            --body "Automated weekly refresh of \`marketing/src/data/rag-manifest.json\` from \`s3://alpha-engine-research/rag/manifest/latest.json\` (config#908). Public-safe rollup only — schema-validated by this workflow. marketing-ci.yml gates the build before merge." \
+            --base main \
+            --head "$BRANCH"
+
+  notify-main-failure:
+    needs: [refresh]
+    if: ${{ failure() && github.ref == 'refs/heads/main' }}
+    uses: nousergon/nousergon-lib/.github/workflows/notify-ci-failure.yml@main
+    secrets: inherit
