@@ -506,28 +506,10 @@ with tab_calibrate:
 
                 judged = load_judged_artifact(art.get("judged_artifact_s3_key"))
                 with st.expander("Agent output (what's being judged)", expanded=True):
-                    if judged is None:
-                        st.caption(
-                            "_Judged artifact unavailable "
-                            "(`judged_artifact_s3_key` missing or unfetchable)._"
-                        )
+                    if judged and judged.get("agent_output") is not None:
+                        st.json(judged["agent_output"], expanded=False)
                     else:
-                        agent_output = judged.get("agent_output")
-                        input_snapshot = judged.get("input_data_snapshot")
-                        if agent_output is not None:
-                            st.markdown("_Agent output (judged):_")
-                            if isinstance(agent_output, (dict, list)):
-                                st.json(agent_output, expanded=False)
-                            else:
-                                st.code(str(agent_output))
-                        if input_snapshot is not None:
-                            st.markdown("_Input snapshot (what the agent saw):_")
-                            if isinstance(input_snapshot, (dict, list)):
-                                st.json(input_snapshot, expanded=False)
-                            else:
-                                st.code(str(input_snapshot))
-                        if agent_output is None and input_snapshot is None:
-                            st.caption("_Judged artifact has no agent_output / input snapshot._")
+                        st.caption("_Agent output unavailable._")
 
                 with st.form(key=f"cal_form__{rid}"):
                     blind_scores: dict[str, int] = {}
