@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 REPO_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(REPO_ROOT))
@@ -496,13 +497,13 @@ class TestMarkPrReady:
 
         def fake_request(method, url, payload=None):
             calls.append((method, url, payload))
-            if url.endswith("/pulls/9"):
+            if urlparse(url).path == "/repos/r/repo/pulls/9":
                 return {"node_id": "PR_kwABC"}
             return {}
 
         monkeypatch.setattr(dq_module, "_request", fake_request)
         dq_module._mark_pr_ready("r/repo", 9)
-        graphql_calls = [c for c in calls if c[1].endswith("/graphql")]
+        graphql_calls = [c for c in calls if urlparse(c[1]).path == "/graphql"]
         assert len(graphql_calls) == 1
         assert graphql_calls[0][2]["variables"] == {"id": "PR_kwABC"}
         assert "markPullRequestReadyForReview" in graphql_calls[0][2]["query"]
