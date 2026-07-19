@@ -72,8 +72,8 @@ jobs:
       dev: ${{ steps.decide.outputs.dev }}
       telos: ${{ steps.decide.outputs.telos }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: dorny/paths-filter@v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
+      - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706  # v4
         id: filter
         if: github.event_name == 'push'
         with:
@@ -170,11 +170,11 @@ jobs:
     steps:
       - name: Checkout
         if: matrix.changed == 'true'
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
 
       - name: Setup Node
         if: matrix.changed == 'true'
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7
         with:
           node-version: '22'
           cache: npm
@@ -213,7 +213,7 @@ jobs:
 
       - name: Deploy to Cloudflare Pages (production)
         if: matrix.changed == 'true'
-        uses: cloudflare/wrangler-action@v4
+        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0  # v4
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
