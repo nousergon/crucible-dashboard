@@ -805,7 +805,8 @@ from loaders.eval_loader import load_rubric_text  # noqa: E402
 
 
 class TestLoadRubricText:
-    def test_decodes_github_contents_response(self, monkeypatch):
+    def test_decodes_github_contents_response_package_first(self, monkeypatch):
+        # config#3066: package path is tried before the legacy top-level path.
         import base64
 
         import loaders.decision_queue_loader as dq
@@ -822,19 +823,59 @@ class TestLoadRubricText:
         text = load_rubric_text("eval_rubric_sector_quant")
         assert text == raw
         assert calls[0][0] == "GET"
-        assert "alpha-engine-config/contents/research/prompts/eval_rubric_sector_quant.txt" in calls[0][1]
+        assert len(calls) == 1
+        assert (
+            "alpha-engine-config/contents/experiments/reference/research/prompts/"
+            "eval_rubric_sector_quant.txt" in calls[0][1]
+        )
+
+    def test_falls_back_to_legacy_path_on_package_404(self, monkeypatch):
+        # config#3066 transition window: package copy missing (404), legacy
+        # top-level copy still present — must not silently drop the rubric.
+        import base64
+        import urllib.error
+
+        import loaders.decision_queue_loader as dq
+
+        raw = "Legacy-only rubric anchors."
+        encoded = base64.b64encode(raw.encode("utf-8")).decode("ascii")
+        calls = []
+
+        def fake_request(method, url):
+            calls.append(url)
+            if "experiments/" in url:
+                raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+            return {"content": encoded}
+
+        monkeypatch.setattr(dq, "_request", fake_request)
+        text = load_rubric_text("eval_rubric_sector_quant")
+        assert text == raw
+        assert len(calls) == 2
+        assert "experiments/reference/research/prompts/" in calls[0]
+        assert calls[1].endswith("research/prompts/eval_rubric_sector_quant.txt")
+
+    def test_returns_none_when_missing_from_both_package_and_legacy(self, monkeypatch):
+        import urllib.error
+
+        import loaders.decision_queue_loader as dq
+
+        def fake_request(method, url):
+            raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+
+        monkeypatch.setattr(dq, "_request", fake_request)
+        assert load_rubric_text("eval_rubric_missing") is None
 
     def test_returns_none_on_fetch_failure(self, monkeypatch):
         import loaders.decision_queue_loader as dq
 
         def fake_request(method, url):
-            raise RuntimeError("404")
+            raise RuntimeError("boom")
 
         monkeypatch.setattr(dq, "_request", fake_request)
-        assert load_rubric_text("eval_rubric_missing") is None
+        assert load_rubric_text("eval_rubric_boom") is None
 
     def test_returns_none_on_empty_content(self, monkeypatch):
         import loaders.decision_queue_loader as dq
 
         monkeypatch.setattr(dq, "_request", lambda m, u: {"content": ""})
-        assert load_rubric_text("eval_rubric_sector_quant") is None
+        assert load_rubric_text("eval_rubric_empty") is None

@@ -292,6 +292,7 @@ def load_eval_artifacts(
 _CALIBRATION_PREFIX = "decision_artifacts/_calibration/"
 _RUBRIC_REPO = "nousergon/alpha-engine-config"
 _RUBRIC_PATH_TEMPLATE = "research/prompts/{rubric_id}.txt"
+_RUBRIC_PACKAGE_PATH_TEMPLATE = "experiments/{experiment_id}/research/prompts/{rubric_id}.txt"
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -300,32 +301,56 @@ def load_rubric_text(rubric_id: str) -> str | None:
 
     The rubric that graded an artifact (``eval_rubric_sector_quant.txt``
     etc.) is a gitignored, proprietary prompt file — it lives in
-    ``alpha-engine-config/research/prompts/`` (private repo), not on the
-    dashboard box's own checkout, so it can't be read from the local
-    filesystem the way ``agents/prompt_loader.py`` does for the research
-    Lambda. Fetched via the GitHub Contents API instead, reusing the
-    same groom-PAT auth as the Decision Queue (already has read access
-    to this repo) — avoids adding a new cross-repo deploy-time sync just
-    to show rubric text. Cached a full day since rubric prompts change
-    on the order of weeks, not per-session.
+    ``alpha-engine-config/experiments/<experiment_id>/research/prompts/``
+    (private repo, package-first per config#1042), not on the dashboard
+    box's own checkout, so it can't be read from the local filesystem the
+    way ``agents/prompt_loader.py`` does for the research Lambda. Fetched
+    via the GitHub Contents API instead, reusing the same groom-PAT auth
+    as the Decision Queue (already has read access to this repo) — avoids
+    adding a new cross-repo deploy-time sync just to show rubric text.
+    Cached a full day since rubric prompts change on the order of weeks,
+    not per-session.
+
+    Tries the experiment-package path first, then the legacy top-level
+    ``research/prompts/`` path (config#3066 — this was the one remaining
+    direct legacy reader found while auditing config#1042's
+    single-source-of-truth completion; a package-only rubric would
+    otherwise silently stop rendering the moment the legacy dir is
+    deleted, since this function degrades to ``None`` rather than raising).
 
     Returns ``None`` (never raises) on any fetch failure — the review
     page still works without the rubric text, just less legibly.
     """
     import base64
+    import os
+    import urllib.error
 
     from loaders.decision_queue_loader import _request as _gh_request
 
-    path = _RUBRIC_PATH_TEMPLATE.format(rubric_id=rubric_id)
-    try:
-        resp = _gh_request(
-            "GET", f"https://api.github.com/repos/{_RUBRIC_REPO}/contents/{path}",
-        )
+    experiment_id = os.environ.get("ALPHA_ENGINE_EXPERIMENT_ID", "reference")
+    candidate_paths = [
+        _RUBRIC_PACKAGE_PATH_TEMPLATE.format(experiment_id=experiment_id, rubric_id=rubric_id),
+        _RUBRIC_PATH_TEMPLATE.format(rubric_id=rubric_id),  # legacy fallback (config#1042 transition)
+    ]
+    for path in candidate_paths:
+        try:
+            resp = _gh_request(
+                "GET", f"https://api.github.com/repos/{_RUBRIC_REPO}/contents/{path}",
+            )
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                continue  # try the next candidate path
+            logger.warning("[eval_loader] could not fetch rubric text for %r", rubric_id)
+            return None
+        except Exception:  # noqa: BLE001 — display degrades gracefully without it
+            logger.warning("[eval_loader] could not fetch rubric text for %r", rubric_id)
+            return None
         content = resp.get("content", "") if resp else ""
         return base64.b64decode(content).decode("utf-8") if content else None
-    except Exception:  # noqa: BLE001 — display degrades gracefully without it
-        logger.warning("[eval_loader] could not fetch rubric text for %r", rubric_id)
-        return None
+    logger.warning(
+        "[eval_loader] could not fetch rubric text for %r (tried package + legacy path)", rubric_id
+    )
+    return None
 
 
 def _review_id(eval_date: str, judged_agent_id: str, run_id: str, judge_model: str) -> str:
