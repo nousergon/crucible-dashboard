@@ -837,6 +837,43 @@ def list_groom_run_keys(limit: int = 30) -> list[str]:
 
 
 @st.cache_data(ttl=_ttl("research"))
+def list_groom_run_keys_since(days: int = 14) -> list[str]:
+    """Return ALL groom run-artifact keys (coverage + sweep) for the last
+    *days* calendar dates, newest first — unlike :func:`list_groom_run_keys`,
+    NOT capped to a fixed count. Needed by the PR Pipeline page (config#2709):
+    the fleet writes ~8-11 run artifacts/day across coverage + sweep runs, so
+    a 14-day trend window needs 100+ keys — well past
+    ``list_groom_run_keys``'s ``limit=30`` default, which exists for the
+    Backlog Groom page's much shorter "recent runs" table. Same date-prefixed
+    listing pattern as :func:`list_groom_decision_keys`. Returns ``[]`` on any
+    listing error (page renders the "no data" state, never a stack trace).
+    """
+    import datetime as _dt
+
+    bucket = _research_bucket()
+    today = _dt.date.today()
+    wanted_dates = {(today - _dt.timedelta(days=i)).isoformat() for i in range(days)}
+    try:
+        client = get_s3_client()
+        paginator = client.get_paginator("list_objects_v2")
+        keys: list[str] = []
+        for page in paginator.paginate(Bucket=bucket, Prefix=_GROOM_RUNS_PREFIX):
+            for obj in page.get("Contents", []):
+                k = obj.get("Key", "")
+                if not _GROOM_RUN_KEY_RE.match(k):
+                    continue
+                date_part = k.removeprefix(_GROOM_RUNS_PREFIX).split("/", 1)[0]
+                if date_part in wanted_dates:
+                    keys.append(k)
+        keys.sort(reverse=True)
+        return keys
+    except Exception as e:
+        logger.error("Failed to list groom run keys since: %s", e)
+        _record_s3_error(bucket, _GROOM_RUNS_PREFIX, type(e).__name__, str(e))
+        return []
+
+
+@st.cache_data(ttl=_ttl("research"))
 def load_groom_run(key: str) -> dict | None:
     """Load a single groom run artifact (schema_version, run_start, model,
     issue_filter, stop_reason, floor_fail, issues: [{repo, number, title,
