@@ -2439,6 +2439,19 @@ def load_expense_report() -> dict | None:
     return download_s3_json(_research_bucket(), "expenses/latest.json")
 
 
+@st.cache_data(ttl=_ttl("research"))
+def load_expense_reconciliation(period: str) -> dict | None:
+    """Month-close true-up for one CLOSED period (``expenses/reconciliation/
+    {period}.json``, ``period`` like ``"2026-06"``) — alpha-engine-config#2849.
+    Per-provider ``{projected_last_seen, accrued_mtd_final, actual_final,
+    delta_usd, delta_pct, status, note}`` plus ``flagged`` (provider keys
+    whose ``|delta_pct|`` exceeded the collector's threshold). Producer:
+    alpha-engine-data ``infrastructure/lambdas/expense-collector`` reconcile
+    mode, ~03:00 UTC on the 2nd of each month. None until that month's
+    reconciliation run has happened."""
+    return download_s3_json(_research_bucket(), f"expenses/reconciliation/{period}.json")
+
+
 # ---------------------------------------------------------------------------
 # Research Think Tank (data++) — config#1579
 # ---------------------------------------------------------------------------
