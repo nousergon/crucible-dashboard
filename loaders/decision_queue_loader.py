@@ -1,15 +1,28 @@
-"""Load + act on the human-gated backlog pool (Decision Queue, config#1926).
+"""Load + act on the human-gated backlog pool — Decision Queue + Action Queue
+(config#1926; split into two queues config#3060).
 
 The console's ONE write scope: the GitHub issue/PR tracker. Rulings made on
-the Decision Queue page post an operator-decision comment and strip the
-``gate:*`` label so the next tier groom executes the ruling — the console
-never writes S3 config, SSM trading params, or any trading state
-(ARCHITECTURE.md carve-out, config#1926).
+either page post an operator-decision comment and strip the ``gate:*`` label
+so the next tier groom executes the ruling — the console never writes S3
+config, SSM trading params, or any trading state (ARCHITECTURE.md carve-out,
+config#1926).
 
-Read side: open issues AND PRs carrying ``gate:operator`` / ``gate:decision``
-/ ``gate:device`` (config#2431: widened from operator/decision only — a
-``gate:device`` item is JUST as human-only by definition, no S3/API check can
-substitute for physically validating hardware) across the four backlog repos
+Two queues, split by whether the gate needs Brian's JUDGMENT or his HANDS
+(Brian's 2026-07-20 ruling, config#3060): a ruling that resolves to "now go
+click a setting / rotate a credential / check hardware" is not a decision —
+it's an action, and belongs on a numbered action list worked during a
+dedicated triage pass, not interleaved with genuine ambiguous tradeoffs.
+
+- ``load_decision_queue()`` — ``gate:decision`` only: items where the
+  product/scope question itself is unresolved.
+- ``load_action_queue()`` — ``gate:operator`` + ``gate:device``: items
+  already resolved in principle, blocked only on Brian physically doing
+  something (console/billing step, credential rotation, hardware check).
+
+Both queues share the same read/write plumbing (``_load_gate_pool``,
+``post_ruling``, etc.) and pull from the same repo pools — only the label
+filter and the presentation (views/49 vs views/50) differ. Read side: open
+issues AND PRs carrying one of these labels across the four backlog repos
 (issues) plus ``CODE_REPOS`` (PRs — these gates were never scoped to the
 backlog repos in the first place; the underlying labels already exist
 fleet-wide on PRs today), oldest-first, with the structured ``**Ask:**``
@@ -91,9 +104,14 @@ CODE_REPOS = [
     "nousergon/vires", "nousergon/vires-ops",
     "nousergon/telos", "nousergon/telos-ops",
 ]
-# config#2431: gate:device added — just as human-only as operator/decision
-# (no S3/API check substitutes for physically validating hardware).
-HUMAN_GATE_LABELS = ("gate:operator", "gate:decision", "gate:device")
+# config#3060: split by judgment (Decision Queue) vs hands (Action Queue).
+# gate:device is action-shaped — "go check the hardware" is a physical step,
+# not an ambiguous tradeoff (Brian's 2026-07-20 ruling).
+DECISION_GATE_LABELS = ("gate:decision",)
+ACTION_GATE_LABELS = ("gate:operator", "gate:device")
+# Union — used where a gate must be cleared regardless of which queue it
+# came from (label removal on ruling); NOT used to select queue membership.
+HUMAN_GATE_LABELS = DECISION_GATE_LABELS + ACTION_GATE_LABELS
 SESSION_LABEL = "triage:session"
 _GROOM_PAT_SSM_PARAM = "/alpha-engine/groom/github_pat"
 _REGION = os.environ.get("AWS_REGION", "us-east-1")
@@ -414,9 +432,11 @@ def _build_decision_item(repo: str, label: str, it: dict, now: datetime,
     )
 
 
-@st.cache_data(ttl=_CACHE_TTL_S, show_spinner="Loading decision queue…")
-def load_decision_queue() -> dict:
-    """Open human-gated issues split into due vs snoozed, as plain dicts.
+def _load_gate_pool(labels: tuple[str, ...]) -> dict:
+    """Open issues/PRs carrying any of ``labels``, split into due vs snoozed.
+
+    Shared implementation behind both ``load_decision_queue()`` (gate:decision)
+    and ``load_action_queue()`` (gate:operator/gate:device) — config#3060.
 
     Returns ``{"items": [...oldest-first, DUE...], "snoozed": [...]}`` —
     an issue whose ``Re-exam:`` date is in the future was deferred by the
@@ -425,20 +445,20 @@ def load_decision_queue() -> dict:
     parked, not lost. Snoozed issues are filtered BEFORE the comment
     fan-out — no network spent on items that won't render.
 
-    The issue-list fetch (repo x label, 8 calls) is cheap; the per-issue
-    gate-comment lookup is not — one blocking GET per pending issue, serially
-    that's O(N) round trips on a page load (~10s+ once the pool has 20-30
-    items). Comment lookups are independent per issue, so they're fanned out
-    across a thread pool rather than looped.
+    The issue-list fetch (repo x label) is cheap; the per-issue gate-comment
+    lookup is not — one blocking GET per pending issue, serially that's O(N)
+    round trips on a page load (~10s+ once the pool has 20-30 items).
+    Comment lookups are independent per issue, so they're fanned out across
+    a thread pool rather than looped.
     """
     now = datetime.now(timezone.utc)
     today = now.date()
-    # An issue carrying BOTH human gates would otherwise get its comment
-    # thread fetched twice — dedupe by (repo, number) BEFORE the network
-    # fan-out, not after, so we never double-pay for a shared issue. (repo,
-    # number) is a safe key even across the issue/PR scans below — GitHub
-    # issues and PRs share one number sequence per repo, so a PR can never
-    # collide with an issue of the same number.
+    # An issue carrying BOTH labels in this queue's set would otherwise get
+    # its comment thread fetched twice — dedupe by (repo, number) BEFORE the
+    # network fan-out, not after, so we never double-pay for a shared issue.
+    # (repo, number) is a safe key even across the issue/PR scans below —
+    # GitHub issues and PRs share one number sequence per repo, so a PR can
+    # never collide with an issue of the same number.
     seen: set[tuple[str, int]] = set()
     to_build: list[tuple[str, str, dict, bool]] = []
     snoozed: list[dict] = []
@@ -458,11 +478,11 @@ def load_decision_queue() -> dict:
         to_build.append((repo, label, it, is_pr))
 
     for repo in BACKLOG_REPOS:
-        for label in HUMAN_GATE_LABELS:
+        for label in labels:
             for it in _list_gated_issues(repo, label):
                 _queue(repo, label, it, is_pr=False)
     for repo in CODE_REPOS:
-        for label in HUMAN_GATE_LABELS:
+        for label in labels:
             for it in _list_gated_prs(repo, label):
                 _queue(repo, label, it, is_pr=True)
 
@@ -478,8 +498,22 @@ def load_decision_queue() -> dict:
     return {"items": [i.__dict__ | {"key": i.key} for i in items], "snoozed": snoozed}
 
 
+@st.cache_data(ttl=_CACHE_TTL_S, show_spinner="Loading decision queue…")
+def load_decision_queue() -> dict:
+    """Judgment-call items only (``gate:decision``) — see module docstring."""
+    return _load_gate_pool(DECISION_GATE_LABELS)
+
+
+@st.cache_data(ttl=_CACHE_TTL_S, show_spinner="Loading action queue…")
+def load_action_queue() -> dict:
+    """Operator-hands items only (``gate:operator``/``gate:device``) — see
+    module docstring."""
+    return _load_gate_pool(ACTION_GATE_LABELS)
+
+
 def clear_queue_cache() -> None:
     load_decision_queue.clear()
+    load_action_queue.clear()
 
 
 # ── write side (the console's single write scope: the issue tracker) ────────
