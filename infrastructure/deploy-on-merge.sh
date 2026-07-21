@@ -383,6 +383,29 @@ if [ "${SKIP_REQUIREMENTS_INSTALL:-0}" != "1" ] && [ -x ".venv/bin/python" ] && 
     # a misleading "WARN alpha-engine-lib upgrade failed" every deploy. Removed.
 fi
 
+# ── 1b. Package-version-drift check (config#3157) ──────────────────────────
+# The state-compare gate above only guards against a MISSED pip install; it
+# says nothing about whether the venv's INSTALLED krepis/nousergon-lib
+# actually satisfies what requirements.in currently declares. That's exactly
+# how the box ran krepis 0.14.0 for days after the repo's floor said
+# `krepis[openai]>=0.16.2` — the stamp/install machinery never asked the
+# reverse question, and the drift was only caught by a human manually
+# running `krepis.__version__`. Run this every deploy (not just when the
+# install block above ran) so an out-of-band venv desync — a manual pip
+# install, a venv restored from an older snapshot, or the §0 self-heal
+# venv-rebuild path using a stale requirements.txt — is also caught, not
+# just a missed install. Uses the box venv's own interpreter so the
+# versions checked are the ones actually live for the running services.
+if [ -x ".venv/bin/python" ]; then
+    if ! sudo -u ec2-user .venv/bin/python infrastructure/check_package_drift.py 2>>"$LOG"; then
+        tail -20 "$LOG"
+        fail "package-version drift detected (krepis/nousergon-lib vs requirements.in) — see check_package_drift output above"
+    fi
+    log "OK   package-version drift check (krepis/nousergon-lib match requirements.in)"
+else
+    log "WARN package-version drift check skipped — no .venv/bin/python"
+fi
+
 # ── 2. Reload nginx if infrastructure/nginx.conf changed ──────────────────
 # State-compare (config#2338), not commit-range diff: the live file at
 # NGINX_CONF_LIVE IS the "installed copy" (same role as the systemd unit
