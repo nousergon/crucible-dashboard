@@ -13,10 +13,20 @@ name: claude-assistant (reusable)
 
 on:
   workflow_call:
+    inputs:
+      runs-on:
+        description: >-
+          Runner label for the respond job. Defaults to ubuntu-latest so
+          public callers (free GH-hosted minutes) are unaffected; private
+          callers (e.g. alpha-engine-config, config#2968) can pass their own
+          CodeBuild/GHA-toggle label.
+        type: string
+        required: false
+        default: ubuntu-latest
 
 jobs:
   respond:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs-on }}
     timeout-minutes: 25
     # AUTHORITATIVE trusted-author gate (event-aware). The caller does a cheap
     # "@claude" pre-filter to avoid spinning this on every comment; THIS is the
