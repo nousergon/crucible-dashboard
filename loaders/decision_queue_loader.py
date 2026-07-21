@@ -113,6 +113,15 @@ ACTION_GATE_LABELS = ("gate:operator", "gate:device")
 # came from (label removal on ruling); NOT used to select queue membership.
 HUMAN_GATE_LABELS = DECISION_GATE_LABELS + ACTION_GATE_LABELS
 SESSION_LABEL = "triage:session"
+# config#3199: a ruling that leaves follow-on work behind (any gate:* label
+# still on the item after de-gating) gets this marker so (a) the groom lanes
+# enumerate it — gate-labeled issues are otherwise excluded (config#1805) and
+# PRs are otherwise invisible to grooms entirely — and (b) gate_sf_run_sweep
+# stands down instead of re-escalating the just-ruled item back into this
+# very queue (the 2026-07-20 twenty-ruling pile-up). The groom removes it
+# after executing the ruling; the sweep re-escalates loudly if that hasn't
+# happened within 72h.
+RULING_PENDING_LABEL = "ruling:pending-exec"
 _GROOM_PAT_SSM_PARAM = "/alpha-engine/groom/github_pat"
 _REGION = os.environ.get("AWS_REGION", "us-east-1")
 _API = "https://api.github.com"
@@ -338,7 +347,11 @@ def ruling_comment(option: str, detail: str, when: str) -> str:
     line = f"**Operator decision {when}: {option}**"
     if detail:
         line += f" — {detail}"
-    return line + "\n\n_Ruled via console Decision Queue (config#1926); gate label removed — actionable for the next tier groom._"
+    return line + ("\n\n_Ruled via console Decision Queue (config#1926); human-gate "
+                   "label removed. If follow-on work remains (a `gate:*` label still "
+                   "on the item), `ruling:pending-exec` is applied and the next tier "
+                   "groom EXECUTES this ruling, then removes that marker "
+                   "(config#3199)._")
 
 
 # ── read side ────────────────────────────────────────────────────────────────
@@ -581,17 +594,43 @@ def _resolve_pr_gate_followup(repo: str, number: int) -> None:
 # the 300s TTL — bounding, not eliminating, cross-session staleness.
 
 
+def _mark_ruling_pending_exec(repo: str, number: int) -> None:
+    """config#3199: after de-gating, re-fetch LIVE labels; any remaining
+    ``gate:*`` label means the ruling left follow-on work no lane could
+    otherwise see (gate-excluded issues, groom-invisible PRs) — apply
+    ``ruling:pending-exec`` so the groom enumerates it and the SF sweep
+    stands down instead of re-escalating. Never raises: the ruling comment
+    already landed; a failed marker just means the 72h-overdue backstop (or
+    a re-escalation Brian will recognize) picks it up — logged loudly so it
+    is a visible degradation, not a silent one."""
+    try:
+        live = _request("GET", f"{_API}/repos/{repo}/issues/{number}") or {}
+        remaining = [l["name"] for l in live.get("labels", [])
+                     if l["name"].startswith("gate:")]
+        if not remaining:
+            return
+        _request("POST", f"{_API}/repos/{repo}/issues/{number}/labels",
+                 {"labels": [RULING_PENDING_LABEL]})
+        logger.info("decision_queue: %s#%d still gated by %s — applied %s",
+                    repo, number, remaining, RULING_PENDING_LABEL)
+    except Exception as exc:
+        logger.warning("decision_queue: ruling-pending marker failed for "
+                       "%s#%d: %s", repo, number, exc)
+
+
 def post_ruling(repo: str, number: int, option: str, detail: str = "", *,
                 is_pr: bool = False) -> None:
-    """Ruling → comment + de-gate (+ PR follow-up, config#2431). The next
-    tier groom executes any remaining work; a fully-unblocked draft PR is
-    flipped ready immediately rather than waiting on a groom pass to notice."""
+    """Ruling → comment + de-gate (+ PR follow-up, config#2431; + pending-exec
+    marker when work remains, config#3199). The next tier groom EXECUTES a
+    marker-carrying ruling; a fully-unblocked draft PR is flipped ready
+    immediately rather than waiting on a groom pass to notice."""
     when = datetime.now(timezone.utc).date().isoformat()
     _request("POST", f"{_API}/repos/{repo}/issues/{number}/comments",
              {"body": ruling_comment(option, detail, when)})
     _remove_gate_labels(repo, number)
     if is_pr:
         _resolve_pr_gate_followup(repo, number)
+    _mark_ruling_pending_exec(repo, number)
 
 
 def kill_issue(repo: str, number: int, detail: str = "") -> None:
