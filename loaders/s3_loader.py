@@ -367,6 +367,23 @@ def download_s3_json(bucket: str, key: str) -> dict | list | None:
     return _fetch_s3_json(bucket, key)
 
 
+@st.cache_data(ttl=_ttl("signals"))
+def download_s3_yaml(bucket: str, key: str) -> dict | list | None:
+    """Download and parse a YAML file from S3. Returns None on failure
+    (missing key, parse error) — same honest-ABSENT contract as
+    ``download_s3_json``, just for YAML-shaped artifacts (e.g. the
+    ARTIFACT_REGISTRY.yaml SoT mirrored to S3 by sync-artifact-registry.yml)."""
+    raw = _s3_get_object(bucket, key)
+    if raw is None:
+        return None
+    try:
+        return yaml.safe_load(raw)
+    except yaml.YAMLError as e:
+        logger.warning("YAML parse failed for %s/%s: %s", bucket, key, e)
+        _record_s3_error(bucket, key, "YAMLParseError", str(e))
+        return None
+
+
 @st.cache_data(ttl=_ttl("research"))
 def load_sector_team_run(eval_date: str, team_id: str) -> dict | None:
     """Load a sector team's full run envelope for one cycle:
