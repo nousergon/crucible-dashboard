@@ -1,28 +1,24 @@
-"""Load + act on the human-gated backlog pool — Decision Queue + Action Queue
-(config#1926; split into two queues config#3060).
+"""Load + act on the human-gated backlog pool (Decision Queue, config#1926).
 
 The console's ONE write scope: the GitHub issue/PR tracker. Rulings made on
-either page post an operator-decision comment and strip the ``gate:*`` label
-so the next tier groom executes the ruling — the console never writes S3
-config, SSM trading params, or any trading state (ARCHITECTURE.md carve-out,
-config#1926).
+the Decision Queue page post an operator-decision comment and strip the
+``gate:*`` label so the next tier groom executes the ruling — the console
+never writes S3 config, SSM trading params, or any trading state
+(ARCHITECTURE.md carve-out, config#1926).
 
-Two queues, split by whether the gate needs Brian's JUDGMENT or his HANDS
-(Brian's 2026-07-20 ruling, config#3060): a ruling that resolves to "now go
-click a setting / rotate a credential / check hardware" is not a decision —
-it's an action, and belongs on a numbered action list worked during a
-dedicated triage pass, not interleaved with genuine ambiguous tradeoffs.
+config-I3060 (2026-07-20) split this into two pages by judgment-vs-hands;
+config-I3239 (2026-07-21, Brian's ruling) RECOMBINED them — the two-page
+split added a routing decision ("which queue is this on") without a
+reliable way to tell which queue an item would land on, which is worse
+than the interleaving problem it was meant to solve. One page again:
+every open issue OR PR carrying ``gate:operator``/``gate:decision``/
+``gate:device`` renders here, oldest first. The per-item framing the split
+introduced is worth keeping even though the page split isn't — an
+operator/device item still shows "Mark done" instead of "Post ruling"
+(``render_card``'s ``is_action`` is now derived per item from its gate,
+not from which page rendered it).
 
-- ``load_decision_queue()`` — ``gate:decision`` only: items where the
-  product/scope question itself is unresolved.
-- ``load_action_queue()`` — ``gate:operator`` + ``gate:device``: items
-  already resolved in principle, blocked only on Brian physically doing
-  something (console/billing step, credential rotation, hardware check).
-
-Both queues share the same read/write plumbing (``_load_gate_pool``,
-``post_ruling``, etc.) and pull from the same repo pools — only the label
-filter and the presentation (views/49 vs views/50) differ. Read side: open
-issues AND PRs carrying one of these labels across the four backlog repos
+Read side: open issues AND PRs carrying one of these labels across the four backlog repos
 (issues) plus ``CODE_REPOS`` (PRs — these gates were never scoped to the
 backlog repos in the first place; the underlying labels already exist
 fleet-wide on PRs today), oldest-first, with the structured ``**Ask:**``
@@ -104,14 +100,18 @@ CODE_REPOS = [
     "nousergon/vires", "nousergon/vires-ops",
     "nousergon/telos", "nousergon/telos-ops",
 ]
-# config#3060: split by judgment (Decision Queue) vs hands (Action Queue).
-# gate:device is action-shaped — "go check the hardware" is a physical step,
-# not an ambiguous tradeoff (Brian's 2026-07-20 ruling).
-DECISION_GATE_LABELS = ("gate:decision",)
-ACTION_GATE_LABELS = ("gate:operator", "gate:device")
-# Union — used where a gate must be cleared regardless of which queue it
-# came from (label removal on ruling); NOT used to select queue membership.
-HUMAN_GATE_LABELS = DECISION_GATE_LABELS + ACTION_GATE_LABELS
+# config-I2431: gate:device added — just as human-only as operator/decision
+# (no S3/API check substitutes for physically validating hardware).
+# config-I3060 split this into DECISION_GATE_LABELS/ACTION_GATE_LABELS for a
+# two-page console split; config-I3239 recombined the pages, but the
+# operator/device-vs-decision distinction still drives per-item card framing
+# (see ACTION_SHAPED_GATE_LABELS below and gate_queue_card.render_card).
+HUMAN_GATE_LABELS = ("gate:operator", "gate:decision", "gate:device")
+# Gates that are already resolved in principle, blocked only on Brian
+# physically doing something — drives the card's "Mark done" vs "Post
+# ruling" framing (config-I3060 origin; config-I3239 made it per-item
+# instead of per-page).
+ACTION_SHAPED_GATE_LABELS = ("gate:operator", "gate:device")
 SESSION_LABEL = "triage:session"
 # config#3199: a ruling that leaves follow-on work behind (any gate:* label
 # still on the item after de-gating) gets this marker so (a) the groom lanes
@@ -448,9 +448,6 @@ def _build_decision_item(repo: str, label: str, it: dict, now: datetime,
 def _load_gate_pool(labels: tuple[str, ...]) -> dict:
     """Open issues/PRs carrying any of ``labels``, split into due vs snoozed.
 
-    Shared implementation behind both ``load_decision_queue()`` (gate:decision)
-    and ``load_action_queue()`` (gate:operator/gate:device) — config#3060.
-
     Returns ``{"items": [...oldest-first, DUE...], "snoozed": [...]}`` —
     an issue whose ``Re-exam:`` date is in the future was deferred by the
     operator and MUST NOT re-enter the queue until due (the Defer button's
@@ -513,20 +510,13 @@ def _load_gate_pool(labels: tuple[str, ...]) -> dict:
 
 @st.cache_data(ttl=_CACHE_TTL_S, show_spinner="Loading decision queue…")
 def load_decision_queue() -> dict:
-    """Judgment-call items only (``gate:decision``) — see module docstring."""
-    return _load_gate_pool(DECISION_GATE_LABELS)
-
-
-@st.cache_data(ttl=_CACHE_TTL_S, show_spinner="Loading action queue…")
-def load_action_queue() -> dict:
-    """Operator-hands items only (``gate:operator``/``gate:device``) — see
-    module docstring."""
-    return _load_gate_pool(ACTION_GATE_LABELS)
+    """All human-only gates (``gate:decision``/``gate:operator``/
+    ``gate:device``) — see module docstring."""
+    return _load_gate_pool(HUMAN_GATE_LABELS)
 
 
 def clear_queue_cache() -> None:
     load_decision_queue.clear()
-    load_action_queue.clear()
 
 
 # ── write side (the console's single write scope: the issue tracker) ────────
