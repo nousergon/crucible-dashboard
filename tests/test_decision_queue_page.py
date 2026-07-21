@@ -655,6 +655,49 @@ class TestPostRulingPrFollowup:
         assert calls == []
 
 
+class TestRulingPendingExecMarker:
+    """config#3199: a ruling that leaves a gate:* label behind must apply
+    ruling:pending-exec — the machine-readable handoff the groom executes
+    and the SF sweep stands down on. Missing this marker is exactly the
+    2026-07-20 twenty-ruling Decision Queue pile-up."""
+
+    def _run(self, monkeypatch, live_labels):
+        posted = []
+
+        def fake(method, url, body=None):
+            if method == "GET" and url.endswith("/issues/9"):
+                return {"labels": [{"name": n} for n in live_labels]}
+            if method == "POST" and url.endswith("/labels"):
+                posted.append(body)
+            return {}
+
+        monkeypatch.setattr(dq_module, "_request", fake)
+        monkeypatch.setattr(dq_module, "_remove_gate_labels", lambda *a, **k: None)
+        post_ruling("r/repo", 9, "Option A")
+        return posted
+
+    def test_marker_applied_when_gate_label_remains(self, monkeypatch):
+        posted = self._run(monkeypatch, ["gate:weekly-sf", "P1"])
+        assert posted == [{"labels": [dq_module.RULING_PENDING_LABEL]}]
+
+    def test_no_marker_when_fully_ungated(self, monkeypatch):
+        assert self._run(monkeypatch, ["P1", "complexity:mid"]) == []
+
+    def test_marker_failure_never_breaks_the_ruling(self, monkeypatch):
+        calls = []
+
+        def fake(method, url, body=None):
+            calls.append(method)
+            if method == "GET" and url.endswith("/issues/9"):
+                raise RuntimeError("network error")
+            return {}
+
+        monkeypatch.setattr(dq_module, "_request", fake)
+        monkeypatch.setattr(dq_module, "_remove_gate_labels", lambda *a, **k: None)
+        post_ruling("r/repo", 9, "Option A")  # must not raise
+        assert "POST" in calls  # the ruling comment itself still landed
+
+
 class TestGithubTokenAuthPath:
     """config-I2785: App installation token first, operator PAT fallback.
 
