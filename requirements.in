@@ -121,7 +121,15 @@ krepis[openai]>=0.14.0
 # authenticates GitHub as the ne-groomer App installation (resilient bot
 # identity; the 2026-07-16 user-token REST outage config-I2784 didn't touch
 # App tokens), keeping the groom PAT only as fallback.
-nousergon-lib[flow-doctor,github_app] @ git+https://github.com/nousergon/nousergon-lib@v0.124.0
+# v0.124.9 (config#3059, nousergon-lib#226, 6th recurrence of the
+# config#1115/#2372/#2430 drift class): pipeline_status registry now covers
+# 2 Saturday-SF states (ChallengerShadow, SignalsEnvelope) + 7 EOD-SF states
+# (HealConvergedNotify, HealLaunchArcticAppendSpot,
+# HealLaunchPostMarketDataSpot, HealNonConvergent, HealReProbe,
+# HealReplayDispatchFailed, ProbeEODReconcilePrecondition) -- keeps
+# tests/test_pipeline_status_registry_drift.py::test_every_substantive_state_has_registry_entry
+# green against the current SF JSONs.
+nousergon-lib[flow-doctor,github_app] @ git+https://github.com/nousergon/nousergon-lib@v0.124.9
 
 # crucible-dash-api (config#1973 phase 9-B): read-only FastAPI over the
 # results view-model, consumed same-box by the /dash Next.js frontend.
