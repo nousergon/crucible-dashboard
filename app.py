@@ -509,6 +509,16 @@ def _build_navigation():
                 "views/48_Fleet_Status.py", title="Fleet Status", icon="🛰",
                 url_path="fleet-status",
             ),
+            # Per-process SLA accountability table (config#2858) — the
+            # table companion to Fleet Status's dots: process | pipeline |
+            # trigger | SLA | last completed | verdict | hit-rate. url_path
+            # pinned to "fleet-sla" (slug guard: tests/test_sla_status_page.py).
+            # Standalone st.Page, same deep-link-stability posture as
+            # fleet-status above.
+            st.Page(
+                "views/54_Fleet_SLA.py", title="Fleet SLA", icon="🎯",
+                url_path="fleet-sla",
+            ),
             # Human-gated backlog ruling surface (config#1926). url_path
             # pinned to "decision-queue" — the weekly Telegram digest
             # (config#1922) deep-links to it and the home chip page_links to
