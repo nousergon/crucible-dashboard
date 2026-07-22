@@ -66,8 +66,8 @@ INSTANCE_ID=$(curl -s --max-time 2 -H "X-aws-ec2-metadata-token: ${_imds_tok}" h
 MEM_MIN_MB=150                       # alert if MemAvailable drops below this
 DISK_WARN_PCT=80                     # root-disk warn band (page, deduped)
 DISK_CRIT_PCT=90                     # root-disk critical band (page, deduped)
-SERVICES=(dashboard.service nous-ergon-live.service crucible-dash.service signal.service metron-api.service metron-web.service)
-PORTS=(8501 8502 8503 8504 8505 8000 3000)
+SERVICES=(dashboard.service nous-ergon-live.service crucible-dash.service signal.service metron-api.service metron-dash-web.service)
+PORTS=(8501 8502 8503 8504 8505 8000 3003)
 RETRY_ATTEMPTS=4                     # samples before a problem is confirmed
 RETRY_DELAY=4                        # seconds between confirmation samples (4x4s ~12s window > metron-api ~5s cold-start)
 
