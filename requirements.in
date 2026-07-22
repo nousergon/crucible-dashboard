@@ -1,4 +1,4 @@
-streamlit>=1.40
+streamlit>=1.60.0
 pandas>=2.0
 plotly>=5.18
 # setuptools floor for PYSEC-2026-3447 (newly disclosed; CI's pip-audit gate
@@ -11,7 +11,7 @@ setuptools>=83.0.0
 # (put_object IfMatch / IfNoneMatch) for lost-update protection; the loader
 # also carries a compare-then-put fallback if the installed botocore
 # predates them, but the pinned floor makes the conditional path the norm.
-boto3>=1.43.52
+boto3>=1.43.53
 pyyaml>=6.0
 # streamlit-calendar: FullCalendar component backing the Morning Signal
 # Content Schedule page (views/45_Morning_Signal_Schedule.py) — month
