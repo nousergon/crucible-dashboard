@@ -118,6 +118,91 @@ class TestDeepLinkTargets:
                 f"{host_file.name}'s subviews"
             )
 
+    def _representative_inputs(self):
+        """A FleetInputs fixture set spanning each resolver's branches.
+
+        config#3207: ``ComponentStatus.deep_link`` is Optional with no
+        chokepoint, so a new/changed resolver branch could silently ship
+        without one. Mirrors ``tests/test_fleet_status.py``'s reference
+        clocks + adds the probe-state toggles needed to walk daemon/
+        trading_instance/groomer/module_self_reports through more than
+        their single default branch.
+        """
+        from fleet_status import FleetInputs, GroomSnapshot, ModuleHealthRow
+
+        trading_mid = datetime(2026, 7, 7, 15, 0, tzinfo=timezone.utc)
+        saturday = datetime(2026, 7, 11, 10, 0, tzinfo=timezone.utc)
+        sunday = datetime(2026, 7, 12, 15, 0, tzinfo=timezone.utc)
+        return [
+            FleetInputs(now=trading_mid, is_trading_day=True),
+            FleetInputs(now=trading_mid, is_trading_day=True, ec2_available=False),
+            FleetInputs(now=trading_mid, is_trading_day=True, intraday_nav_age_s=5.0),
+            FleetInputs(now=trading_mid, is_trading_day=True, intraday_nav_age_s=9999.0),
+            FleetInputs(now=trading_mid, is_trading_day=True, live_service_ok=True),
+            FleetInputs(now=trading_mid, is_trading_day=True, live_service_ok=False),
+            FleetInputs(now=saturday, is_trading_day=False),
+            FleetInputs(now=sunday, is_trading_day=False),
+            FleetInputs(
+                now=trading_mid, is_trading_day=True,
+                groom=GroomSnapshot(marker_started_at=trading_mid, marker_tier="mid"),
+            ),
+            FleetInputs(
+                now=trading_mid, is_trading_day=True,
+                module_health=(
+                    ModuleHealthRow(module="predictor", status="failed", age_hrs=1.0,
+                                     stale_after_hrs=None, error="boom"),
+                ),
+            ),
+        ]
+
+    def test_every_row_has_a_deep_link_or_a_documented_exemption(self):
+        """Chokepoint (config#3207): every resolved row either deep_links to
+        a real target, or its component_id is a documented exemption in
+        ``fleet_status.NO_DEEP_LINK_TARGETS``. Neither can drift silently —
+        an undocumented None fails here; a stale exemption entry whose row
+        now HAS a deep_link fails in ``test_no_deep_link_targets_registry_
+        is_not_stale`` below.
+        """
+        from fleet_status import NO_DEEP_LINK_TARGETS, resolve_fleet
+
+        urls = self._url_map()
+        for inputs in self._representative_inputs():
+            for s in resolve_fleet(inputs):
+                if s.component_id in NO_DEEP_LINK_TARGETS:
+                    continue
+                assert s.deep_link is not None, (
+                    f"{s.component_id} carries deep_link=None and is not in "
+                    f"NO_DEEP_LINK_TARGETS — either wire a deep_link or add a "
+                    f"one-line documented exemption"
+                )
+                assert s.deep_link in urls, (
+                    f"{s.component_id} deep_link {s.deep_link!r} missing from "
+                    f"_URL_BY_SLUG"
+                )
+
+    def test_no_deep_link_targets_registry_is_not_stale(self):
+        """Every NO_DEEP_LINK_TARGETS entry must still be a real component_id
+        that actually produces deep_link=None across the fixture set —
+        catches a row gaining a real deep_link without its exemption being
+        removed (config#3207)."""
+        from fleet_status import NO_DEEP_LINK_TARGETS, resolve_fleet
+
+        seen_ids = set()
+        for inputs in self._representative_inputs():
+            for s in resolve_fleet(inputs):
+                seen_ids.add(s.component_id)
+                if s.component_id in NO_DEEP_LINK_TARGETS:
+                    assert s.deep_link is None, (
+                        f"{s.component_id} is listed in NO_DEEP_LINK_TARGETS "
+                        f"but now carries deep_link={s.deep_link!r} — remove "
+                        f"its exemption entry"
+                    )
+        missing = set(NO_DEEP_LINK_TARGETS) - seen_ids
+        assert not missing, (
+            f"NO_DEEP_LINK_TARGETS names component_id(s) resolve_fleet() "
+            f"never produces: {sorted(missing)}"
+        )
+
 
 # ── Render smoke (exec-load with mocked streamlit + stubbed loader) ─────────
 

@@ -243,6 +243,25 @@ class ComponentStatus:
         return _DOT_ICONS.get(self.dot, "⚪")
 
 
+# component_id -> one-line reason a row has no deep_link. Every resolver
+# that never sets deep_link on any of its branches MUST be listed here
+# (config#3207) — the chokepoint test
+# (test_fleet_status_page.py::TestDeepLinkTargets.
+# test_every_row_has_a_deep_link_or_a_documented_exemption) fails a row
+# that is neither in this registry nor carrying a deep_link that resolves
+# in views/48_Fleet_Status.py's _URL_BY_SLUG. This forces the same
+# conscious PR-time call ARTIFACT_REGISTRY.yaml's mandatory run_calendar
+# field forces for a new continuous artifact — a new/changed resolver
+# branch can no longer silently ship with deep_link=None.
+NO_DEEP_LINK_TARGETS: dict[str, str] = {
+    "console_service": "self-referential — this page rendering IS the probe",
+    "live_service": "no dedicated status page for the public live site yet",
+    "trading_instance": "no dedicated EC2-instance detail page yet",
+    "ci_watch": "no dedicated console detail page yet (see resolve_ci_watch)",
+    "module_self_reports": "aggregates all modules; no single-target detail page",
+}
+
+
 # ── Time helpers (pure; all take/return tz-aware UTC) ───────────────────────
 
 
@@ -305,6 +324,7 @@ def _parse_iso_utc(raw) -> Optional[datetime]:
 
 
 def resolve_trading_instance(inp: FleetInputs) -> ComponentStatus:
+    # No dedicated EC2-instance detail page yet — see NO_DEEP_LINK_TARGETS.
     cid, label = "trading_instance", "Trading instance (EC2)"
     start, end = trading_instance_window(inp.now)
     expected = inp.is_trading_day and start <= inp.now <= end
@@ -361,7 +381,7 @@ def resolve_daemon(inp: FleetInputs) -> ComponentStatus:
         if age <= DAEMON_STALE_S:
             return ComponentStatus(
                 cid, label, GROUP_INFRA, GREEN,
-                f"heartbeat {_ago(inp.now, last)}", last,
+                f"heartbeat {_ago(inp.now, last)}", last, deep_link="pipeline-status",
             )
         # Stale within the session: heartbeat from THIS session ⇒ stalled
         # (yellow); a heartbeat that predates today's open ⇒ the daemon
@@ -370,21 +390,24 @@ def resolve_daemon(inp: FleetInputs) -> ComponentStatus:
             return ComponentStatus(
                 cid, label, GROUP_INFRA, RED,
                 f"no heartbeat this session — last {_ago(inp.now, last)}", last,
+                deep_link="pipeline-status",
             )
         return ComponentStatus(
             cid, label, GROUP_INFRA, YELLOW,
             f"stalled — heartbeat {_ago(inp.now, last)} "
             f"(expected ≤{DAEMON_STALE_S / 60:.0f} min during market hours)",
-            last,
+            last, deep_link="pipeline-status",
         )
     return ComponentStatus(
         cid, label, GROUP_INFRA, GRAY,
         f"market closed — last heartbeat {_ago(inp.now, last)}", last,
+        deep_link="pipeline-status",
     )
 
 
 def resolve_console_service(inp: FleetInputs) -> ComponentStatus:
-    # Self-evident: this page rendering IS the console service being up.
+    # Self-evident: this page rendering IS the console service being up —
+    # no deep_link (nothing to navigate TO; see NO_DEEP_LINK_TARGETS).
     return ComponentStatus(
         "console_service", "Console (dashboard.service)", GROUP_INFRA,
         GREEN, "serving this page",
@@ -392,6 +415,8 @@ def resolve_console_service(inp: FleetInputs) -> ComponentStatus:
 
 
 def resolve_live_service(inp: FleetInputs) -> ComponentStatus:
+    # No dedicated status page for the public live site yet — see
+    # NO_DEEP_LINK_TARGETS.
     cid, label = "live_service", "Public live site (nous-ergon-live)"
     if inp.live_service_ok is None:
         return ComponentStatus(
@@ -656,6 +681,8 @@ def resolve_artifact_freshness(inp: FleetInputs) -> ComponentStatus:
 
 
 def resolve_module_self_reports(inp: FleetInputs) -> ComponentStatus:
+    # Aggregates every module's health/*.json in one row — no single
+    # per-module detail page to deep_link to. See NO_DEEP_LINK_TARGETS.
     cid, label = "module_self_reports", "Module self-reports (health/*.json)"
     rows = inp.module_health
     if not rows:
