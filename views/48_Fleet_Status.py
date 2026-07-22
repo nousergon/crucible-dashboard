@@ -126,6 +126,16 @@ def _live_grid() -> None:
 
 _live_grid()
 
+st.caption(
+    "Substrate: AWS EC2/SSM control plane + Step Functions "
+    "(`loaders.pipeline_status_loader`, 60s cache) + S3 artifacts "
+    "(freshness-monitor heartbeat, groom markers, `health/*.json` "
+    "self-reports) + local `systemctl` probe, composed by "
+    "`fleet_status.resolve_fleet()`. Loader cache: 25s "
+    "(`loaders.fleet_status_loader._TTL_SECONDS`) — the page's own "
+    "`st.fragment(run_every=\"30s\")` tick always lands on a fresh read."
+)
+
 # ── Raw daemon snapshots ────────────────────────────────────────────────────
 # Rehomed from the retired Intraday Surveillance page (console-IA phase 2a,
 # config#1987): the raw surveillance snapshots the every-30-min alerts Lambda

@@ -51,6 +51,12 @@ st.caption(
     "immediately, the next tier groom executes any remaining work. "
     "(config#1923/#1926/#2421/#3245; write scope = issue/PR tracker only)"
 )
+st.caption(
+    "Data source: GitHub Issues across `BACKLOG_REPOS` + PRs across "
+    "`CODE_REPOS` (`loaders.decision_queue_loader.load_decision_queue()`). "
+    "Cached 300s (`_CACHE_TTL_S`) — a ruling made elsewhere may take up to "
+    "5 min to disappear here; use 🔄 Refresh queue below to force a live re-read."
+)
 
 if github_token() is None:
     st.error(
