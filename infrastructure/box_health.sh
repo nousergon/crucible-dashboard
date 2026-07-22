@@ -12,7 +12,9 @@
 #   8504 crucible-dash.service    (crucible.nousergon.ai/dash)
 #   8505 signal.service           (signal.thecyphering.com)
 #   8000 metron-api.service       (Metron FastAPI backend, internal)
-#   3000 metron-web.service       (Metron Next.js, behind portfolio.nousergon.ai)
+# (metron-web.service / :3000 retired 2026-07-22 — portfolio.nousergon.ai deprecated,
+#  301s to metron.nousergon.ai/dash at the CF edge; metron-dash-web.service on :3003
+#  is Metron's sole web process.)
 # (robodashboard.service / :8504 decommissioned 2026-06-10 — Metron succeeded it at
 #  portfolio.nousergon.ai; robodashboard is now local-only. :8504 was reused by
 #  crucible-dash.service on 2026-07-08 after the #354 deploy's port survey missed
