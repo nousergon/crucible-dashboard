@@ -113,6 +113,31 @@ CANARY_DEAD = timedelta(days=15)
 # a false alarm on a not-yet-applied schedule).
 CANARY_EXPECTED_FROM_UTC = datetime(2026, 7, 23, tzinfo=timezone.utc)
 
+# Recovery-overlay ``pipeline_role`` values (config#3085): ad-hoc executions
+# that complete the CURRENT cadence cycle after its scheduled run failed —
+# ``watch-rerun`` is ``scripts/weekly_sf_rerun.py``'s mechanical weekly-SF
+# recovery helper's own role; ``recovery`` is the general operator/agent
+# ad-hoc convention (nousergon-data Option-D taxonomy: "weekly / daily / eod
+# (cron-triggered cadence) + shell-run / smoke / recovery / backfill /
+# operator-replay (ad-hoc)"). Deliberately excludes ``smoke``/``shell-run``/
+# ``backfill``/``operator-replay`` — never cycle-completing overlays (the
+# original Option-D motivation).
+#
+# NOTE: the Saturday-SF-watch dispatcher's "fast-path rerun" (config#1900/
+# #2953, ``infrastructure/lambdas/saturday-sf-watch-dispatcher/index.py``)
+# is NOT a distinct ``pipeline_role`` — verified live: it starts the rerun
+# with ``input=describe_resp["input"]``, i.e. it reuses the FAILED
+# execution's own input verbatim, so ``pipeline_role`` stays whatever the
+# cadence role already was. Only the execution NAME is tagged, with the
+# ``fast-path-rerun-`` prefix — so it's detected via
+# :func:`_is_recovery_execution`'s name check below, not membership here.
+RECOVERY_PIPELINE_ROLES = frozenset({"watch-rerun", "recovery"})
+
+# Execution-name prefix for the Saturday-SF-watch dispatcher's own
+# deterministic fast-path rerun (see NOTE above) — the one recovery overlay
+# that can't be told apart from a first-try cadence run by role alone.
+FAST_PATH_RERUN_NAME_PREFIX = "fast-path-rerun-"
+
 
 @dataclass(frozen=True)
 class PipelineSnapshot:
@@ -123,7 +148,12 @@ class PipelineSnapshot:
     ``verdict`` is the artifact-completion CycleVerdict ("COMPLETE"/
     "PARTIAL"/"FAILED"/"RUNNING"/"NOT_RUN") — the honest cycle judgment
     (config#727: a run that wrote every artifact but tripped a terminal
-    Catch still reports SF FAILED).
+    Catch still reports SF FAILED). ``role`` is the resolved execution's
+    ``pipeline_role`` (e.g. "weekly" for a first-try cadence run, or a
+    ``RECOVERY_PIPELINE_ROLES`` member when the dot reflects a recovery
+    overlay that completed/is completing the cycle — config#3085).
+    ``execution_name`` backs the fast-path-rerun name-prefix check (role
+    alone can't distinguish it — see the module-level NOTE above).
     """
 
     status: str
@@ -132,6 +162,27 @@ class PipelineSnapshot:
     stopped_at: Optional[datetime] = None
     current_state: Optional[str] = None
     error: Optional[str] = None
+    role: Optional[str] = None
+    execution_name: Optional[str] = None
+
+
+def _is_recovery_execution(snap: "PipelineSnapshot") -> bool:
+    """True when the resolved execution is a recovery overlay, not the
+    cadence run itself — either a ``RECOVERY_PIPELINE_ROLES`` role, or a
+    fast-path rerun identified by its execution-name prefix (config#3085)."""
+    if snap.role in RECOVERY_PIPELINE_ROLES:
+        return True
+    return bool(
+        snap.execution_name
+        and snap.execution_name.startswith(FAST_PATH_RERUN_NAME_PREFIX)
+    )
+
+
+def _recovery_label(snap: "PipelineSnapshot") -> str:
+    """Human-readable tag for a recovery execution's reason string."""
+    if snap.role in RECOVERY_PIPELINE_ROLES:
+        return snap.role
+    return "fast-path rerun"
 
 
 @dataclass(frozen=True)
@@ -460,9 +511,10 @@ def resolve_pipeline(key: str, inp: FleetInputs) -> ComponentStatus:
         )
     if snap.status == "RUNNING":
         state_note = f" — {snap.current_state}" if snap.current_state else ""
+        role_note = " (recovery)" if _is_recovery_execution(snap) else ""
         return ComponentStatus(
             cid, label, GROUP_PIPELINES, GREEN,
-            f"running{state_note} (started {_ago(inp.now, snap.started_at)})",
+            f"running{role_note}{state_note} (started {_ago(inp.now, snap.started_at)})",
             snap.started_at, deep_link="pipeline-status",
         )
 
@@ -481,6 +533,12 @@ def resolve_pipeline(key: str, inp: FleetInputs) -> ComponentStatus:
     verdict = snap.verdict or ("COMPLETE" if snap.status == "SUCCEEDED" else "FAILED")
     when = _ago(inp.now, snap.stopped_at or snap.started_at)
     if verdict == "COMPLETE":
+        if _is_recovery_execution(snap):
+            return ComponentStatus(
+                cid, label, GROUP_PIPELINES, GREEN,
+                f"recovered ({when}) — completed via {_recovery_label(snap)}",
+                snap.stopped_at or snap.started_at, deep_link="pipeline-status",
+            )
         return ComponentStatus(
             cid, label, GROUP_PIPELINES, GRAY,
             f"idle — last cycle COMPLETE ({when}); {cadence}",

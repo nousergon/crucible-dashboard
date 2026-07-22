@@ -255,6 +255,53 @@ class TestPipelineSnapshots:
         snaps = fsl._pipeline_snapshots()
         assert snaps["postclose"].status == "NO_EXECUTIONS"
 
+    def test_role_filter_unions_cadence_and_recovery_roles(self, monkeypatch):
+        """config#3085: the role_filter passed to read_pipeline_state_with_
+        fallback must include the cadence role AND every recovery role, so
+        the loader's newest-first walk can resolve to a running/succeeded
+        recovery overlay instead of pinning to a stale scheduled failure.
+        Smoke/shell/backfill roles must NOT be in the filter (Option-D)."""
+        from fleet_status import RECOVERY_PIPELINE_ROLES
+
+        import loaders.fleet_status_loader as fsl
+
+        seen_filters = {}
+
+        def _fake(arn, role_filter=None):
+            seen_filters[arn] = role_filter
+            return self._load_result()
+
+        monkeypatch.setattr(fsl, "read_pipeline_state_with_fallback", _fake)
+        fsl._pipeline_snapshots()
+        assert len(seen_filters) == 3
+        for arn, role_filter in seen_filters.items():
+            assert RECOVERY_PIPELINE_ROLES <= role_filter
+            assert "smoke" not in role_filter
+            assert "shell-run" not in role_filter
+
+    def test_role_passthrough_for_recovery_completion(self, monkeypatch):
+        from nousergon_lib.pipeline_status import PipelineRun
+
+        run = PipelineRun.model_validate({
+            "state_machine_arn": "arn:x",
+            "pretty_label": "Weekly Freshness SF",
+            "execution_arn": "arn:e",
+            "execution_name": "e1",
+            "status": "SUCCEEDED",
+            "start_utc": "2026-07-20T12:45:00Z",
+            "end_utc": "2026-07-20T13:45:00Z",
+            "pipeline_role": "watch-rerun",
+            "tasks": [],
+        })
+        import loaders.fleet_status_loader as fsl
+
+        monkeypatch.setattr(
+            fsl, "read_pipeline_state_with_fallback",
+            lambda arn, role_filter=None: self._load_result(run=run),
+        )
+        snaps = fsl._pipeline_snapshots()
+        assert snaps["weekly"].role == "watch-rerun"
+
 
 class TestWatchDispatchAlerts:
     """_watch_dispatch_alert's title-matching (the only non-S3-passthrough
