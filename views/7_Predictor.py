@@ -14,7 +14,7 @@ import streamlit as st
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from loaders.s3_loader import load_predictions_json, list_predictions_dates, load_predictor_metrics, load_predictor_training_state, load_production_health, load_signals_json, load_mode_history, load_feature_importance, load_hold_book_flag
+from loaders.s3_loader import load_predictions_json, list_predictions_dates, load_predictor_metrics, load_predictor_training_state, load_production_health, load_signals_json_with_fallback, load_mode_history, load_feature_importance, load_hold_book_flag, load_executor_params
 from loaders.db_loader import get_predictor_outcomes, canonicalize_predictor_outcomes
 from loaders.signal_loader import get_available_signal_dates
 from charts.predictor_chart import make_model_drift_chart, make_feature_importance_chart
@@ -609,7 +609,107 @@ else:
     predictions = load_predictions_json()
     st.subheader("Today's Predictions")
 
-signals_data = load_signals_json(selected_date) if get_available_signal_dates() else None
+signals_data = load_signals_json_with_fallback(selected_date) if get_available_signal_dates() else None
+
+# ---------------------------------------------------------------------------
+# Research Brief + Effective Optimizer Params — relocated here from the
+# predictor morning-briefing email (config#856 slim-email cutover,
+# alpha-engine-predictor#332): the email now carries only the at-a-glance
+# summary + this page's deep-link, so the market regime, full research
+# population (score/conviction/signal/sector), sector ratings, and the
+# auto-tuned executor params must render here or that content is lost
+# entirely, not just moved.
+# ---------------------------------------------------------------------------
+
+if signals_data:
+    st.subheader("Research Brief")
+
+    market_regime = signals_data.get("market_regime", "")
+    if market_regime:
+        st.caption(f"Market Regime: **{market_regime.upper()}**")
+
+    population = signals_data.get("universe", []) or signals_data.get("population", [])
+    if population:
+        pop_rows = []
+        for c in population:
+            if not isinstance(c, dict):
+                continue
+            score = c.get("score") or c.get("long_term_score")
+            pop_rows.append({
+                "Ticker": c.get("ticker", "?"),
+                "Score": score if isinstance(score, (int, float)) else None,
+                "Conviction": c.get("conviction", "—"),
+                "Signal": c.get("signal") or c.get("long_term_rating") or "—",
+                "Sector": c.get("sector", "—"),
+            })
+        pop_df = pd.DataFrame(pop_rows).sort_values(
+            "Score", ascending=False, na_position="last"
+        ).reset_index(drop=True)
+        st.caption(f"Population ({len(pop_df)})")
+        st.dataframe(
+            pop_df.style.format({"Score": "{:.1f}"}, na_rep="—"),
+            use_container_width=True, hide_index=True,
+        )
+
+    sector_ratings = signals_data.get("sector_ratings", {})
+    sorted_sectors = sorted(
+        [(s, v) for s, v in sector_ratings.items() if isinstance(v, dict)],
+        key=lambda x: x[1].get("rating", 0),
+        reverse=True,
+    )
+    if sorted_sectors:
+        st.caption("Sector Ratings")
+        st.dataframe(
+            pd.DataFrame([
+                {"Sector": s, "Rating": v.get("rating", "—"), "Modifier": v.get("modifier", "—")}
+                for s, v in sorted_sectors
+            ]),
+            use_container_width=True, hide_index=True,
+        )
+
+    st.divider()
+
+st.subheader("Effective Optimizer Params")
+_ep = load_executor_params()
+if _ep:
+    _ep_keys_to_surface = [
+        ("min_score", "min_score_to_enter"),
+        ("max_position_pct", "max_position_pct"),
+        ("atr_multiplier", "atr_multiplier"),
+        ("profit_take_pct", "profit_take_pct"),
+        ("time_decay_reduce_days", "time_decay_reduce_days"),
+        ("time_decay_exit_days", "time_decay_exit_days"),
+    ]
+    _ep_rows = []
+    for key, label in _ep_keys_to_surface:
+        if key not in _ep:
+            continue
+        val = _ep[key]
+        if isinstance(val, float):
+            display = f"{val:.4f}" if abs(val) < 1 else f"{val:.2f}"
+        else:
+            display = str(val)
+        _ep_rows.append({"Param": label, "Live value": display, "Source": "S3 (auto-tuned)"})
+
+    if _ep_rows:
+        _meta_bits = [f"updated **{_ep.get('updated_at', '—')}**"]
+        _best_sharpe = _ep.get("best_sharpe")
+        if isinstance(_best_sharpe, (int, float)):
+            _meta_bits.append(f"best Sharpe **{_best_sharpe:.2f}**")
+        _improvement = _ep.get("improvement_pct")
+        if isinstance(_improvement, (int, float)):
+            _meta_bits.append(f"improvement **{_improvement:+.1%}**")
+        if _ep.get("manual_override"):
+            _meta_bits.append(":red[**manual override**]")
+        st.caption(" · ".join(_meta_bits))
+        st.dataframe(pd.DataFrame(_ep_rows), use_container_width=True, hide_index=True)
+        st.caption("Keys absent here fall through to the executor's local risk.yaml.")
+    else:
+        st.info("executor_params.json has no recognized param keys.")
+else:
+    st.info("No `config/executor_params.json` available yet.")
+
+st.divider()
 
 if not predictions:
     st.info(f"No predictions available for {selected_date}. Run the predictor to populate.")
@@ -668,6 +768,11 @@ else:
             ),
         )
 
+    # Meta-mode gains extra L1 columns (momentum/vol/research-calibrator),
+    # mirroring the pre-slim email's `_meta_cols` — same is_meta test.
+    _model_version = metrics.get("model_version", "") or ""
+    is_meta = metrics.get("inference_mode") == "meta" or "meta" in _model_version.lower()
+
     rows = []
     for ticker, pred in predictions.items():
         conf = pred.get("prediction_confidence") or 0.0
@@ -683,9 +788,16 @@ else:
         p_down = pred.get("p_down") or 0.0
         modifier = (p_up - p_down) * 10.0 * conf if conf >= _VETO_CONF else 0.0
         sig = universe.get(ticker, {})
-        rows.append({
+        alpha = pred.get("predicted_alpha")
+        rank = pred.get("combined_rank")
+        row = {
             "Ticker": ticker,
+            "Alpha": alpha if isinstance(alpha, (int, float)) else None,
+            "Rank": rank if isinstance(rank, (int, float)) else None,
             "Direction": f"{direction} {arrow}",
+            # Single-sourced from the authoritative gbm_veto boolean
+            # (config#1815) — the ONLY veto the executor acts on.
+            "Veto": "⚠ VETO" if pred.get("gbm_veto") else "—",
             "Confidence": conf,
             "P(UP)": p_up,
             "P(DOWN)": p_down,
@@ -694,7 +806,12 @@ else:
             "Score Modifier": f"+{modifier:.1f}" if modifier > 0 else (f"{modifier:.1f}" if modifier != 0 else "—"),
             "Signal": sig.get("signal", "—"),
             "Score": sig.get("score", "—"),
-        })
+        }
+        if is_meta:
+            row["Mom"] = pred.get("momentum_confirmation")
+            row["Vol"] = pred.get("expected_move")
+            row["Res.Cal"] = pred.get("research_calibrator_prob")
+        rows.append(row)
 
     if rows:
         df = pd.DataFrame(rows).sort_values("Confidence", ascending=False).reset_index(drop=True)
@@ -720,6 +837,16 @@ else:
         styled = styled.map(_source_color, subset=["Source"])
         for col in ["Confidence", "P(UP)", "P(DOWN)"]:
             styled = styled.format({col: "{:.0%}"}, na_rep="—")
+        if "Alpha" in df.columns:
+            styled = styled.format({"Alpha": "{:+.2%}"}, na_rep="—")
+        if "Rank" in df.columns:
+            styled = styled.format({"Rank": "{:.1f}"}, na_rep="—")
+        if "Mom" in df.columns:
+            styled = styled.format({"Mom": "{:+.3f}"}, na_rep="—")
+        if "Vol" in df.columns:
+            styled = styled.format({"Vol": "{:.3f}"}, na_rep="—")
+        if "Res.Cal" in df.columns:
+            styled = styled.format({"Res.Cal": "{:.0%}"}, na_rep="—")
         st.dataframe(styled, use_container_width=True, hide_index=True)
     else:
         st.info("No high-confidence predictions today. Toggle to show all.")

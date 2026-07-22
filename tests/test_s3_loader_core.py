@@ -246,6 +246,62 @@ class TestConvenienceWrappers:
             result = mod.load_signals_json("2026-04-08")
             assert result == {"signals": {}}
 
+    def test_load_signals_json_with_fallback_hits_exact_date(self):
+        mod = _import_s3_loader()
+        with patch.object(mod, "load_config", return_value=_MOCK_CONFIG), \
+                patch.object(mod, "_research_bucket", return_value="b"), \
+                patch.object(mod, "download_s3_json", return_value={"market_regime": "NEUTRAL"}) as m:
+            result = mod.load_signals_json_with_fallback("2026-07-22")
+            assert result == {"market_regime": "NEUTRAL"}
+            assert m.call_count == 1
+            m.assert_called_with("b", "signals/2026-07-22/signals.json")
+
+    def test_load_signals_json_with_fallback_walks_back_to_prior_weekday(self):
+        # 2026-07-22 is a Wednesday; the exact-date + Tuesday keys miss, so
+        # this should resolve on Monday 2026-07-20 — mirrors research only
+        # writing signals.json on Saturdays (predictor's identical chain).
+        mod = _import_s3_loader()
+        with patch.object(mod, "load_config", return_value=_MOCK_CONFIG), \
+                patch.object(mod, "_research_bucket", return_value="b"), \
+                patch.object(mod, "download_s3_json",
+                             side_effect=[None, None, {"market_regime": "BULLISH"}]) as m:
+            result = mod.load_signals_json_with_fallback("2026-07-22")
+            assert result == {"market_regime": "BULLISH"}
+            assert m.call_count == 3
+            assert m.call_args_list[-1].args[1] == "signals/2026-07-20/signals.json"
+
+    def test_load_signals_json_with_fallback_skips_weekends(self):
+        # Walking back from Monday 2026-07-20 for 6 days back must never
+        # probe Saturday 2026-07-18 or Sunday 2026-07-19.
+        mod = _import_s3_loader()
+        with patch.object(mod, "load_config", return_value=_MOCK_CONFIG), \
+                patch.object(mod, "_research_bucket", return_value="b"), \
+                patch.object(mod, "download_s3_json", return_value=None) as m:
+            mod.load_signals_json_with_fallback("2026-07-20")
+            probed = [c.args[1] for c in m.call_args_list]
+            assert "signals/2026-07-18/signals.json" not in probed
+            assert "signals/2026-07-19/signals.json" not in probed
+            assert probed[-1] == "signals/latest.json"
+
+    def test_load_signals_json_with_fallback_falls_through_to_latest(self):
+        mod = _import_s3_loader()
+        with patch.object(mod, "load_config", return_value=_MOCK_CONFIG), \
+                patch.object(mod, "_research_bucket", return_value="b"), \
+                patch.object(mod, "download_s3_json", return_value=None) as m:
+            result = mod.load_signals_json_with_fallback("2026-07-22")
+            assert result is None
+            assert m.call_args_list[-1].args[1] == "signals/latest.json"
+
+    def test_load_signals_json_with_fallback_bad_date_still_tries_latest(self):
+        mod = _import_s3_loader()
+        with patch.object(mod, "load_config", return_value=_MOCK_CONFIG), \
+                patch.object(mod, "_research_bucket", return_value="b"), \
+                patch.object(mod, "download_s3_json",
+                             return_value={"market_regime": "NEUTRAL"}) as m:
+            result = mod.load_signals_json_with_fallback("not-a-date")
+            assert result == {"market_regime": "NEUTRAL"}
+            m.assert_called_once_with("b", "signals/latest.json")
+
     def test_load_trades_full(self):
         mod = _import_s3_loader()
         df = pd.DataFrame({"ticker": ["AAPL"]})
