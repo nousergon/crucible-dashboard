@@ -360,18 +360,22 @@ def _canary_age_days(now: datetime, heartbeat: dict | None) -> float | None:
 
 
 @st.cache_data(ttl=120)
-def load_watch_efficacy_snapshot() -> WatchEfficacySnapshot:
+def load_watch_efficacy_snapshot(*, _now: datetime | None = None) -> WatchEfficacySnapshot:
     """Aggregate efficacy metrics across ALL Saturday SF Watch + Fleet CI
     Watch dates (config#2389). Zero dates (no failures ever recorded, the
     common case) returns zero-valued metrics — never raises. Per-date read
     failures are logged and that date is excluded from the aggregate rather
     than aborting the whole snapshot.
 
+    The ``_now`` keyword-only parameter is an injection point for tests to
+    pin a deterministic "now" (config-I3497). Production always uses wall-
+    clock time; the leading-underscore signals "not the normal public API".
+
     Cached 120s: the watch-logs are append-only per date, so a short TTL is
     enough to avoid re-reading every date file on each Streamlit rerun while
     staying reasonably fresh after a new dispatch.
     """
-    now = datetime.now(timezone.utc)
+    now = _now if _now is not None else datetime.now(timezone.utc)
 
     try:
         sf_dates = list_saturday_sf_watch_dates()
