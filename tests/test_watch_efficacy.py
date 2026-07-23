@@ -74,8 +74,11 @@ class _MultiPatch:
 
 class TestZeroDates:
     def test_zero_dates_returns_zero_valued_metrics_no_crash(self):
-        with _MultiPatch(_patch_all()):
-            snap = we.load_watch_efficacy_snapshot()
+        # CANARY_EXPECTED_FROM is 2026-07-23; patch to far future so this
+        # test still passes after the activation date arrives.
+        with patch.object(we, "CANARY_EXPECTED_FROM", "2099-01-01"):
+            with _MultiPatch(_patch_all()):
+                snap = we.load_watch_efficacy_snapshot()
 
         assert snap.sf_watch.total_dates == 0
         assert snap.sf_watch.total_events == 0
