@@ -74,8 +74,12 @@ class _MultiPatch:
 
 class TestZeroDates:
     def test_zero_dates_returns_zero_valued_metrics_no_crash(self):
-        with _MultiPatch(_patch_all()):
-            snap = we.load_watch_efficacy_snapshot()
+        # CANARY_EXPECTED_FROM has arrived — patch to a future date so this
+        # test stays deterministic regardless of the wall clock. Mirrors the
+        # same pattern in test_before_expected_date_shows_zero_expected.
+        with patch.object(we, "CANARY_EXPECTED_FROM", "2099-01-01"):
+            with _MultiPatch(_patch_all()):
+                snap = we.load_watch_efficacy_snapshot()
 
         assert snap.sf_watch.total_dates == 0
         assert snap.sf_watch.total_events == 0
