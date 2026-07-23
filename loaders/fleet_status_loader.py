@@ -45,6 +45,7 @@ from fleet_status import (
     GroomSnapshot,
     ModuleHealthRow,
     PipelineSnapshot,
+    RagIngestionProgress,
 )
 from loaders.pipeline_status_loader import (
     LoadOutcome,
@@ -87,6 +88,11 @@ _CHECK_RESULTS_KEY = "_freshness_monitor/check_results.json"
 _INTRADAY_NAV_KEY = "intraday/nav.json"
 _GROOM_IN_PROGRESS_KEY = "groom/in_progress.json"
 _LIVE_UNIT_FILE = "/etc/systemd/system/nous-ergon-live.service"
+# RAGIngestion inner-step telemetry (config-I2966 deliverable #2) — written
+# by alpha-engine-data rag/pipelines/run_weekly_ingestion.sh between steps.
+# Registered as artifact_id rag_ingestion_progress in ARTIFACT_REGISTRY.yaml
+# (alpha-engine-config).
+_RAG_PROGRESS_KEY_TEMPLATE = "health/rag_ingestion_progress/{date}.json"
 
 # SF ARNs — mirrors views/25_Pipeline_Status.py + canonical role filters
 # (Option-D: cadence runs, not smoke/recovery overlays).
@@ -254,6 +260,7 @@ def _pipeline_snapshots() -> dict[str, PipelineSnapshot]:
             error=error,
             role=run.pipeline_role,
             execution_name=run.execution_name,
+            tasks=tuple(run.tasks),
         )
     return snaps
 
@@ -352,6 +359,50 @@ def _module_health_rows() -> list[dict]:
             "stale_after_hrs": float(stale_after),
         })
     return rows
+
+
+@st.cache_data(ttl=_TTL_SECONDS, show_spinner=False)
+def _rag_ingestion_progress_raw(run_date: str) -> dict | None:
+    """Fetch the RAGIngestion inner-step progress artifact for ``run_date``
+    (config-I2966 deliverable #2). Returns None on absence (pre-write, or
+    the artifact aged out) or a malformed body — the strip's RAGIngestion
+    chip degrades gracefully to "no inner-step telemetry yet" rather than
+    erroring, since this is enrichment, never authority for the SF-derived
+    RUNNING/done/pending state itself."""
+    doc = download_s3_json(_research_bucket(), _RAG_PROGRESS_KEY_TEMPLATE.format(date=run_date))
+    if not isinstance(doc, dict):
+        return None
+    required = {"step", "of", "label"}
+    if not required <= doc.keys():
+        logger.warning(
+            "rag_ingestion_progress/%s.json missing required key(s) %s — "
+            "ignoring malformed artifact",
+            run_date, required - doc.keys(),
+        )
+        return None
+    return doc
+
+
+def rag_ingestion_progress(run_date: str) -> "RagIngestionProgress | None":
+    """Typed wrapper the page/resolver consumes — see
+    :class:`fleet_status.RagIngestionProgress`."""
+    raw = _rag_ingestion_progress_raw(run_date)
+    if raw is None:
+        return None
+    try:
+        return RagIngestionProgress(
+            step=int(raw["step"]),
+            of=int(raw["of"]),
+            label=str(raw["label"]),
+            started_at=raw.get("started_at"),
+            updated_at=raw.get("updated_at"),
+        )
+    except (TypeError, ValueError) as exc:  # noqa: BLE001 — degenerate artifact
+        logger.warning(
+            "rag_ingestion_progress/%s.json failed to parse into "
+            "RagIngestionProgress: %s", run_date, exc,
+        )
+        return None
 
 
 # ── Fleet-SF Watch / Fleet CI Watch (config#1227/#1593) ────────────────────

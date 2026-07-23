@@ -154,6 +154,11 @@ class PipelineSnapshot:
     overlay that completed/is completing the cycle — config#3085).
     ``execution_name`` backs the fast-path-rerun name-prefix check (role
     alone can't distinguish it — see the module-level NOTE above).
+    ``tasks`` is the full per-state TaskRow tuple from the same
+    ``PipelineRun`` this snapshot condenses (empty for pipelines whose
+    resolver doesn't need per-step detail) — the weekly-SF progress strip
+    (config-I2966, see :func:`build_weekly_sf_strip`) is the one consumer
+    that needs the full ordered list rather than just ``current_state``.
     """
 
     status: str
@@ -164,6 +169,7 @@ class PipelineSnapshot:
     error: Optional[str] = None
     role: Optional[str] = None
     execution_name: Optional[str] = None
+    tasks: tuple = ()
 
 
 def _is_recovery_execution(snap: "PipelineSnapshot") -> bool:
@@ -962,3 +968,280 @@ def worst_dot(statuses: list[ComponentStatus]) -> str:
     if not statuses:
         return GRAY
     return max((s.dot for s in statuses), key=lambda d: _DOT_SEVERITY.get(d, 1))
+
+
+# ── Weekly-SF live progress strip (config-I2966 / Brian directive 2026-07-18)
+# ───────────────────────────────────────────────────────────────────────────
+#
+# Status-Surface Standard rule 2 (ARCHITECTURE.md §118) + SF Stage Standard
+# rule 7 (§111) both name this exact gap as open: a RUNNING weekly SF
+# execution renders on Fleet Status as a single green "running" row with no
+# indication of WHICH step it's on. This section adds the per-step strip
+# data model; ``views/48_Fleet_Status.py`` renders it only when the weekly
+# pipeline snapshot is RUNNING (absent entirely otherwise — no dead chrome).
+#
+# The step ORDER is intrinsically SF topology (nousergon_lib.pipeline_status
+# has no ordered-state-list primitive — the registry is an unordered dict
+# keyed by state name), so it necessarily lives here, not in the lib. But
+# every step NAME in this list is asserted (by
+# tests/test_pipeline_status_registry_drift.py::
+# test_weekly_sf_strip_states_are_all_registered) to be a real key in
+# ``nousergon_lib.pipeline_status.registry.STATE_TO_ARCHIVE_PAGE`` — so the
+# strip can never show a step whose data provenance the registry doesn't
+# already vouch for, and a registry rename/removal fails CI here instead of
+# silently going stale on the strip.
+
+STEP_DONE = "done"
+STEP_RUNNING = "running"
+STEP_PENDING = "pending"
+STEP_FAILED = "failed"
+
+_STEP_ICONS = {STEP_DONE: "✓", STEP_RUNNING: "▶", STEP_PENDING: "○", STEP_FAILED: "✗"}
+
+# Linear backbone of the weekly SF (ne-weekly-freshness-pipeline), pre- and
+# post- the ResearchPredictorParallel fan-out. Sourced from a full walk of
+# alpha-engine-data/infrastructure/step_function.json's top-level State map
+# (audited 2026-07-23 — every substantive Task/Map-iterator state outside
+# ResearchPredictorParallel, including the pre-spend gates and the terminal
+# notify/degraded-alert plumbing page 25 also renders): mirrors the EXACT
+# substantive-state set page 25 renders via the same registry, so the
+# registry-drift test (tests/test_pipeline_status_registry_drift.py::
+# test_weekly_sf_strip_backbone_matches_live_sf_json) can assert set
+# equality against the live SF JSON, not just a curated subset.
+WEEKLY_SF_PRE_PARALLEL_STEPS: tuple[str, ...] = (
+    "WeeklyRunDayGate",
+    "WeeklyRunDayGateFailed",
+    "LibPinDriftCheck",
+    "PipelineContractCheck",
+    "PublishLibPinGateDegraded",
+    "PublishPipelineContractGateDegraded",
+    "SubstrateHealthGate",
+    "MorningEnrich",
+    "DataPhase1",
+)
+
+# ResearchPredictorParallel's two branches (config#1083 shape) — rendered as
+# two lanes ("Branch A" / "Branch B") per the issue's acceptance criterion.
+# Branch A is the Research chain (carries RAGIngestion); Branch B is the
+# PredictorTraining / model-zoo chain. Ordered per each branch's own State
+# sequence in the SF JSON; each list is exhaustive over that branch's
+# substantive states, including its own failure-immediate SNS publish and
+# (Branch B) the ModelZooTrainMap Map-iterator's own Task.
+WEEKLY_SF_BRANCH_A_STEPS: tuple[str, ...] = (
+    "Scanner",
+    "RegimeSubstrate",
+    "SignalsEnvelope",
+    "ChallengerShadow",
+    "RAGIngestion",
+    "ThinkTankCoverage",
+    "RegimeRetrospectiveEval",
+    "DataPhase2",
+    "EvalJudgeSubmitFirstSaturday",
+    "EvalJudgeSubmitWeekly",
+    "EvalJudgePoll",
+    "EvalJudgeProcess",
+    "EvalRollingMean",
+    "RationaleClustering",
+    "ReplayConcordance",
+    "Counterfactual",
+    "AggregateCosts",
+    "PublishResearchFailureImmediate",
+)
+WEEKLY_SF_BRANCH_B_STEPS: tuple[str, ...] = (
+    "PredictorTraining",
+    "PublishPredictorFailureImmediate",
+    "ResolveZooSpecs",
+    "TrainSpecDispatch",
+    "ModelZooSelect",
+    "PublishModelZooFailureImmediate",
+)
+
+# Backbone resumes once both parallel branches join; ends with the terminal
+# notify/failure-handling plumbing (also substantive per the registry —
+# each is an SNS publish page 25 already surfaces).
+WEEKLY_SF_POST_PARALLEL_STEPS: tuple[str, ...] = (
+    "Backtester",
+    "PredictorBacktest",
+    "PortfolioOptimizerBacktest",
+    "Parity",
+    "Evaluator",
+    "SaturdayHealthCheck",
+    "WeeklySubstrateHealthCheck",
+    "ReportCard",
+    "PublishReportCardDegraded",
+    "Director",
+    "PublishDirectorDegraded",
+    "NotifyCompleteGatesDegraded",
+    "NotifyCompleteHealthDegraded",
+    "NotifyCompleteGatesAndHealthDegraded",
+    "NotifyShellRunComplete",
+    "NotifyComplete",
+    "HandleFailure",
+)
+
+# Every state name across the strip, in canonical registry-membership-check
+# order. Kept as one flat tuple (rather than re-deriving from the lane
+# tuples at every call site) so the registry-drift test has a single, cheap
+# surface to walk.
+WEEKLY_SF_STRIP_STATES: tuple[str, ...] = (
+    WEEKLY_SF_PRE_PARALLEL_STEPS
+    + WEEKLY_SF_BRANCH_A_STEPS
+    + WEEKLY_SF_BRANCH_B_STEPS
+    + WEEKLY_SF_POST_PARALLEL_STEPS
+)
+
+# Chips that are plumbing (pre-spend gates, terminal notify/degraded-alert
+# SNS publishes) rather than load-bearing production stages — rendered
+# compactly (collapsed under an expander) on the strip rather than as
+# full-width chips, so the operator's eye goes straight to the 9
+# substantive production stages. Membership here is presentation-only; it
+# does NOT affect the registry-drift completeness checks above (every name
+# in this set is still a WEEKLY_SF_STRIP_STATES member and still asserted
+# against the live SF JSON).
+WEEKLY_SF_STRIP_PLUMBING_STATES: frozenset[str] = frozenset(
+    {
+        "WeeklyRunDayGate",
+        "WeeklyRunDayGateFailed",
+        "LibPinDriftCheck",
+        "PipelineContractCheck",
+        "PublishLibPinGateDegraded",
+        "PublishPipelineContractGateDegraded",
+        "SubstrateHealthGate",
+        "PublishResearchFailureImmediate",
+        "PublishPredictorFailureImmediate",
+        "PublishModelZooFailureImmediate",
+        "PublishReportCardDegraded",
+        "PublishDirectorDegraded",
+        "NotifyCompleteGatesDegraded",
+        "NotifyCompleteHealthDegraded",
+        "NotifyCompleteGatesAndHealthDegraded",
+        "NotifyShellRunComplete",
+        "NotifyComplete",
+        "HandleFailure",
+    }
+)
+
+# RAGIngestion inner-step staleness telltale (issue acceptance: "updated_at
+# older than ~45 min while RUNNING renders amber").
+RAG_PROGRESS_STALE_MINUTES = 45
+
+
+@dataclass(frozen=True)
+class StripStep:
+    """One chip on the weekly-SF progress strip."""
+
+    state_name: str
+    lane: Optional[str]  # None (linear backbone) | "Branch A" | "Branch B"
+    state: str  # STEP_DONE | STEP_RUNNING | STEP_PENDING | STEP_FAILED
+    elapsed_sec: Optional[float] = None  # populated only when state == STEP_RUNNING
+    # RAGIngestion-only enrichment (config-I2966 deliverable #2) — None for
+    # every other chip.
+    rag_inner_step: Optional[str] = None  # e.g. "step 5/10: news"
+    rag_stale: bool = False  # True ⇒ amber — updated_at stale while RUNNING
+
+
+@dataclass(frozen=True)
+class RagIngestionProgress:
+    """Projection of the ``rag_ingestion_progress/{date}.json`` artifact
+    (alpha-engine-data ``rag/pipelines/run_weekly_ingestion.sh``).
+
+    ``age_seconds`` is the caller-computed age of ``updated_at`` against
+    the resolver's ``now`` — kept out of this dataclass's own construction
+    (pure; no clock read) and instead passed alongside it, mirroring the
+    rest of this module's now-is-an-input discipline.
+    """
+
+    step: int
+    of: int
+    label: str
+    started_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+def _task_lookup(tasks) -> dict:
+    """state_name -> task-like object, from a PipelineRun.tasks list (or
+    any iterable of objects carrying ``.state_name``/``.status``)."""
+    return {t.state_name: t for t in tasks}
+
+
+def build_weekly_sf_strip(
+    tasks,
+    *,
+    now: datetime,
+    rag_progress: Optional[RagIngestionProgress] = None,
+) -> list[StripStep]:
+    """Project the weekly SF's task rows onto the ordered progress strip.
+
+    ``tasks`` is ``PipelineRun.tasks`` (a list of TaskRow-like objects
+    carrying ``state_name``, ``status`` — with ``.value`` ∈
+    {"RUNNING","SUCCEEDED","FAILED","TIMED_OUT","ABORTED","SKIPPED",
+    "NOT-RUN"} — and optional ``start_utc``/``duration_sec``) for the
+    CURRENT execution. A state absent from ``tasks`` (not yet reached) is
+    STEP_PENDING; a state present with a terminal-success status is
+    STEP_DONE; RUNNING is STEP_RUNNING (elapsed computed from
+    ``start_utc``); any of FAILED/TIMED_OUT/ABORTED is STEP_FAILED.
+    ``SKIPPED`` renders as STEP_DONE (a Choice branched past it — not a
+    stall, the step is behind us) so a legitimately-skipped step (e.g.
+    ``ChallengerShadow`` when observe-mode is off) never shows as
+    perpetually pending.
+
+    Pure: takes ``now`` as a parameter rather than reading the clock, so
+    the whole strip is unit-testable with a frozen clock (matches this
+    module's existing discipline for every other resolver).
+    """
+    by_state = _task_lookup(tasks)
+    steps: list[StripStep] = []
+
+    def _lane_for(state_name: str) -> Optional[str]:
+        if state_name in WEEKLY_SF_BRANCH_A_STEPS:
+            return "Branch A"
+        if state_name in WEEKLY_SF_BRANCH_B_STEPS:
+            return "Branch B"
+        return None
+
+    for state_name in WEEKLY_SF_STRIP_STATES:
+        task = by_state.get(state_name)
+        lane = _lane_for(state_name)
+
+        if task is None:
+            steps.append(StripStep(state_name, lane, STEP_PENDING))
+            continue
+
+        status_value = getattr(task.status, "value", task.status)
+        elapsed = None
+        rag_inner_step = None
+        rag_stale = False
+
+        if status_value == "RUNNING":
+            step_state = STEP_RUNNING
+            start = getattr(task, "start_utc", None)
+            if start is not None:
+                elapsed = max(0.0, (now - start).total_seconds())
+            if state_name == "RAGIngestion" and rag_progress is not None:
+                rag_inner_step = (
+                    f"step {rag_progress.step}/{rag_progress.of}: "
+                    f"{rag_progress.label}"
+                )
+                updated = _parse_iso_utc(rag_progress.updated_at)
+                if updated is not None:
+                    age_min = (now - updated).total_seconds() / 60.0
+                    rag_stale = age_min > RAG_PROGRESS_STALE_MINUTES
+        elif status_value in ("SUCCEEDED", "SKIPPED"):
+            step_state = STEP_DONE
+        elif status_value in ("FAILED", "TIMED_OUT", "ABORTED"):
+            step_state = STEP_FAILED
+        else:  # NOT-RUN or any future/unknown value
+            step_state = STEP_PENDING
+
+        steps.append(
+            StripStep(
+                state_name,
+                lane,
+                step_state,
+                elapsed_sec=elapsed,
+                rag_inner_step=rag_inner_step,
+                rag_stale=rag_stale,
+            )
+        )
+
+    return steps
