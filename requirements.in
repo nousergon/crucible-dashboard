@@ -11,7 +11,7 @@ setuptools>=83.0.0
 # (put_object IfMatch / IfNoneMatch) for lost-update protection; the loader
 # also carries a compare-then-put fallback if the installed botocore
 # predates them, but the pinned floor makes the conditional path the norm.
-boto3>=1.43.53
+boto3>=1.43.54
 pyyaml>=6.0
 # streamlit-calendar: FullCalendar component backing the Morning Signal
 # Content Schedule page (views/45_Morning_Signal_Schedule.py) — month
@@ -45,7 +45,7 @@ yfinance>=1.5.1
 # alpha-engine-ssm-read policy, no new IAM. v0.12.2 is the earliest tag
 # carrying the OpenRouter unresolved/leaked-tool-call safety fix in
 # krepis.llm; the >=0.14.0 floor here already clears that.
-krepis[openai]>=0.16.2
+krepis[openai]>=0.18.0
 # nousergon-lib (renamed from alpha-engine-lib at v0.60.0) provides
 # setup_logging used by app.py + health_checker.py
 # to attach the FlowDoctorHandler when FLOW_DOCTOR_ENABLED=1, the
