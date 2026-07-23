@@ -29,7 +29,6 @@ TARGET_SHA="${1:-HEAD}"
 # cutover), which moves ALL its routes — including health — under /live.
 CONSOLE_URL="http://localhost:8501/_stcore/health"
 LIVE_URL="http://localhost:8502/live/_stcore/health"
-DASH_URL="http://localhost:8504/dash/_stcore/health"
 DASH_API_URL="http://localhost:8506/api/health"
 DASH_WEB_URL="http://localhost:3002/dash"
 
@@ -199,9 +198,9 @@ if [ -f "$PYVER_SSOT_FILE" ] && [ -f "$REPO_DIR/.venv/bin/python" ]; then
         # to not exist at the final path while we build, hence stopping
         # services first — this is now brief PLANNED downtime, not a live
         # swap out from under running processes.)
-        systemctl stop dashboard nous-ergon-live crucible-dash crucible-dash-api 2>>"$LOG" \
+        systemctl stop dashboard nous-ergon-live crucible-dash-api 2>>"$LOG" \
             || fail "python-parity self-heal: stop services before venv rebuild"
-        log "stopped dashboard, nous-ergon-live, crucible-dash, crucible-dash-api for venv rebuild"
+        log "stopped dashboard, nous-ergon-live, crucible-dash-api for venv rebuild"
 
         # 3. Preserve the old venv for rollback, then build+install the new
         # venv DIRECTLY at the final $REPO_DIR/.venv path (no relocation).
@@ -221,10 +220,9 @@ if [ -f "$PYVER_SSOT_FILE" ] && [ -f "$REPO_DIR/.venv/bin/python" ]; then
                 log "FAIL python-parity self-heal: rollback mv itself failed — box has NO venv at $REPO_DIR/.venv, manual intervention required NOW"
                 return 1
             fi
-            systemctl restart dashboard nous-ergon-live crucible-dash crucible-dash-api 2>>"$LOG"
+            systemctl restart dashboard nous-ergon-live crucible-dash-api 2>>"$LOG"
             wait_for_health "$CONSOLE_URL" "dashboard (console) [post-rollback]" \
                 && wait_for_health "$LIVE_URL" "nous-ergon-live [post-rollback]" \
-                && wait_for_health "$DASH_URL" "crucible-dash [post-rollback]" \
                 && wait_for_health "$DASH_API_URL" "crucible-dash-api [post-rollback]"
         }
 
@@ -243,14 +241,14 @@ if [ -f "$PYVER_SSOT_FILE" ] && [ -f "$REPO_DIR/.venv/bin/python" ]; then
         rm -rf "$NEW_VENV_PIP_TMPDIR"
         log "built venv directly at final path $REPO_DIR/.venv on $SSOT_PYVER_MAJOR_MINOR — no relocation, shebangs are correct by construction (old venv preserved at $OLD_VENV_BACKUP for rollback)"
 
-        # 4. Restart the 4 Python-venv-backed services (dashboard,
-        # nous-ergon-live, crucible-dash + its crucible-dash-api sibling;
-        # crucible-dash-web is Node/Next.js, not Python — untouched here).
+        # 4. Restart the 3 Python-venv-backed services (dashboard,
+        # nous-ergon-live, crucible-dash-api; crucible-dash-web is
+        # Node/Next.js, not Python — untouched here. crucible-dash (the
+        # retired Streamlit /dash skin) no longer runs — config#1973 tail).
         systemctl restart dashboard 2>>"$LOG" || { _rollback_venv; fail "python-parity self-heal: restart dashboard (rolled back to previous venv)"; }
         systemctl restart nous-ergon-live 2>>"$LOG" || { _rollback_venv; fail "python-parity self-heal: restart nous-ergon-live (rolled back to previous venv)"; }
-        systemctl restart crucible-dash 2>>"$LOG" || { _rollback_venv; fail "python-parity self-heal: restart crucible-dash (rolled back to previous venv)"; }
         systemctl restart crucible-dash-api 2>>"$LOG" || { _rollback_venv; fail "python-parity self-heal: restart crucible-dash-api (rolled back to previous venv)"; }
-        log "restarted dashboard, nous-ergon-live, crucible-dash, crucible-dash-api on new venv"
+        log "restarted dashboard, nous-ergon-live, crucible-dash-api on new venv"
 
         # 5. Reuse the script's existing health-gate (§4) immediately, so a
         # bad interpreter swap is caught and visible NOW rather than only at
@@ -258,15 +256,14 @@ if [ -f "$PYVER_SSOT_FILE" ] && [ -f "$REPO_DIR/.venv/bin/python" ]; then
         # AUTO-ROLLBACK (defect 2) instead of leaving the broken venv live.
         if ! wait_for_health "$CONSOLE_URL" "dashboard (console) [python-parity swap]" \
             || ! wait_for_health "$LIVE_URL" "nous-ergon-live [python-parity swap]" \
-            || ! wait_for_health "$DASH_URL" "crucible-dash [python-parity swap]" \
             || ! wait_for_health "$DASH_API_URL" "crucible-dash-api [python-parity swap]"; then
             if _rollback_venv; then
-                fail "python-parity self-heal: post-swap health gate failed on $SSOT_PYVER_MAJOR_MINOR venv — ROLLED BACK to previous venv successfully, all 4 services healthy again on old venv"
+                fail "python-parity self-heal: post-swap health gate failed on $SSOT_PYVER_MAJOR_MINOR venv — ROLLED BACK to previous venv successfully, all 3 services healthy again on old venv"
             else
                 fail "python-parity self-heal: post-swap health gate failed on $SSOT_PYVER_MAJOR_MINOR venv AND rollback also failed — box may have NO working venv, manual intervention required NOW"
             fi
         fi
-        log "OK   Python-parity self-heal: all 4 services healthy on $SSOT_PYVER_MAJOR_MINOR"
+        log "OK   Python-parity self-heal: all 3 services healthy on $SSOT_PYVER_MAJOR_MINOR"
 
         # requirements.txt is already installed fresh into the new venv
         # above (it must be, to build a working venv at all) — skip §1's
@@ -518,7 +515,8 @@ fi
 # ── 3. Self-provision dashboard and nous-ergon-live unit files ──────────────
 # Both services ship in the repo; install/refresh them on unit-file diff
 # (or first deploy) so they can never drift from the repo copy — same
-# idempotent pattern as crucible-dash/dash-api/dash-web (§3b-3d).
+# idempotent pattern as dash-api/dash-web (§3c-3d; §3b tears down the
+# retired crucible-dash Streamlit skin instead of provisioning it).
 DASHBOARD_UNIT_SRC="$REPO_DIR/infrastructure/dashboard.service"
 DASHBOARD_UNIT_DST="/etc/systemd/system/dashboard.service"
 if [ ! -f "$DASHBOARD_UNIT_DST" ] || ! cmp -s "$DASHBOARD_UNIT_SRC" "$DASHBOARD_UNIT_DST"; then
@@ -546,23 +544,22 @@ sleep 2
 systemctl restart nous-ergon-live 2>>"$LOG" || fail "restart nous-ergon-live"
 log "restarted nous-ergon-live.service"
 
-# ── 3b. Crucible /dash service (config#1957) — idempotent self-provision ────
-# Same pattern as the dashboard/nous-ergon-live units above (§3).
-# The unit ships in this repo; install/refresh it on unit-file diff (or first
-# deploy) so the service can never drift from the repo copy — mirrors the CF
-# Pages project self-provision precedent (#328): a new box or a unit change
-# needs no manual step.
-DASH_UNIT_SRC="$REPO_DIR/infrastructure/crucible-dash.service"
-DASH_UNIT_DST="/etc/systemd/system/crucible-dash.service"
-if [ ! -f "$DASH_UNIT_DST" ] || ! cmp -s "$DASH_UNIT_SRC" "$DASH_UNIT_DST"; then
-    cp "$DASH_UNIT_SRC" "$DASH_UNIT_DST" 2>>"$LOG" || fail "install crucible-dash unit"
-    systemctl daemon-reload 2>>"$LOG" || fail "daemon-reload for crucible-dash"
-    systemctl enable crucible-dash 2>>"$LOG" || fail "enable crucible-dash"
-    log "installed/refreshed crucible-dash.service unit"
+# ── 3b. Crucible /dash Streamlit skin (config#1957) — RETIRED (config#1973) ──
+# The Streamlit skin was kept running on :8504 only as the 9-D cutover's
+# one-line-rollback safety net (nginx /dash routed to :3002 the Next.js
+# surface from 2026-07-08; see infrastructure/nginx.conf). It was never
+# reverted to during the soak week (~2026-07-15) and the repo's
+# infrastructure/crucible-dash.service source is now gone (dash/ removed
+# alongside it) — teardown here mirrors the self-provision idempotency of
+# §3/§3c/§3d: a box still running the old unit (or a fresh box that never
+# saw it) both converge to "not installed" with no manual SSM step.
+if [ -f /etc/systemd/system/crucible-dash.service ]; then
+    systemctl stop crucible-dash 2>>"$LOG" || log "WARN stop crucible-dash (retiring anyway)"
+    systemctl disable crucible-dash 2>>"$LOG" || log "WARN disable crucible-dash (retiring anyway)"
+    rm -f /etc/systemd/system/crucible-dash.service
+    systemctl daemon-reload 2>>"$LOG" || fail "daemon-reload after crucible-dash teardown"
+    log "retired crucible-dash.service (config#1973 Streamlit-skin retirement)"
 fi
-sleep 2
-systemctl restart crucible-dash 2>>"$LOG" || fail "restart crucible-dash"
-log "restarted crucible-dash.service"
 
 # ── 3c. Crucible dash-api service (config#1973 9-B) — same idempotent
 # self-provision pattern as 3b.
@@ -626,7 +623,6 @@ fi
 
 wait_for_health "$CONSOLE_URL" "dashboard (console)" || fail "console health"
 wait_for_health "$LIVE_URL" "nous-ergon-live" || fail "live health"
-wait_for_health "$DASH_URL" "crucible-dash" || fail "crucible-dash health"
 wait_for_health "$DASH_API_URL" "crucible-dash-api" || fail "crucible-dash-api health"
 if [ -d "$REPO_DIR/dash-web" ]; then
     wait_for_health "$DASH_WEB_URL" "crucible-dash-web" || fail "crucible-dash-web health"

@@ -1,7 +1,7 @@
 #!/bin/bash
 # box_health.sh — lightweight resource + service watchdog for the shared
-# dashboard EC2. The box runs ~5 web services
-# (4 Streamlit + mnemon on bun) plus nginx on a small instance, so the
+# dashboard EC2. The box runs ~4 web services
+# (3 Streamlit + mnemon on bun) plus nginx on a small instance, so the
 # binding constraint is RAM, not CPU. This alerts (deduped) when memory
 # runs low or an expected service/port is down. Quiet on success.
 #
@@ -9,7 +9,6 @@
 #   8501 dashboard.service        (alpha-engine console)
 #   8502 nous-ergon-live.service  (live.nousergon.ai)
 #   8503 mnemon (bun)             (memory.nousergon.ai)
-#   8504 crucible-dash.service    (crucible.nousergon.ai/dash)
 #   8505 signal.service           (signal.thecyphering.com)
 #   8000 metron-api.service       (Metron FastAPI backend, internal)
 # (metron-web.service / :3000 retired 2026-07-22 — portfolio.nousergon.ai deprecated,
@@ -19,7 +18,8 @@
 #  portfolio.nousergon.ai; robodashboard is now local-only. :8504 was reused by
 #  crucible-dash.service on 2026-07-08 after the #354 deploy's port survey missed
 #  that :8503 was already held by the mnemon/bun co-tenant — see config#1957,
-#  crucible-dashboard#356, config#1972.)
+#  crucible-dashboard#356, config#1972 — and freed again by crucible-dash's own
+#  retirement after the 9-D cutover soak, config#1973.)
 #
 # Confirm-on-retry (2026-06-04): every check is sampled up to RETRY_ATTEMPTS
 # times RETRY_DELAY apart, and only problems present in EVERY sample are
@@ -66,8 +66,8 @@ INSTANCE_ID=$(curl -s --max-time 2 -H "X-aws-ec2-metadata-token: ${_imds_tok}" h
 MEM_MIN_MB=150                       # alert if MemAvailable drops below this
 DISK_WARN_PCT=80                     # root-disk warn band (page, deduped)
 DISK_CRIT_PCT=90                     # root-disk critical band (page, deduped)
-SERVICES=(dashboard.service nous-ergon-live.service crucible-dash.service signal.service metron-api.service metron-dash-web.service)
-PORTS=(8501 8502 8503 8504 8505 8000 3003)
+SERVICES=(dashboard.service nous-ergon-live.service signal.service metron-api.service metron-dash-web.service)
+PORTS=(8501 8502 8503 8505 8000 3003)
 RETRY_ATTEMPTS=4                     # samples before a problem is confirmed
 RETRY_DELAY=4                        # seconds between confirmation samples (4x4s ~12s window > metron-api ~5s cold-start)
 

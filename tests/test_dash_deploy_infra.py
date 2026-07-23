@@ -1,4 +1,13 @@
-"""Wiring tests for the /dash exposure (config#1957 plan §8.5)."""
+"""Wiring tests for the /dash exposure (config#1957 plan §8.5) and the
+generic deploy-on-merge.sh infra gates.
+
+The pre-cutover Streamlit /dash skin (dash/app.py, crucible-dash.service)
+was retired after a clean 9-D soak with no rollback incidents (config#1973
+tail, 2026-07-23) — /dash is served exclusively by dash-web (Next.js) +
+dash_api (FastAPI) now. Tests below assert the retirement is complete and
+that deploy-on-merge.sh's OTHER infra gates (unrelated to the retired skin)
+still hold.
+"""
 
 import sys
 from pathlib import Path
@@ -8,40 +17,42 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 REPO_ROOT = Path(__file__).parent.parent
 
 
-class TestDashApp:
-    def test_registers_all_six_crucible_views(self):
-        src = (REPO_ROOT / "dash" / "app.py").read_text()
-        for view in ("Crucible_Overview", "Crucible_Validation", "Crucible_Evaluation",
-                     "Crucible_Execution", "Crucible_Feedback", "Crucible_Trust"):
-            assert f"../views/{view}.py" in src, view
+class TestStreamlitSkinRetired:
+    def test_dash_app_and_unit_removed(self):
+        assert not (REPO_ROOT / "dash").exists(), \
+            "dash/ (the retired Streamlit /dash skin) should be fully removed"
+        assert not (REPO_ROOT / "infrastructure" / "crucible-dash.service").exists()
 
-    def test_page_paths_resolve_from_dash_dir(self):
-        # st.Page resolves relative to the entrypoint's parent — every ref
-        # must exist at dash/../views/.
-        src = (REPO_ROOT / "dash" / "app.py").read_text()
+    def test_deploy_script_tears_down_stale_unit_instead_of_provisioning_it(self):
+        script = (REPO_ROOT / "infrastructure" / "deploy-on-merge.sh").read_text()
+        # No self-provision/restart of the retired unit anymore.
+        assert "install crucible-dash unit" not in script
+        assert "systemctl restart crucible-dash 2>>" not in script
+        assert "8504/dash/_stcore/health" not in script       # retired health gate
+        assert 'DASH_URL="http://localhost:8504' not in script
+        # A teardown path exists so a box still running the old unit (or one
+        # that never had it) both converge to "not installed", no manual step.
+        assert "if [ -f /etc/systemd/system/crucible-dash.service ]; then" in script
+        assert "systemctl disable crucible-dash" in script
+        assert "rm -f /etc/systemd/system/crucible-dash.service" in script
+
+    def test_box_health_no_longer_watches_retired_service_or_port(self):
+        # A historical comment noting :8504's reuse history is fine — the
+        # watchdog's actual SERVICES/PORTS arrays must not carry the retired
+        # unit/port forward.
+        box_health = (REPO_ROOT / "infrastructure" / "box_health.sh").read_text()
         import re
-        for ref in re.findall(r'st\.Page\("([^"]+)"', src):
-            assert (REPO_ROOT / "dash" / ref).resolve().exists(), ref
-
-    def test_config_carries_baseurl_and_cors_fix(self):
-        cfg = (REPO_ROOT / "dash" / ".streamlit" / "config.toml").read_text()
-        assert 'baseUrlPath = "dash"' in cfg
-        # Without the public-origin allowlist, Tornado rejects every WebSocket
-        # handshake through the Worker proxy and the app hangs on load (same
-        # gotcha documented in live/.streamlit/config.toml).
-        assert '"https://crucible.nousergon.ai"' in cfg
-
-
-class TestInfraWiring:
-    def test_unit_file_matches_app_layout(self):
-        unit = (REPO_ROOT / "infrastructure" / "crucible-dash.service").read_text()
-        assert "WorkingDirectory=/home/ec2-user/alpha-engine-dashboard/dash" in unit
-        assert "--server.port=8504" in unit
+        services_array_match = re.search(r"^SERVICES=\(([^)]*)\)", box_health, re.M)
+        assert services_array_match
+        assert "crucible-dash.service" not in services_array_match.group(1).split()
+        ports_array_match = re.search(r"^PORTS=\(([^)]*)\)", box_health, re.M)
+        assert ports_array_match
+        assert "8504" not in ports_array_match.group(1).split()
 
     def test_nginx_routes_dash_to_web(self):
         # 9-D cutover (config#1973): /dash serves the Next.js surface on
-        # :3002; the Streamlit skin (:8504) stays running as rollback but is
-        # no longer the route target.
+        # :3002. The Streamlit skin (:8504) that used to sit behind a
+        # one-line rollback is gone — rollback is a plain git revert now.
         conf = (REPO_ROOT / "infrastructure" / "nginx.conf").read_text()
         assert "location /dash" in conf
         assert conf.index("location /dash") < conf.index("location / {"), \
@@ -49,12 +60,8 @@ class TestInfraWiring:
         dash_block = conf[conf.index("location /dash"):conf.index("location / {")]
         assert "http://127.0.0.1:3002" in dash_block
 
-    def test_deploy_script_provisions_restarts_and_health_checks(self):
-        script = (REPO_ROOT / "infrastructure" / "deploy-on-merge.sh").read_text()
-        assert "crucible-dash.service" in script          # idempotent self-provision
-        assert "systemctl restart crucible-dash" in script
-        assert "8504/dash/_stcore/health" in script       # health gate
 
+class TestInfraWiring:
     def test_requirements_nginx_installer_gates_are_state_compared(self):
         # config#2338: a deploy that never executes (SSM delivery failure)
         # must not permanently skip the missed commit's requirements/nginx/
@@ -160,9 +167,10 @@ class TestInfraWiring:
     def test_python_parity_self_heal_has_rollback_on_failed_health_gate(self):
         # config#2835 defect 2: the old flow's post-swap health-gate failure
         # called `fail` directly WITHOUT restoring the preserved old venv,
-        # leaving all 4 services crash-looping on the broken venv for ~25
+        # leaving all services crash-looping on the broken venv for ~25
         # minutes. A rollback path must exist and must be invoked on the
         # post-swap health-gate failure branch, not just logged about.
+        # (3 venv-backed services since config#1973 retired crucible-dash.)
         script = (REPO_ROOT / "infrastructure" / "deploy-on-merge.sh").read_text()
         heal_block = script[script.index("Python-parity self-heal: box venv is"):
                              script.index("# ── 1. Refresh deps")]
@@ -174,9 +182,9 @@ class TestInfraWiring:
         rollback_fn = heal_block[rollback_start:
                                   rollback_start + heal_block[rollback_start:].index("\n        }")]
         assert 'mv "$OLD_VENV_BACKUP" "$REPO_DIR/.venv"' in rollback_fn
-        assert "systemctl restart dashboard nous-ergon-live crucible-dash crucible-dash-api" in rollback_fn
-        assert rollback_fn.count("wait_for_health") == 4, \
-            "rollback must re-verify health on all 4 services before considering itself successful"
+        assert "systemctl restart dashboard nous-ergon-live crucible-dash-api" in rollback_fn
+        assert rollback_fn.count("wait_for_health") == 3, \
+            "rollback must re-verify health on all 3 remaining services before considering itself successful"
 
         # The post-swap health-gate failure branch must actually call the
         # rollback — not just `fail` on its own, and not just mention
@@ -195,65 +203,23 @@ class TestInfraWiring:
         assert 'paths_changed "${CURRENT_SHA}~1" "$CURRENT_SHA" dash-web/' in script
         assert '[ ! -d "$WEB_DIR/.next" ]' in script
 
-    def test_dash_port_registered_and_collision_free(self):
-        # config#1972 Part A: box_health.sh's port map is still a
-        # hand-maintained comment + SERVICES/PORTS arrays, not a derived
-        # registry (that's Part B) — but this at least fails loudly if a
-        # future edit reintroduces the #354/config#1957 bug class: the dash
-        # app's --server.port drifting out of sync with the watchdog's port
-        # map, colliding with another guarded service's port, or shipping
-        # unmonitored (present nowhere in SERVICES/PORTS, so box-health
-        # would never page if /dash died).
+    def test_port_8504_freed_by_retirement_not_reclaimed_silently(self):
+        # config#1972 Part A lives on for the remaining hand-maintained
+        # port map: :8504 was crucible-dash's (retired config#1973) — this
+        # guards against a future service silently reusing the port without
+        # updating the comment map / SERVICES / PORTS arrays in lockstep,
+        # the exact drift class #1972/#354 existed to catch.
         import re
 
-        unit = (REPO_ROOT / "infrastructure" / "crucible-dash.service").read_text()
-        port_match = re.search(r"--server\.port=(\d+)", unit)
-        assert port_match, "crucible-dash.service must declare --server.port"
-        dash_port = port_match.group(1)
-
         box_health = (REPO_ROOT / "infrastructure" / "box_health.sh").read_text()
-
-        # Parse the hand-maintained "port -> service" comment map, e.g.:
-        #   "#   8504 crucible-dash.service    (crucible.nousergon.ai/dash)"
-        comment_map = {}
-        for line in box_health.splitlines():
-            m = re.match(r"#\s+(\d{3,5})\s+(\S.*?)\s{2,}\(", line)
-            if m:
-                comment_map.setdefault(m.group(1), []).append(m.group(2).strip())
-
-        assert dash_port in comment_map, (
-            f"port {dash_port} (crucible-dash.service's --server.port) is not "
-            f"recorded in box_health.sh's port map comment"
-        )
-        owners = comment_map[dash_port]
-        assert len(owners) == 1 and "crucible-dash" in owners[0], (
-            f"port {dash_port} is claimed by {owners!r} in box_health.sh's port "
-            f"map comment, not solely by crucible-dash.service — collision risk"
-        )
-
-        # No OTHER port entry in the map may also claim crucible-dash — and
-        # symmetrically, nothing else may be recorded under the dash port.
-        for port, names in comment_map.items():
-            if port == dash_port:
-                continue
-            assert not any("crucible-dash" in n for n in names), (
-                f"crucible-dash also appears under port {port} in box_health.sh's "
-                f"port map comment"
-            )
+        services_array_match = re.search(r"^SERVICES=\(([^)]*)\)", box_health, re.M)
+        assert services_array_match
+        assert "crucible-dash.service" not in services_array_match.group(1).split()
 
         ports_array_match = re.search(r"^PORTS=\(([^)]*)\)", box_health, re.M)
         assert ports_array_match, "box_health.sh must declare a PORTS=(...) watchdog array"
-        watchdog_ports = ports_array_match.group(1).split()
-        assert dash_port in watchdog_ports, (
-            f"port {dash_port} is missing from box_health.sh's PORTS=(...) "
-            f"watchdog array — crucible-dash would be un-monitored (box-health "
-            f"would not page if /dash died)"
-        )
-
-        services_array_match = re.search(r"^SERVICES=\(([^)]*)\)", box_health, re.M)
-        assert services_array_match, "box_health.sh must declare a SERVICES=(...) watchdog array"
-        watchdog_services = services_array_match.group(1).split()
-        assert "crucible-dash.service" in watchdog_services, (
-            "crucible-dash.service is missing from box_health.sh's SERVICES=(...) "
-            "watchdog array — systemctl is-active would never be checked for it"
+        assert "8504" not in ports_array_match.group(1).split(), (
+            "8504 (retired crucible-dash's port) should not be watched unless "
+            "a new service has claimed it — if so, update this test with the "
+            "new owner"
         )

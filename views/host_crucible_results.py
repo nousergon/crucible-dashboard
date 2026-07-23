@@ -5,10 +5,11 @@ IA (`crucible_ux_output_plan_260708.md` §4.2). The console mount carries only
 the tabs that are NOT already covered by console-native pages (console-IA
 phase 1, config#1990): Validation / Feedback loop / Trust. The Overview,
 Evaluation and Execution views duplicated Report Card, Report Card Detail and
-the Execution page's backtest sections (~80-90%) — they remain available to
-the /dash skins (dash-web via dash_api, and the Streamlit rollback dash/app.py
-mounts all six) through the shared `results/view_model.py` layer. The Compare
-tab lands with the ablation maturation (config#1959, ≈2026-08-03).
+the Execution page's backtest sections (~80-90%) — they remain available on
+/dash (dash-web via dash_api; the pre-cutover Streamlit rollback skin was
+retired after a clean soak, config#1973) through the shared
+`results/view_model.py` layer. The Compare tab lands with the ablation
+maturation (config#1959, ≈2026-08-03).
 """
 import os
 import sys
