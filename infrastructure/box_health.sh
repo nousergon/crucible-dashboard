@@ -12,7 +12,9 @@
 #   8504 crucible-dash.service    (crucible.nousergon.ai/dash)
 #   8505 signal.service           (signal.thecyphering.com)
 #   8000 metron-api.service       (Metron FastAPI backend, internal)
-#   3000 metron-web.service       (Metron Next.js, behind portfolio.nousergon.ai)
+# (metron-web.service / :3000 retired 2026-07-22 — portfolio.nousergon.ai deprecated,
+#  301s to metron.nousergon.ai/dash at the CF edge; metron-dash-web.service on :3003
+#  is Metron's sole web process.)
 # (robodashboard.service / :8504 decommissioned 2026-06-10 — Metron succeeded it at
 #  portfolio.nousergon.ai; robodashboard is now local-only. :8504 was reused by
 #  crucible-dash.service on 2026-07-08 after the #354 deploy's port survey missed
@@ -64,8 +66,8 @@ INSTANCE_ID=$(curl -s --max-time 2 -H "X-aws-ec2-metadata-token: ${_imds_tok}" h
 MEM_MIN_MB=150                       # alert if MemAvailable drops below this
 DISK_WARN_PCT=80                     # root-disk warn band (page, deduped)
 DISK_CRIT_PCT=90                     # root-disk critical band (page, deduped)
-SERVICES=(dashboard.service nous-ergon-live.service crucible-dash.service signal.service metron-api.service metron-web.service)
-PORTS=(8501 8502 8503 8504 8505 8000 3000)
+SERVICES=(dashboard.service nous-ergon-live.service crucible-dash.service signal.service metron-api.service metron-dash-web.service)
+PORTS=(8501 8502 8503 8504 8505 8000 3003)
 RETRY_ATTEMPTS=4                     # samples before a problem is confirmed
 RETRY_DELAY=4                        # seconds between confirmation samples (4x4s ~12s window > metron-api ~5s cold-start)
 
