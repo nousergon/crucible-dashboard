@@ -95,7 +95,7 @@ class TestZeroDates:
 
         assert snap.canary.sf_watch_age_days is None
         assert snap.canary.ci_watch_age_days is None
-        assert snap.canary.total_expected_drills == 0
+        assert snap.canary.total_expected_drills == 2  # sf_watch + ci_watch
         assert snap.canary.reliability == 0.0
 
         assert snap.computed_at is not None
