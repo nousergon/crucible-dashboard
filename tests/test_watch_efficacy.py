@@ -74,8 +74,18 @@ class _MultiPatch:
 
 class TestZeroDates:
     def test_zero_dates_returns_zero_valued_metrics_no_crash(self):
-        with _MultiPatch(_patch_all()):
-            snap = we.load_watch_efficacy_snapshot()
+        # canary.total_expected_drills is intentionally derived from
+        # wall-clock "now" vs. CANARY_EXPECTED_FROM (config#2223 weekly
+        # synthetic-drill cadence), not from the sf_watch/ci_watch `dates`
+        # input this test is otherwise exercising — so asserting an
+        # all-zero snapshot must isolate that wall-clock dependency the
+        # same way TestCanaryEfficacy.test_before_expected_date_shows_zero_expected
+        # does, rather than relying on the suite happening to run before
+        # CANARY_EXPECTED_FROM. Without this, the test silently broke the
+        # day CANARY_EXPECTED_FROM's date (2026-07-23) arrived.
+        with patch.object(we, "CANARY_EXPECTED_FROM", "2099-01-01"):
+            with _MultiPatch(_patch_all()):
+                snap = we.load_watch_efficacy_snapshot()
 
         assert snap.sf_watch.total_dates == 0
         assert snap.sf_watch.total_events == 0
