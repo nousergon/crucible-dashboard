@@ -74,8 +74,13 @@ class _MultiPatch:
 
 class TestZeroDates:
     def test_zero_dates_returns_zero_valued_metrics_no_crash(self):
+        # config-I3497: pin ``_now`` to a date before CANARY_EXPECTED_FROM so
+        # the canary-efficacy computation returns total_expected_drills=0
+        # regardless of what today's calendar date is.
+        from datetime import datetime, timezone
+        pre_canary = datetime(2026, 7, 22, tzinfo=timezone.utc)
         with _MultiPatch(_patch_all()):
-            snap = we.load_watch_efficacy_snapshot()
+            snap = we.load_watch_efficacy_snapshot(_now=pre_canary)
 
         assert snap.sf_watch.total_dates == 0
         assert snap.sf_watch.total_events == 0
