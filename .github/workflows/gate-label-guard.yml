@@ -11,6 +11,8 @@ name: Gate Label Guard
 on:
   pull_request:
     types: [opened, reopened, labeled, unlabeled, ready_for_review, synchronize]
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
