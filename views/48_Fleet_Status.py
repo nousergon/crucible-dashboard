@@ -26,8 +26,18 @@ from datetime import datetime, timezone
 import pandas as pd
 import streamlit as st
 
-from fleet_status import GROUP_ORDER, ComponentStatus, resolve_fleet
-from loaders.fleet_status_loader import gather_fleet_inputs
+from fleet_status import (
+    GROUP_ORDER,
+    STEP_DONE,
+    STEP_FAILED,
+    STEP_PENDING,
+    STEP_RUNNING,
+    WEEKLY_SF_STRIP_PLUMBING_STATES,
+    ComponentStatus,
+    build_weekly_sf_strip,
+    resolve_fleet,
+)
+from loaders.fleet_status_loader import gather_fleet_inputs, rag_ingestion_progress
 from loaders.s3_loader import load_intraday_heartbeat, load_intraday_latest_prices
 
 st.title("🛰 Fleet Status")
@@ -77,10 +87,137 @@ def _render_row(s: ComponentStatus) -> None:
             )
 
 
+# ── Weekly-SF live progress strip (config-I2966) ────────────────────────────
+# Renders ONLY while a weekly-SF execution is RUNNING (per the issue's "no
+# dead chrome" acceptance criterion) — absent entirely the rest of the week.
+# Reuses the SAME registry-backed state list page 25 renders
+# (fleet_status.build_weekly_sf_strip / WEEKLY_SF_STRIP_STATES) rather than
+# hand-maintaining a second state list; the drift guard
+# (tests/test_pipeline_status_registry_drift.py::
+# test_weekly_sf_strip_states_are_all_registered) keeps it honest against
+# the live SF JSON.
+
+_STEP_MARKDOWN = {
+    STEP_DONE: "✅",
+    STEP_RUNNING: "🚀",
+    STEP_PENDING: "⚪",
+    STEP_FAILED: "🔴",
+}
+
+
+def _format_elapsed(seconds: float | None) -> str:
+    if seconds is None:
+        return ""
+    secs = max(0, int(seconds))
+    h, rem = divmod(secs, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h}h{m:02d}m"
+    if m:
+        return f"{m}m{s:02d}s"
+    return f"{s}s"
+
+
+def _render_step_chip(step) -> None:
+    icon = _STEP_MARKDOWN.get(step.state, "❓")
+    label = step.state_name
+    suffix = ""
+    if step.state == STEP_RUNNING and step.elapsed_sec is not None:
+        suffix = f" ({_format_elapsed(step.elapsed_sec)})"
+    st.markdown(f"{icon} **{label}**{suffix}")
+    if step.rag_inner_step:
+        amber = " 🟠" if step.rag_stale else ""
+        st.caption(f"{step.rag_inner_step}{amber}")
+
+
+def _render_weekly_sf_strip(inputs) -> None:
+    """Render the compact horizontal step strip for the weekly SF's CURRENT
+    execution, iff it is RUNNING right now. Absent (renders nothing) for
+    every other pipeline state — idle, succeeded, failed, no-executions,
+    unavailable — per the issue's explicit "no dead chrome" requirement;
+    page 25 remains the durable detail table for those states.
+
+    Renders the 9 substantive PRODUCTION stages (MorningEnrich ... Director,
+    plus the two ResearchPredictorParallel lanes) as the main visual strip;
+    the pre-spend gates + terminal notify/degraded-alert plumbing
+    (WEEKLY_SF_STRIP_PLUMBING_STATES — still part of the SAME registry-
+    backed, drift-guarded state list, just visually de-emphasized) render
+    compactly under an expander so the operator's eye goes straight to the
+    stages that actually take wall-clock time.
+    """
+    snap = inputs.pipelines.get("weekly")
+    if snap is None or snap.status != "RUNNING":
+        return
+
+    now = inputs.now
+    run_date = (snap.started_at or now).strftime("%Y-%m-%d")
+    rag_progress = rag_ingestion_progress(run_date)
+    steps = build_weekly_sf_strip(snap.tasks, now=now, rag_progress=rag_progress)
+
+    st.subheader("🏃 Weekly SF — live progress")
+    st.caption(
+        "ne-weekly-freshness-pipeline is RUNNING — step strip below "
+        "(done ✅ / running 🚀 / pending ⚪ / failed 🔴). "
+        "[Full detail table → Pipeline Status](/pipeline-status)"
+    )
+
+    production = [s for s in steps if s.state_name not in WEEKLY_SF_STRIP_PLUMBING_STATES]
+    plumbing = [s for s in steps if s.state_name in WEEKLY_SF_STRIP_PLUMBING_STATES]
+
+    linear = [s for s in production if s.lane is None]
+    branch_a = [s for s in production if s.lane == "Branch A"]
+    branch_b = [s for s in production if s.lane == "Branch B"]
+
+    pre_parallel = [s for s in linear if s.state_name in ("MorningEnrich", "DataPhase1")]
+    post_parallel = [s for s in linear if s not in pre_parallel]
+
+    if pre_parallel:
+        cols = st.columns(len(pre_parallel))
+        for col, step in zip(cols, pre_parallel):
+            with col:
+                _render_step_chip(step)
+
+    if branch_a or branch_b:
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.markdown("**Branch A** (Research)")
+            for step in branch_a:
+                _render_step_chip(step)
+        with col_b:
+            st.markdown("**Branch B** (PredictorTraining)")
+            for step in branch_b:
+                _render_step_chip(step)
+
+    if post_parallel:
+        cols = st.columns(len(post_parallel))
+        for col, step in zip(cols, post_parallel):
+            with col:
+                _render_step_chip(step)
+
+    if plumbing:
+        done_ct = sum(1 for s in plumbing if s.state == STEP_DONE)
+        with st.expander(
+            f"Gates + terminal notifiers ({done_ct}/{len(plumbing)} done)",
+            expanded=False,
+        ):
+            cols = st.columns(min(len(plumbing), 6) or 1)
+            for i, step in enumerate(plumbing):
+                with cols[i % len(cols)]:
+                    _render_step_chip(step)
+
+    st.divider()
+
+
 @st.fragment(run_every="30s")
 def _live_grid() -> None:
     inputs = gather_fleet_inputs()
     statuses = resolve_fleet(inputs)
+
+    # config-I2966: strip renders ONLY while the weekly SF is RUNNING —
+    # absent (no-op) otherwise. Ahead of the KPI row so it's the first
+    # thing an operator sees during the one window it matters (a live
+    # Saturday/shell-run) without permanently taking space above the fold.
+    _render_weekly_sf_strip(inputs)
 
     # Degraded-plane banners — named, loud, per feedback_no_silent_fails.
     if not inputs.ec2_available:
