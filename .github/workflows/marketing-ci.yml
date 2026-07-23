@@ -35,6 +35,9 @@ on:
       - .github/workflows/marketing-ci.yml
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     name: build + check + lint (${{ matrix.site }})

@@ -367,6 +367,23 @@ def download_s3_json(bucket: str, key: str) -> dict | list | None:
     return _fetch_s3_json(bucket, key)
 
 
+@st.cache_data(ttl=_ttl("signals"))
+def download_s3_yaml(bucket: str, key: str) -> dict | list | None:
+    """Download and parse a YAML file from S3. Returns None on failure
+    (missing key, parse error) — same honest-ABSENT contract as
+    ``download_s3_json``, just for YAML-shaped artifacts (e.g. the
+    ARTIFACT_REGISTRY.yaml SoT mirrored to S3 by sync-artifact-registry.yml)."""
+    raw = _s3_get_object(bucket, key)
+    if raw is None:
+        return None
+    try:
+        return yaml.safe_load(raw)
+    except yaml.YAMLError as e:
+        logger.warning("YAML parse failed for %s/%s: %s", bucket, key, e)
+        _record_s3_error(bucket, key, "YAMLParseError", str(e))
+        return None
+
+
 @st.cache_data(ttl=_ttl("research"))
 def load_sector_team_run(eval_date: str, team_id: str) -> dict | None:
     """Load a sector team's full run envelope for one cycle:
@@ -476,6 +493,49 @@ def load_signals_json(date_str: str) -> dict | None:
     cfg = load_config()
     key = cfg["paths"]["signals"].format(date=date_str)
     return download_s3_json(_research_bucket(), key)
+
+
+def load_signals_json_with_fallback(date_str: str) -> dict | None:
+    """Load signals.json for *date_str*, falling back to the most recent
+    prior weekday and finally ``signals/latest.json`` if the exact date
+    has no snapshot.
+
+    Research (Scanner/SignalsEnvelope) writes signals.json on Saturdays
+    only (see ~/Development/CLAUDE.md's weekly pipeline) — a strict
+    exact-date lookup on any weekday predictions page returns None every
+    time. Mirrors alpha-engine-predictor's
+    ``inference/stages/load_universe.py::_signals_fallback_keys`` /
+    ``_load_signals_payload_with_fallback`` chain (today → prior 5
+    weekdays → ``signals/latest.json``) so the console shows the same
+    research snapshot the predictor itself used to build that day's
+    predictions/email, instead of a stricter and perpetually-empty
+    lookup. Duplicated here rather than shared via nousergon-lib — see
+    alpha-engine-config-I3284 for the lib-consolidation follow-up (this
+    chain is already independently duplicated in predictor + executor).
+    """
+    from datetime import date as _date, timedelta as _td
+
+    cfg = load_config()
+    template = cfg["paths"]["signals"]
+
+    keys: list[str] = []
+    try:
+        start = _date.fromisoformat(date_str)
+        for days_back in range(6):
+            candidate = start - _td(days=days_back)
+            if candidate.weekday() >= 5:
+                continue
+            keys.append(template.format(date=candidate.isoformat()))
+    except ValueError:
+        pass
+    keys.append("signals/latest.json")
+
+    bucket = _research_bucket()
+    for key in keys:
+        payload = download_s3_json(bucket, key)
+        if payload:
+            return payload
+    return None
 
 
 def load_universe_board(date_str: str | None = None) -> dict | None:
@@ -2437,6 +2497,19 @@ def load_expense_report() -> dict | None:
     UTC); per-period history accumulates under ``expenses/monthly/``. None
     until the collector's first run."""
     return download_s3_json(_research_bucket(), "expenses/latest.json")
+
+
+@st.cache_data(ttl=_ttl("research"))
+def load_expense_reconciliation(period: str) -> dict | None:
+    """Month-close true-up for one CLOSED period (``expenses/reconciliation/
+    {period}.json``, ``period`` like ``"2026-06"``) — alpha-engine-config#2849.
+    Per-provider ``{projected_last_seen, accrued_mtd_final, actual_final,
+    delta_usd, delta_pct, status, note}`` plus ``flagged`` (provider keys
+    whose ``|delta_pct|`` exceeded the collector's threshold). Producer:
+    alpha-engine-data ``infrastructure/lambdas/expense-collector`` reconcile
+    mode, ~03:00 UTC on the 2nd of each month. None until that month's
+    reconciliation run has happened."""
+    return download_s3_json(_research_bucket(), f"expenses/reconciliation/{period}.json")
 
 
 # ---------------------------------------------------------------------------

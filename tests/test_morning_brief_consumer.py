@@ -1,16 +1,18 @@
 """Consumer-wiring tests for the morning brief (config#664 / L4574).
 
-Covers the impure shell WITHOUT live data or an Anthropic key, by mocking the
-Anthropic SDK + S3 and stubbing ``loaders.s3_loader`` (streamlit is mocked in
-conftest). Uses the importlib-from-file isolation pattern (mirrors
-tests/test_ticker_detail.py) so loading the ``live/`` modules does not pollute
-``sys.modules['loaders']`` for the rest of the suite — ``live/loaders`` and the
-top-level ``loaders`` are both packages named ``loaders``.
+Covers the impure shell WITHOUT live data or an OpenRouter key, by injecting
+a fake ``krepis.llm.LLMClient`` transport (``client_factory`` test seam) + S3
+and stubbing ``loaders.s3_loader`` (streamlit is mocked in conftest). Uses the
+importlib-from-file isolation pattern (mirrors tests/test_ticker_detail.py)
+so loading the ``live/`` modules does not pollute ``sys.modules['loaders']``
+for the rest of the suite — ``live/loaders`` and the top-level ``loaders`` are
+both packages named ``loaders``.
 
-Covered:
-  * ``generate_morning_brief`` parses Haiku text blocks, uses claude-haiku-4-5,
-    and sends no thinking/effort params (Haiku rejects them).
-  * ``generate_morning_brief`` is fail-soft (None) with no key / on SDK error.
+Covered (post alpha-engine-config-I2997 OpenRouter migration, 2026-07-19):
+  * ``generate_morning_brief`` parses the OpenRouter/DeepSeek V4 Flash
+    completion text and sends the model + reasoning-exclude spec.
+  * ``generate_morning_brief`` is fail-soft (None) with no key / on transport
+    error.
   * the ``ai_advisor.enabled`` kill switch suppresses generation.
   * ``top_holdings_news`` ranks/filters per-ticker rows (pure).
   * ``load_daily_news_rows`` is fail-soft to [] when the sidecar is missing.
@@ -151,48 +153,58 @@ class TestDailyNewsReader:
         assert rows == []
 
 
-# ── generate_morning_brief (mocked Anthropic) ──────────────────────────────
+# ── generate_morning_brief (fake krepis.llm OpenRouter transport) ──────────
 
 
 class TestGenerateBrief:
-    def test_parses_text_blocks_and_uses_haiku(self):
+    def test_parses_completion_and_uses_deepseek_flash(self):
         mb = _morning_brief()
         captured = {}
 
-        class FakeMessages:
+        class FakeCompletions:
             def create(self, **kwargs):
                 captured.update(kwargs)
                 return SimpleNamespace(
-                    content=[SimpleNamespace(type="text", text="Macro lead.\n- AAPL: news")]
+                    choices=[SimpleNamespace(
+                        message=SimpleNamespace(content="Macro lead.\n- AAPL: news")
+                    )],
+                    model=kwargs["model"],
+                    usage=None,
                 )
 
-        class FakeClient:
-            def __init__(self, **kwargs):
-                self.messages = FakeMessages()
+        class FakeChat:
+            def __init__(self):
+                self.completions = FakeCompletions()
 
-        with patch.dict(sys.modules, {"anthropic": SimpleNamespace(Anthropic=FakeClient)}):
-            text = mb.generate_morning_brief(
-                _snap(), [{"ticker": "AAPL", "n_articles": 3}], api_key="sk-test"
-            )
+        class FakeClient:
+            def __init__(self):
+                self.chat = FakeChat()
+
+        text = mb.generate_morning_brief(
+            _snap(), [{"ticker": "AAPL", "n_articles": 3}],
+            api_key="sk-test",
+            client_factory=lambda spec, api_key: FakeClient(),
+        )
         assert text == "Macro lead.\n- AAPL: news"
-        assert captured["model"] == "claude-haiku-4-5"
-        assert "thinking" not in captured
-        assert "output_config" not in captured
+        assert captured["model"] == mb.OPENROUTER_MODEL == "deepseek/deepseek-v4-flash"
+        assert captured["extra_body"]["reasoning"] == {"exclude": True}
 
     def test_no_key_returns_none(self):
         mb = _morning_brief()
-        with patch.object(mb, "_anthropic_api_key", return_value=None):
+        with patch.object(mb, "_openrouter_api_key", return_value=None):
             assert mb.generate_morning_brief(_snap(), [], api_key=None) is None
 
-    def test_sdk_error_is_fail_soft(self):
+    def test_transport_error_is_fail_soft(self):
         mb = _morning_brief()
 
         class FakeClient:
-            def __init__(self, **kwargs):
+            def __init__(self):
                 raise RuntimeError("boom")
 
-        with patch.dict(sys.modules, {"anthropic": SimpleNamespace(Anthropic=FakeClient)}):
-            assert mb.generate_morning_brief(_snap(), [], api_key="sk-test") is None
+        assert mb.generate_morning_brief(
+            _snap(), [], api_key="sk-test",
+            client_factory=lambda spec, api_key: FakeClient(),
+        ) is None
 
 
 # ── kill switch ────────────────────────────────────────────────────────────

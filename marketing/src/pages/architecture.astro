@@ -1,5 +1,6 @@
 ---
 import Base from '../layouts/Base.astro';
+import KnowledgeBase from '../components/KnowledgeBase.astro';
 
 /**
  * Mermaid integration: client-side via CDN ESM module, lazy-loaded.
@@ -277,6 +278,8 @@ const feedbackDiagram = `flowchart LR
       <pre class="mermaid">{feedbackDiagram}</pre>
     </div>
   </section>
+
+  <KnowledgeBase />
 
   <script is:inline type="module">
     import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';

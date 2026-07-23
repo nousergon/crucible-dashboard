@@ -486,11 +486,24 @@ def _build_navigation():
                 "views/48_Fleet_Status.py", title="Fleet Status", icon="🛰",
                 url_path="fleet-status",
             ),
-            # Human-gated backlog ruling surface (config#1926). url_path
-            # pinned to "decision-queue" — the weekly Telegram digest
-            # (config#1922) deep-links to it and the home chip page_links to
-            # it. Guarded by tests/test_decision_queue_page.py. Standalone
-            # st.Page (slug lives on the page, like fleet-status above).
+            # Per-process SLA accountability table (config#2858) — the
+            # table companion to Fleet Status's dots: process | pipeline |
+            # trigger | SLA | last completed | verdict | hit-rate. url_path
+            # pinned to "fleet-sla" (slug guard: tests/test_sla_status_page.py).
+            # Standalone st.Page, same deep-link-stability posture as
+            # fleet-status above.
+            st.Page(
+                "views/54_Fleet_SLA.py", title="Fleet SLA", icon="🎯",
+                url_path="fleet-sla",
+            ),
+            # Human-gated backlog ruling surface (config#1926): all three
+            # human-only gates (gate:decision/gate:operator/gate:device) —
+            # config-I3060 split this into two pages, config-I3239 recombined
+            # them. url_path pinned to "decision-queue" — the weekly Telegram
+            # digest (config#1922) deep-links to it and the home chip
+            # page_links to it. Guarded by tests/test_decision_queue_page.py.
+            # Standalone st.Page (slug lives on the page, like fleet-status
+            # above).
             st.Page(
                 "views/49_Decision_Queue.py", title="Decision Queue", icon="🗳",
                 url_path="decision-queue",

@@ -1,4 +1,4 @@
-streamlit>=1.40
+streamlit>=1.60.0
 pandas>=2.0
 plotly>=5.18
 # setuptools floor for PYSEC-2026-3447 (newly disclosed; CI's pip-audit gate
@@ -11,7 +11,7 @@ setuptools>=83.0.0
 # (put_object IfMatch / IfNoneMatch) for lost-update protection; the loader
 # also carries a compare-then-put fallback if the installed botocore
 # predates them, but the pinned floor makes the conditional path the norm.
-boto3>=1.43.50
+boto3>=1.43.53
 pyyaml>=6.0
 # streamlit-calendar: FullCalendar component backing the Morning Signal
 # Content Schedule page (views/45_Morning_Signal_Schedule.py) — month
@@ -23,22 +23,29 @@ streamlit-calendar>=1.2
 # (live/loaders/s3_loader.py::load_live_day_return) so it shows TODAY's % change
 # rather than the last EOD snapshot. Fail-soft to the snapshot if unavailable.
 yfinance>=1.5.1
-# anthropic: Phase-2 morning-brief consumer (config#664 / L4574) — builds the
-# rerun-driven, four-gate-throttled morning brief with Haiku (claude-haiku-4-5)
-# on the Live Portfolio page (live/morning_brief.py). The API key is read from
-# st.secrets["anthropic"]["ANTHROPIC_API_KEY"] (NOT os.environ — see
-# tests/test_no_secret_environ_reads.py); when the key or SDK is absent the
-# brief card degrades to a friendly notice (fail-soft, no hard render dependency).
-anthropic>=0.117.0
-# krepis (config#1722, 2026-07-05): views/36_Claude_Code_Usage.py imports
-# krepis.usage_pacing.reset_window for the reset-aligned weekly window math,
-# replacing the local _current_week_window that used to be duplicated with
-# alpha-engine-config's scripts/groom_budget.py (config#1351 / config#1721).
-# Public, MIT, plain PyPI package (`pip install krepis`) — NOT nousergon-lib
-# (git-tag-pinned below); the two are unrelated packages. Floor matches the
-# pin alpha-engine-config uses for the same module (currently on PyPI at
-# 0.10.2).
-krepis>=0.14.0
+# krepis[openai] (config#1722, 2026-07-05; extended alpha-engine-config-I2997,
+# 2026-07-19): views/36_Claude_Code_Usage.py imports krepis.usage_pacing.reset_window
+# for the reset-aligned weekly window math, replacing the local
+# _current_week_window that used to be duplicated with alpha-engine-config's
+# scripts/groom_budget.py (config#1351 / config#1721). Public, MIT, plain
+# PyPI package (`pip install krepis`) — NOT nousergon-lib (git-tag-pinned
+# below); the two are unrelated packages. Floor matches the pin
+# alpha-engine-config uses for the same module (currently on PyPI at 0.10.2).
+#
+# [openai] extra (I2997): live/morning_brief.py's Phase-2 morning-brief
+# consumer (config#664 / L4574) now builds its rerun-driven, four-gate-
+# throttled brief via krepis.llm.LLMClient's OpenRouter transport
+# (DeepSeek V4 Flash) instead of a raw anthropic.Anthropic() client — the
+# fleet-wide "off direct Anthropic API" migration (EvalJudge Batches is the
+# sole deliberate exception, per Brian's 2026-07-19 ruling). The extra pulls
+# `openai` (OpenAI-compatible SDK, used against OpenRouter's base_url). Key
+# resolution moved from the (verified-dead-in-production, no secrets.toml on
+# this box) st.secrets path to nousergon_lib.secrets.get_secret
+# ("OPENROUTER_API_KEY") — SSM-first via the box's existing
+# alpha-engine-ssm-read policy, no new IAM. v0.12.2 is the earliest tag
+# carrying the OpenRouter unresolved/leaked-tool-call safety fix in
+# krepis.llm; the >=0.14.0 floor here already clears that.
+krepis[openai]>=0.16.2
 # nousergon-lib (renamed from alpha-engine-lib at v0.60.0) provides
 # setup_logging used by app.py + health_checker.py
 # to attach the FlowDoctorHandler when FLOW_DOCTOR_ENABLED=1, the
@@ -114,7 +121,15 @@ krepis>=0.14.0
 # authenticates GitHub as the ne-groomer App installation (resilient bot
 # identity; the 2026-07-16 user-token REST outage config-I2784 didn't touch
 # App tokens), keeping the groom PAT only as fallback.
-nousergon-lib[flow-doctor,github_app] @ git+https://github.com/nousergon/nousergon-lib@v0.124.0
+# v0.124.9 (config#3059, nousergon-lib#226, 6th recurrence of the
+# config#1115/#2372/#2430 drift class): pipeline_status registry now covers
+# 2 Saturday-SF states (ChallengerShadow, SignalsEnvelope) + 7 EOD-SF states
+# (HealConvergedNotify, HealLaunchArcticAppendSpot,
+# HealLaunchPostMarketDataSpot, HealNonConvergent, HealReProbe,
+# HealReplayDispatchFailed, ProbeEODReconcilePrecondition) -- keeps
+# tests/test_pipeline_status_registry_drift.py::test_every_substantive_state_has_registry_entry
+# green against the current SF JSONs.
+nousergon-lib[flow-doctor,github_app] @ git+https://github.com/nousergon/nousergon-lib@v0.124.9
 
 # crucible-dash-api (config#1973 phase 9-B): read-only FastAPI over the
 # results view-model, consumed same-box by the /dash Next.js frontend.

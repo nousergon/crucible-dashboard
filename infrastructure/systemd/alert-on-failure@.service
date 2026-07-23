@@ -1,0 +1,13 @@
+[Unit]
+Description=Alert-on-failure handler for %i (config#2954)
+
+[Service]
+Type=oneshot
+User=ec2-user
+Group=ec2-user
+ExecStart=/home/ec2-user/alpha-engine-dashboard/infrastructure/alert_on_failure.sh %i
+# Region for krepis.alerts SNS publish (Telegram creds load from
+# /home/ec2-user/.alpha-engine.env inside the script) — mirrors
+# box-health.service's Environment= convention.
+Environment=AWS_REGION=us-east-1
+TimeoutStartSec=60

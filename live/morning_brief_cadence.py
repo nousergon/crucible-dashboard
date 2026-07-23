@@ -1,14 +1,14 @@
-"""Pure, side-effect-free cadence gating for the morning-brief Haiku call.
+"""Pure, side-effect-free cadence gating for the morning-brief LLM call.
 
 This module is the decision core of the Phase-2 morning brief (config#664 /
-L4574). It answers ONE question — *should this dashboard rerun fire a Haiku
+L4574). It answers ONE question — *should this dashboard rerun fire an LLM
 call to (re)generate the brief?* — given a synthetic clock, the current
 broad-market snapshot, and the persisted state of the last brief generation.
 
-It is deliberately free of Streamlit, the Anthropic SDK, boto3, yfinance, and
+It is deliberately free of Streamlit, the LLM transport SDK, boto3, yfinance, and
 even ``datetime.now()``: every input is passed in, so the four gates can be
 unit-tested without live data, network, or API keys. The Streamlit I/O,
-Anthropic call, and S3 reads live in ``live/morning_brief.py``; the renderer
+LLM call, and S3 reads live in ``live/morning_brief.py``; the renderer
 in ``live/components/morning_brief_card.py``.
 
 The four gates (ALL must hold to fire a call):
@@ -21,7 +21,7 @@ The four gates (ALL must hold to fire a call):
                         is satisfied by being called at all; it is represented
                         here as the absence of any cron/background path. No
                         separate predicate is needed — the caller IS the demand.
-  3. Hourly throttle  — <= 1 Haiku call per rolling 60 min. A refresh within
+  3. Hourly throttle  — <= 1 LLM call per rolling 60 min. A refresh within
                         60 min of the last brief reuses cache.
   4. Materiality      — beyond the throttle, regenerate only if the broad
                         market moved materially since the snapshot captured at
@@ -32,7 +32,7 @@ Plus two backstops:
   * First view inside the callable window each trading day always generates
     once (subject to throttle) — there is no prior intraday snapshot to
     compare against.
-  * Hard daily cap of <= 8 Haiku calls per trading day.
+  * Hard daily cap of <= 8 LLM calls per trading day.
 
 A view BEFORE the window opens shows the prior brief and does NOT call.
 """
@@ -111,7 +111,7 @@ class BriefState:
     """Everything persisted per generation, keyed by ``trading_day``.
 
     Stored alongside the brief text so the NEXT view can evaluate the throttle
-    and materiality gates. ``call_count`` is the number of Haiku calls made for
+    and materiality gates. ``call_count`` is the number of LLM calls made for
     ``trading_day`` so far (drives the daily cap).
     """
 
@@ -150,7 +150,7 @@ class BriefState:
 class Decision(Enum):
     """What the cadence wants the caller to do on this rerun."""
 
-    GENERATE = "generate"        # fire a Haiku call now
+    GENERATE = "generate"        # fire an LLM call now
     REUSE_CACHED = "reuse"       # show the persisted brief; no call
     CLOSED = "closed"            # outside the callable window; show last brief
                                  # stamped "as of HH:MM ET" + closed indicator

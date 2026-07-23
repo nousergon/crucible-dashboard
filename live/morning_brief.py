@@ -1,4 +1,4 @@
-"""Phase-2 morning-brief consumer — Streamlit I/O, Haiku call, persistence.
+"""Phase-2 morning-brief consumer — Streamlit I/O, LLM call, persistence.
 
 This is the impure shell around the pure cadence core in
 ``live/morning_brief_cadence.py``. It:
@@ -6,20 +6,32 @@ This is the impure shell around the pure cadence core in
   * reads the producer's daily news (``live/loaders/daily_news.py``),
   * captures the broad-market snapshot (``live/loaders/market_snapshot.py``),
   * runs the four-gate cadence to decide GENERATE / REUSE / CLOSED,
-  * on GENERATE, builds the brief with Haiku (``claude-haiku-4-5``),
+  * on GENERATE, builds the brief via OpenRouter (DeepSeek V4 Flash),
   * persists ``{brief text + snapshot + generated_at + call_count}`` keyed by
     ``trading_day`` in ``st.session_state`` so the next rerun can evaluate the
     throttle + materiality gates,
   * honors the ``ai_advisor.enabled`` regulatory kill switch (config) — when
-    off, NO Haiku call is ever made and the card shows a disabled notice.
+    off, NO LLM call is ever made and the card shows a disabled notice.
 
 The brief LEADS WITH THE MACRO READ ("why is the market down today" — from the
 live SPY/QQQ/VIX snapshot + any macro headlines) THEN per-ticker holdings news.
 
-Anthropic SDK usage follows the project claude-api guidance: the official
-``anthropic`` Python SDK, model id literally ``claude-haiku-4-5``. Haiku 4.5
-does NOT support the ``thinking`` / ``output_config.effort`` parameters (they
-400 on Haiku), so we pass neither.
+**alpha-engine-config-I2997 (2026-07-19): migrated off direct Anthropic API.**
+Was a raw ``anthropic.Anthropic()`` client resolving its key via
+``st.secrets["anthropic"]["ANTHROPIC_API_KEY"]`` — live-verified during the
+migration that NO ``secrets.toml`` exists anywhere on the dashboard EC2 box
+(``i-09b539c844515d549``), so this call site was silently dead in production
+(``_anthropic_api_key()`` always returned ``None``, and the fail-soft path
+swallowed it into an "unavailable" notice with no operator-visible signal).
+Now uses the fleet-SOTA ``krepis.llm.LLMClient`` OpenRouter transport (the
+Think-Tank-ratified multi-provider adapter — see
+``crucible-research/thinktank/client.py`` / ``krepis.llm``), with the API key
+resolved via ``nousergon_lib.secrets.get_secret("OPENROUTER_API_KEY")`` —
+SSM-first (``/alpha-engine/OPENROUTER_API_KEY``, readable by the dashboard
+box's existing ``alpha-engine-ssm-read`` instance-role policy, no new IAM),
+env fallback. This is also the module's own test file's documented preferred
+pattern (see ``tests/test_no_secret_environ_reads.py``) over the previously
+used, and here non-functional, ``st.secrets`` path.
 """
 
 from __future__ import annotations
@@ -45,7 +57,17 @@ from morning_brief_cadence import (
 logger = logging.getLogger(__name__)
 
 ET = ZoneInfo("America/New_York")
-HAIKU_MODEL = "claude-haiku-4-5"
+# OpenRouter/DeepSeek V4 Flash (alpha-engine-config-I2997, 2026-07-19).
+# ID verified two ways: (1) live against the OpenRouter models API
+# (`GET https://openrouter.ai/api/v1/models` lists `deepseek/deepseek-v4-flash`
+# — "DeepSeek: DeepSeek V4 Flash"); (2) cross-checked against two independent
+# live fleet configs already running this exact ID: morning-signal's SSM
+# `/morning-signal/config-yaml` `fallback_llm`, and crucible-research's
+# `evals/judge_models.py::OPENROUTER_SHADOW` (live-verified 2026-07-18). A
+# hand-typed/wrong OpenRouter model ID silently killed morning-signal on
+# 2026-07-15 (`deepseek/deepseek-chat-v4` is not a real model) — never
+# hand-write one.
+OPENROUTER_MODEL = "deepseek/deepseek-v4-flash"
 _SESSION_KEY = "morning_brief_state"        # st.session_state cache key
 _MAX_TOKENS = 900                           # brief is a few short paragraphs
 
@@ -54,7 +76,7 @@ _MAX_TOKENS = 900                           # brief is a few short paragraphs
 
 def _ai_advisor_enabled() -> bool:
     """Regulatory kill switch. Default ON; set ``ai_advisor.enabled: false`` in
-    config.yaml to hard-disable ALL Haiku calls (the brief card then shows a
+    config.yaml to hard-disable ALL LLM calls (the brief card then shows a
     disabled notice and never reaches the SDK)."""
     try:
         cfg = load_config()
@@ -105,24 +127,30 @@ def _save_state(state: BriefState) -> None:
     st.session_state[_SESSION_KEY] = state.to_dict()
 
 
-# ── Anthropic key resolution (st.secrets; NO os.environ — see
+# ── OpenRouter key resolution (nousergon_lib.secrets: SSM-first, env
+#    fallback — no os.environ.get/getenv direct read; see
 #    tests/test_no_secret_environ_reads.py) ──────────────────────────────────
 
-def _anthropic_api_key() -> Optional[str]:
-    """Resolve the Anthropic key from ``st.secrets`` only.
+def _openrouter_api_key() -> Optional[str]:
+    """Resolve the OpenRouter key via ``nousergon_lib.secrets.get_secret``.
 
-    The repo bans ``os.environ.get`` secret reads (tests/test_no_secret_environ_
-    reads.py); on EC2 the key is seeded into Streamlit secrets (or
-    ``nousergon_lib.secrets`` at deploy). Returns None when unavailable — the
-    card then shows a friendly "AI brief unavailable" notice instead of erroring.
+    SSM-first (``/alpha-engine/OPENROUTER_API_KEY``, readable by the
+    dashboard box's instance role — the same ``alpha-engine-ssm-read``
+    inline policy every other SSM-backed fleet secret on this box uses, no
+    new IAM needed), env fallback. Predates this call site: verified live
+    (alpha-engine-config-I2997 migration, 2026-07-19) that NO
+    ``.streamlit/secrets.toml`` exists anywhere on the box — the prior
+    ``st.secrets``-based Anthropic key resolution this replaced was always
+    returning ``None`` in production. Returns None when unavailable — the
+    card then shows a friendly "AI brief unavailable" notice instead of
+    erroring (fail-soft; this is a UI convenience, not a producer).
     """
-    try:
-        return st.secrets["anthropic"]["ANTHROPIC_API_KEY"]
-    except (KeyError, FileNotFoundError, AttributeError):
-        return None
+    from nousergon_lib.secrets import get_secret
+
+    return get_secret("OPENROUTER_API_KEY", required=False, default=None) or None
 
 
-# ── The Haiku call ─────────────────────────────────────────────────────────
+# ── The LLM call (OpenRouter / DeepSeek V4 Flash) ──────────────────────────
 
 def _build_prompt(snapshot: MarketSnapshot, holdings_news: list[dict]) -> str:
     """Assemble the user prompt: macro snapshot first, then holdings news."""
@@ -173,34 +201,52 @@ def generate_morning_brief(
     holdings_news: list[dict],
     *,
     api_key: Optional[str] = None,
+    client_factory=None,
 ) -> Optional[str]:
-    """Build the brief with Haiku (``claude-haiku-4-5``). Returns the brief text,
-    or None on any failure (no key, SDK error) so the caller degrades gracefully.
+    """Build the brief via OpenRouter (DeepSeek V4 Flash, see ``OPENROUTER_MODEL``).
+    Returns the brief text, or None on any failure (no key, SDK/transport error)
+    so the caller degrades gracefully — this is a UI convenience, not a
+    producer; the fail-soft contract predates the alpha-engine-config-I2997
+    transport migration and is unchanged by it.
 
-    Haiku 4.5 does not support ``thinking`` / ``effort`` — neither is passed.
+    ``client_factory`` is the krepis.llm.LLMClient test seam (mirrors the
+    Think Tank pattern): a callable ``(spec, api_key) -> transport_client``.
+    Production leaves it unset — ``LLMClient`` lazily builds the real
+    ``openai.OpenAI`` client pointed at OpenRouter's ``base_url``.
+
+    ``reasoning={"exclude": True}`` mirrors the two other live fleet DeepSeek
+    V4 consumers (morning-signal's ``fallback_llm``, crucible-research's
+    ``evals/judge_models.py::OPENROUTER_SHADOW``) — without it, a reasoning-
+    capable OpenRouter model can burn its entire output budget on chain-of-
+    thought and return empty content even at a generous ``max_tokens``
+    (live-reproduced fleet-wide, config#1659 / config#2575).
     """
-    key = api_key or _anthropic_api_key()
+    from krepis.llm import LLMClient
+    from krepis.llm_config import ModelSpec
+
+    key = api_key or _openrouter_api_key()
     if not key:
-        logger.warning("[morning_brief] no Anthropic API key — skipping generation")
+        logger.warning("[morning_brief] no OpenRouter API key — skipping generation")
         return None
     try:
-        import anthropic
-
-        client = anthropic.Anthropic(api_key=key)
-        resp = client.messages.create(
-            model=HAIKU_MODEL,
+        spec = ModelSpec(
+            provider="openrouter",
+            model=OPENROUTER_MODEL,
             max_tokens=_MAX_TOKENS,
-            system=_SYSTEM_PROMPT,
-            messages=[
-                {"role": "user", "content": _build_prompt(snapshot, holdings_news)}
-            ],
+            reasoning={"exclude": True},
         )
-        # Parse content blocks by .type (per claude-api guidance).
-        parts = [b.text for b in resp.content if getattr(b, "type", None) == "text"]
-        text = "\n".join(p for p in parts if p).strip()
+        client = LLMClient(spec, api_key=key, client_factory=client_factory)
+        result = client.complete(
+            system=_SYSTEM_PROMPT,
+            user_content=_build_prompt(snapshot, holdings_news),
+            max_tokens=_MAX_TOKENS,
+        )
+        text = (result.text or "").strip()
         return text or None
     except Exception as e:  # noqa: BLE001 — fail-soft; card shows last brief / notice
-        logger.warning("[morning_brief] Haiku call failed (%s: %s)", type(e).__name__, e)
+        logger.warning(
+            "[morning_brief] OpenRouter call failed (%s: %s)", type(e).__name__, e
+        )
         return None
 
 
