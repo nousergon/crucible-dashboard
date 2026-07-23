@@ -1,22 +1,24 @@
 """
 Decision Queue — Alpha Engine (private console)
 
-The PRIMARY review surface for judgment-call items (config#1926; narrowed to
-``gate:decision`` only, config#3060). Every open issue OR PR whose product/
-scope question is still unresolved renders as one card, oldest first, with
-the structured ``**Ask:**`` block (config#1923) and one-tap ruling buttons.
-A ruling posts the operator-decision comment and strips the gate label; for
-a PR, it ALSO flips a fully-unblocked draft ready for review immediately
-(config#2431) rather than waiting on a groom pass to notice. The next tier
-groom (3x/day) executes any remaining work. The operator's tap is the
-authorization; the groom fleet is the hands.
+The PRIMARY review surface for the human-gated backlog (config#1926): every
+open issue OR PR carrying ``gate:decision``/``gate:operator``/``gate:device``
+renders as one card, oldest first, with the structured ``**Ask:**`` block
+(config#1923) and one-tap ruling buttons. A ruling posts the
+operator-decision comment and strips the gate label; for a PR, it ALSO flips
+a fully-unblocked draft ready for review immediately (config#2431) rather
+than waiting on a groom pass to notice. The next tier groom (3x/day)
+executes any remaining work. The operator's tap is the authorization; the
+groom fleet is the hands.
 
-Operator-HANDS items (``gate:operator``/``gate:device`` — "go click a
-setting", "go check the hardware") live on the separate Action Queue
-(views/50) instead: Brian's 2026-07-20 ruling is that "a decision/ruling
-that leads to something I have to do specifically" doesn't belong in a
-queue framed around resolving ambiguity — it belongs on a numbered action
-list worked during a dedicated pass.
+config-I3060 (2026-07-20) split ``gate:operator``/``gate:device`` off to a
+separate Action Queue page. config-I3239 (2026-07-21, Brian's ruling)
+recombined them — the split added a "which page is this on" routing
+question with no reliable way to answer it, worse than the interleaving
+problem it solved. Operator/device items still render with "Mark done"
+framing instead of "Post ruling" (derived per item from its gate, not from
+a page), so the distinction the split was trying to preserve survives —
+just not as a second page.
 
 Write scope: the GitHub issue/PR tracker ONLY (ARCHITECTURE.md carve-out).
 This page never writes S3 config, SSM params, or any trading state.
@@ -33,6 +35,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from components.gate_queue_card import render_card  # noqa: E402
 from loaders.decision_queue_loader import (  # noqa: E402
+    ACTION_SHAPED_GATE_LABELS,
     clear_queue_cache,
     github_token,
     load_decision_queue,
@@ -42,11 +45,17 @@ _STATE_KEY = "dq_done"
 
 st.title("🗳 Decision Queue")
 st.caption(
-    "Judgment-call issues AND PRs (gate:decision), oldest first — one tap "
-    "posts your ruling and de-gates it; a fully-unblocked draft PR flips "
-    "ready immediately, the next tier groom executes any remaining work. "
-    "Operator-hands items live on the Action Queue instead. "
-    "(config#1923/#1926/#2421/#3060; write scope = issue/PR tracker only)"
+    "Human-gated issues AND PRs (gate:decision/gate:operator/gate:device), "
+    "oldest first — one tap posts your ruling (or marks an operator/device "
+    "item done) and de-gates it; a fully-unblocked draft PR flips ready "
+    "immediately, the next tier groom executes any remaining work. "
+    "(config#1923/#1926/#2421/#3245; write scope = issue/PR tracker only)"
+)
+st.caption(
+    "Data source: GitHub Issues across `BACKLOG_REPOS` + PRs across "
+    "`CODE_REPOS` (`loaders.decision_queue_loader.load_decision_queue()`). "
+    "Cached 300s (`_CACHE_TTL_S`) — a ruling made elsewhere may take up to "
+    "5 min to disappear here; use 🔄 Refresh queue below to force a live re-read."
 )
 
 if github_token() is None:
@@ -93,4 +102,5 @@ if not pending:
     st.stop()
 
 for item in pending:
-    render_card(item, state_key=_STATE_KEY)
+    render_card(item, state_key=_STATE_KEY,
+                is_action=item["gate"] in ACTION_SHAPED_GATE_LABELS)

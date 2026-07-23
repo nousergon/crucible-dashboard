@@ -1,10 +1,10 @@
-"""Shared card renderer + one-shot write-action guard for the two
-human-gated queue pages (config#3060): the Decision Queue (views/49,
-gate:decision — judgment calls) and the Action Queue (views/50,
-gate:operator/gate:device — Brian's-hands items). Both render one card per
-gated issue/PR and post a ruling through the same
-``loaders.decision_queue_loader`` write path; only the framing differs —
-Decision Queue asks "which option", Action Queue asks "done yet".
+"""Shared card renderer + one-shot write-action guard for the Decision Queue
+(views/49) — every human-gated issue/PR (``gate:decision``/``gate:operator``/
+``gate:device``, config#1926; config-I3060 split this into two pages,
+config-I3239 recombined them). One card per gated issue/PR, posting a ruling
+through ``loaders.decision_queue_loader``'s write path; ``is_action`` (derived
+per item from its gate label, not from a page) swaps the framing from "which
+option" to "done yet" for operator/device items.
 """
 
 from __future__ import annotations
@@ -23,11 +23,7 @@ _GATE_BADGE = {
 
 
 def act_once(state_key: str, item_key: str, outcome: str, fn, *args, **kwargs) -> None:
-    """Run a write action exactly once per item per session; fail LOUD.
-
-    ``state_key`` namespaces the done-set per page (``dq_done``/``aq_done``)
-    so ruling on an item in one queue never masks its twin's session state.
-    """
+    """Run a write action exactly once per item per session; fail LOUD."""
     done = st.session_state.setdefault(state_key, {})
     if item_key in done:
         return
@@ -40,24 +36,20 @@ def act_once(state_key: str, item_key: str, outcome: str, fn, *args, **kwargs) -
     st.toast(f"{item_key}: {outcome}")
 
 
-def render_card(item: dict, *, state_key: str, index: int | None = None,
-                is_action: bool = False) -> None:
+def render_card(item: dict, *, state_key: str, is_action: bool = False) -> None:
     """Render one gate item card with its ruling controls.
 
-    ``index`` (1-based) prefixes the card as ``#N`` — the Action Queue's
-    numbered-list presentation Brian asked for (2026-07-20 ruling); the
-    Decision Queue passes ``None`` and stays unnumbered, oldest-first.
     ``is_action`` swaps the unframed-item button from "Post ruling" to
-    "✅ Mark done" — an operator action's default resolution is "did it",
-    not "here's my judgment call".
+    "✅ Mark done" — an operator/device item's default resolution is "did
+    it", not "here's my judgment call". The caller derives it per item from
+    ``item["gate"]``, not from a page split (config-I3239).
     """
     key = item["key"]
     with st.container(border=True):
         left, right = st.columns([5, 1])
         kind_badge = "🔀 PR" if item["is_pr"] else "📋 issue"
-        prefix = f"**#{index}** " if index is not None else ""
         left.markdown(
-            f"{prefix}**[{key}]({item['url']})** — {item['title']}  \n"
+            f"**[{key}]({item['url']})** — {item['title']}  \n"
             f"{kind_badge} · {_GATE_BADGE.get(item['gate'], item['gate'])} · "
             f"open **{item['age_days']}d**"
         )

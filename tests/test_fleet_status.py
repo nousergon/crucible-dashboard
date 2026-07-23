@@ -23,6 +23,7 @@ from fleet_status import (  # noqa: E402
     GRAY,
     GREEN,
     GROUP_ORDER,
+    RECOVERY_PIPELINE_ROLES,
     RED,
     YELLOW,
     FleetInputs,
@@ -279,6 +280,88 @@ class TestPipelines:
     def test_gray_no_executions(self):
         s = _pipe("preopen", PipelineSnapshot(status="NO_EXECUTIONS"))
         assert s.dot == GRAY
+
+
+class TestPipelineRecoveryRoles:
+    """config#3085 — a failed scheduled cadence run followed by a
+    watch-rerun/recovery/fast-path-rerun overlay must render the cycle's
+    current truth, not the stale scheduled failure."""
+
+    def test_running_recovery_role_is_green_and_named(self):
+        # failed-sched+running-recovery: the loader's role-filter walk
+        # already resolved to the newer recovery execution (RUNNING), so
+        # this is what resolve_pipeline sees.
+        s = _pipe("weekly", PipelineSnapshot(
+            status="RUNNING", role="watch-rerun",
+            started_at=TRADING_MID - timedelta(minutes=5)))
+        assert s.dot == GREEN
+        assert "running (recovery)" in s.reason
+
+    def test_succeeded_recovery_role_is_green_recovered(self):
+        # failed-sched+succeeded-recovery.
+        s = _pipe("weekly", PipelineSnapshot(
+            status="SUCCEEDED", verdict="COMPLETE", role="recovery",
+            started_at=TRADING_MID - timedelta(hours=2),
+            stopped_at=TRADING_MID - timedelta(hours=1)))
+        assert s.dot == GREEN
+        assert "recovered" in s.reason
+        assert "recovery" in s.reason
+
+    def test_failed_scheduled_no_recovery_stays_red(self):
+        # failed-sched+no-recovery: role-filter walk found only the
+        # scheduled cadence execution (still FAILED) — no recovery
+        # overlay matched, so the dot stays RED as before.
+        s = _pipe("weekly", PipelineSnapshot(
+            status="FAILED", verdict="FAILED", role="weekly",
+            started_at=TRADING_MID - timedelta(hours=2)))
+        assert s.dot == RED
+        assert "last cycle FAILED" in s.reason
+
+    def test_fast_path_rerun_detected_by_name_not_role(self):
+        # The Saturday-SF-watch dispatcher's fast-path rerun (live-verified
+        # in infrastructure/lambdas/saturday-sf-watch-dispatcher/index.py,
+        # nousergon-data) reuses the FAILED execution's own input verbatim,
+        # so its pipeline_role is still the CADENCE role ("eod" here) — only
+        # the execution name carries the "fast-path-rerun-" prefix.
+        s = _pipe("postclose", PipelineSnapshot(
+            status="SUCCEEDED", verdict="COMPLETE", role="eod",
+            execution_name="fast-path-rerun-2026-07-20-093000",
+            started_at=TRADING_MID - timedelta(hours=2),
+            stopped_at=TRADING_MID - timedelta(hours=1)))
+        assert s.dot == GREEN
+        assert "recovered" in s.reason
+        assert "fast-path rerun" in s.reason
+
+    def test_cadence_role_execution_name_is_not_mistaken_for_recovery(self):
+        # A first-try cadence execution's name never carries the
+        # "fast-path-rerun-" prefix — sanity check the negative case.
+        s = _pipe("postclose", PipelineSnapshot(
+            status="SUCCEEDED", verdict="COMPLETE", role="eod",
+            execution_name="ne-postclose-trading-pipeline-2026-07-20",
+            started_at=TRADING_MID - timedelta(hours=2),
+            stopped_at=TRADING_MID - timedelta(hours=1)))
+        assert s.dot == GRAY
+        assert "idle" in s.reason
+
+    def test_first_try_success_is_gray_not_green(self):
+        # A plain cadence success (role == the cadence role itself, not a
+        # recovery overlay) keeps the existing idle-gray reading — only
+        # recovery-role completions get the green "recovered" treatment.
+        s = _pipe("weekly", PipelineSnapshot(
+            status="SUCCEEDED", verdict="COMPLETE", role="weekly",
+            started_at=TRADING_MID - timedelta(hours=2),
+            stopped_at=TRADING_MID - timedelta(hours=1)))
+        assert s.dot == GRAY
+        assert "idle" in s.reason
+
+    def test_recovery_roles_constant_excludes_smoke(self):
+        assert "smoke" not in RECOVERY_PIPELINE_ROLES
+        assert "shell-run" not in RECOVERY_PIPELINE_ROLES
+        assert "backfill" not in RECOVERY_PIPELINE_ROLES
+        assert "operator-replay" not in RECOVERY_PIPELINE_ROLES
+        # fast-path-rerun is NOT a pipeline_role (it reuses the cadence
+        # role — see test_fast_path_rerun_detected_by_name_not_role).
+        assert {"watch-rerun", "recovery"} == set(RECOVERY_PIPELINE_ROLES)
 
 
 # ── Groomer ─────────────────────────────────────────────────────────────────

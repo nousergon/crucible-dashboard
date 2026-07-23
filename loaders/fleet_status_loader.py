@@ -40,6 +40,7 @@ from datetime import date, datetime, timezone
 import streamlit as st
 
 from fleet_status import (
+    RECOVERY_PIPELINE_ROLES,
     FleetInputs,
     GroomSnapshot,
     ModuleHealthRow,
@@ -205,11 +206,26 @@ def _ec2_snapshot() -> dict:
 
 
 def _pipeline_snapshots() -> dict[str, PipelineSnapshot]:
-    """Condense page-25's loader results (already 60s-cached + S3-fallback)."""
+    """Condense page-25's loader results (already 60s-cached + S3-fallback).
+
+    role_filter unions the pipeline's cadence role ({weekly,daily,eod})
+    with RECOVERY_PIPELINE_ROLES (config#3085): read_pipeline_state's
+    role-filter walk returns the LATEST execution across the whole set
+    (ListExecutions is newest-first), so a running/succeeded recovery
+    overlay that completed the cycle after a scheduled failure is picked
+    up automatically instead of the dot pinning to the stale failed
+    scheduled execution. Smoke/shell/backfill/operator-replay roles stay
+    excluded — the original Option-D motivation. The Saturday-SF-watch
+    dispatcher's fast-path rerun doesn't need its own filter entry — it
+    reuses the failed execution's own input, so it carries the CADENCE
+    role already in this set; fleet_status.py's resolver tells it apart
+    from a first-try run via the execution-name prefix instead (see
+    fleet_status.FAST_PATH_RERUN_NAME_PREFIX).
+    """
     snaps: dict[str, PipelineSnapshot] = {}
     for key, (sf_name, role) in _PIPELINES.items():
         result = read_pipeline_state_with_fallback(
-            _arn_for(sf_name), role_filter={role}
+            _arn_for(sf_name), role_filter={role} | RECOVERY_PIPELINE_ROLES
         )
         if result.outcome == LoadOutcome.NO_EXECUTIONS:
             snaps[key] = PipelineSnapshot(status="NO_EXECUTIONS")
@@ -236,6 +252,8 @@ def _pipeline_snapshots() -> dict[str, PipelineSnapshot]:
             stopped_at=run.end_utc,
             current_state=current,
             error=error,
+            role=run.pipeline_role,
+            execution_name=run.execution_name,
         )
     return snaps
 
