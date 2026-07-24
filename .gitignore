@@ -6,6 +6,7 @@
 # infrastructure detail (deploy sequences, service topology, instance
 # config) that shouldn't be public. Untracked on purpose; never commit.
 CLAUDE.md
+AGENTS.md
 
 # Config — canonical source is SSM Parameter Store at
 # /alpha-engine/dashboard/{config.yaml,live-config.yaml}. boot-pull.sh
