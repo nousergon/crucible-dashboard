@@ -11,11 +11,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from shared.expense_view import (
+    RECONCILIATION_DELTA_PCT_THRESHOLD,
     as_of_age_hours,
     error_rows,
     pace_badge,
     provider_table_rows,
     quota_str,
+    reconciliation_table_rows,
     usd,
 )
 
@@ -54,6 +56,26 @@ DOC = {
     "warnings": [],
 }
 
+RECON_DOC = {
+    "schema_version": 1,
+    "period": "2026-06",
+    "as_of": "2026-07-02T03:00:00+00:00",
+    "delta_pct_threshold": 0.08,
+    "flagged": ["aws"],
+    "providers": {
+        "aws": {"projected_last_seen": 20.0, "accrued_mtd_final": 40.0,
+                "actual_final": 55.0, "delta_usd": 15.0, "delta_pct": 0.375,
+                "status": "ok", "note": None},
+        "openrouter": {"projected_last_seen": 12.0, "accrued_mtd_final": 11.0,
+                       "actual_final": 11.2, "delta_usd": 0.2, "delta_pct": 0.018,
+                       "status": "ok", "note": None},
+        "neon": {"projected_last_seen": None, "accrued_mtd_final": None,
+                 "actual_final": None, "delta_usd": None, "delta_pct": None,
+                 "status": "not_available",
+                 "note": "Neon's API exposes only the current consumption period"},
+    },
+}
+
 
 class TestRegistration:
     def test_page_file_exists(self):
@@ -83,6 +105,18 @@ class TestRegistration:
         page_src = PAGE.read_text()
         assert "gha_by_repo" in page_src
         assert "public vs private" in page_src.lower()
+
+    def test_reconciliation_loader_reads_prefix(self):
+        # alpha-engine-config#2849 — month-close true-up loader.
+        loader_src = (REPO_ROOT / "loaders" / "s3_loader.py").read_text()
+        assert "def load_expense_reconciliation" in loader_src
+        assert '"expenses/reconciliation/' in loader_src
+
+    def test_page_renders_reconciliation_section(self):
+        page_src = PAGE.read_text()
+        assert "load_expense_reconciliation" in page_src
+        assert "reconciliation_table_rows" in page_src
+        assert "Reconciliation (prior months)" in page_src
 
 
 class TestFormatting:
@@ -126,6 +160,34 @@ class TestTableRows:
 
     def test_error_rows(self):
         assert [p["key"] for p in error_rows(DOC)] == ["deepseek"]
+
+
+class TestReconciliationTableRows:
+    def test_worst_drift_first_and_shape(self):
+        rows = reconciliation_table_rows(RECON_DOC)
+        assert rows[0]["Provider"] == "aws"  # |37.5%| > |1.8%| > not-available(-1)
+        assert rows[0]["Actual (final)"] == "$55.00"
+        assert rows[0]["Delta $"] == "$15.00"
+        assert "_abs_delta_pct" not in rows[0]
+
+    def test_flagged_rows_get_warning_marker(self):
+        rows = reconciliation_table_rows(RECON_DOC)
+        aws = next(r for r in rows if r["Provider"] == "aws")
+        openrouter = next(r for r in rows if r["Provider"] == "openrouter")
+        assert aws["Delta %"].startswith("⚠️")  # 37.5% > 8% threshold
+        assert not openrouter["Delta %"].startswith("⚠️")  # 1.8% < 8% threshold
+
+    def test_not_available_row_renders_status_and_note(self):
+        rows = reconciliation_table_rows(RECON_DOC)
+        neon = next(r for r in rows if r["Provider"] == "neon")
+        assert neon["Status"] == "— not available"
+        assert neon["Delta %"] == "—"
+        assert "current consumption period" in neon["Note"]
+
+    def test_threshold_constant_matches_producer_convention(self):
+        # Kept in lockstep with the collector's RECONCILIATION_DELTA_PCT_THRESHOLD
+        # (alpha-engine-data expense-collector/index.py) — see module docstring.
+        assert RECONCILIATION_DELTA_PCT_THRESHOLD == 0.08
 
 
 class TestStaleness:

@@ -21,6 +21,20 @@ STATUS_BADGES = {
     "not_configured": "⚙️ not configured",
 }
 
+# Month-close reconciliation (alpha-engine-config#2849) — |delta_pct| beyond
+# this is visible drift, not rounding/timing noise. Kept in lockstep with the
+# collector's own RECONCILIATION_DELTA_PCT_THRESHOLD (alpha-engine-data
+# infrastructure/lambdas/expense-collector/index.py) — both sides of a
+# producer/console pair must agree on what counts as "flagged" or a row the
+# collector flags could render unhighlighted here (or vice versa).
+RECONCILIATION_DELTA_PCT_THRESHOLD = 0.08
+
+RECONCILIATION_STATUS_BADGES = {
+    "error": "⚠️ error",
+    "not_configured": "⚙️ not configured",
+    "not_available": "— not available",
+}
+
 
 def usd(v: float | None) -> str:
     return "—" if v is None else f"${v:,.2f}"
@@ -68,6 +82,36 @@ def provider_table_rows(doc: dict) -> list[dict]:
 
 def error_rows(doc: dict) -> list[dict]:
     return [p for p in doc.get("providers", []) if p.get("status") == "error"]
+
+
+def reconciliation_table_rows(doc: dict) -> list[dict]:
+    """Flatten one period's ``expenses/reconciliation/{period}.json`` into
+    display rows — one per provider, worst-drift first (rows with no
+    computable ``delta_pct`` — errors/not-available — sink to the bottom,
+    same convention as ``provider_table_rows``). A ``⚠️`` prefix on
+    ``Delta %`` marks rows past ``RECONCILIATION_DELTA_PCT_THRESHOLD`` so the
+    highlight survives a plain ``st.dataframe`` render (this page uses no
+    Styler/column_config coloring anywhere else — see ``pace_badge``)."""
+    rows = []
+    for key, r in (doc.get("providers") or {}).items():
+        delta_pct = r.get("delta_pct")
+        flagged = delta_pct is not None and abs(delta_pct) > RECONCILIATION_DELTA_PCT_THRESHOLD
+        delta_pct_s = "—" if delta_pct is None else f"{delta_pct * 100:+,.1f}%"
+        rows.append({
+            "Provider": key,
+            "Projected (last seen)": usd(r.get("projected_last_seen")),
+            "Accrued MTD (final run)": usd(r.get("accrued_mtd_final")),
+            "Actual (final)": usd(r.get("actual_final")),
+            "Delta $": usd(r.get("delta_usd")),
+            "Delta %": (f"⚠️ {delta_pct_s}" if flagged else delta_pct_s),
+            "Status": RECONCILIATION_STATUS_BADGES.get(r.get("status"), "✅ ok"),
+            "Note": r.get("note") or "",
+            "_abs_delta_pct": abs(delta_pct) if delta_pct is not None else -1.0,
+        })
+    rows.sort(key=lambda r: -r["_abs_delta_pct"])
+    for r in rows:
+        del r["_abs_delta_pct"]
+    return rows
 
 
 def as_of_age_hours(doc: dict, now: datetime | None = None) -> float | None:

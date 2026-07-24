@@ -310,8 +310,19 @@ class TestLibVersionPin:
             "nousergon_lib import alias still works via the shim)"
         )
         assert "@main" not in text, "nousergon-lib must be pinned to a tag, not @main"
-        assert "@v0.124.0" in text, (
-            "nousergon-lib should pin to v0.124.0 (alpha-engine-config-I2785, "
+        assert "@v0.124.9" in text, (
+            "nousergon-lib should pin to v0.124.9 (config#3059, "
+            "nousergon-lib#226, 6th recurrence of the config#1115/#2372/"
+            "#2430 pipeline-status registry drift class: registers 2 "
+            "Saturday-SF states [ChallengerShadow, SignalsEnvelope] + 7 "
+            "EOD-SF states [HealConvergedNotify, "
+            "HealLaunchArcticAppendSpot, HealLaunchPostMarketDataSpot, "
+            "HealNonConvergent, HealReProbe, HealReplayDispatchFailed, "
+            "ProbeEODReconcilePrecondition] — required so "
+            "test_pipeline_status_registry_drift.py::"
+            "test_every_substantive_state_has_registry_entry passes for "
+            "both SFs. "
+            "Earlier: v0.124.0 (alpha-engine-config-I2785, "
             "nousergon-lib#220: adds nousergon_lib.github_app + the "
             "[github_app] extra — loaders/decision_queue_loader.py now "
             "authenticates GitHub as the ne-groomer App installation token "

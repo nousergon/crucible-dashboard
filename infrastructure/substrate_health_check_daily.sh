@@ -25,9 +25,22 @@ cd /home/ec2-user/alpha-engine-dashboard
 # here rather than silently rewrite history on a box other services share.
 git pull --ff-only origin main
 
-source .venv/bin/activate
+# Fleet-standard absolute venv interpreter (config#2954) — mirrors
+# box_health.sh's VENV_PY / morning-signal-watchdog.sh's DASH_PY. `source
+# .venv/bin/activate` alone is not sufficient: AL2023 carries no bare
+# `python` symlink on PATH outside a venv, and this venv's own `bin/python`
+# symlink has gone missing at least once in production (the `python:
+# command not found` failure this fixes) — the absolute path removes the
+# dependency on activation having produced a working `python` at all.
+PYTHON_BIN=/home/ec2-user/alpha-engine-dashboard/.venv/bin/python
+
+# systemd LogsDirectory=substrate-health-daily (see the .service unit)
+# creates this directory pre-owned by the service's User=/Group= before
+# ExecStart runs — /var/log/ itself is root-owned and not writable by
+# ec2-user, which is what made the old direct /var/log/*.log path fail.
+LOG_FILE=/var/log/substrate-health-daily/run.log
 
 # Ship the run log to S3 on exit — same trap the SF's Task ran inline.
-trap 'aws s3 cp /var/log/substrate-health-check-daily.log "s3://alpha-engine-research/_ssm_logs/substrate-health-check-daily/$(date -u +%Y-%m-%d)/$(hostname)-$(date -u +%H%M%SZ).log" --only-show-errors || true' EXIT
+trap 'aws s3 cp "$LOG_FILE" "s3://alpha-engine-research/_ssm_logs/substrate-health-check-daily/$(date -u +%Y-%m-%d)/$(hostname)-$(date -u +%H%M%SZ).log" --only-show-errors || true' EXIT
 
-python -m nousergon_lib.transparency --cadence daily --alert 2>&1 | tee /var/log/substrate-health-check-daily.log
+"$PYTHON_BIN" -m nousergon_lib.transparency --cadence daily --alert 2>&1 | tee "$LOG_FILE"

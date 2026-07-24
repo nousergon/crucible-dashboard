@@ -20,19 +20,26 @@ from __future__ import annotations
 
 import os
 import sys
+from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pandas as pd
 import streamlit as st
 
-from loaders.s3_loader import load_expense_report
+from loaders.s3_loader import load_expense_reconciliation, load_expense_report
 from shared.expense_view import (
     as_of_age_hours,
     error_rows,
     provider_table_rows,
+    reconciliation_table_rows,
     usd,
 )
+
+# How many closed months back the Reconciliation section looks — enough to
+# catch a month whose reconciliation run landed late without querying every
+# period that ever existed.
+RECONCILIATION_LOOKBACK_MONTHS = 3
 
 st.divider()
 st.title("Expenses")
@@ -148,6 +155,57 @@ st.caption(
     "subscription. — = no budget set for the row (set one in "
     "`config/expense_budgets.json`)."
 )
+
+# --- reconciliation (prior months) --------------------------------------------
+# Month-close true-up (alpha-engine-config#2849): each closed month's
+# provider-authoritative FINAL actual vs what was last projected/accrued for
+# it — the backward-looking check that catches drift (like the AWS forecast
+# double-count, config-era fix nousergon-data-PR910) systematically instead of
+# by eyeballing. Producer: alpha-engine-data expense-collector's reconcile
+# mode (~03:00 UTC, 2nd of each month), writing
+# `expenses/reconciliation/{YYYY-MM}.json`.
+st.subheader("Reconciliation (prior months)", divider="gray")
+st.caption(
+    "Closed-month true-up: each provider's FINAL actual (re-queried after "
+    "providers finalize the prior month) vs what was last projected/accrued "
+    "for it. Rows past the drift threshold are flagged ⚠️."
+)
+
+
+def _prior_periods(current_period: str, n: int) -> list[str]:
+    y, m = (int(x) for x in current_period.split("-"))
+    out = []
+    for _ in range(n):
+        m -= 1
+        if m == 0:
+            m, y = 12, y - 1
+        out.append(f"{y:04d}-{m:02d}")
+    return out
+
+
+current_period = doc.get("period") or date.today().strftime("%Y-%m")
+found_any = False
+for period in _prior_periods(current_period, RECONCILIATION_LOOKBACK_MONTHS):
+    recon_doc = load_expense_reconciliation(period)
+    if not recon_doc:
+        continue
+    found_any = True
+    flagged = recon_doc.get("flagged") or []
+    with st.expander(f"{period}" + (f" — {len(flagged)} flagged" if flagged else ""),
+                     expanded=bool(flagged)):
+        if flagged:
+            names = ", ".join(f"**{k}**" for k in flagged)
+            st.error(f"Drift beyond threshold this closed month: {names}")
+        recon_table = pd.DataFrame(reconciliation_table_rows(recon_doc))
+        st.dataframe(recon_table, use_container_width=True, hide_index=True)
+
+if not found_any:
+    st.info(
+        "No reconciliation data yet for the last "
+        f"{RECONCILIATION_LOOKBACK_MONTHS} closed months — the collector's "
+        "`reconcile` mode runs ~03:00 UTC on the 2nd of each month, after the "
+        "prior month's providers finalize."
+    )
 
 # --- drill-down ---------------------------------------------------------------
 st.subheader("Detail", divider="gray")

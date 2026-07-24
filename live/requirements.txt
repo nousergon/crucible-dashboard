@@ -1,7 +1,7 @@
-streamlit>=1.40
+streamlit>=1.60.0
 pandas>=2.0
 plotly>=5.18
-boto3>=1.43.50
+boto3>=1.43.53
 pyyaml>=6.0
 # Direct import in loaders/s3_loader.py::load_company_names (SEC ticker→name
 # map). Always present transitively via streamlit; pinned here for hygiene.

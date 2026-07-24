@@ -1,18 +1,24 @@
 """
 Decision Queue — Alpha Engine (private console)
 
-The PRIMARY review surface for the human-gated backlog pool (config#1926).
-Every open issue OR PR carrying ``gate:operator`` / ``gate:decision`` /
-``gate:device`` (config#2431: widened to PRs + gate:device — all three are
-equally human-only, no S3/API check substitutes for an operator action, a
-product decision, or physically validating hardware) across the four
-backlog repos (issues) plus every code repo (PRs) renders as one card,
-oldest first, with the structured ``**Ask:**`` block (config#1923) and
-one-tap ruling buttons. A ruling posts the operator-decision comment and
-strips the gate label; for a PR, it ALSO flips a fully-unblocked draft ready
-for review immediately (config#2431) rather than waiting on a groom pass to
-notice. The next tier groom (3x/day) executes any remaining work. The
-operator's tap is the authorization; the groom fleet is the hands.
+The PRIMARY review surface for the human-gated backlog (config#1926): every
+open issue OR PR carrying ``gate:decision``/``gate:operator``/``gate:device``
+renders as one card, oldest first, with the structured ``**Ask:**`` block
+(config#1923) and one-tap ruling buttons. A ruling posts the
+operator-decision comment and strips the gate label; for a PR, it ALSO flips
+a fully-unblocked draft ready for review immediately (config#2431) rather
+than waiting on a groom pass to notice. The next tier groom (3x/day)
+executes any remaining work. The operator's tap is the authorization; the
+groom fleet is the hands.
+
+config-I3060 (2026-07-20) split ``gate:operator``/``gate:device`` off to a
+separate Action Queue page. config-I3239 (2026-07-21, Brian's ruling)
+recombined them — the split added a "which page is this on" routing
+question with no reliable way to answer it, worse than the interleaving
+problem it solved. Operator/device items still render with "Mark done"
+framing instead of "Post ruling" (derived per item from its gate, not from
+a page), so the distinction the split was trying to preserve survives —
+just not as a second page.
 
 Write scope: the GitHub issue/PR tracker ONLY (ARCHITECTURE.md carve-out).
 This page never writes S3 config, SSM params, or any trading state.
@@ -22,34 +28,34 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import datetime, timedelta, timezone
 
 import streamlit as st
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from components.gate_queue_card import render_card  # noqa: E402
 from loaders.decision_queue_loader import (  # noqa: E402
+    ACTION_SHAPED_GATE_LABELS,
     clear_queue_cache,
-    defer_issue,
     github_token,
-    kill_issue,
     load_decision_queue,
-    post_ruling,
-    send_to_session,
 )
 
-_GATE_BADGE = {
-    "gate:operator": "🔧 operator action",
-    "gate:decision": "⚖️ decision",
-    "gate:device": "🔬 device check",
-}
+_STATE_KEY = "dq_done"
 
 st.title("🗳 Decision Queue")
 st.caption(
-    "Human-gated issues AND PRs, oldest first — one tap posts your ruling "
-    "and de-gates it; a fully-unblocked draft PR flips ready immediately, "
-    "the next tier groom executes any remaining work. "
-    "(config#1923/#1926/#2421; write scope = issue/PR tracker only)"
+    "Human-gated issues AND PRs (gate:decision/gate:operator/gate:device), "
+    "oldest first — one tap posts your ruling (or marks an operator/device "
+    "item done) and de-gates it; a fully-unblocked draft PR flips ready "
+    "immediately, the next tier groom executes any remaining work. "
+    "(config#1923/#1926/#2421/#3245; write scope = issue/PR tracker only)"
+)
+st.caption(
+    "Data source: GitHub Issues across `BACKLOG_REPOS` + PRs across "
+    "`CODE_REPOS` (`loaders.decision_queue_loader.load_decision_queue()`). "
+    "Cached 300s (`_CACHE_TTL_S`) — a ruling made elsewhere may take up to "
+    "5 min to disappear here; use 🔄 Refresh queue below to force a live re-read."
 )
 
 if github_token() is None:
@@ -64,22 +70,8 @@ if github_token() is None:
     st.stop()
 
 # ── one-shot action guard: survive Streamlit reruns / double-clicks ─────────
-if "dq_done" not in st.session_state:
-    st.session_state.dq_done = {}  # key -> outcome string
-
-
-def _act(item_key: str, outcome: str, fn, *args, **kwargs) -> None:
-    """Run a write action exactly once per item per session; fail LOUD."""
-    if item_key in st.session_state.dq_done:
-        return
-    try:
-        fn(*args, **kwargs)
-    except Exception as exc:  # surface the API error on the page, never silent
-        st.error(f"{item_key}: write failed — {exc}")
-        return
-    st.session_state.dq_done[item_key] = outcome
-    st.toast(f"{item_key}: {outcome}")
-
+if _STATE_KEY not in st.session_state:
+    st.session_state[_STATE_KEY] = {}  # key -> outcome string
 
 try:
     data = load_decision_queue()
@@ -88,12 +80,12 @@ except Exception as exc:
     st.stop()
 
 snoozed = data["snoozed"]
-pending = [q for q in data["items"] if q["key"] not in st.session_state.dq_done]
+pending = [q for q in data["items"] if q["key"] not in st.session_state[_STATE_KEY]]
 
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Pending decisions", len(pending))
 c2.metric("Oldest", f"{pending[0]['age_days']}d" if pending else "—")
-c3.metric("Ruled this session", len(st.session_state.dq_done))
+c3.metric("Ruled this session", len(st.session_state[_STATE_KEY]))
 c4.metric("Deferred", len(snoozed), help="Hidden until their Re-exam date arrives")
 
 if st.button("🔄 Refresh queue"):
@@ -110,76 +102,5 @@ if not pending:
     st.stop()
 
 for item in pending:
-    key = item["key"]
-    with st.container(border=True):
-        left, right = st.columns([5, 1])
-        kind_badge = "🔀 PR" if item["is_pr"] else "📋 issue"
-        left.markdown(
-            f"**[{key}]({item['url']})** — {item['title']}  \n"
-            f"{kind_badge} · {_GATE_BADGE.get(item['gate'], item['gate'])} · "
-            f"open **{item['age_days']}d**"
-        )
-        if item["summary"]:
-            st.markdown(f"📋 {item['summary']}")
-        if item["ask"]:
-            st.markdown(f"**Ask:** {item['ask']}")
-            for letter, text in item["options"]:
-                st.markdown(f"- **{letter})** {text}")
-            if item["sota"] or item["delta"]:
-                lines = []
-                if item["sota"]:
-                    lines.append(f"🏛 **SOTA:** {item['sota']}")
-                if item["delta"]:
-                    lines.append(f"↔ **Delta:** {item['delta']}")
-                st.caption("  \n".join(lines))
-        else:
-            right.markdown("🏷️ `needs framing`")
-            with st.expander("Newest gate comment / body excerpt"):
-                st.markdown(item["excerpt"] or "_no comment found_")
-
-        rec = item["recommended"]
-        letters = [l for l, _ in item["options"]]
-
-        if letters:
-            # One-tap per lettered option — every option posts its ruling
-            # directly on click. Previously the non-recommended option(s)
-            # were a reveal-toggle button that only unhid a form whose
-            # selectbox defaulted back to letters[0] (the recommended
-            # option) — clicking "B" silently re-armed a form that would
-            # still rule "A" unless the dropdown was manually changed, so
-            # a repeated B click never posted anything.
-            opt_cols = st.columns(len(letters))
-            for i, (letter, text) in enumerate(item["options"]):
-                prefix = "✅ " if letter == rec else ""
-                suffix = " (recommended)" if letter == rec else ""
-                label = f"{prefix}{letter}) {text[:50]}{suffix}"
-                if opt_cols[i].button(label, key=f"opt-{key}-{letter}"):
-                    _act(key, f"ruled {letter}", post_ruling,
-                         item["repo"], item["number"], f"Option {letter}",
-                         is_pr=item["is_pr"])
-                    st.rerun()
-
-        action_cols = st.columns(3)
-        if action_cols[0].button("⏸ Defer 2w", key=f"def-{key}"):
-            # UTC date — must match the loader's snoozed-until comparison.
-            _act(key, "deferred 2w", defer_issue, item["repo"], item["number"],
-                 (datetime.now(timezone.utc).date() + timedelta(days=14)).isoformat(),
-                 item["body"])
-            st.rerun()
-        if action_cols[1].button("💬 Session", key=f"ses-{key}", help="Needs discussion — park for /backlog-triage"):
-            _act(key, "sent to session", send_to_session, item["repo"], item["number"])
-            st.rerun()
-        if action_cols[2].button("🗑 Kill", key=f"kill-{key}"):
-            _act(key, "killed", kill_issue, item["repo"], item["number"])
-            st.rerun()
-
-        # Free-form ruling — only for unframed items (no lettered options
-        # exist to render as one-tap buttons above).
-        if not item["ask"]:
-            with st.form(key=f"form-{key}", border=False):
-                detail = st.text_input("Ruling / rationale (one line)", key=f"txt-{key}")
-                if st.form_submit_button("Post ruling → de-gate"):
-                    _act(key, "ruled free-form", post_ruling,
-                         item["repo"], item["number"], "Ruling", detail,
-                         is_pr=item["is_pr"])
-                    st.rerun()
+    render_card(item, state_key=_STATE_KEY,
+                is_action=item["gate"] in ACTION_SHAPED_GATE_LABELS)
