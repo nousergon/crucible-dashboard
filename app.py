@@ -130,28 +130,6 @@ def _render_decision_queue_chip() -> None:
     st.page_link("views/49_Decision_Queue.py", label="Open Decision Queue →", icon="🗳")
 
 
-def _render_action_queue_chip() -> None:
-    """Home chip for operator-hands items (config#3060): pending count +
-    oldest age, linking to the Action Queue page. Degrades to a named
-    caption — never silently absent (feedback_no_silent_fails)."""
-    try:
-        from loaders.decision_queue_loader import load_action_queue
-
-        data = load_action_queue()
-    except Exception as exc:  # noqa: BLE001 — home must render; failure shown
-        st.caption(f"⚠️ Action queue unavailable — {type(exc).__name__}: {exc}")
-        return
-    items, snoozed = data["items"], data["snoozed"]
-    deferred_note = f" · {len(snoozed)} deferred" if snoozed else ""
-    if not items:
-        st.caption(f"🔧 Action Queue: clear — nothing needs your hands.{deferred_note}")
-        return
-    st.markdown(
-        f"🔧 **{len(items)} action(s) pending** — oldest {items[0]['age_days']}d{deferred_note}"
-    )
-    st.page_link("views/50_Action_Queue.py", label="Open Action Queue →", icon="🔧")
-
-
 def _render_todays_activity(
     order_book_summary: dict | None,
     trades_df: pd.DataFrame | None,
@@ -351,7 +329,6 @@ def main() -> None:
     st.subheader("Fleet Status")
     _render_fleet_strip()
     _render_decision_queue_chip()
-    _render_action_queue_chip()
 
     st.divider()
     st.subheader("Today's Activity")
@@ -519,24 +496,17 @@ def _build_navigation():
                 "views/54_Fleet_SLA.py", title="Fleet SLA", icon="🎯",
                 url_path="fleet-sla",
             ),
-            # Human-gated backlog ruling surface (config#1926). url_path
-            # pinned to "decision-queue" — the weekly Telegram digest
-            # (config#1922) deep-links to it and the home chip page_links to
-            # it. Guarded by tests/test_decision_queue_page.py. Standalone
-            # st.Page (slug lives on the page, like fleet-status above).
+            # Human-gated backlog ruling surface (config#1926): all three
+            # human-only gates (gate:decision/gate:operator/gate:device) —
+            # config-I3060 split this into two pages, config-I3239 recombined
+            # them. url_path pinned to "decision-queue" — the weekly Telegram
+            # digest (config#1922) deep-links to it and the home chip
+            # page_links to it. Guarded by tests/test_decision_queue_page.py.
+            # Standalone st.Page (slug lives on the page, like fleet-status
+            # above).
             st.Page(
                 "views/49_Decision_Queue.py", title="Decision Queue", icon="🗳",
                 url_path="decision-queue",
-            ),
-            # Operator-hands companion to Decision Queue above (config#3060,
-            # Brian's 2026-07-20 ruling: "a decision/ruling that leads to
-            # something I have to do specifically" doesn't belong in the
-            # judgment-call queue). url_path pinned to "action-queue" for the
-            # same deep-link stability reasons as decision-queue. Guarded by
-            # tests/test_action_queue_page.py.
-            st.Page(
-                "views/50_Action_Queue.py", title="Action Queue", icon="🔧",
-                url_path="action-queue",
             ),
             # Renamed from "System Health" (page retired — console-IA phase
             # 2a, config#1987): this host now carries the agent-fleet

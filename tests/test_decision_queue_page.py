@@ -28,10 +28,9 @@ REPO_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from loaders.decision_queue_loader import (  # noqa: E402
-    ACTION_GATE_LABELS,
+    ACTION_SHAPED_GATE_LABELS,
     BACKLOG_REPOS,
     CODE_REPOS,
-    DECISION_GATE_LABELS,
     HUMAN_GATE_LABELS,
     bump_reexam_line,
     defer_issue,
@@ -78,22 +77,16 @@ class TestScopeContract:
         assert set(HUMAN_GATE_LABELS) == {"gate:operator", "gate:decision", "gate:device"}
 
 
-class TestGateLabelPartition:
-    """config#3060: judgment (Decision Queue) vs hands (Action Queue) split.
-    ``gate:device`` is action-shaped ("go check the hardware") per Brian's
-    2026-07-20 ruling, not a judgment call."""
+class TestActionShapedGateLabels:
+    """config-I3060 introduced a judgment-vs-hands distinction as a two-page
+    split; config-I3239 recombined the pages but kept the distinction as
+    per-item card framing (``gate_queue_card.render_card``'s ``is_action``)."""
 
-    def test_decision_gate_is_decision_only(self):
-        assert DECISION_GATE_LABELS == ("gate:decision",)
+    def test_action_shaped_gates_are_operator_and_device(self):
+        assert set(ACTION_SHAPED_GATE_LABELS) == {"gate:operator", "gate:device"}
 
-    def test_action_gates_are_operator_and_device(self):
-        assert set(ACTION_GATE_LABELS) == {"gate:operator", "gate:device"}
-
-    def test_partition_is_a_clean_split_of_the_union(self):
-        # No overlap, and together they reconstitute HUMAN_GATE_LABELS —
-        # the union used by label-removal on ruling (queue-agnostic).
-        assert set(DECISION_GATE_LABELS) & set(ACTION_GATE_LABELS) == set()
-        assert set(DECISION_GATE_LABELS) | set(ACTION_GATE_LABELS) == set(HUMAN_GATE_LABELS)
+    def test_action_shaped_gates_are_a_subset_of_human_gates(self):
+        assert set(ACTION_SHAPED_GATE_LABELS) <= set(HUMAN_GATE_LABELS)
 
     def test_loader_never_shells_to_gh_for_api_calls(self):
         # Proxy-TLS constraint: GitHub via urllib only. `gh auth token` (local
@@ -290,11 +283,6 @@ class TestLoadQueueFanout:
         assert "ThreadPoolExecutor" in src
 
     def test_shared_issue_across_both_gates_fetches_comment_once(self, monkeypatch):
-        # config#3060: exercises _load_gate_pool directly with two labels —
-        # load_decision_queue() alone now only ever scans ONE label
-        # (gate:decision), so it can no longer exercise the cross-label
-        # dedup path itself. _load_gate_pool is the shared implementation
-        # behind both load_decision_queue() and load_action_queue().
         import loaders.decision_queue_loader as dq
         shared_issue = {
             "number": 42, "title": "shared",
@@ -361,7 +349,7 @@ class TestDeferSnooze:
         ]
         monkeypatch.setattr(dq, "BACKLOG_REPOS", ["nousergon/alpha-engine-config"])
         monkeypatch.setattr(dq, "CODE_REPOS", [])  # config#2431: isolate from the PR scan
-        monkeypatch.setattr(dq, "DECISION_GATE_LABELS", ("gate:decision",))
+        monkeypatch.setattr(dq, "HUMAN_GATE_LABELS", ("gate:decision",))
         monkeypatch.setattr(dq, "_list_gated_issues", lambda repo, label: issues)
         comment_calls: list[int] = []
 
@@ -426,8 +414,8 @@ class TestCardRendersContext:
     never reaches ``st.markdown``/``st.caption`` would satisfy the parser
     tests while leaving the console showing nothing new to Brian.
 
-    config#3060: this rendering now lives in ``components/gate_queue_card.py``
-    (shared by both views/49 and views/50, not duplicated per page)."""
+    Rendering lives in ``components/gate_queue_card.py``, imported by the
+    Decision Queue view."""
 
     def test_card_component_renders_summary_sota_and_delta(self):
         src = (REPO_ROOT / "components" / "gate_queue_card.py").read_text()
@@ -435,10 +423,9 @@ class TestCardRendersContext:
         assert 'item["sota"]' in src
         assert 'item["delta"]' in src
 
-    def test_both_views_use_the_shared_card_component(self):
-        for name in ("49_Decision_Queue.py", "50_Action_Queue.py"):
-            src = (REPO_ROOT / "views" / name).read_text()
-            assert "from components.gate_queue_card import render_card" in src
+    def test_view_uses_the_shared_card_component(self):
+        src = PAGE.read_text()
+        assert "from components.gate_queue_card import render_card" in src
 
 
 # ── config#2431: PR coverage + gate:device + ruling-resolves-the-gate ───────
@@ -458,7 +445,6 @@ class TestCodeReposContract:
         }
 
     def test_card_component_shows_pr_vs_issue_badge(self):
-        # config#3060: badge rendering moved into the shared component.
         src = (REPO_ROOT / "components" / "gate_queue_card.py").read_text()
         assert 'item["is_pr"]' in src
 
@@ -509,9 +495,6 @@ class TestBuildDecisionItemIsPr:
 
 class TestLoadQueueScansCodeReposPrs:
     def test_pr_items_are_included_and_flagged(self, monkeypatch):
-        # config#3060: exercises _load_gate_pool directly (queue-agnostic —
-        # gate:device belongs to the Action Queue, not load_decision_queue()
-        # any more; see TestActionGatePool below for the wired-up variant).
         pr = {
             "number": 5, "title": "a PR", "created_at": "2026-07-01T00:00:00Z",
             "html_url": "http://x", "body": "b", "pull_request": {},
@@ -526,12 +509,12 @@ class TestLoadQueueScansCodeReposPrs:
         assert out["items"][0]["number"] == 5
 
 
-class TestActionGatePool:
-    """config#3060: load_action_queue() must scan ACTION_GATE_LABELS
-    (gate:operator/gate:device) and must NOT pick up gate:decision items —
-    the whole point of the split is that a judgment call never lands here."""
+class TestLoadDecisionQueueScansAllHumanGates:
+    """config-I3239: the recombined page scans all three human-only gate
+    labels — an operator/device item must render on the Decision Queue
+    again, not just gate:decision."""
 
-    def test_scans_action_labels_only(self, monkeypatch):
+    def test_scans_all_human_gate_labels(self, monkeypatch):
         seen_labels: list[str] = []
 
         def fake_list_issues(repo, label):
@@ -541,10 +524,9 @@ class TestActionGatePool:
         monkeypatch.setattr(dq_module, "BACKLOG_REPOS", ["nousergon/alpha-engine-config"])
         monkeypatch.setattr(dq_module, "CODE_REPOS", [])
         monkeypatch.setattr(dq_module, "_list_gated_issues", fake_list_issues)
-        getattr(dq_module.load_action_queue, "clear", lambda: None)()  # real st caches; conftest mock doesn't
-        dq_module.load_action_queue()
-        assert set(seen_labels) == {"gate:operator", "gate:device"}
-        assert "gate:decision" not in seen_labels
+        getattr(dq_module.load_decision_queue, "clear", lambda: None)()  # real st caches; conftest mock doesn't
+        dq_module.load_decision_queue()
+        assert set(seen_labels) == {"gate:operator", "gate:decision", "gate:device"}
 
     def test_operator_item_is_returned(self, monkeypatch):
         issue = {
@@ -558,24 +540,22 @@ class TestActionGatePool:
             lambda repo, label: [issue] if label == "gate:operator" else [],
         )
         monkeypatch.setattr(dq_module, "_newest_gate_comment", lambda repo, number: "")
-        getattr(dq_module.load_action_queue, "clear", lambda: None)()  # real st caches; conftest mock doesn't
-        out = dq_module.load_action_queue()
+        getattr(dq_module.load_decision_queue, "clear", lambda: None)()  # real st caches; conftest mock doesn't
+        out = dq_module.load_decision_queue()
         assert [i["number"] for i in out["items"]] == [7]
         assert out["items"][0]["gate"] == "gate:operator"
 
 
-class TestClearQueueCacheClearsBoth:
-    def test_clears_decision_and_action_caches(self, monkeypatch):
+class TestClearQueueCache:
+    def test_clears_decision_queue_cache(self, monkeypatch):
         # conftest mocks st.cache_data as an identity decorator, so
-        # load_decision_queue/load_action_queue have no real .clear in the
-        # test env — raising=False lets us attach one to observe the call.
+        # load_decision_queue has no real .clear in the test env —
+        # raising=False lets us attach one to observe the call.
         cleared = []
         monkeypatch.setattr(dq_module.load_decision_queue, "clear",
                             lambda: cleared.append("decision"), raising=False)
-        monkeypatch.setattr(dq_module.load_action_queue, "clear",
-                            lambda: cleared.append("action"), raising=False)
         dq_module.clear_queue_cache()
-        assert set(cleared) == {"decision", "action"}
+        assert cleared == ["decision"]
 
 
 class TestMarkPrReady:
@@ -653,6 +633,49 @@ class TestPostRulingPrFollowup:
                             lambda *a, **k: calls.append(a))
         post_ruling("r/repo", 9, "Option A")
         assert calls == []
+
+
+class TestRulingPendingExecMarker:
+    """config#3199: a ruling that leaves a gate:* label behind must apply
+    ruling:pending-exec — the machine-readable handoff the groom executes
+    and the SF sweep stands down on. Missing this marker is exactly the
+    2026-07-20 twenty-ruling Decision Queue pile-up."""
+
+    def _run(self, monkeypatch, live_labels):
+        posted = []
+
+        def fake(method, url, body=None):
+            if method == "GET" and url.endswith("/issues/9"):
+                return {"labels": [{"name": n} for n in live_labels]}
+            if method == "POST" and url.endswith("/labels"):
+                posted.append(body)
+            return {}
+
+        monkeypatch.setattr(dq_module, "_request", fake)
+        monkeypatch.setattr(dq_module, "_remove_gate_labels", lambda *a, **k: None)
+        post_ruling("r/repo", 9, "Option A")
+        return posted
+
+    def test_marker_applied_when_gate_label_remains(self, monkeypatch):
+        posted = self._run(monkeypatch, ["gate:weekly-sf", "P1"])
+        assert posted == [{"labels": [dq_module.RULING_PENDING_LABEL]}]
+
+    def test_no_marker_when_fully_ungated(self, monkeypatch):
+        assert self._run(monkeypatch, ["P1", "complexity:mid"]) == []
+
+    def test_marker_failure_never_breaks_the_ruling(self, monkeypatch):
+        calls = []
+
+        def fake(method, url, body=None):
+            calls.append(method)
+            if method == "GET" and url.endswith("/issues/9"):
+                raise RuntimeError("network error")
+            return {}
+
+        monkeypatch.setattr(dq_module, "_request", fake)
+        monkeypatch.setattr(dq_module, "_remove_gate_labels", lambda *a, **k: None)
+        post_ruling("r/repo", 9, "Option A")  # must not raise
+        assert "POST" in calls  # the ruling comment itself still landed
 
 
 class TestGithubTokenAuthPath:

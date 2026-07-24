@@ -2,6 +2,12 @@
 Description=Daily-cadence transparency substrate health check (re-homed from ne-postclose-trading-pipeline's DailySubstrateHealthCheck chain, alpha-engine-config-I2722)
 Wants=network-online.target
 After=network-online.target
+# config#2954: a failed/never-finalized run was previously invisible — no
+# alert fed off this unit's own state. OnFailure= fires the generic
+# alert-on-failure@ handler (alert_on_failure.sh) via krepis.alerts,
+# independent of whatever this script's own run does or doesn't manage to
+# do before dying.
+OnFailure=alert-on-failure@%n.service
 
 [Service]
 Type=oneshot
@@ -15,6 +21,11 @@ StandardError=journal
 # there's no separate SSM delivery-timeout layer bounding this path.
 TimeoutStartSec=300
 RemainAfterExit=no
+# config#2954: /var/log/ itself isn't writable by User=ec2-user. systemd
+# creates+owns /var/log/substrate-health-daily/ for this unit's lifetime
+# (mode 0755, User:Group owned) before ExecStart runs — no bespoke chown/
+# tmpfiles.d entry needed. Requires systemd >= 235 (AL2023 ships 252).
+LogsDirectory=substrate-health-daily
 
 [Install]
 WantedBy=multi-user.target

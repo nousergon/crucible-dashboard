@@ -495,6 +495,49 @@ def load_signals_json(date_str: str) -> dict | None:
     return download_s3_json(_research_bucket(), key)
 
 
+def load_signals_json_with_fallback(date_str: str) -> dict | None:
+    """Load signals.json for *date_str*, falling back to the most recent
+    prior weekday and finally ``signals/latest.json`` if the exact date
+    has no snapshot.
+
+    Research (Scanner/SignalsEnvelope) writes signals.json on Saturdays
+    only (see ~/Development/CLAUDE.md's weekly pipeline) — a strict
+    exact-date lookup on any weekday predictions page returns None every
+    time. Mirrors alpha-engine-predictor's
+    ``inference/stages/load_universe.py::_signals_fallback_keys`` /
+    ``_load_signals_payload_with_fallback`` chain (today → prior 5
+    weekdays → ``signals/latest.json``) so the console shows the same
+    research snapshot the predictor itself used to build that day's
+    predictions/email, instead of a stricter and perpetually-empty
+    lookup. Duplicated here rather than shared via nousergon-lib — see
+    alpha-engine-config-I3284 for the lib-consolidation follow-up (this
+    chain is already independently duplicated in predictor + executor).
+    """
+    from datetime import date as _date, timedelta as _td
+
+    cfg = load_config()
+    template = cfg["paths"]["signals"]
+
+    keys: list[str] = []
+    try:
+        start = _date.fromisoformat(date_str)
+        for days_back in range(6):
+            candidate = start - _td(days=days_back)
+            if candidate.weekday() >= 5:
+                continue
+            keys.append(template.format(date=candidate.isoformat()))
+    except ValueError:
+        pass
+    keys.append("signals/latest.json")
+
+    bucket = _research_bucket()
+    for key in keys:
+        payload = download_s3_json(bucket, key)
+        if payload:
+            return payload
+    return None
+
+
 def load_universe_board(date_str: str | None = None) -> dict | None:
     """Load the full ~900-name universe scoreboard (attractiveness + pillar
     scores + raw metrics + sector/country + gate flags) produced by

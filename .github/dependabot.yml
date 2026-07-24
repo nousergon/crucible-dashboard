@@ -64,18 +64,6 @@ updates:
       # rather than auto-merging.
       - dependency-name: "next"
         update-types: ["version-update:semver-major"]
-      # astro 7.1.0 carries an upstream static-build regression: `astro build`
-      # aborts with "rollupOptions.input should not be an html file when
-      # building for SSR" for a `output: "static"` site, breaking `npm run
-      # build` (astro check && astro build) and reddening main deploy-marketing.
-      # Dependabot opened the astro 6→7 major once per marketing directory —
-      # marketing-apex/#495 + marketing-dev/#497 (reverted #500/#501) and then
-      # marketing/#499 (reverted here) all reddened main the same day
-      # (2026-07-21, config#... ci-watch). Hold astro on 6.x across all
-      # marketing sites until the upstream static-build regression is fixed,
-      # then lift this.
-      - dependency-name: "astro"
-        update-types: ["version-update:semver-major"]
 
   # NOTE: no cooldown here — Dependabot rejects cooldown.semver-major-days for
   # the github-actions ecosystem (semver cooldown keys are per-ecosystem; pip
