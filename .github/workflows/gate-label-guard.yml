@@ -1,12 +1,15 @@
 name: Gate Label Guard
 
-# Structural enforcement of the gate:* draft-PR discipline (config#2002) —
-# fails while ANY gate:* label is attached to this PR. Required status
-# check on main branch protection so a gated PR structurally cannot merge,
-# even if flipped to ready for review by mistake or by an automated actor
-# (incident precedent: nousergon-data-PR643, 2026-07-05, config#1446/#1464).
-# Logic lives in the fleet chokepoint: nousergon-lib gate-label-guard.yml.
-# Rollout: config-I3491.
+# Inline structural check: fails while ANY gate:* label is attached to the
+# PR. Required status check on main branch protection — structurally
+# prevents merging a gated PR even if flipped to ready by mistake (incident:
+# nousergon-data-PR643, 2026-07-05, config#1446/#1464).
+#
+# Inlined 2026-07-24 from a reusable workflow in nousergon-lib. The
+# reusable pattern introduced more failure modes than it eliminated:
+# workflow_call startup_failure, @main caching, toJson() expression-eval
+# size limits, per-consumer pinning choreography, merge_group trigger gaps.
+# This ~50-line inline check has none of those failure modes.
 
 on:
   pull_request:
@@ -19,5 +22,46 @@ permissions:
   pull-requests: read
 
 jobs:
-  gate-label-guard:
-    uses: nousergon/nousergon-lib/.github/workflows/gate-label-guard.yml@6c4bdb834f0869efc5de3166b285a812053ea709
+  guard:
+    name: gate-label-guard
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if any gate:* label is present
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # Read from GITHUB_EVENT_PATH — the runner's on-disk event file.
+          # Never toJson(github.event) in env: — hits expression-eval limits.
+
+          if [ "$EVENT_NAME" = 'pull_request' ]; then
+            jq -r '.pull_request.labels[].name' "$GITHUB_EVENT_PATH" > /tmp/pr_labels.txt || true
+            echo "Resolved labels from the pull_request event payload."
+
+          elif [ "$EVENT_NAME" = 'merge_group' ]; then
+            HEAD_REF=$(jq -r '.merge_group.head_ref' "$GITHUB_EVENT_PATH")
+            PR_NUM=$(printf '%s' "$HEAD_REF" | sed -nE 's#^refs/heads/gh-readonly-queue/.+/pr-([0-9]+)-[0-9a-f]+$#\1#p')
+            if [ -z "$PR_NUM" ]; then
+              echo "::error::Could not extract PR number from merge_group.head_ref ('$HEAD_REF'). Failing closed."
+              exit 1
+            fi
+            echo "Resolved merge_group entry to PR #$PR_NUM — fetching its current labels."
+            gh pr view "$PR_NUM" --repo "$REPO" --json labels --jq '.labels[].name' > /tmp/pr_labels.txt
+          else
+            echo "::error::Unsupported event_name='$EVENT_NAME'. Failing closed."
+            exit 1
+          fi
+
+          echo "Labels under check:"
+          cat /tmp/pr_labels.txt || echo "(none)"
+
+          if grep -q '^gate:' /tmp/pr_labels.txt; then
+            echo ""
+            echo "::error::This PR carries a gate:* label ($(grep '^gate:' /tmp/pr_labels.txt | paste -sd, -)). Remove the gate:* label only after verifying the blocker is actually resolved."
+            exit 1
+          fi
+
+          echo "No gate:* label present — check passes."
