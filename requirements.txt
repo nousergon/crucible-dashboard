@@ -65,7 +65,7 @@ flow-doctor[diagnosis,s3]==0.8.5
     # via krepis
 gitdb==4.0.12
     # via gitpython
-gitpython==3.1.52
+gitpython==3.1.55
     # via streamlit
 h11==0.16.0
     # via
