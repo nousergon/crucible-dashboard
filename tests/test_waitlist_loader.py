@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 from urllib.error import URLError
 
 import pytest
@@ -28,12 +28,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from loaders.waitlist_loader import (
     _cf_credentials,
     _query_d1,
-    _fetch_product_signups,
     _fetch_probe_status,
     load_waitlist_signups,
-    load_waitlist_probe,
-    _D1_DATABASES,
-    _WAITLIST_PROBE_WORKFLOW_ID,
 )
 
 
