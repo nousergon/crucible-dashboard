@@ -312,6 +312,64 @@ def _render_report_card() -> None:
     )
 
 
+def _render_waitlist_health() -> None:
+    """Waitlist-signup health tile (Metron/Vires marketing funnel, config#2941).
+
+    Renders a compact chip line: per-product signup counts (total + 7d) +
+    latest waitlist-probe conclusion icon. Fail-soft:
+      - Cloudflare credentials not configured → shows a single "not configured"
+        line with the SSM parameter name the operator must fill.
+      - Probe API unavailable → probe icon shows "?" with a muted label.
+      - D1 query failure per product → that product shows "error" — never a
+        silent zero (feedback_no_silent_fails).
+    """
+    try:
+        from loaders.waitlist_loader import load_waitlist_probe, load_waitlist_signups
+
+        signups = load_waitlist_signups()
+        probe = load_waitlist_probe()
+    except Exception as exc:  # noqa: BLE001 — home must render; failure shown
+        st.caption(f"⚠️ Waitlist health unavailable — {type(exc).__name__}: {exc}")
+        return
+
+    # ── Probe icon ──────────────────────────────────────────────────────────────
+    probe_icon = {"success": "🟢", "failure": "🔴"}.get(probe.get("conclusion", ""), "⚪")
+    probe_label = probe.get("conclusion", "unknown")
+    probe_ts = ""
+    if probe.get("timestamp"):
+        try:
+            probe_ts = f" ({probe['timestamp'][:10]})"
+        except (TypeError, IndexError):
+            probe_ts = ""
+
+    # ── Signup chips ────────────────────────────────────────────────────────────
+    if not signups.get("configured"):
+        st.caption(
+            f"{probe_icon} Waitlist probe: **{probe_label}**{probe_ts} · "
+            "Signups: *not configured — set `st.secrets[\"cloudflare\"]` "
+            "(SSM parameter: `/alpha-engine/dashboard/cloudflare/api_token`)*"
+        )
+        return
+
+    parts = [f"{probe_icon} Probe: **{probe_label}**{probe_ts}"]
+    for p in signups.get("products", []):
+        name = p["product"]
+        if p.get("error"):
+            parts.append(f"{name}: ⚠️ *error*")
+            continue
+        total = p.get("total", "—")
+        last_7d = p.get("last_7d", "—")
+        total_str = f"{total:,}" if isinstance(total, int) else "—"
+        last_7d_str = f"{last_7d:,}" if isinstance(last_7d, int) else "—"
+        parts.append(f"{name}: **{total_str}** ({last_7d_str} in 7d)")
+
+    st.markdown(" &nbsp;·&nbsp; ".join(parts))
+    st.page_link(
+        "https://github.com/nousergon/crucible-dashboard/actions/workflows/waitlist-probe.yml",
+        label="Waitlist probe workflow →", icon="🔍",
+    )
+
+
 def main() -> None:
     st.title("Alpha Engine")
     st.caption("Autonomous equity portfolio — LLM research + GBM predictions + quantitative execution")
@@ -341,6 +399,10 @@ def main() -> None:
     st.divider()
     st.subheader("System Report Card")
     _render_report_card()
+
+    st.divider()
+    st.subheader("Waitlist Health")
+    _render_waitlist_health()
 
     st.divider()
     _render_regime_chip(macro_df)
