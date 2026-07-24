@@ -186,6 +186,37 @@ class TestInfraWiring:
         assert 'fail "python-parity self-heal: post-swap health gate failed' in post_swap_gate
         assert "ROLLED BACK to previous venv successfully" in post_swap_gate
 
+    def test_python_parity_self_heal_probes_venv_health_not_just_version(self):
+        # config#2955: the 2026-07-18 Deploy false-red (run 29654297139,
+        # config#2938) proved a venv can pass the python-VERSION check while
+        # its console-script wrappers/site-packages are otherwise unhealthy
+        # — §0 must not no-op purely on version match. A functionality probe
+        # (`python -m pip --version`) gates the no-op branch, and a failed
+        # probe must fall through to the SAME rebuild+rollback path as a
+        # version mismatch (not a separate/new path).
+        script = (REPO_ROOT / "infrastructure" / "deploy-on-merge.sh").read_text()
+        heal_start = script.index('PYVER_SSOT_FILE="$REPO_DIR/.python-version"')
+        heal_block = script[heal_start:script.index("# ── 1. Refresh deps")]
+
+        # The no-op branch requires BOTH version match AND a working pip
+        # module in the box venv — not version match alone.
+        no_op_gate = heal_block[:heal_block.index('log "OK   Python-parity self-heal')]
+        assert '"$REPO_DIR/.venv/bin/python" -m pip --version' in no_op_gate, (
+            "the self-heal no-op branch must probe venv functionality "
+            "(python -m pip --version), not just the python version"
+        )
+
+        # A version-match-but-unhealthy venv must log distinctly and still
+        # fall into the rebuild block (same rollback-guarded path pinned by
+        # test_python_parity_self_heal_has_rollback_on_failed_health_gate).
+        assert "functionality probe failed" in heal_block
+        rebuild_trigger = heal_block[heal_block.index("functionality probe failed"):]
+        assert '"$NEW_PY_BIN" -m venv "$REPO_DIR/.venv"' in rebuild_trigger, (
+            "a failed functionality probe must route through the same "
+            "rebuild path as a python-version drift, not a new one"
+        )
+        assert "_rollback_venv()" in rebuild_trigger
+
     def test_dash_web_build_gate_unaffected_by_state_compare_migration(self):
         # config#2338 scoped the fix to requirements/nginx/installer gates
         # only; the dash-web build gate is a separate cost tradeoff (npm ci +
