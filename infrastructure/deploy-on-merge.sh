@@ -171,10 +171,25 @@ if [ -f "$PYVER_SSOT_FILE" ] && [ -f "$REPO_DIR/.venv/bin/python" ]; then
         log "WARN Python-parity self-heal: could not parse major.minor from $PYVER_SSOT_FILE (got '$SSOT_PYVER') — skipping"
     elif [ -z "$BOX_VENV_PYVER" ]; then
         log "WARN Python-parity self-heal: could not determine box venv's Python version — skipping"
-    elif [ "$BOX_VENV_PYVER" = "$SSOT_PYVER_MAJOR_MINOR" ]; then
-        log "OK   Python-parity self-heal: box venv already on $BOX_VENV_PYVER, matches SSoT $SSOT_PYVER_MAJOR_MINOR — no-op"
+    elif [ "$BOX_VENV_PYVER" = "$SSOT_PYVER_MAJOR_MINOR" ] \
+        && sudo -u ec2-user "$REPO_DIR/.venv/bin/python" -m pip --version >>"$LOG" 2>&1; then
+        log "OK   Python-parity self-heal: box venv already on $BOX_VENV_PYVER, matches SSoT $SSOT_PYVER_MAJOR_MINOR, pip functional — no-op"
     else
-        log "Python-parity self-heal: box venv is $BOX_VENV_PYVER, SSoT ($PYVER_SSOT_FILE) requires $SSOT_PYVER_MAJOR_MINOR — rebuilding venv"
+        # Two distinct trigger conditions land here: (a) version drift, the
+        # original §0 scope; (b) version MATCHES SSoT but the functionality
+        # probe (`python -m pip --version`) failed — the class the 2026-07-18
+        # incident (config#2955, crucible-dashboard#478/#479) exposed: a venv
+        # can pass the version check while its console-script wrappers or
+        # site-packages are otherwise broken, and the version-only guard
+        # would no-op right past it. Both drive the SAME rebuild+rollback
+        # path below — this is a new entry condition into a proven path, not
+        # a new rebuild path (config#2835's atomic-build-at-final-path +
+        # rollback-on-health-gate-failure semantics are untouched).
+        if [ "$BOX_VENV_PYVER" = "$SSOT_PYVER_MAJOR_MINOR" ]; then
+            log "Python-parity self-heal: box venv on $BOX_VENV_PYVER (matches SSoT) but functionality probe failed ('python -m pip --version') — venv unhealthy, rebuilding"
+        else
+            log "Python-parity self-heal: box venv is $BOX_VENV_PYVER, SSoT ($PYVER_SSOT_FILE) requires $SSOT_PYVER_MAJOR_MINOR — rebuilding venv"
+        fi
 
         # 1. Install the target interpreter via dnf if not already present
         # (AL2023 amazonlinux repo carries pythonX.Y packages directly).
