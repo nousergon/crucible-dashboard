@@ -74,11 +74,11 @@ class _MultiPatch:
 
 class TestZeroDates:
     def test_zero_dates_returns_zero_valued_metrics_no_crash(self):
-        # CANARY_EXPECTED_FROM (2026-07-23) has arrived as of the wall
-        # clock — patch to a sufficiently past date so this test stays
-        # deterministic regardless of when it runs. Mirrors the same
-        # pattern in test_after_expected_date_counts_present_heartbeats.
-        with patch.object(we, "CANARY_EXPECTED_FROM", "2020-01-01"):
+        # Pin CANARY_EXPECTED_FROM to the future so total_expected_drills is
+        # deterministically 0 regardless of what "today" is when this suite
+        # runs (this test isn't exercising canary-gating behavior — see
+        # TestCanaryEfficacy for that — just the zero-dates sf/ci shape).
+        with patch.object(we, "CANARY_EXPECTED_FROM", "2099-01-01"):
             with _MultiPatch(_patch_all()):
                 snap = we.load_watch_efficacy_snapshot()
 
@@ -100,7 +100,7 @@ class TestZeroDates:
 
         assert snap.canary.sf_watch_age_days is None
         assert snap.canary.ci_watch_age_days is None
-        assert snap.canary.total_expected_drills == 2  # sf_watch + ci_watch
+        assert snap.canary.total_expected_drills == 0  # pinned to future above
         assert snap.canary.reliability == 0.0
 
         assert snap.computed_at is not None
