@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # The module under test — imported after streamlit is mocked (conftest.py
 # handles streamlit mocking at import time via sys.modules).
+import loaders.waitlist_loader as _wl
 from loaders.waitlist_loader import (
     _cf_credentials,
     _query_d1,
@@ -65,8 +66,7 @@ def _make_gh_runs_response(conclusion: str = "success",
 
 def test_cf_credentials_returned_from_streamlit_secrets():
     """st.secrets['cloudflare'] yields account_id + api_token."""
-    st_mock = sys.modules["streamlit"]
-    st_mock.secrets = {
+    _wl.st.secrets = {
         "cloudflare": {"account_id": "test-account", "api_token": "test-token"},
     }
     account_id, token = _cf_credentials()
@@ -76,18 +76,16 @@ def test_cf_credentials_returned_from_streamlit_secrets():
 
 def test_cf_credentials_none_when_missing():
     """Missing or empty cloudflare section returns (None, None)."""
-    st_mock = sys.modules["streamlit"]
-
     # Empty dict
-    st_mock.secrets = {}
+    _wl.st.secrets = {}
     assert _cf_credentials() == (None, None)
 
     # Missing api_token
-    st_mock.secrets = {"cloudflare": {"account_id": "x"}}
+    _wl.st.secrets = {"cloudflare": {"account_id": "x"}}
     assert _cf_credentials() == ("x", None)
 
     # Non-dict cloudflare value
-    st_mock.secrets = {"cloudflare": "misconfigured"}
+    _wl.st.secrets = {"cloudflare": "misconfigured"}
     assert _cf_credentials() == (None, None)
 
 
@@ -136,8 +134,7 @@ def test_query_d1_network_error_returns_none(mock_urlopen):
 
 def _setup_secrets(account_id: str = "test-acct", token: str = "test-token"):
     """Helper: populate ``st.secrets`` with Cloudflare creds."""
-    st_mock = sys.modules["streamlit"]
-    st_mock.secrets = {
+    _wl.st.secrets = {
         "cloudflare": {"account_id": account_id, "api_token": token},
     }
 
@@ -174,8 +171,7 @@ def test_load_waitlist_signups_happy_path(mock_urlopen):
 
 def test_load_waitlist_signups_not_configured():
     """Missing credentials → configured=False, not a crash."""
-    st_mock = sys.modules["streamlit"]
-    st_mock.secrets = {}
+    _wl.st.secrets = {}
 
     result = load_waitlist_signups()
     assert result["configured"] is False
