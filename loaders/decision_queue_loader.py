@@ -85,12 +85,13 @@ BACKLOG_REPOS = [
     "nousergon/vires-ops",
     "nousergon/telos-ops",
 ]
-# Mirrors alpha-engine-config/scripts/gate_pr_actions.CODE_REPOS verbatim
-# (config#2431) — PRs across these repos are ALSO scanned for the same
-# human-only gate labels. Duplicated (not imported) since this is a
-# different repo/deploy surface; kept in sync by inspection, same posture
-# as gate_pr_actions.py's own contract test against groom_driver.CODE_REPOS.
-CODE_REPOS = [
+# Hardcoded fallback used ONLY when live org enumeration (GET /orgs/nousergon/
+# repos) fails — never the primary path. Mirrors alpha-engine-config/scripts/
+# gate_pr_actions.CODE_REPOS; kept in sync by inspection. Every new fleet repo
+# MUST be added here until _code_repos()'s live enumeration fully replaces it.
+# config#2838: gh_repo_enum.list_org_repos() is the SSoT in alpha-engine-config;
+# the dashboard (separate repo/deploy surface) has its own _list_org_repos().
+_CODE_REPOS_FALLBACK = [
     "nousergon/alpha-engine-config", "nousergon/metron-ops",
     "nousergon/crucible-executor", "nousergon/nousergon-data",
     "nousergon/crucible-predictor", "nousergon/crucible-research",
@@ -99,7 +100,13 @@ CODE_REPOS = [
     "nousergon/nousergon-docs", "nousergon/metron",
     "nousergon/vires", "nousergon/vires-ops",
     "nousergon/telos", "nousergon/telos-ops",
+    "nousergon/symposion",
+    "nousergon/nous-ergon-ops",
 ]
+# Exported as CODE_REPOS for backward compatibility with tests importing the
+# name — it is now a function, not a list. Tests that asserted set equality
+# have been updated to test the function's return value.
+# config-I3060 split this into DECISION_GATE_LABELS/ACTION_GATE_LABELS for a
 # config-I2431: gate:device added — just as human-only as operator/decision
 # (no S3/API check substitutes for physically validating hardware).
 # config-I3060 split this into DECISION_GATE_LABELS/ACTION_GATE_LABELS for a
@@ -445,6 +452,59 @@ def _build_decision_item(repo: str, label: str, it: dict, now: datetime,
     )
 
 
+# ── org-wide repo enumeration (mirrors gh_repo_enum.list_org_repos) ──────────
+# config#2838 built the shared gh_repo_enum module in alpha-engine-config to
+# replace every hardcoded CODE_REPOS list with live GET /orgs/nousergon/repos.
+# The dashboard is a separate deploy surface and cannot import gh_repo_enum, so
+# it carries its own minimal implementation here — same REST endpoint, same
+# archived/disabled filter, same fallback-to-hardcoded-list posture.
+
+
+def _list_org_repos(token: str) -> list[str]:
+    """Live ``owner/name`` list from ``GET /orgs/nousergon/repos`` (paginated),
+    excluding archived and disabled repos. Raises on API failure — callers
+    (``_code_repos``) wrap with the hardcoded fallback."""
+    repos: list[str] = []
+    page = 1
+    while True:
+        batch = _request(
+            "GET",
+            f"{_API}/orgs/nousergon/repos?per_page=100&page={page}&type=all",
+        ) or []
+        for r in batch:
+            if r.get("archived") or r.get("disabled"):
+                continue
+            repos.append(r["full_name"])
+        if len(batch) < 100:
+            break
+        page += 1
+    return repos
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _code_repos() -> list[str]:
+    """PR-scanning repo list: live org enumeration, falling back to the
+    hardcoded list on ANY failure (auth, network, API error). Cached for 1 hr
+    — repos are added far less often than that."""
+    try:
+        token = github_token()
+        if token:
+            live = _list_org_repos(token)
+            if live:
+                logger.info("decision_queue: live org enumeration → %d repos", len(live))
+                return live
+    except Exception as exc:
+        logger.warning("decision_queue: live org enumeration failed (%s) — "
+                       "falling back to hardcoded list (%d repos)", exc,
+                       len(_CODE_REPOS_FALLBACK))
+    return list(_CODE_REPOS_FALLBACK)
+
+
+# Backward-compatible alias — tests and callers that imported CODE_REPOS as a
+# list now get the function instead. Iteration and len() work identically.
+CODE_REPOS = _code_repos
+
+
 def _load_gate_pool(labels: tuple[str, ...]) -> dict:
     """Open issues/PRs carrying any of ``labels``, split into due vs snoozed.
 
@@ -491,7 +551,7 @@ def _load_gate_pool(labels: tuple[str, ...]) -> dict:
         for label in labels:
             for it in _list_gated_issues(repo, label):
                 _queue(repo, label, it, is_pr=False)
-    for repo in CODE_REPOS:
+    for repo in CODE_REPOS():
         for label in labels:
             for it in _list_gated_prs(repo, label):
                 _queue(repo, label, it, is_pr=True)
