@@ -289,7 +289,7 @@ class TestLoadQueueFanout:
             "created_at": "2026-07-01T00:00:00Z", "html_url": "http://x", "body": "b",
         }
         monkeypatch.setattr(dq, "BACKLOG_REPOS", ["nousergon/alpha-engine-config"])
-        monkeypatch.setattr(dq, "CODE_REPOS", [])  # config#2431: isolate from the PR scan
+        monkeypatch.setattr(dq, "CODE_REPOS", lambda: [])  # config#2431: isolate from PR scan
         monkeypatch.setattr(dq, "_list_gated_issues", lambda repo, label: [shared_issue])
         comment_calls: list[tuple] = []
 
@@ -348,7 +348,7 @@ class TestDeferSnooze:
              "html_url": "http://b", "body": "Re-exam: 2020-01-01\n"},
         ]
         monkeypatch.setattr(dq, "BACKLOG_REPOS", ["nousergon/alpha-engine-config"])
-        monkeypatch.setattr(dq, "CODE_REPOS", [])  # config#2431: isolate from the PR scan
+        monkeypatch.setattr(dq, "CODE_REPOS", lambda: [])  # config#2431: isolate from PR scan
         monkeypatch.setattr(dq, "HUMAN_GATE_LABELS", ("gate:decision",))
         monkeypatch.setattr(dq, "_list_gated_issues", lambda repo, label: issues)
         comment_calls: list[int] = []
@@ -432,8 +432,21 @@ class TestCardRendersContext:
 
 
 class TestCodeReposContract:
-    def test_code_repos_covers_the_full_fleet(self):
-        assert set(CODE_REPOS) == {
+    def test_code_repos_is_callable_and_returns_a_list(self):
+        # CODE_REPOS is now a function (alias for _code_repos) that does live
+        # org enumeration with a hardcoded fallback. In the test env (no
+        # Streamlit caching), calling it directly returns the fallback.
+        result = CODE_REPOS()
+        assert isinstance(result, list)
+        assert len(result) >= 17  # at minimum the pre-existing fleet
+
+    def test_fallback_covers_the_full_fleet(self, monkeypatch):
+        # The hardcoded fallback must include every repo the old constant had,
+        # plus nous-ergon-ops and symposion which were missing.
+        monkeypatch.setattr(dq_module, "_code_repos",
+                           lambda: list(dq_module._CODE_REPOS_FALLBACK))
+        repos = set(dq_module._code_repos())
+        assert repos >= {
             "nousergon/alpha-engine-config", "nousergon/metron-ops",
             "nousergon/crucible-executor", "nousergon/nousergon-data",
             "nousergon/crucible-predictor", "nousergon/crucible-research",
@@ -442,6 +455,7 @@ class TestCodeReposContract:
             "nousergon/nousergon-docs", "nousergon/metron",
             "nousergon/vires", "nousergon/vires-ops",
             "nousergon/telos", "nousergon/telos-ops",
+            "nousergon/symposion", "nousergon/nous-ergon-ops",
         }
 
     def test_card_component_shows_pr_vs_issue_badge(self):
@@ -500,7 +514,7 @@ class TestLoadQueueScansCodeReposPrs:
             "html_url": "http://x", "body": "b", "pull_request": {},
         }
         monkeypatch.setattr(dq_module, "BACKLOG_REPOS", [])
-        monkeypatch.setattr(dq_module, "CODE_REPOS", ["nousergon/some-repo"])
+        monkeypatch.setattr(dq_module, "CODE_REPOS", lambda: ["nousergon/some-repo"])
         monkeypatch.setattr(dq_module, "_list_gated_prs", lambda repo, label: [pr])
         monkeypatch.setattr(dq_module, "_newest_gate_comment", lambda repo, number: "")
         out = dq_module._load_gate_pool(("gate:device",))
@@ -522,7 +536,7 @@ class TestLoadDecisionQueueScansAllHumanGates:
             return []
 
         monkeypatch.setattr(dq_module, "BACKLOG_REPOS", ["nousergon/alpha-engine-config"])
-        monkeypatch.setattr(dq_module, "CODE_REPOS", [])
+        monkeypatch.setattr(dq_module, "CODE_REPOS", lambda: [])
         monkeypatch.setattr(dq_module, "_list_gated_issues", fake_list_issues)
         getattr(dq_module.load_decision_queue, "clear", lambda: None)()  # real st caches; conftest mock doesn't
         dq_module.load_decision_queue()
@@ -534,7 +548,7 @@ class TestLoadDecisionQueueScansAllHumanGates:
             "created_at": "2026-07-01T00:00:00Z", "html_url": "http://x", "body": "",
         }
         monkeypatch.setattr(dq_module, "BACKLOG_REPOS", ["nousergon/alpha-engine-config"])
-        monkeypatch.setattr(dq_module, "CODE_REPOS", [])
+        monkeypatch.setattr(dq_module, "CODE_REPOS", lambda: [])
         monkeypatch.setattr(
             dq_module, "_list_gated_issues",
             lambda repo, label: [issue] if label == "gate:operator" else [],
