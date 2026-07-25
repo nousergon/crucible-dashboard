@@ -14,7 +14,7 @@
     "format:check": "biome format .",
     "lint": "biome lint .",
     "astro": "astro",
-    "build:blog": "hugo --source ../blog --destination ../marketing-apex/public/blog --minify"
+    "build:blog": "cd ../blog && hugo --destination ../marketing-apex/public/blog --minify"
   },
   "dependencies": {
     "@astrojs/sitemap": "^3.7.2",
@@ -30,6 +30,7 @@
   },
   "overrides": {
     "vite": "8.1.5",
-    "esbuild": "^0.28.1"
+    "esbuild": "^0.28.1",
+    "adm-zip": "^0.6.0"
   }
 }
