@@ -19,8 +19,6 @@ from pathlib import Path
 from unittest.mock import patch
 from urllib.error import URLError
 
-import pytest
-
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # The module under test — imported after streamlit is mocked (conftest.py
