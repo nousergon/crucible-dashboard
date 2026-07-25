@@ -136,3 +136,12 @@ nousergon-lib[flow-doctor,github_app] @ git+https://github.com/nousergon/nouserg
 fastapi>=0.139.2
 uvicorn>=0.51.0
 httpx>=0.27          # fastapi TestClient transport (tests/test_dash_api.py)
+
+# flow-doctor floor (alpha-engine-config-I3226): explicit floor so the uv-compiled
+# lockfile never resolves below 0.8.7. Prior to this pin, the trading box was stuck
+# at 0.8.1 because boot-pull's plain `pip install -r requirements.txt` treated
+# an already-satisfied floating dependency (transitively via krepis[flow_doctor]) as
+# permanent. The compiled lockfile `requirements.txt` pins the exact resolved version;
+# this floor ensures the next `uv pip compile` doesn't silently drop back below 0.8.7.
+flow-doctor>=0.8.7
+
