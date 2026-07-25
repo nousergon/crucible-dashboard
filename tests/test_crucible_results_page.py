@@ -22,9 +22,10 @@ class TestNavRegistration:
         # Console mount carries only the tabs NOT covered by console-native
         # pages (console-IA phase 1, config#1990): Overview/Evaluation/
         # Execution duplicated Report Card / Report Card Detail / the
-        # Execution page's backtest sections. All six views remain mounted
-        # by the /dash Streamlit rollback (dash/app.py) — see
-        # test_crucible_dash_app.py.
+        # Execution page's backtest sections. All six views' logic remains
+        # reachable through /dash's dash-web/dash_api surface — the pre-
+        # cutover Streamlit rollback skin (dash/app.py) that used to mount
+        # them directly was retired after a clean soak (config#1973).
         src = (REPO_ROOT / "views" / "host_crucible_results.py").read_text()
         for label, filename in [
             ("Validation", "Crucible_Validation.py"),
