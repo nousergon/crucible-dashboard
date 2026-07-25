@@ -40,7 +40,6 @@ from fleet_status import (  # noqa: E402
     YELLOW,
     FleetInputs,
     resolve_artifact_freshness,
-    resolve_fleet,
 )
 
 # Reference clock (trading day mid-session, same as test_fleet_status.py).
