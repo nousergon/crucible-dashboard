@@ -206,7 +206,7 @@ def check_package_drift(
 
 def main() -> int:
     try:
-        violations = check_package_drift()
+        violations = check_package_drift(requirements_in=_REQUIREMENTS_IN)
     except RuntimeError as exc:
         print(f"FAIL check_package_drift: {exc}", file=sys.stderr)
         return 1
