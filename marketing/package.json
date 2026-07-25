@@ -29,6 +29,7 @@
   },
   "overrides": {
     "vite": "8.1.5",
-    "esbuild": "^0.28.1"
+    "esbuild": "^0.28.1",
+    "adm-zip": "^0.6.0"
   }
 }
