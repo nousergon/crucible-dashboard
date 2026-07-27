@@ -277,39 +277,50 @@ if [ "$CONFIGS_CHANGED" -eq 1 ]; then
     log "RESTART dashboard + nous-ergon-live (config-driven)"
 fi
 
-# ── Report failures to flow-doctor if any occurred ──────────────────────────
-# Don't rely on the log file alone — flow-doctor's GitHub notifier gives a
-# visible red badge on the repo so the failure isn't invisible in
-# /var/log/boot-pull.log until someone happens to look.
+# ── Report failures if any occurred ─────────────────────────────────────────
+# The log file alone is not a signal — nobody reads /var/log/boot-pull.log
+# until something else has already gone wrong.
+#
+# This used to construct flow-doctor by hand in a heredoc. It had been BROKEN
+# since some earlier flow-doctor release and nobody knew, because the thing
+# that was broken was the failure reporter itself (alpha-engine-config-I4509).
+# Two independent faults, either one fatal:
+#
+#   1. `flow_doctor.init()` does not exist. flow-doctor 0.8.7 exports
+#      FlowDoctor/FlowDoctorBuilder and no `init`; the call raised
+#      AttributeError every time. The only trace was one stderr line,
+#      `[boot-pull] flow-doctor report failed: module 'flow_doctor' has no
+#      attribute 'init'`, inside a log nobody reads.
+#   2. The env hydration was incomplete anyway. flow-doctor.yaml references
+#      EIGHT ${VAR}s; the heredoc hydrated FOUR. Even with the API call fixed,
+#      construction fails with ConfigError on TELEGRAM_BOT_TOKEN.
+#
+# Both faults come from the same root cause: this call site hand-rolled
+# something the fleet already has a maintained interface for. `krepis.alerts`
+# is the canonical alert CLI (config#1649) and is what box_health.sh on this
+# same box already uses — verified reaching both SNS and Telegram. It resolves
+# its own secrets, so there is no env-hydration list here to drift out of sync
+# with flow-doctor.yaml.
 if [ "$PULL_FAILURES" -gt 0 ]; then
     log "=== boot-pull completed with $PULL_FAILURES failure(s): ${FAILED_REPOS[*]} ==="
-    # Fire-and-forget report. If flow-doctor itself is broken, the log
-    # above is the fallback signal.
-    FD_VENV="/home/ec2-user/alpha-engine-dashboard/.venv/bin/python"
-    if [ -x "$FD_VENV" ]; then
-        "$FD_VENV" - <<PYEOF 2>> "$LOG" || true
-import os
-import sys
-sys.path.insert(0, "/home/ec2-user/alpha-engine-dashboard")
-try:
-    from nousergon_lib.secrets import get_secret
-    for _name in ("EMAIL_SENDER", "EMAIL_RECIPIENTS", "GMAIL_APP_PASSWORD", "FLOW_DOCTOR_GITHUB_TOKEN"):
-        _val = get_secret(_name, required=False)
-        if _val is not None and _name not in os.environ:
-            os.environ[_name] = _val
-    import flow_doctor
-    fd = flow_doctor.init(
-        config_path="/home/ec2-user/alpha-engine-dashboard/flow-doctor.yaml",
-    )
-    fd.report(
-        RuntimeError("boot-pull failed: ${FAILED_REPOS[*]}"),
-        severity="error",
-        context={"site": "boot-pull", "failures": "${FAILED_REPOS[*]}"},
-    )
-except Exception as e:
-    print(f"[boot-pull] flow-doctor report failed: {e}", file=sys.stderr)
-PYEOF
+
+    ALERT_PY="/home/ec2-user/alpha-engine-dashboard/.venv/bin/python"
+    if [ -x "$ALERT_PY" ]; then
+        # Dedup on the failing repo set, not the message: the same repo failing
+        # every boot should alert once a day, not once per boot. A NEW repo
+        # failing changes the key and pages immediately.
+        _dkey="boot-pull-$(printf '%s' "${FAILED_REPOS[*]}" | tr ' /' '__' | cut -c1-72)"
+        "$ALERT_PY" -m krepis.alerts publish \
+            --message "boot-pull FAILED on $(hostname): ${PULL_FAILURES} repo(s) could not be updated — ${FAILED_REPOS[*]}. The box may be running stale code. See /var/log/boot-pull.log." \
+            --severity error \
+            --source boot-pull \
+            --dedup-key "$_dkey" \
+            --dedup-window-min 1440 \
+            || log "ALERT PUBLISH FAILED — boot-pull failure is UNREPORTED"
+    else
+        log "ALERT PUBLISH SKIPPED — $ALERT_PY missing; boot-pull failure is UNREPORTED"
     fi
+
     exit 1
 fi
 

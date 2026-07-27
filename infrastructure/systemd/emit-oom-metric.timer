@@ -1,0 +1,13 @@
+[Unit]
+Description=Publish cgroup OOM-kill delta every 5 minutes (alpha-engine-config-I4486)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+# Persistent so a missed window after a reboot still runs -- an OOM storm that
+# ends in a reboot is exactly when the delta matters most.
+Persistent=true
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
