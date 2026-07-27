@@ -2,7 +2,7 @@
   "name": "crucible-dash-web",
   "version": "0.1.0",
   "private": true,
-  "description": "Crucible /dash — the experiment-results surface (config#1973, plan §9.4). Next.js frontend over crucible-dash-api; mirrors metron/web conventions.",
+  "description": "Crucible /dash \u2014 the experiment-results surface (config#1973, plan \u00a79.4). Next.js frontend over crucible-dash-api; mirrors metron/web conventions.",
   "engines": {
     "node": ">=22"
   },
@@ -35,5 +35,8 @@
     "tailwindcss": "^4.3.1",
     "typescript": "^5.7.2",
     "vitest": "^4.1.10"
+  },
+  "overrides": {
+    "sharp": "0.35.0"
   }
 }
