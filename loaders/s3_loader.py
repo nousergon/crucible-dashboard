@@ -583,6 +583,35 @@ def load_attractiveness_history() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=_ttl("signals"))
+def load_universe_membership_history(limit: int | None = None) -> list[dict]:
+    """Every recorded ``universe_membership/{date}/membership.json`` (the cut
+    SSoT produced by crucible-research ``scoring/universe_membership.py``),
+    oldest first — the substrate for the Universe Churn page.
+
+    ``limit`` keeps only the most recent N cycles. Dated keys are read (never
+    ``latest.json``): the pointer duplicates whichever dated cycle is newest,
+    and including it would double-count that cycle in every churn calculation.
+
+    A cycle whose object is unreadable is SKIPPED with a warning rather than
+    failing the page — one bad cycle should cost one point on the chart, not
+    the whole history. Empty list when the prefix is absent (page degrades to
+    its explainer)."""
+    dates = list_s3_prefixes(_research_bucket(), "universe_membership/")
+    if limit:
+        dates = dates[-limit:]
+    out: list[dict] = []
+    for date in dates:
+        doc = download_s3_json(
+            _research_bucket(), f"universe_membership/{date}/membership.json"
+        )
+        if isinstance(doc, dict) and doc.get("cuts"):
+            out.append(doc)
+        else:
+            logger.warning("universe membership %s unreadable or has no cuts", date)
+    return out
+
+
+@st.cache_data(ttl=_ttl("signals"))
 def load_report_card(date_str: str | None = None) -> dict | None:
     """Load the evaluator Report Card v2 (the 7-tile MetricRecord substrate).
 
