@@ -66,8 +66,33 @@ INSTANCE_ID=$(curl -s --max-time 2 -H "X-aws-ec2-metadata-token: ${_imds_tok}" h
 MEM_MIN_MB=150                       # alert if MemAvailable drops below this
 DISK_WARN_PCT=80                     # root-disk warn band (page, deduped)
 DISK_CRIT_PCT=90                     # root-disk critical band (page, deduped)
-SERVICES=(dashboard.service nous-ergon-live.service signal.service metron-api.service metron-dash-web.service)
-PORTS=(8501 8502 8503 8505 8000 3003)
+# Service/port coverage comes from the GENERATED manifest, which is rendered
+# from infrastructure/systemd/resource-limits/budget.yaml — the box's single
+# service registry. Do not hand-edit the arrays here.
+#
+# This used to be a hand-maintained list and it drifted exactly as you would
+# expect: on 2026-07-27 the installed copy listed 8 services, the copy in git
+# listed 5, and NEITHER covered nginx — the single ingress for all ten vhosts.
+# Six of fourteen services and seven of thirteen ports were unmonitored, and
+# the gap presented as GREEN, which is worse than presenting as broken.
+MANIFEST="/etc/alpha-engine/box-services.conf"
+if [ -r "$MANIFEST" ]; then
+    # shellcheck source=/dev/null
+    . "$MANIFEST"
+    MANIFEST_OK=1
+else
+    # Fall back so a missing manifest degrades to partial monitoring rather
+    # than NO monitoring — but say so loudly, because partial coverage that
+    # looks total is the exact failure this replaced.
+    MANIFEST_OK=0
+    SERVICES=(dashboard.service nous-ergon-live.service signal.service \
+              metron-api.service metron-dash-web.service crucible-dash-api.service \
+              crucible-dash-web.service litellm-proxy.service llm-egress-proxy.service \
+              telos-web.service vires.service mnemon.service nousergon-auth.service \
+              nginx.service)
+    PORTS=(8501 8502 8503 8505 8000 3003 8506 3002 3001 8530 4100 8980 8990 443)
+    EXPECTED_SERVICE_COUNT=14
+fi
 RETRY_ATTEMPTS=4                     # samples before a problem is confirmed
 RETRY_DELAY=4                        # seconds between confirmation samples (4x4s ~12s window > metron-api ~5s cold-start)
 
@@ -135,6 +160,50 @@ snapshot_problems() {
     local s
     for s in "${SERVICES[@]}"; do
         systemctl is-active --quiet "$s" || echo "service down: $s"
+    done
+
+    # Manifest presence. Reported as a problem in its own right: running on the
+    # fallback list means coverage is frozen at whatever was hardcoded here,
+    # which is the drift this mechanism exists to end.
+    if [ "${MANIFEST_OK:-0}" -ne 1 ]; then
+        echo "watchdog: service manifest missing ($MANIFEST) — using stale fallback list"
+    fi
+
+    # Coverage self-check. Counts enabled, non-oneshot units under
+    # /etc/systemd/system and compares against what we monitor. This is the
+    # guard that stops the list falling behind again: a service added to the
+    # box but not to budget.yaml shows up HERE instead of being silently
+    # unmonitored. Without it, the failure mode is a green watchdog.
+    local installed_count
+    installed_count=$(
+        for u in /etc/systemd/system/*.service; do
+            [ -e "$u" ] || continue
+            local n; n=$(basename "$u")
+            systemctl is-enabled --quiet "$n" 2>/dev/null || continue
+            [ "$(systemctl show "$n" -p Type --value 2>/dev/null)" = "oneshot" ] && continue
+            echo "$n"
+        done | wc -l
+    )
+    if [ -n "${EXPECTED_SERVICE_COUNT:-}" ] && \
+       [ "${installed_count:-0}" -gt "$EXPECTED_SERVICE_COUNT" ]; then
+        echo "watchdog: ${installed_count} enabled services installed but only ${EXPECTED_SERVICE_COUNT} monitored — add the new unit to budget.yaml"
+    fi
+
+    # Timer dead-man. A timer-driven oneshot is correctly `inactive` almost all
+    # of the time, so the service/port checks above structurally CANNOT see it
+    # die — which is why metron-refresh sat dead for two days after its
+    # 2026-07-25 OOM kill with nothing noticing (alpha-engine-config-I4487).
+    #
+    # An `enabled` timer whose NEXT is `-` will never fire again. That is the
+    # signal: unambiguous, no interval arithmetic, no false positives from a
+    # job that simply has not come due yet.
+    local dead_timers t
+    dead_timers=$(systemctl list-timers --all --no-pager --legend=false 2>/dev/null \
+                  | awk '$1=="-" && $NF ~ /\.service$/ {print $(NF-1)}')
+    for t in $dead_timers; do
+        # A timer that is not enabled is deliberately parked, not broken.
+        systemctl is-enabled --quiet "$t" 2>/dev/null || continue
+        echo "timer will never fire again: $t"
     done
 
     # listening ports (mnemon/bun has no systemd unit here, so port is the probe).
