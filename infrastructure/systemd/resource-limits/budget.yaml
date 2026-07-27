@@ -159,7 +159,7 @@ services:
       cgroup throttled continuously, and the service reported active while
       never binding :8980. Steady state 308M; the gap between that and 500M is
       startup headroom, not slack. Separately has known memory growth (I4441);
-      OOMPolicy=restart now recycles it instead of letting it die.
+      Restart=always now recycles it on an OOM kill instead of letting it die.
 
   - unit: llm-egress-proxy.service
     observed_mb: 42
@@ -183,11 +183,29 @@ services:
 
 # Restart semantics applied uniformly to every unit above (policy T1-2).
 #
-# OOMPolicy=restart is the load-bearing setting. The previous OOMPolicy=stop
-# is the direct mechanism by which metron-refresh stayed dead for two days
-# after its 2026-07-25 OOM kill: systemd stopped the unit AND its timer, and
-# nothing restarted either. A user-facing service that stays dead after an OOM
-# kill is a worse outcome than a restart loop, which at least alerts.
+# `Restart=always` IS the restart-on-OOM mechanism. There is no
+# `OOMPolicy=restart` -- systemd.service(5) takes only `continue`, `stop`, or
+# `kill`, and an invalid value is SILENTLY IGNORED (systemd falls back to the
+# default and logs nothing at the unit level). Verified live on systemd 252:
+# a drop-in carrying `OOMPolicy=restart` left `systemctl show -p OOMPolicy`
+# reporting `stop`, while `Restart=` and `MemoryMax=` from the same block
+# applied normally. Anything that "looks applied" here must be read back from
+# `systemctl show`, never assumed from the file on disk.
+#
+# The working combination is:
+#   OOMPolicy=stop   -> on an OOM kill systemd terminates the unit cleanly,
+#                       stopping its remaining processes rather than letting a
+#                       multi-process unit limp on with a dead worker (which is
+#                       what `continue` would do).
+#   Restart=always   -> systemd then restarts it 5s later, because `always`
+#                       restarts on ANY stop, including that clean termination.
+#
+# CORRECTION to the original I4491 analysis: `OOMPolicy=stop` was NOT the
+# mechanism that kept metron-refresh dead for two days. `stop` is systemd's
+# default and is correct here. metron-refresh is `Type=oneshot`, `static`, and
+# timer-triggered -- a failed oneshot batch job legitimately does not restart.
+# Its real defects were that nothing ALERTED on the failure and that its timer
+# went inactive; both are tracked in I4487, not fixed by restart semantics.
 #
 # StartLimitBurst bounds the loop: a genuinely broken service still lands in
 # `failed` after 5 restarts in 300s, where box_health.sh sees it. Restart=always
@@ -195,6 +213,6 @@ services:
 restart_policy:
   Restart: always
   RestartSec: 5s
-  OOMPolicy: restart
+  OOMPolicy: stop
   StartLimitIntervalSec: 300      # [Unit] section
   StartLimitBurst: 5              # [Unit] section

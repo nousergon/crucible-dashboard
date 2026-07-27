@@ -73,7 +73,7 @@ MemoryHigh=${high}
 MemoryMax=${max}
 Restart=always
 RestartSec=5s
-OOMPolicy=restart
+OOMPolicy=stop
 EOF
 )
 
@@ -131,6 +131,6 @@ echo "daemon-reload done."
 echo
 echo "Drop-ins are installed but NOT yet applied to running processes."
 echo "New MemoryMax takes effect on the running cgroup immediately;"
-echo "Restart=/OOMPolicy= apply to the NEXT start of each unit."
+echo "Restart=/RestartSec= apply to the NEXT start of each unit."
 echo
 echo "Verify with: $HERE/check_memory_budget.py --installed"
