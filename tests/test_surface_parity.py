@@ -30,7 +30,7 @@ chokepoint-identity: surface-parity-v1  (config#3208)
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -39,7 +39,13 @@ from fleet_status import (  # noqa: E402
     RED,
     YELLOW,
     FleetInputs,
+    GroomSnapshot,
+    ModuleHealthRow,
+    PipelineSnapshot,
     resolve_artifact_freshness,
+    resolve_groomer,
+    resolve_module_self_reports,
+    resolve_pipeline,
 )
 
 # Reference clock (trading day mid-session, same as test_fleet_status.py).
@@ -304,3 +310,194 @@ class TestSurfaceParity:
         state — the Fleet Status should handle it gracefully."""
         s = resolve_artifact_freshness(_inputs(check_results=_cr([])))
         assert s.dot != RED, f"empty results resolved to {s.dot}"
+
+
+class TestSurfaceParityV2RedToPage:
+    """Reverse direction of the surface-parity chokepoint (config#3952,
+    ARCHITECTURE.md §118 rule 5): every Fleet Status RED must have a
+    corresponding page in the alert plane.
+
+    For each Fleet Status component that resolves to RED, verify the
+    matching alert mechanism (freshness-monitor, sf-telegram-notifier,
+    watch dispatch) would have paged.  When no direct page path exists
+    for a component, document the gap explicitly — same pattern as v1's
+    ``test_escalated_warning_misses_page_but_fleet_status_not_red``.
+
+    Unlike v1, which models a single alert path (freshness-monitor) for a
+    single component (artifact_freshness), v2 must model MULTIPLE alert
+    paths — different RED components page through different mechanisms.
+    The page-path models below are intentionally conservative (matching
+    v1's design philosophy: favor false-negatives that can be investigated,
+    never false-divergence alarms that desensitise).
+
+    chokepoint-identity: surface-parity-v2  (config#3952)
+    """
+
+    # ── Alert-path models ───────────────────────────────────────────────
+
+    @staticmethod
+    def _sf_telegram_would_page(snap: PipelineSnapshot) -> bool:
+        """True when the sf-telegram-notifier would have paged for a Step
+        Function execution in this state.
+
+        Models ``_severity_for_status`` from
+        ``infrastructure/lambdas/sf-telegram-notifier/index.py``: a Lambda
+        that subscribes to Step Function execution events and pages loud
+        (``send_loud``) for any terminal failure — ``FAILED``, ``TIMED_OUT``,
+        or ``ABORTED``.  ``SUCCEEDED`` executions never page, even when the
+        pipeline resolver's composite ``verdict`` is ``PARTIAL``/``FAILED``
+        (a known divergence — see
+        ``test_pipeline_succeeded_but_verdict_failed_red_no_page``).
+        """
+        return snap.status in {"FAILED", "TIMED_OUT", "ABORTED"}
+
+    # ── artifact_freshness RED → freshness-monitor page ────────────────
+
+    def test_artifact_freshness_red_implies_each_critical_rows_pages(self):
+        """Every artifact_freshness RED is backed by rows where
+        severity=critical and state∈{missing,stale,probe_failed}.  Each such
+        row would also have paged through the freshness-monitor (the same
+        ``_would_page`` model v1 uses — this test is the symmetric
+        counterpart to v1's page→RED tests, verifying the direction holds
+        from the console side as well)."""
+        rows = [
+            _row("a1", "missing", severity="critical"),
+            _row("a2", "stale", severity="critical"),
+            _row("a3", "probe_failed", severity="critical"),
+            _row("a4", "fresh"),
+        ]
+        s = resolve_artifact_freshness(_inputs(check_results=_cr(rows)))
+        assert s.dot == RED, f"critical-bad artifacts should be RED: {s.reason}"
+        for r in rows[:3]:
+            assert _would_page(r), f"critical artifact does not page: {r}"
+        assert _would_not_page(rows[3]), "fresh artifact unexpectedly pages"
+
+    # ── pipeline FAILED/TIMED_OUT RED → sf-telegram-notifier page ─────
+
+    def test_pipeline_failed_red_pages_via_sf_telegram(self):
+        """A pipeline whose Step Function execution FAILED shows RED on the
+        console and pages loud through sf-telegram-notifier."""
+        snap = PipelineSnapshot(
+            status="FAILED",
+            started_at=TRADING_MID - timedelta(hours=2),
+            stopped_at=TRADING_MID - timedelta(hours=1),
+        )
+        # weekly on a Tuesday = not expected → no overdue YELLOW
+        inp = _inputs(pipelines={"weekly": snap})
+        s = resolve_pipeline("weekly", inp)
+        assert s.dot == RED, f"FAILED pipeline expected RED: {s.reason}"
+        assert self._sf_telegram_would_page(snap), (
+            "sf-telegram-notifier must page on FAILED execution"
+        )
+
+    def test_pipeline_timed_out_red_pages_via_sf_telegram(self):
+        """A TIMED_OUT execution follows the same page path as FAILED."""
+        snap = PipelineSnapshot(
+            status="TIMED_OUT",
+            started_at=TRADING_MID - timedelta(hours=2),
+        )
+        inp = _inputs(pipelines={"weekly": snap})
+        s = resolve_pipeline("weekly", inp)
+        assert s.dot == RED, f"TIMED_OUT pipeline expected RED: {s.reason}"
+        assert self._sf_telegram_would_page(snap), (
+            "sf-telegram-notifier must page on TIMED_OUT execution"
+        )
+
+    # ── pipeline SUCCEEDED+FAILED_verdict RED — sf-telegram knows nothing
+
+    def test_pipeline_succeeded_but_verdict_failed_red_no_page(self):
+        """KNOWN DIVERGENCE: a Step Function that SUCCEEDED at the execution
+        level but whose artifact-completion check produced a FAILED verdict
+        is RED on the Fleet Status console but the sf-telegram-notifier does
+        NOT page — it only sees the execution ``status: SUCCEEDED`` and
+        does not look at the composite ``verdict`` field.
+
+        This is a real surface-parity gap (config#3952): the console says
+        ``last cycle FAILED`` (RED) for a pipeline whose Step Function
+        actually reached SUCCEEDED, but the pager saw SUCCEEDED and stayed
+        silent.  The missing-artifact alert for this case comes through the
+        **freshness-monitor** (artifact_freshness component), not the
+        pipeline resolver — so the parity guarantee across BOTH planes
+        depends on artifact_freshness also catching the failure.  The
+        artifact_freshness RED→page test above covers that direction.
+
+        This test asserts the divergence: console RED, no sf-telegram page.
+        If a future change makes the notifier also subscribe to composite
+        verdicts, this test marks where to flip the assertion and consolidate.
+        """
+        snap = PipelineSnapshot(
+            status="SUCCEEDED",
+            verdict="FAILED",
+            started_at=TRADING_MID - timedelta(hours=2),
+            stopped_at=TRADING_MID - timedelta(hours=1),
+        )
+        inp = _inputs(pipelines={"weekly": snap})
+        s = resolve_pipeline("weekly", inp)
+        assert s.dot == RED, (
+            f"SUCCEEDED+FAILED verdict expected RED, got {s.dot}: {s.reason}"
+        )
+        # sf-telegram-notifier does NOT page:
+        assert not self._sf_telegram_would_page(snap), (
+            "sf-telegram-notifier must NOT page on SUCCEEDED execution "
+            "(the verdict gap this test documents)"
+        )
+
+    def test_pipeline_succeeded_complete_no_red_no_page(self):
+        """A SUCCEEDED pipeline with COMPLETE verdict is the happy path:
+        not RED, no sf-telegram page.  Baseline that distinguishes the
+        previous test."""
+        snap = PipelineSnapshot(
+            status="SUCCEEDED",
+            verdict="COMPLETE",
+            started_at=TRADING_MID - timedelta(hours=2),
+            stopped_at=TRADING_MID - timedelta(hours=1),
+        )
+        inp = _inputs(pipelines={"weekly": snap})
+        s = resolve_pipeline("weekly", inp)
+        assert s.dot != RED, (
+            f"SUCCEEDED+COMPLETE should not be RED: {s.reason}"
+        )
+        assert not self._sf_telegram_would_page(snap), (
+            "sf-telegram-notifier must not page on SUCCEEDED+COMPLETE"
+        )
+
+    # ── Known gaps — components RED but no direct page path ────────────
+
+    def test_known_gap_backlog_groomer_red_no_page(self):
+        """KNOWN GAP: backlog_groomer RED (stale in-progress marker without
+        a live spot instance, or idle past GROOM_IDLE_WARN) has NO page path.
+        The groomer is a best-effort batch job, not a live service with an
+        SLA — its failures do not page.  This is a deliberate architectural
+        choice, not an oversight, but it IS a divergence from strict surface
+        parity (config#3952).
+
+        If a page path is added in the future (e.g. an alarm on the groom
+        spot failing to start), flip this assertion from ``assert s.dot == RED``
+        plus a gap comment to ``assert s.dot != RED or <page-would-fire>``."""
+        g = GroomSnapshot(
+            marker_started_at=TRADING_MID - timedelta(hours=48),
+            spot_running=False,
+        )
+        inp = _inputs(groom=g)
+        s = resolve_groomer(inp)
+        assert s.dot == RED, f"stale groom marker expected RED: {s.reason}"
+        # No page path exists — this is the documented gap.
+
+    def test_known_gap_module_self_reports_failed_no_page(self):
+        """KNOWN GAP: module_self_reports RED (module reports 'failed') has
+        NO independent page path.  Health self-reports are enrichment data
+        per config#1724 (self-report is enrichment, never the authority) —
+        the authority for module health is the freshness-monitor's independent
+        artifact probes, not the module's own report.  A module whose health
+        check says 'failed' but whose artifacts are still fresh is not paged
+        (the artifacts ARE the real page signal)."""
+        rows = (
+            ModuleHealthRow(
+                module="crucible-executor", status="failed",
+                age_hrs=0.5, stale_after_hrs=2.0,
+            ),
+        )
+        inp = _inputs(module_health=rows)
+        s = resolve_module_self_reports(inp)
+        assert s.dot == RED, f"failed module expected RED: {s.reason}"
+        # No independent page path — documented gap.
