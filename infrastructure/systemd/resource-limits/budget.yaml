@@ -1,0 +1,157 @@
+# Dashboard box — box-level memory budget and restart semantics.
+#
+# WHY THIS FILE EXISTS, AND WHY IT LIVES IN THIS REPO
+# ---------------------------------------------------
+# This box runs 14 long-running services across eight products (alpha-engine,
+# metron, telos, vires, the-cyphering, mnemon, nousergon-auth, plus dev
+# infrastructure). Most of those services are OWNED by other repos.
+#
+# The memory budget is nonetheless a property of the BOX, not of any one app,
+# because the invariant is about the SUM. No single app repo can enforce
+# "everything fits in RAM" — only the repo that owns the box's infrastructure
+# can, and that is this one (it already owns nginx.conf, box_health.sh,
+# boot-pull.sh, all of which are similarly cross-product).
+#
+# THE INVARIANT
+# -------------
+#   sum(memory_max_mb) <= RAM_MB * (1 - RESERVE_FRACTION)
+#
+# Per-service caps bound ONE runaway. They do nothing about several services
+# growing toward their individually-legal ceilings at once — the kernel OOM
+# killer then fires against whatever it picks, which need not be the service
+# that caused the pressure. That is exactly what happened on 2026-07-25
+# (metron-refresh OOM-killed while doing legitimate work) and again on
+# 2026-07-27, when the sum stood at ~4650 MB against 1913 MB of RAM (2.4x)
+# and the box cascaded: MemAvailable hit 44 MB, metron-dash stopped answering,
+# and the SSM agent was starved badly enough that the box could not be managed
+# remotely at all.
+#
+# Enforced by `infrastructure/check_memory_budget.py`, which is run by
+# `box_health.sh` and can be run in CI.
+#
+# Governing policy: nous-ergon-ops/policies/shared-application-host-policy.md
+#   T1-1 (aggregate limits <= RAM), T1-2 (uniform restart semantics),
+#   T1-7 (right-sized instance).
+
+ram_mb: 3839              # t3.medium, as reported by `free -m` total
+reserve_fraction: 0.15    # kernel + page cache headroom
+# => budget ceiling 3263 MB; current allocation 3250 MB
+
+# memory_high is the SOFT limit: the kernel throttles and reclaims against the
+# service rather than killing it. memory_max is the HARD cap. Setting high at
+# ~70% of max gives every service a reclaim window before it hits the wall —
+# a service with only a hard cap goes from unconstrained straight to a kill.
+#
+# observed_mb is steady-state RSS measured 2026-07-27 ~11 min after a clean
+# boot on t3.medium. Caps are set at roughly 1.6-3x observed so normal spikes
+# do not kill anything. Re-measure and re-budget when the service set changes.
+
+services:
+  # ── alpha-engine ────────────────────────────────────────────────────────
+  - unit: dashboard.service
+    observed_mb: 82
+    memory_high: 175M
+    memory_max: 250M
+    note: Streamlit private console; spikes on large dataframe renders
+
+  - unit: nous-ergon-live.service
+    observed_mb: 72
+    memory_high: 126M
+    memory_max: 180M
+
+  - unit: crucible-dash-api.service
+    observed_mb: 195
+    memory_high: 245M
+    memory_max: 350M
+
+  - unit: crucible-dash-web.service
+    observed_mb: 113
+    memory_high: 154M
+    memory_max: 220M
+
+  # ── metron ──────────────────────────────────────────────────────────────
+  - unit: metron-api.service
+    observed_mb: 349
+    memory_high: 385M
+    memory_max: 550M
+    note: largest steady-state consumer on the box (gunicorn + uvicorn workers)
+
+  - unit: metron-dash-web.service
+    observed_mb: 104
+    memory_high: 154M
+    memory_max: 220M
+
+  # ── other products ──────────────────────────────────────────────────────
+  - unit: telos-web.service
+    observed_mb: 57
+    memory_high: 105M
+    memory_max: 150M
+
+  - unit: vires.service
+    observed_mb: 79
+    memory_high: 98M
+    memory_max: 140M
+
+  - unit: signal.service
+    observed_mb: 78
+    memory_high: 98M
+    memory_max: 140M
+
+  - unit: mnemon.service
+    observed_mb: 109
+    memory_high: 175M
+    memory_max: 250M
+    note: >
+      Was capped at 150M with MemoryHigh=infinity — 109M observed against a
+      150M hard cap and no soft limit at all, i.e. closest to its ceiling of
+      any service on the box while having no reclaim window. Raised.
+
+  - unit: nousergon-auth.service
+    observed_mb: 51
+    memory_high: 105M
+    memory_max: 150M
+    note: >
+      Shared identity service. Found DISABLED (not enabled at boot) on
+      2026-07-27 — it was running only because someone had started it by hand,
+      and it did not survive the first reboot. Enabled since.
+
+  # ── dev infrastructure ──────────────────────────────────────────────────
+  - unit: litellm-proxy.service
+    observed_mb: 308
+    memory_high: 280M
+    memory_max: 400M
+    note: >
+      Known memory growth, tracked in alpha-engine-config-I4441. memory_high is
+      deliberately set BELOW observed so the kernel reclaims against it
+      continuously rather than letting it drift up to the hard cap. With
+      OOMPolicy=restart it now recycles instead of dying.
+
+  - unit: llm-egress-proxy.service
+    observed_mb: 42
+    memory_high: 105M
+    memory_max: 150M
+
+  # ── ingress ─────────────────────────────────────────────────────────────
+  - unit: nginx.service
+    observed_mb: 6
+    memory_high: 70M
+    memory_max: 100M
+    note: sole ingress for all ten vhosts — Restart=always is load-bearing
+
+# Restart semantics applied uniformly to every unit above (policy T1-2).
+#
+# OOMPolicy=restart is the load-bearing setting. The previous OOMPolicy=stop
+# is the direct mechanism by which metron-refresh stayed dead for two days
+# after its 2026-07-25 OOM kill: systemd stopped the unit AND its timer, and
+# nothing restarted either. A user-facing service that stays dead after an OOM
+# kill is a worse outcome than a restart loop, which at least alerts.
+#
+# StartLimitBurst bounds the loop: a genuinely broken service still lands in
+# `failed` after 5 restarts in 300s, where box_health.sh sees it. Restart=always
+# without a limit is its own failure mode.
+restart_policy:
+  Restart: always
+  RestartSec: 5s
+  OOMPolicy: restart
+  StartLimitIntervalSec: 300      # [Unit] section
+  StartLimitBurst: 5              # [Unit] section
