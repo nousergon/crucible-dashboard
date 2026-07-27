@@ -1,27 +1,43 @@
 #!/bin/bash
-# emit_oom_metric.sh — publish a DELTA count of cgroup OOM kills to CloudWatch.
+# emit_oom_metric.sh — publish a count of NEW OOM kills to CloudWatch.
 #
-# The CloudWatch agent has no OOM-kill metric, and OOM kills are the single
-# failure mode this box actually suffers. Two in three days went unnoticed:
-# metron-refresh on 2026-07-25 (dead for two days, silently), and the cascade
+# The CloudWatch agent has no OOM-kill metric, and OOM kills are the failure
+# mode this box actually suffers. Two in three days went unnoticed:
+# metron-refresh on 2026-07-25 (dead for two days, silently) and the cascade
 # on 2026-07-27 where services cycled while nothing recorded it.
 #
-# WHY A DELTA, NOT THE RAW COUNTER
-# --------------------------------
-# /sys/fs/cgroup/**/memory.events exposes `oom_kill` as a CUMULATIVE counter
-# that only resets when the cgroup is recreated. Publishing it raw means an
-# alarm on "> 0" fires forever after the first kill and has to be manually
-# reset -- which is how alarms get ignored. Publishing the delta since the last
-# run means ANY nonzero datapoint is a NEW kill, so the alarm is
-# self-clearing and every firing is real.
+# WHY THE JOURNAL AND NOT /sys/fs/cgroup/**/memory.events
+# -------------------------------------------------------
+# The obvious implementation -- sum `oom_kill` from each service's
+# memory.events -- is WRONG, and was caught failing its own acceptance test on
+# 2026-07-27: a deliberately OOM-killed canary unit produced
+# `systemctl show -p Result` = `oom-kill` while the cgroup sum still read 0.
 #
-# The state file survives reboots (it lives under /var/lib). On a cgroup reset
-# the current total can go BACKWARDS relative to the stored value; that is
-# treated as a fresh baseline (delta 0), never as a negative.
+# The reason is that a cgroup is DESTROYED when its unit goes away, and
+# memory.events goes with it. So the cgroup approach only ever sees kills in
+# units that are still loaded -- it structurally cannot see a kill in a
+# oneshot, a transient `systemd-run` unit, or anything already cleaned up.
+# Oneshot batch jobs are precisely the case that motivated this collector
+# (metron-refresh is `Type=oneshot`), so the cgroup approach would have missed
+# the very incident it was built to catch.
+#
+# The journal is durable across unit teardown and reboots. systemd emits one
+# line per unit OOM kill:
+#   `<unit>: A process of this unit has been killed by the OOM killer.`
+#
+# CURSOR, NOT TIMESTAMP
+# ---------------------
+# State is a journal CURSOR, not a clock reading. A timestamp window either
+# double-counts or drops events around the boundary depending on rounding and
+# clock skew; a cursor resumes exactly where the last run stopped. If the
+# cursor is stale/invalid (log rotation, journal reset) we fall back to the
+# current boot and re-baseline rather than replaying history as "new".
 #
 # Emits, to namespace AlphaEngine/Host, dimension InstanceId:
-#   OOMKills      — kills since the previous run (0 on a healthy box)
-#   OOMKillsTotal — cumulative, for context when investigating
+#   OOMKills — kills since the previous run. 0 on a healthy box, so ANY
+#              nonzero datapoint is a NEW kill and the alarm self-clears.
+#              (A cumulative counter would latch an alarm on forever after the
+#              first kill, which is how alarms get ignored.)
 #
 # Runs every 5 min via emit-oom-metric.timer.
 # Policy: nous-ergon-ops/policies/shared-application-host-policy.md T0-3.
@@ -29,35 +45,45 @@
 set -uo pipefail
 
 STATE_DIR="/var/lib/alpha-engine"
-STATE_FILE="${STATE_DIR}/oom_kill_count"
+CURSOR_FILE="${STATE_DIR}/oom_journal_cursor"
 NAMESPACE="AlphaEngine/Host"
 REGION="us-east-1"
 
+# systemd's per-unit OOM line. Matching systemd's message rather than the
+# kernel's `Out of memory: Killed process` avoids double-counting a single
+# kill that produces both, and gives us the unit name for the log line below.
+PATTERN='killed by the OOM killer'
+
 mkdir -p "$STATE_DIR"
 
-# Sum oom_kill across every cgroup that has a memory.events file. Covers
-# system.slice services and any nested scopes. `memory.events` reports kills
-# for the cgroup and its descendants, so summing every level would double
-# count -- we read only the per-service level under system.slice.
-total=0
-shopt -s nullglob
-for f in /sys/fs/cgroup/system.slice/*/memory.events \
-         /sys/fs/cgroup/system.slice/*.service/memory.events; do
-    n=$(awk '$1=="oom_kill"{print $2}' "$f" 2>/dev/null)
-    [[ -n "${n:-}" ]] && total=$(( total + n ))
-done
-shopt -u nullglob
+read_since_cursor() {
+    local cursor="$1"
+    journalctl --after-cursor="$cursor" --no-pager --output=short 2>/dev/null
+}
 
-prev=0
-[[ -f "$STATE_FILE" ]] && prev=$(cat "$STATE_FILE" 2>/dev/null || echo 0)
-[[ "$prev" =~ ^[0-9]+$ ]] || prev=0
+if [[ -s "$CURSOR_FILE" ]] && lines=$(read_since_cursor "$(cat "$CURSOR_FILE")") ; then
+    :
+else
+    # No cursor yet, or the cursor no longer resolves. Baseline from this boot
+    # WITHOUT counting anything -- replaying old kills as "new" would fire a
+    # false alarm on every journal reset.
+    lines=""
+    echo "emit_oom_metric: no usable cursor; re-baselining from current position" >&2
+fi
 
-delta=$(( total - prev ))
-# A negative delta means cgroups were recreated (reboot, unit reinstall).
-# Re-baseline rather than reporting nonsense.
-(( delta < 0 )) && delta=0
+delta=$(printf '%s' "$lines" | grep -c "$PATTERN" || true)
+[[ "$delta" =~ ^[0-9]+$ ]] || delta=0
 
-printf '%s\n' "$total" > "$STATE_FILE"
+# Advance the cursor to the journal's current end, whether or not we counted
+# anything, so the next run resumes from here.
+new_cursor=$(journalctl -n 0 --show-cursor --no-pager 2>/dev/null \
+             | sed -n 's/^-- cursor: //p' | tail -1)
+if [[ -n "$new_cursor" ]]; then
+    printf '%s\n' "$new_cursor" > "$CURSOR_FILE"
+else
+    echo "emit_oom_metric: could not read journal cursor" >&2
+    exit 1
+fi
 
 TOKEN=$(curl -s --max-time 2 -X PUT "http://169.254.169.254/latest/api/token" \
     -H "X-aws-ec2-metadata-token-ttl-seconds: 60" 2>/dev/null || true)
@@ -65,26 +91,23 @@ INSTANCE_ID=$(curl -s --max-time 2 -H "X-aws-ec2-metadata-token: ${TOKEN}" \
     http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null || echo "unknown")
 
 # Fail loud: a metric publisher that silently swallows its own failure is the
-# same defect class this script exists to fix (see boot-pull's broken reporter,
-# alpha-engine-config-I4509). Exit non-zero so systemd records the failure.
+# same defect class this exists to fix (see boot-pull's broken reporter,
+# alpha-engine-config-I4509). Exit non-zero so systemd records it.
 if ! aws cloudwatch put-metric-data \
         --region "$REGION" \
         --namespace "$NAMESPACE" \
         --metric-data \
-            "MetricName=OOMKills,Value=${delta},Unit=Count,Dimensions=[{Name=InstanceId,Value=${INSTANCE_ID}}]" \
-            "MetricName=OOMKillsTotal,Value=${total},Unit=Count,Dimensions=[{Name=InstanceId,Value=${INSTANCE_ID}}]"
+            "MetricName=OOMKills,Value=${delta},Unit=Count,Dimensions=[{Name=InstanceId,Value=${INSTANCE_ID}}]"
 then
-    echo "emit_oom_metric: put-metric-data FAILED (delta=${delta} total=${total})" >&2
+    echo "emit_oom_metric: put-metric-data FAILED (delta=${delta})" >&2
     exit 1
 fi
 
 if (( delta > 0 )); then
-    echo "emit_oom_metric: ${delta} NEW oom kill(s) since last run (cumulative ${total})"
-    # Name the culprits -- the metric says "something died", the log says what.
-    for f in /sys/fs/cgroup/system.slice/*.service/memory.events; do
-        n=$(awk '$1=="oom_kill"{print $2}' "$f" 2>/dev/null)
-        [[ -n "${n:-}" ]] && (( n > 0 )) && echo "  $(basename "$(dirname "$f")"): ${n} total"
-    done
+    # The metric says "something died"; the log says what. Without this the
+    # alarm sends you to a box with no record of which unit was killed.
+    echo "emit_oom_metric: ${delta} NEW oom kill(s):"
+    printf '%s' "$lines" | grep "$PATTERN" | sed 's/^/  /'
 else
-    echo "emit_oom_metric: no new oom kills (cumulative ${total})"
+    echo "emit_oom_metric: no new oom kills"
 fi
