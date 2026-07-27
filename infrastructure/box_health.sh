@@ -169,24 +169,27 @@ snapshot_problems() {
         echo "watchdog: service manifest missing ($MANIFEST) — using stale fallback list"
     fi
 
-    # Coverage self-check. Counts enabled, non-oneshot units under
-    # /etc/systemd/system and compares against what we monitor. This is the
-    # guard that stops the list falling behind again: a service added to the
-    # box but not to budget.yaml shows up HERE instead of being silently
-    # unmonitored. Without it, the failure mode is a green watchdog.
-    local installed_count
-    installed_count=$(
-        for u in /etc/systemd/system/*.service; do
-            [ -e "$u" ] || continue
-            local n; n=$(basename "$u")
-            systemctl is-enabled --quiet "$n" 2>/dev/null || continue
-            [ "$(systemctl show "$n" -p Type --value 2>/dev/null)" = "oneshot" ] && continue
-            echo "$n"
-        done | wc -l
-    )
-    if [ -n "${EXPECTED_SERVICE_COUNT:-}" ] && \
-       [ "${installed_count:-0}" -gt "$EXPECTED_SERVICE_COUNT" ]; then
-        echo "watchdog: ${installed_count} enabled services installed but only ${EXPECTED_SERVICE_COUNT} monitored — add the new unit to budget.yaml"
+    # Coverage self-check. Any enabled, non-oneshot unit that is neither
+    # monitored nor explicitly excluded is NAMED here. This is the guard that
+    # stops the list falling behind again: a service added to the box but not
+    # to budget.yaml surfaces as an alert instead of going quietly unmonitored.
+    # Without it, the failure mode is a green watchdog.
+    #
+    # Named, not counted. A count says "something is missing" without saying
+    # what, and cannot distinguish a new app service from OS plumbing — a
+    # count-based version of this check false-alarmed on dbus aliases and the
+    # CloudWatch agent when first deployed 2026-07-27.
+    local u n unmonitored
+    for u in /etc/systemd/system/*.service; do
+        [ -e "$u" ] || continue
+        n=$(basename "$u")
+        case " ${SERVICES[*]} ${MONITOR_EXCLUDE[*]:-} " in *" $n "*) continue ;; esac
+        systemctl is-enabled --quiet "$n" 2>/dev/null || continue
+        [ "$(systemctl show "$n" -p Type --value 2>/dev/null)" = "oneshot" ] && continue
+        unmonitored="${unmonitored}${n} "
+    done
+    if [ -n "${unmonitored:-}" ]; then
+        echo "watchdog: unmonitored enabled service(s): ${unmonitored%% } — add to budget.yaml or manifest_exclude"
     fi
 
     # Timer dead-man. A timer-driven oneshot is correctly `inactive` almost all

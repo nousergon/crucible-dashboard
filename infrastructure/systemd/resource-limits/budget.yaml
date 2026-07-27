@@ -230,3 +230,25 @@ restart_policy:
   OOMPolicy: stop
   StartLimitIntervalSec: 300      # [Unit] section
   StartLimitBurst: 5              # [Unit] section
+
+# Units that are legitimately NOT under box_health.sh coverage. The watchdog's
+# coverage self-check reports any enabled, non-oneshot unit that is neither in
+# `services:` above nor excluded here — so a new app service surfaces as an
+# alert instead of going quietly unmonitored, while OS plumbing stays quiet.
+#
+# Exclusions are BY NAME WITH A REASON. A bare count cannot say what is
+# missing, and a count-based check false-alarmed on exactly these units when
+# first deployed 2026-07-27.
+manifest_exclude:
+  - unit: "alert-on-failure@.service"
+    reason: systemd template unit, never instantiated directly
+  - unit: amazon-cloudwatch-agent.service
+    reason: AWS agent, has its own supervision and its own alarms
+  - unit: dbus.service
+    reason: OS plumbing
+  - unit: dbus-org.freedesktop.home1.service
+    reason: OS plumbing (dbus alias)
+  - unit: dbus-org.freedesktop.network1.service
+    reason: OS plumbing (dbus alias)
+  - unit: dbus-org.freedesktop.resolve1.service
+    reason: OS plumbing (dbus alias)
