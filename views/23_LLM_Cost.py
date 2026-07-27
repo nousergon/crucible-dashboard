@@ -33,6 +33,7 @@ import plotly.express as px
 import streamlit as st
 from krepis.usage_pacing import reset_window
 
+from shared import cache_hit_rate
 from loaders.s3_loader import (
     load_claude_code_usage,
     load_llm_cost_parquets,
@@ -186,8 +187,9 @@ fig_trend.update_layout(height=320, margin=dict(l=0, r=0, t=10, b=0))
 st.plotly_chart(fig_trend, use_container_width=True)
 
 # ─── Breakdowns ─────────────────────────────────────────────────────────────
-tab_agent, tab_team, tab_model, tab_prompt, tab_calls = st.tabs(
-    ["By agent", "By sector team", "By model", "By prompt version", "Recent calls"]
+tab_agent, tab_team, tab_model, tab_cache, tab_prompt, tab_calls = st.tabs(
+    ["By agent", "By sector team", "By model", "Cache hit rate",
+     "By prompt version", "Recent calls"]
 )
 
 
@@ -309,6 +311,77 @@ with tab_model:
     fig_model.update_layout(height=320, margin=dict(l=0, r=0, t=10, b=0))
     st.plotly_chart(fig_model, use_container_width=True)
     st.dataframe(model_df, use_container_width=True, hide_index=True)
+
+# ─── Cache hit rate ─────────────────────────────────────────────────────────
+#
+# Gate G6 of nous-ergon-ops/policies/prompt-caching-policy.md. Caching is the
+# largest controllable cost lever we have -- at agentic-loop shape ~90-98% of
+# billed input tokens are re-reads of an identical prefix -- and the easiest
+# thing to break silently, because a cache miss is behaviourally identical to
+# a hit. This tab is the signal that a prompt-shape regression otherwise only
+# shows up on the invoice.
+
+with tab_cache:
+    cf = cache_hit_rate.with_cache_denominator(df)
+    known = cache_hit_rate.measurable(cf)
+    unknown_calls = int(len(cf) - len(known))
+    overall = cache_hit_rate.hit_rate(cf)
+
+    if overall is None:
+        st.info(
+            "No cache telemetry in this window. The hit rate needs either a "
+            "provider-reported `prompt_cache_miss_tokens` (krepis >= 0.19.2, "
+            "automatic-prefix providers such as DeepSeek) or an Anthropic "
+            "model, where `input_tokens` is already the uncached remainder. "
+            "Partitions written before krepis 0.19.2 carry neither, so an "
+            "empty panel here means *not reported*, not a 0% hit rate."
+        )
+    else:
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Window hit rate", f"{overall:.1%}")
+        c2.metric("Cached input tokens", f"{float(known['cache_read_tokens'].sum()):,.0f}")
+        c3.metric(
+            "Calls without telemetry",
+            f"{unknown_calls:,}",
+            help="Excluded from the rate rather than counted as misses — a "
+                 "zero denominator means 'not reported', not a 0% hit rate.",
+        )
+
+        model_df = cache_hit_rate.by_model(cf)
+        fig_cache = px.bar(
+            model_df,
+            x="model",
+            y="hit_rate",
+            labels={"model": "Model", "hit_rate": "Hit rate"},
+        )
+        fig_cache.update_layout(
+            height=320, margin=dict(l=0, r=0, t=10, b=0), yaxis_tickformat=".0%"
+        )
+        st.plotly_chart(fig_cache, use_container_width=True)
+
+        display = model_df.copy()
+        display["hit_rate"] = (display["hit_rate"] * 100).round(1)
+        if "cost_usd" in display.columns:
+            display["cost_usd"] = display["cost_usd"].round(4)
+        st.dataframe(
+            display.rename(columns={"hit_rate": "hit_rate_%"}),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        basis_counts = cf["cache_basis"].value_counts().to_dict()
+        st.caption(
+            "Denominator basis per row — `reported_miss` "
+            f"({basis_counts.get('reported_miss', 0):,} calls): the provider's own "
+            "hit/miss pair. `uncached_input` "
+            f"({basis_counts.get('uncached_input', 0):,}): Anthropic, where "
+            "`input_tokens` is already the uncached remainder. `unknown` "
+            f"({basis_counts.get('unknown', 0):,}): excluded, never imputed. "
+            "Per-call-site floors live in "
+            "`alpha-engine-config/private-docs/LLM_CALLSITE_REGISTRY.yaml` and are "
+            "`pending_measurement` until a window like this one justifies a number."
+        )
+
 
 with tab_prompt:
     if "prompt_version" not in df.columns or df["prompt_version"].dropna().empty:
