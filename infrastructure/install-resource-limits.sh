@@ -74,6 +74,19 @@ MemoryMax=${max}
 Restart=always
 RestartSec=5s
 OOMPolicy=stop
+
+# ── sandboxing (alpha-engine-config-I4490) ──────────────────────────────
+# Thirteen services across eight products share the single ec2-user identity.
+# Without these, one compromised service reads every other service's material:
+# the ~/.netrc deploy PAT, both Cloudflare Origin private keys, 17 git
+# checkouts, and whatever the other twelve have resolved from SSM.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
 EOF
 )
 
