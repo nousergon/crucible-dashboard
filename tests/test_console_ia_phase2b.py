@@ -20,6 +20,10 @@ class TestUniverseConsolidation:
             '("Universe Board", "39_Universe_Board.py")',
             '("Funnel", "34_Scanner.py")',
             '("Trends", "40_Attractiveness_Trends.py")',
+            # Churn (config-I4819) — the only Universe tab spanning MULTIPLE
+            # cycles, which is why it reads the universe_membership contract
+            # rather than any single-snapshot artifact.
+            '("Churn", "55_Universe_Churn.py")',
             '("Focus Audit", "5_Focus_List.py")',
         ):
             assert pair in src, pair
