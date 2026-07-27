@@ -1,0 +1,12 @@
+[Unit]
+Description=Weekly conditional-reboot check, Sunday 07:00 UTC (alpha-engine-config-I4493)
+
+[Timer]
+OnCalendar=Sun *-*-* 07:00:00
+# NOT Persistent: a missed window must not fire a reboot at an arbitrary later
+# moment. The whole point of a window is that reboots happen inside it.
+Persistent=false
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

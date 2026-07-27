@@ -1,0 +1,60 @@
+{
+  "_comment": [
+    "CloudWatch agent config for the dashboard box.",
+    "",
+    "WHY THIS FILE EXISTS: before 2026-07-27 this agent collected exactly ONE",
+    "metric -- disk used_percent -- on a box whose own watchdog script documents",
+    "RAM as the binding constraint ('the binding constraint is RAM, not CPU',",
+    "box_health.sh line 5). The consequence was demonstrated twice in three days:",
+    "metron-refresh was OOM-killed on 2026-07-25 and nothing alerted, and on",
+    "2026-07-27 the box cascaded into an unmanageable state (MemAvailable 44 MB,",
+    "metron-dash down, SSM agent starved) with no CloudWatch signal at any point.",
+    "There was no memory metric to alarm on.",
+    "",
+    "The config also lived only on the box. It is version-controlled here so a",
+    "rebuild reproduces it -- see REBUILD_RUNBOOK.md.",
+    "",
+    "NAMESPACE: AlphaEngine/Host. The previous namespace was AlphaEngine/HostDisk,",
+    "which stopped being accurate the moment this collected anything but disk.",
+    "Alarms were migrated in the same change.",
+    "",
+    "Install:  sudo ./infrastructure/install-cloudwatch-agent-config.sh",
+    "Policy:   nous-ergon-ops/policies/shared-application-host-policy.md T0-3"
+  ],
+  "agent": {
+    "metrics_collection_interval": 60,
+    "run_as_user": "cwagent"
+  },
+  "metrics": {
+    "namespace": "AlphaEngine/Host",
+    "append_dimensions": {
+      "InstanceId": "${aws:InstanceId}"
+    },
+    "metrics_collected": {
+      "mem": {
+        "measurement": [
+          "mem_available_percent",
+          "mem_available",
+          "mem_used_percent"
+        ],
+        "metrics_collection_interval": 60
+      },
+      "swap": {
+        "measurement": [
+          "swap_used_percent"
+        ],
+        "metrics_collection_interval": 60
+      },
+      "disk": {
+        "measurement": [
+          "used_percent"
+        ],
+        "resources": [
+          "/"
+        ],
+        "drop_device": true,
+        "metrics_collection_interval": 300
+      }
+    }
+  }
+}

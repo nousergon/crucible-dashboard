@@ -1,0 +1,18 @@
+[Unit]
+Description=Publish cgroup OOM-kill delta to CloudWatch (alpha-engine-config-I4486)
+Documentation=https://github.com/nousergon/nous-ergon-ops/blob/main/policies/shared-application-host-policy.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/emit_oom_metric.sh
+User=root
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=AWS_REGION=us-east-1
+TimeoutStartSec=60
+
+# This publisher must not itself become an unnoticed failure -- that is the
+# exact defect it exists to detect elsewhere on this box (I4509).
+StandardOutput=journal
+StandardError=journal

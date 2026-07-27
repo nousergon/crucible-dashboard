@@ -17,6 +17,47 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 REPO_ROOT = Path(__file__).parent.parent
 
 
+def watchdog_units_and_ports():
+    """Every unit/port the box watchdog covers, across BOTH of its surfaces.
+
+    Since I4492 the authoritative registry is
+    `infrastructure/systemd/resource-limits/budget.yaml` — box_health.sh sources
+    a manifest generated from it. box_health.sh also keeps a hardcoded fallback
+    list used when that manifest is missing.
+
+    Both are returned together so a retirement guard cannot be satisfied by
+    cleaning one and forgetting the other. The previous version of this helper
+    was a `^SERVICES=\\(` regex against box_health.sh alone; when the arrays
+    moved inside an `else` block it silently matched nothing, and an
+    `assert match` was the only thing standing between that and a guard that
+    passes vacuously.
+    """
+    import re
+
+    import yaml
+
+    units, ports = set(), set()
+
+    spec = yaml.safe_load(
+        (REPO_ROOT / "infrastructure" / "systemd" / "resource-limits"
+         / "budget.yaml").read_text()
+    )
+    for svc in spec["services"]:
+        units.add(svc["unit"])
+        if str(svc.get("port", "none")) != "none":
+            ports.add(str(svc["port"]))
+
+    box_health = (REPO_ROOT / "infrastructure" / "box_health.sh").read_text()
+    # Tolerates indentation and backslash line-continuations; the arrays live
+    # inside an if/else now.
+    for name, sink in (("SERVICES", units), ("PORTS", ports)):
+        m = re.search(rf"^\s*{name}=\((.*?)\)", box_health, re.M | re.S)
+        assert m, f"box_health.sh must declare a fallback {name}=(...) array"
+        sink.update(m.group(1).replace("\\\n", " ").split())
+
+    return units, ports
+
+
 class TestStreamlitSkinRetired:
     def test_dash_app_and_unit_removed(self):
         assert not (REPO_ROOT / "dash").exists(), \
@@ -37,17 +78,17 @@ class TestStreamlitSkinRetired:
         assert "rm -f /etc/systemd/system/crucible-dash.service" in script
 
     def test_box_health_no_longer_watches_retired_service_or_port(self):
-        # A historical comment noting :8504's reuse history is fine — the
-        # watchdog's actual SERVICES/PORTS arrays must not carry the retired
-        # unit/port forward.
-        box_health = (REPO_ROOT / "infrastructure" / "box_health.sh").read_text()
-        import re
-        services_array_match = re.search(r"^SERVICES=\(([^)]*)\)", box_health, re.M)
-        assert services_array_match
-        assert "crucible-dash.service" not in services_array_match.group(1).split()
-        ports_array_match = re.search(r"^PORTS=\(([^)]*)\)", box_health, re.M)
-        assert ports_array_match
-        assert "8504" not in ports_array_match.group(1).split()
+        # A historical comment noting :8504's reuse history is fine — neither
+        # the authoritative registry nor the watchdog's fallback may carry the
+        # retired unit/port forward.
+        #
+        # Checks BOTH surfaces since I4492: budget.yaml is now the box's single
+        # service registry (box_health.sh sources a manifest generated from it),
+        # and box_health.sh keeps a hardcoded fallback for when that manifest is
+        # missing. A guard that watched only one of them would miss the other.
+        units, ports = watchdog_units_and_ports()
+        assert "crucible-dash.service" not in units
+        assert "8504" not in ports
 
     def test_nginx_routes_dash_to_web(self):
         # 9-D cutover (config#1973): /dash serves the Next.js surface on
@@ -235,22 +276,16 @@ class TestInfraWiring:
         assert '[ ! -d "$WEB_DIR/.next" ]' in script
 
     def test_port_8504_freed_by_retirement_not_reclaimed_silently(self):
-        # config#1972 Part A lives on for the remaining hand-maintained
-        # port map: :8504 was crucible-dash's (retired config#1973) — this
-        # guards against a future service silently reusing the port without
-        # updating the comment map / SERVICES / PORTS arrays in lockstep,
-        # the exact drift class #1972/#354 existed to catch.
-        import re
+        # config#1972 Part A: :8504 was crucible-dash's (retired config#1973) —
+        # this guards against a future service silently reusing the port
+        # without updating the port map in lockstep, the exact drift class
+        # #1972/#354 existed to catch.
+        units, ports = watchdog_units_and_ports()
 
-        box_health = (REPO_ROOT / "infrastructure" / "box_health.sh").read_text()
-        services_array_match = re.search(r"^SERVICES=\(([^)]*)\)", box_health, re.M)
-        assert services_array_match
-        assert "crucible-dash.service" not in services_array_match.group(1).split()
+        assert "crucible-dash.service" not in units
 
-        ports_array_match = re.search(r"^PORTS=\(([^)]*)\)", box_health, re.M)
-        assert ports_array_match, "box_health.sh must declare a PORTS=(...) watchdog array"
-        assert "8504" not in ports_array_match.group(1).split(), (
+        assert "8504" not in ports, (
             "8504 (retired crucible-dash's port) should not be watched unless "
             "a new service has claimed it — if so, update this test with the "
-            "new owner"
+            "new owner, and give it a `port:` row in budget.yaml"
         )
