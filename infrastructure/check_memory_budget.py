@@ -135,26 +135,53 @@ def main() -> int:
         rows.append((unit, effective))
 
     total_mb = total_bytes // 1024**2 if total_bytes < sys.maxsize else -1
-    over = total_mb > ceiling_mb or total_mb < 0
 
-    if not args.quiet or over or problems:
+    # Bound 1: bounded overcommit. Caps are sized for STARTUP PEAKS, which do
+    # not coincide across services, so the sum is allowed to exceed the ceiling
+    # by a declared ratio -- but only by a declared one. An unbounded sum is the
+    # 2.4x accident that cascaded the box on 2026-07-27.
+    max_ratio = float(spec["max_overcommit_ratio"])
+    allowed_mb = int(ceiling_mb * max_ratio)
+    ratio = (total_mb / ceiling_mb) if ceiling_mb and total_mb > 0 else float("inf")
+    over = total_mb > allowed_mb or total_mb < 0
+
+    # Bound 2: steady-state safety. This is the one that governs normal
+    # operation -- the sum of what the services ACTUALLY use must leave real
+    # headroom, independent of how generous the caps are.
+    max_ss = float(spec["max_steady_state_fraction"])
+    ss_mb = sum(int(s["observed_mb"]) for s in spec["services"])
+    ss_allowed = int(ram_mb * max_ss)
+    ss_over = ss_mb > ss_allowed
+
+    if not args.quiet or over or ss_over or problems:
         label = "installed" if installed else "declared"
-        print(f"memory budget ({label}): RAM {ram_mb} MB, "
-              f"reserve {reserve:.0%}, ceiling {ceiling_mb} MB")
+        print(f"memory budget ({label}): RAM {ram_mb} MB, reserve {reserve:.0%}, "
+              f"ceiling {ceiling_mb} MB, max overcommit {max_ratio:.2f}x "
+              f"(= {allowed_mb} MB)")
         for unit, b in sorted(rows, key=lambda r: -r[1]):
             print(f"  {unit:<28} {b // 1024**2:>5} MB")
-        print(f"  {'TOTAL':<28} {total_mb:>5} MB "
-              f"({'OVER by ' + str(total_mb - ceiling_mb) + ' MB' if over else 'within budget'})")
+        print(f"  {'TOTAL (caps)':<28} {total_mb:>5} MB  "
+              f"{ratio:.2f}x ceiling "
+              f"({'OVER' if over else 'within declared overcommit'})")
+        print(f"  {'TOTAL (steady state)':<28} {ss_mb:>5} MB  "
+              f"{ss_mb / ram_mb:.0%} of RAM "
+              f"({'OVER' if ss_over else 'ok'}, limit {max_ss:.0%})")
 
     for p in problems:
         print(f"DRIFT: {p}", file=sys.stderr)
 
     if over:
-        print(f"FAIL: aggregate MemoryMax {total_mb} MB exceeds the {ceiling_mb} MB "
-              f"ceiling. Per-service caps do not prevent global exhaustion -- "
-              f"either lower a cap or move a service off this box "
-              f"(policy T1-1 / decision framework section 4).", file=sys.stderr)
-    return 1 if (over or problems) else 0
+        print(f"FAIL: aggregate MemoryMax {total_mb} MB is {ratio:.2f}x the "
+              f"{ceiling_mb} MB ceiling, above the declared "
+              f"max_overcommit_ratio {max_ratio:.2f}x. Either lower a cap, raise "
+              f"the ratio WITH a written rationale, or move a service off this "
+              f"box (policy T1-1 / decision framework section 4).", file=sys.stderr)
+    if ss_over:
+        print(f"FAIL: steady-state total {ss_mb} MB is {ss_mb / ram_mb:.0%} of "
+              f"RAM, above the {max_ss:.0%} limit. This is the bound that governs "
+              f"normal operation -- the box is genuinely too small for what it "
+              f"runs (policy T1-7 / exit trigger E3).", file=sys.stderr)
+    return 1 if (over or ss_over or problems) else 0
 
 
 if __name__ == "__main__":

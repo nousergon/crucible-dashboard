@@ -19,7 +19,24 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUDGET="$HERE/systemd/resource-limits/budget.yaml"
-DROPIN_NAME="10-resource-limits.conf"
+
+# 99- so this drop-in sorts LAST and therefore wins. systemd merges drop-ins in
+# alphabetical order with later files overriding earlier ones, and the legacy
+# hand-written files on this box are named `override.conf` and `10-memory.conf`.
+# A `10-` prefix here would have been silently overridden by `override.conf` --
+# the budget would have been installed and had no effect.
+DROPIN_NAME="99-resource-limits.conf"
+
+# Legacy hand-written memory drop-ins that this file supersedes. Every one was
+# verified 2026-07-27 to contain ONLY [Service] + Memory{High,Max} — no
+# ExecStart, Environment, or other settings — so removing them loses nothing.
+# They are removed rather than left in place because dead config that no longer
+# takes effect is exactly the drift this mechanism exists to eliminate.
+# NOTE: morning-signal.service.d/10-memory.conf is deliberately NOT touched —
+# morning-signal is timer-driven, out of this budget's scope, and its drop-in
+# is already tracked in VCS.
+LEGACY_NAMES=("override.conf" "10-memory.conf")
+
 DRY_RUN=0
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
 
@@ -59,6 +76,24 @@ RestartSec=5s
 OOMPolicy=restart
 EOF
 )
+
+    # Retire superseded legacy drop-ins for this unit first. Left in place they
+    # are dead config (99- wins), which is drift waiting to confuse someone.
+    for legacy in "${LEGACY_NAMES[@]}"; do
+        lpath="${dir}/${legacy}"
+        [[ -f "$lpath" ]] || continue
+        if grep -qvE '^\s*($|#|\[Service\]|MemoryAccounting=|MemoryHigh=|MemoryMax=)' "$lpath"; then
+            echo "SKIP removing $lpath — contains settings beyond memory; review by hand" >&2
+            continue
+        fi
+        CHANGED=1
+        if [[ $DRY_RUN -eq 1 ]]; then
+            echo "would remove superseded $lpath"
+        else
+            rm -f "$lpath"
+            echo "removed superseded $lpath"
+        fi
+    done
 
     if [[ -f "$target" ]] && [[ "$(cat "$target")" == "$rendered" ]]; then
         continue
