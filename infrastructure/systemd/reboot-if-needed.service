@@ -1,0 +1,14 @@
+[Unit]
+Description=Reboot the dashboard box only if patching requires it (alpha-engine-config-I4493)
+Documentation=https://github.com/nousergon/nous-ergon-ops/blob/main/policies/shared-application-host-policy.md
+After=network-online.target
+Wants=network-online.target
+OnFailure=alert-on-failure@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/reboot_if_needed.sh
+User=root
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+Environment=AWS_REGION=us-east-1
+TimeoutStartSec=300
