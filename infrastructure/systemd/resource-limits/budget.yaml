@@ -252,3 +252,45 @@ manifest_exclude:
     reason: OS plumbing (dbus alias)
   - unit: dbus-org.freedesktop.resolve1.service
     reason: OS plumbing (dbus alias)
+
+# ── Sandboxing (alpha-engine-config-I4490) ────────────────────────────────
+# Applied uniformly by install-resource-limits.sh to every unit above:
+#
+#   NoNewPrivileges=yes       no privilege escalation via setuid/fscaps
+#   PrivateTmp=yes            per-service /tmp namespace
+#   ProtectSystem=full        /usr, /boot, /efi, /etc read-only
+#   ProtectKernelTunables=yes /proc/sys, /sys read-only
+#   ProtectKernelModules=yes  no module (un)loading
+#   ProtectControlGroups=yes  /sys/fs/cgroup read-only
+#   RestrictSUIDSGID=yes      cannot create setuid/setgid files
+#
+# THREE SETTINGS DELIBERATELY NOT USED, each of which would break this box
+# ------------------------------------------------------------------------
+# `ProtectHome=` — NOT SET. Every service on this box runs FROM
+#   /home/ec2-user/<repo> (verified 2026-07-27: WorkingDirectory is
+#   /home/ec2-user/... for all of dashboard, metron-api, mnemon, vires, signal,
+#   telos-web, nousergon-auth). Any ProtectHome= value makes /home invisible or
+#   read-only and breaks all thirteen simultaneously. I4490's own issue body
+#   suggested `ProtectHome=read-only`; that was wrong for this box.
+#
+# `ProtectSystem=strict` — NOT USED, `full` instead. `strict` makes the ENTIRE
+#   filesystem hierarchy read-only, /home included, so every service would need
+#   its own ReadWritePaths= for its checkout, venv, and any local SQLite. That
+#   is per-service work with a real breakage surface; `full` protects /usr,
+#   /boot, /efi and /etc while leaving /home writable, which is where the whole
+#   attack surface of a shared-user box actually is. I4490's issue body
+#   suggested `strict`; downgraded deliberately, not by omission.
+#
+# `RemoveIPC=` — NOT SET, and this one is a genuine hazard here. It removes ALL
+#   IPC objects owned by the user when the unit stops. With thirteen services
+#   sharing the single ec2-user identity, stopping one service could destroy
+#   IPC belonging to the other twelve. Safe only once services have per-service
+#   users.
+#
+# THE DEEPER FIX, NOT DONE HERE
+# ----------------------------- 
+# Sandboxing narrows what a service can reach; it does not change the fact that
+# all thirteen share one Unix identity and therefore one set of credentials.
+# Per-service system users (User=svc-metron, svc-mnemon, ...) with per-service
+# home directories are the real fix, and they need a file-ownership migration
+# per service. Tracked separately rather than bundled here.
