@@ -128,6 +128,12 @@ fi
 
 systemctl daemon-reload
 echo "daemon-reload done."
+
+# Regenerate the watchdog's service/port manifest from the same budget.yaml, so
+# adding a service to the budget also puts it under box_health.sh coverage.
+# Two lists is how the watchdog fell six services behind in the first place.
+echo
+"$PY" "$HERE/generate-box-manifest.py"
 echo
 echo "Drop-ins are installed but NOT yet applied to running processes."
 echo "New MemoryMax takes effect on the running cgroup immediately;"
