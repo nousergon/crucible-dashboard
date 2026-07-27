@@ -56,9 +56,24 @@ PATTERN='killed by the OOM killer'
 
 mkdir -p "$STATE_DIR"
 
+# _PID=1 restricts the scan to systemd's OWN messages, and that restriction is
+# load-bearing, not tidiness.
+#
+# Without it this script reads its own output: it logs the matched OOM lines to
+# the journal (so the alert names the dead unit), those log lines contain the
+# match pattern verbatim, and the next run counts them as fresh kills. Observed
+# live 2026-07-27 — one real kill at 16:17:55 produced "1 NEW oom kill" every
+# 5 minutes indefinitely, each log entry nesting the previous one, holding the
+# CloudWatch alarm permanently in ALARM. That is exactly the latched-alarm
+# failure the delta design exists to prevent, reintroduced through the back
+# door.
+#
+# systemd (PID 1) is also the authoritative emitter of the per-unit line
+# `<unit>: A process of this unit has been killed by the OOM killer.`, so
+# narrowing to it loses no real signal.
 read_since_cursor() {
     local cursor="$1"
-    journalctl --after-cursor="$cursor" --no-pager --output=short 2>/dev/null
+    journalctl _PID=1 --after-cursor="$cursor" --no-pager --output=short 2>/dev/null
 }
 
 if [[ -s "$CURSOR_FILE" ]] && lines=$(read_since_cursor "$(cat "$CURSOR_FILE")") ; then
@@ -76,7 +91,7 @@ delta=$(printf '%s' "$lines" | grep -c "$PATTERN" || true)
 
 # Advance the cursor to the journal's current end, whether or not we counted
 # anything, so the next run resumes from here.
-new_cursor=$(journalctl -n 0 --show-cursor --no-pager 2>/dev/null \
+new_cursor=$(journalctl _PID=1 -n 0 --show-cursor --no-pager 2>/dev/null \
              | sed -n 's/^-- cursor: //p' | tail -1)
 if [[ -n "$new_cursor" ]]; then
     printf '%s\n' "$new_cursor" > "$CURSOR_FILE"
