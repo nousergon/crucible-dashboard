@@ -81,55 +81,65 @@ max_steady_state_fraction: 0.60 # sum(observed_mb) / RAM. Currently 0.43.
 services:
   # ── alpha-engine ────────────────────────────────────────────────────────
   - unit: dashboard.service
+    port: 8501
     observed_mb: 82
     memory_high: 210M
     memory_max: 300M
     note: Streamlit private console; spikes on large dataframe renders
 
   - unit: nous-ergon-live.service
+    port: 8502
     observed_mb: 72
     memory_high: 175M
     memory_max: 250M
 
   - unit: crucible-dash-api.service
+    port: 8506
     observed_mb: 195
     memory_high: 245M
     memory_max: 350M
 
   - unit: crucible-dash-web.service
+    port: 3002
     observed_mb: 113
     memory_high: 154M
     memory_max: 220M
 
   # ── metron ──────────────────────────────────────────────────────────────
   - unit: metron-api.service
+    port: 8000
     observed_mb: 349
     memory_high: 385M
     memory_max: 550M
     note: largest steady-state consumer on the box (gunicorn + uvicorn workers)
 
   - unit: metron-dash-web.service
+    port: 3003
     observed_mb: 104
     memory_high: 154M
     memory_max: 220M
 
   # ── other products ──────────────────────────────────────────────────────
   - unit: telos-web.service
+    port: 3001
     observed_mb: 57
     memory_high: 105M
     memory_max: 150M
 
   - unit: vires.service
+    port: 8530
     observed_mb: 79
     memory_high: 112M
     memory_max: 160M
 
   - unit: signal.service
+    port: 8505
     observed_mb: 78
     memory_high: 175M
     memory_max: 250M
 
   - unit: mnemon.service
+    port: 8503
     observed_mb: 109
     memory_high: 175M
     memory_max: 250M
@@ -139,6 +149,7 @@ services:
       any service on the box while having no reclaim window. Raised.
 
   - unit: nousergon-auth.service
+    port: 4100
     observed_mb: 51
     memory_high: 105M
     memory_max: 150M
@@ -149,6 +160,7 @@ services:
 
   # ── dev infrastructure ──────────────────────────────────────────────────
   - unit: litellm-proxy.service
+    port: 8980
     observed_mb: 308
     memory_high: 350M
     memory_max: 500M
@@ -162,6 +174,7 @@ services:
       Restart=always now recycles it on an OOM kill instead of letting it die.
 
   - unit: llm-egress-proxy.service
+    port: 8990
     observed_mb: 42
     memory_high: 250M
     memory_max: 400M
@@ -176,6 +189,7 @@ services:
 
   # ── ingress ─────────────────────────────────────────────────────────────
   - unit: nginx.service
+    port: 443
     observed_mb: 6
     memory_high: 70M
     memory_max: 100M
@@ -216,3 +230,25 @@ restart_policy:
   OOMPolicy: stop
   StartLimitIntervalSec: 300      # [Unit] section
   StartLimitBurst: 5              # [Unit] section
+
+# Units that are legitimately NOT under box_health.sh coverage. The watchdog's
+# coverage self-check reports any enabled, non-oneshot unit that is neither in
+# `services:` above nor excluded here — so a new app service surfaces as an
+# alert instead of going quietly unmonitored, while OS plumbing stays quiet.
+#
+# Exclusions are BY NAME WITH A REASON. A bare count cannot say what is
+# missing, and a count-based check false-alarmed on exactly these units when
+# first deployed 2026-07-27.
+manifest_exclude:
+  - unit: "alert-on-failure@.service"
+    reason: systemd template unit, never instantiated directly
+  - unit: amazon-cloudwatch-agent.service
+    reason: AWS agent, has its own supervision and its own alarms
+  - unit: dbus.service
+    reason: OS plumbing
+  - unit: dbus-org.freedesktop.home1.service
+    reason: OS plumbing (dbus alias)
+  - unit: dbus-org.freedesktop.network1.service
+    reason: OS plumbing (dbus alias)
+  - unit: dbus-org.freedesktop.resolve1.service
+    reason: OS plumbing (dbus alias)
