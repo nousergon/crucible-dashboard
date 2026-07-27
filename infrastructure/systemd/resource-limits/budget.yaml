@@ -1,0 +1,218 @@
+# Dashboard box — box-level memory budget and restart semantics.
+#
+# WHY THIS FILE EXISTS, AND WHY IT LIVES IN THIS REPO
+# ---------------------------------------------------
+# This box runs 14 long-running services across eight products (alpha-engine,
+# metron, telos, vires, the-cyphering, mnemon, nousergon-auth, plus dev
+# infrastructure). Most of those services are OWNED by other repos.
+#
+# The memory budget is nonetheless a property of the BOX, not of any one app,
+# because the invariant is about the SUM. No single app repo can enforce
+# "everything fits in RAM" — only the repo that owns the box's infrastructure
+# can, and that is this one (it already owns nginx.conf, box_health.sh,
+# boot-pull.sh, all of which are similarly cross-product).
+#
+# THE TWO INVARIANTS
+# ------------------
+#   sum(memory_max_mb) <= ceiling * max_overcommit_ratio    (bounded overcommit)
+#   sum(observed_mb)   <= RAM_MB * max_steady_state_fraction (steady-state safety)
+#
+# where ceiling = RAM_MB * (1 - reserve_fraction). See the overcommit note below
+# for why the first bound is a ratio rather than 1.0.
+#
+# Per-service caps bound ONE runaway. They do nothing about several services
+# growing toward their individually-legal ceilings at once — the kernel OOM
+# killer then fires against whatever it picks, which need not be the service
+# that caused the pressure. That is exactly what happened on 2026-07-25
+# (metron-refresh OOM-killed while doing legitimate work) and again on
+# 2026-07-27, when the sum stood at ~4650 MB against 1913 MB of RAM (2.4x)
+# and the box cascaded: MemAvailable hit 44 MB, metron-dash stopped answering,
+# and the SSM agent was starved badly enough that the box could not be managed
+# remotely at all.
+#
+# Enforced by `infrastructure/check_memory_budget.py`, which is run by
+# `box_health.sh` and can be run in CI.
+#
+# Governing policy: nous-ergon-ops/policies/shared-application-host-policy.md
+#   T1-1 (aggregate limits <= RAM), T1-2 (uniform restart semantics),
+#   T1-7 (right-sized instance).
+
+ram_mb: 3839              # t3.medium, as reported by `free -m` total
+reserve_fraction: 0.15    # kernel + page cache headroom => ceiling 3263 MB
+
+# THE OVERCOMMIT RATIO IS DELIBERATE, MEASURED, AND BOUNDED
+# ---------------------------------------------------------
+# Caps must be sized for each service's STARTUP PEAK, not its steady state.
+# Two services on this box proved that painfully on 2026-07-27:
+#
+#   litellm-proxy    at 150M/300M could never cold-start at all -- importing
+#                    litellm's dependency tree exceeded the cap, so the unit
+#                    reported active while never binding :8980.
+#   llm-egress-proxy at 50M/100M throttled 11385 times with ~60% memory stall;
+#                    a single `ssm get-parameter` hung for >113s. It shells out
+#                    to the AWS CLI 5x (~150M peak each) during startup.
+#
+# Sizing every cap for its startup peak makes the SUM exceed the ceiling. That
+# is acceptable here and is NOT the same defect as the 2.4x accidental
+# overcommit that cascaded the box, because startup peaks DO NOT COINCIDE --
+# services cold-start serially, not simultaneously (the one exception is boot,
+# where systemd's own ordering staggers them).
+#
+# What actually governs steady-state safety is the observed sum, tracked
+# separately below. Both bounds are enforced by check_memory_budget.py.
+#
+# Policy section 5 T1-1 permits this explicitly: "Overcommit is permitted only
+# as a documented, ratio-stated decision." This is that statement.
+max_overcommit_ratio: 1.20      # sum(memory_max) / ceiling. Currently 1.18.
+max_steady_state_fraction: 0.60 # sum(observed_mb) / RAM. Currently 0.43.
+
+# memory_high is the SOFT limit: the kernel throttles and reclaims against the
+# service rather than killing it. memory_max is the HARD cap. Setting high at
+# ~70% of max gives every service a reclaim window before it hits the wall —
+# a service with only a hard cap goes from unconstrained straight to a kill.
+#
+# observed_mb is steady-state RSS measured 2026-07-27 ~11 min after a clean
+# boot on t3.medium. Caps are sized for each service's STARTUP PEAK, which for
+# most units is ~2-3x observed but for the two proxies is far more (see their
+# notes). Re-measure and re-budget when the service set or instance type
+# changes; a unit whose note says DO NOT LOWER was calibrated against a real
+# failure, and lowering it reproduces that failure.
+
+services:
+  # ── alpha-engine ────────────────────────────────────────────────────────
+  - unit: dashboard.service
+    observed_mb: 82
+    memory_high: 210M
+    memory_max: 300M
+    note: Streamlit private console; spikes on large dataframe renders
+
+  - unit: nous-ergon-live.service
+    observed_mb: 72
+    memory_high: 175M
+    memory_max: 250M
+
+  - unit: crucible-dash-api.service
+    observed_mb: 195
+    memory_high: 245M
+    memory_max: 350M
+
+  - unit: crucible-dash-web.service
+    observed_mb: 113
+    memory_high: 154M
+    memory_max: 220M
+
+  # ── metron ──────────────────────────────────────────────────────────────
+  - unit: metron-api.service
+    observed_mb: 349
+    memory_high: 385M
+    memory_max: 550M
+    note: largest steady-state consumer on the box (gunicorn + uvicorn workers)
+
+  - unit: metron-dash-web.service
+    observed_mb: 104
+    memory_high: 154M
+    memory_max: 220M
+
+  # ── other products ──────────────────────────────────────────────────────
+  - unit: telos-web.service
+    observed_mb: 57
+    memory_high: 105M
+    memory_max: 150M
+
+  - unit: vires.service
+    observed_mb: 79
+    memory_high: 112M
+    memory_max: 160M
+
+  - unit: signal.service
+    observed_mb: 78
+    memory_high: 175M
+    memory_max: 250M
+
+  - unit: mnemon.service
+    observed_mb: 109
+    memory_high: 175M
+    memory_max: 250M
+    note: >
+      Was capped at 150M with MemoryHigh=infinity — 109M observed against a
+      150M hard cap and no soft limit at all, i.e. closest to its ceiling of
+      any service on the box while having no reclaim window. Raised.
+
+  - unit: nousergon-auth.service
+    observed_mb: 51
+    memory_high: 105M
+    memory_max: 150M
+    note: >
+      Shared identity service. Found DISABLED (not enabled at boot) on
+      2026-07-27 — it was running only because someone had started it by hand,
+      and it did not survive the first reboot. Enabled since.
+
+  # ── dev infrastructure ──────────────────────────────────────────────────
+  - unit: litellm-proxy.service
+    observed_mb: 308
+    memory_high: 350M
+    memory_max: 500M
+    note: >
+      DO NOT LOWER without re-testing a cold start. Calibrated 2026-07-27
+      (alpha-engine-config-I4441/I4451): at 150M/300M this unit could never
+      cold-start — importing litellm's dependency tree exceeded the cap, the
+      cgroup throttled continuously, and the service reported active while
+      never binding :8980. Steady state 308M; the gap between that and 500M is
+      startup headroom, not slack. Separately has known memory growth (I4441);
+      Restart=always now recycles it on an OOM kill instead of letting it die.
+
+  - unit: llm-egress-proxy.service
+    observed_mb: 42
+    memory_high: 250M
+    memory_max: 400M
+    note: >
+      DO NOT LOWER — steady state (42M) is wildly unrepresentative of startup.
+      Calibrated 2026-07-27 (alpha-engine-config-I4451): at 50M/100M the cgroup
+      throttled 11385 times with ~60% memory stall and a single
+      `ssm get-parameter` hung for >113s, so the service never finished booting.
+      Startup shells out to the AWS CLI 5x (~150M peak each) to resolve provider
+      keys, then runs gitleaks subprocesses per scan. The 6x gap between
+      observed and cap is entirely startup and subprocess spikes.
+
+  # ── ingress ─────────────────────────────────────────────────────────────
+  - unit: nginx.service
+    observed_mb: 6
+    memory_high: 70M
+    memory_max: 100M
+    note: sole ingress for all ten vhosts — Restart=always is load-bearing
+
+# Restart semantics applied uniformly to every unit above (policy T1-2).
+#
+# `Restart=always` IS the restart-on-OOM mechanism. There is no
+# `OOMPolicy=restart` -- systemd.service(5) takes only `continue`, `stop`, or
+# `kill`, and an invalid value is SILENTLY IGNORED (systemd falls back to the
+# default and logs nothing at the unit level). Verified live on systemd 252:
+# a drop-in carrying `OOMPolicy=restart` left `systemctl show -p OOMPolicy`
+# reporting `stop`, while `Restart=` and `MemoryMax=` from the same block
+# applied normally. Anything that "looks applied" here must be read back from
+# `systemctl show`, never assumed from the file on disk.
+#
+# The working combination is:
+#   OOMPolicy=stop   -> on an OOM kill systemd terminates the unit cleanly,
+#                       stopping its remaining processes rather than letting a
+#                       multi-process unit limp on with a dead worker (which is
+#                       what `continue` would do).
+#   Restart=always   -> systemd then restarts it 5s later, because `always`
+#                       restarts on ANY stop, including that clean termination.
+#
+# CORRECTION to the original I4491 analysis: `OOMPolicy=stop` was NOT the
+# mechanism that kept metron-refresh dead for two days. `stop` is systemd's
+# default and is correct here. metron-refresh is `Type=oneshot`, `static`, and
+# timer-triggered -- a failed oneshot batch job legitimately does not restart.
+# Its real defects were that nothing ALERTED on the failure and that its timer
+# went inactive; both are tracked in I4487, not fixed by restart semantics.
+#
+# StartLimitBurst bounds the loop: a genuinely broken service still lands in
+# `failed` after 5 restarts in 300s, where box_health.sh sees it. Restart=always
+# without a limit is its own failure mode.
+restart_policy:
+  Restart: always
+  RestartSec: 5s
+  OOMPolicy: stop
+  StartLimitIntervalSec: 300      # [Unit] section
+  StartLimitBurst: 5              # [Unit] section
