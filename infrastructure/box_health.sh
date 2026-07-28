@@ -372,6 +372,29 @@ classify_throttle_delta() {
     fi
 }
 
+# publish_verdict COUNT — put the watchdog's OWN conclusion on the metrics path.
+#
+# Why this exists (config-I5211): until now the verdict travelled ONLY via
+# `krepis.alerts publish` (SNS + Telegram). Metrics and alerts are separate code
+# paths with separate failure modes, so a broken alert path means a confirmed
+# problem is found and then silently dropped — while emit_metrics keeps
+# publishing happily, so the box-liveness alarm stays green. The box looks
+# healthy precisely because the part that says otherwise is the part that broke.
+# That is not hypothetical on this fleet: `python -m nousergon_lib.alerts` was a
+# guard-less silent exit-0 no-op on lib 0.81.0 (config#1646).
+#
+# A count, deliberately, not the problem text. WHICH problem and WHY is the
+# on-box alert's job and it does it well; duplicating that detail into CloudWatch
+# would make both layers wrong in the same way when the source is wrong. This
+# layer answers one question the other cannot: "is the watchdog finding
+# anything, regardless of whether it can tell me about it?"
+publish_verdict() {
+    aws cloudwatch put-metric-data --namespace "AlphaEngine/Box" \
+        --metric-data \
+        "MetricName=health_problems,Dimensions=[{Name=InstanceId,Value=${INSTANCE_ID}}],Value=${1:-0},Unit=Count" \
+        2>&1 | head -1 | sed 's/^/box_health: verdict publish failed: /' >&2 || true
+}
+
 # snapshot_problems — run the full check ONCE, printing one problem per line.
 # No shared state; the caller samples it repeatedly and keeps the intersection.
 snapshot_problems() {
@@ -636,6 +659,7 @@ trap throttle_baseline_write EXIT
 # all-healthy path takes a single sample and exits without added latency.
 confirmed=$(snapshot_problems)
 if [ -z "$confirmed" ]; then
+    publish_verdict 0
     exit 0
 fi
 attempt=1
@@ -649,12 +673,17 @@ done
 
 # all flagged problems self-healed within the confirmation window → no page
 if [ -z "$confirmed" ]; then
+    publish_verdict 0
     exit 0
 fi
 
 # Log the confirmed set so a firing is diagnosable from the journal directly
 # (no S3 dedup-marker archaeology needed).
 printf 'box_health: confirmed problems after %d samples:\n%s\n' "$attempt" "$confirmed" >&2
+
+# Publish the verdict BEFORE alerting, so a broken alert path cannot also
+# prevent the count being recorded — that ordering is the whole point.
+publish_verdict "$(printf '%s\n' "$confirmed" | grep -c .)"
 
 # build message + a dedup key derived from the problem set, so the same
 # ongoing issue alerts once per dedup window rather than every 10 min.
