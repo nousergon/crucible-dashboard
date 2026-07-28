@@ -108,22 +108,32 @@ services:
   # ── metron ──────────────────────────────────────────────────────────────
   - unit: metron-api.service
     port: 8000
-    observed_mb: 403
-    memory_high: 450M
+    observed_mb: 384
+    memory_high: 480M
     memory_max: 550M
-    # 2026-07-28 re-measure (alpha-engine-config-I5216). Steady state had grown
-    # 349 -> 403 MB, so MemoryHigh=385M sat BELOW the working set and the kernel
-    # throttled the cgroup continuously: memory.events showed high=7347 since
-    # boot, with max=0 / oom_kill=0 — never a runaway, just a permanently
-    # under-sized throttle. The host had 1.7 GB free the whole time.
-    #
-    # ONLY memory_high moves. memory_max stays 550M deliberately: the hard cap
-    # was never approached (max=0), and sum(memory_max) is at 1.18 of the 1.20
-    # max_overcommit_ratio — raising it would spend the last of the box's
-    # overcommit headroom to fix a throttle that the cap has nothing to do with.
-    # sum(observed_mb) moves 0.43 -> ~0.44 against a 0.60 ceiling, so the
-    # steady-state invariant is unaffected.
-    note: largest steady-state consumer on the box (gunicorn + uvicorn workers)
+    note: >-
+      largest steady-state consumer on the box (gunicorn + 4 uvicorn workers).
+      memory_high raised 385M -> 480M (config-I5216). This is a STARTUP-PEAK
+      sizing error, not continuous throttling — the same mistake this file
+      already records for litellm-proxy and llm-egress-proxy, and the reason
+      the overcommit note above says caps must be sized for the startup peak.
+      Measured 2026-07-28, cgroup started 17:24:24 UTC: 7347 MemoryHigh events
+      accumulated during worker warm-up and then STOPPED — the counter was
+      static across a 2-minute sample and memory.pressure read 0.00 at avg10,
+      avg60 and avg300 for both `some` and `full`. Steady state fits under the
+      cap; warm-up does not. It fits by 1 MiB: memory.current 384 MiB against
+      memory.high 385 MiB, with memory.peak also 385 MiB — peak EQUAL to the
+      cap is the tell that the reading is censored by the cap itself, so the
+      old observed_mb of 349 was never the working set, only the largest value
+      the ceiling permitted. anon was 380 of those 384 MiB, so there is almost
+      no page cache to reclaim and the kernel throttles rather than freeing
+      anything. Left unfixed this degrades every cold start, which is exactly
+      how litellm-proxy reached "could never cold-start at all". memory_max
+      stays 550M, so the T1-1 aggregate is unchanged (the sum is over
+      memory_max, not memory_high). observed_mb updated to the measured 384 and
+      is STILL a floor — re-measure once it has run un-pinned. The structural
+      question (4 gunicorn workers on a 2-vCPU box, each carrying a full Python
+      heap) is config-I5225, not fixed here: it changes serving capacity.
 
   - unit: metron-dash-web.service
     port: 3003
