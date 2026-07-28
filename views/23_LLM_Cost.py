@@ -35,6 +35,7 @@ from krepis.usage_pacing import reset_window
 
 from shared import cache_hit_rate
 from loaders.s3_loader import (
+    cost_archive_staleness,
     load_claude_code_usage,
     load_llm_cost_parquets,
     load_usage_pacing_config,
@@ -126,6 +127,31 @@ st.caption(
 )
 
 df = load_llm_cost_parquets(n_recent=12)
+
+# Staleness gate BEFORE any rendering. This page loads the N most recent
+# partitions regardless of age, so without this it renders a dead pipeline
+# as a healthy one — which it did from 2026-07-11 to 2026-07-28
+# (alpha-engine-config-I5206). Old numbers presented as current are worse
+# than no numbers: they get acted on.
+_staleness = cost_archive_staleness()
+if _staleness["is_stale"]:
+    if _staleness["latest"] is None:
+        st.error(
+            "**Cost archive is empty.** No `decision_artifacts/_cost/` "
+            "partitions exist. The producer (`AggregateCosts` in the weekly "
+            "SF) has never written, or the prefix moved."
+        )
+    else:
+        _age = _staleness["days_old"]
+        st.error(
+            f"**Cost data is stale — everything below describes "
+            f"{_staleness['latest']}"
+            + (f", {_age} days ago" if _age is not None else "")
+            + f".** The archive is weekly; anything older than "
+            f"{_staleness['threshold_days']} days means the producer has "
+            f"missed at least two cycles and is dead, not late. Do not read "
+            f"these figures as current spend. See alpha-engine-config-I5206."
+        )
 
 if df.empty:
     st.info(
