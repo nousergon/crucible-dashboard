@@ -68,6 +68,44 @@ if ! "$PY" "$HERE/check_memory_budget.py" --declared --quiet; then
     exit 1
 fi
 
+# ── Refuse to render a User= for an account that does not exist ─────────────
+#
+# On 2026-07-28 this installer wrote User=svc-<service> into all thirteen
+# drop-ins from budget.yaml's new `user:` fields. The script that CREATES those
+# accounts (create-service-users.sh) was never invoked — it is named create-*,
+# and the routing guard that exists to catch exactly this globs install-*.sh,
+# so it matched nothing. systemd cannot resolve a User= it cannot look up, so
+# every unit that restarted died with 217/USER: five services down, and the
+# other eight armed to die on their next restart.
+#
+# A generator that emits a reference to an account it neither creates nor
+# verifies is fail-OPEN — it produces a unit file that is syntactically valid
+# and unbootable. Checking is one getent per declared user, so the only reason
+# not to check is that nobody thought of it. Fail closed, before ANY file is
+# written: a deploy that stops loudly here is recoverable, a box whose fourteen
+# units all reference missing accounts is not.
+#
+# This is deliberately a check on the RENDERED state, not a dependency on
+# create-service-users.sh having run. It holds no matter how the accounts come
+# to exist — by that script, by hand, or by a future provisioning path.
+missing_users=$("$PY" - "$BUDGET" <<'PYEOF'
+import sys, yaml
+spec = yaml.safe_load(open(sys.argv[1]))
+print(" ".join(sorted({u for s in spec["services"] if (u := s.get("user", ""))})))
+PYEOF
+)
+absent=""
+for u in $missing_users; do
+    getent passwd "$u" >/dev/null 2>&1 || absent="${absent} ${u}"
+done
+if [[ -n "${absent// /}" ]]; then
+    echo "REFUSING to install: budget.yaml declares User= for account(s) that do not exist on this host:" >&2
+    for u in $absent; do echo "    $u" >&2; done
+    echo "Nothing was written. Create the accounts first (infrastructure/create-service-users.sh)," >&2
+    echo "or remove the 'user:' field from those services in budget.yaml." >&2
+    exit 1
+fi
+
 CHANGED=0
 while IFS='|' read -r unit user high max; do
     [[ -z "$unit" ]] && continue

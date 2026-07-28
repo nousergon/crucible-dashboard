@@ -144,7 +144,7 @@ class TestInfraWiring:
         # What actually matters here is that no gate in this region reverts to
         # a commit-range diff (the config#2338 defect this test exists for).
         # That every installer is invoked at all is guarded separately and
-        # exhaustively by TestInstallerRouting.
+        # exhaustively by TestProvisioningScriptRouting.
         assert "any_file_state_stale" in installer_block
         assert "CURRENT_SHA}~1" not in installer_block
         # Floor, not equality: gates are only ever added, so this catches a
@@ -473,8 +473,8 @@ class TestManifestPropagation:
         assert "rendered=$(" not in body
 
 
-class TestInstallerRouting:
-    """Every install-*.sh must be routed on deploy, or declared manual-only.
+class TestProvisioningScriptRouting:
+    """Every provisioning script must be routed on deploy, or declared manual-only.
 
     These scripts provision state OUTSIDE the git tree — systemd units,
     /usr/local/bin copies, agent configs, CloudWatch alarms — which a `git
@@ -522,12 +522,68 @@ class TestInstallerRouting:
             if ln.strip() and not ln.strip().startswith("#")
         }
 
+    # A script provisions if it writes state a `git pull` never touches. Keyed
+    # on what the script DOES, not what it is called: this guard used to glob
+    # install-*.sh, so create-service-users.sh — 271 lines whose entire job is
+    # creating thirteen Unix accounts the systemd units reference — matched
+    # nothing, was routed by nothing, and never ran. budget.yaml shipped
+    # User=svc-<name> for all thirteen anyway; every unit that restarted died
+    # with 217/USER (alpha-engine-config-I4791). The guard was working exactly
+    # as written and caught nothing, because the naming convention it trusted
+    # was never an invariant — a provisioning script is free to be called
+    # anything, and eventually one was.
+    PROVISIONING_MARKERS = (
+        "/etc/systemd/system",
+        "/usr/local/bin",
+        "/etc/alpha-engine",
+        "systemctl enable",
+        "useradd",
+        "groupadd",
+        "put-metric-alarm",
+        "amazon-cloudwatch-agent-ctl",
+    )
+
+    # Scripts that contain a marker but are not themselves provisioners. Each
+    # is a PAYLOAD an installer copies onto the box, the deploy driver itself,
+    # or a test. Exempting by name is safe here only because the entry states
+    # which installer owns it — an orphan payload has an orphan installer, and
+    # that installer is still caught by the check below.
+    NOT_PROVISIONERS = {
+        "boot-pull.sh": "payload; installed + scheduled by install-boot-pull.sh",
+        "box_health.sh": "payload; installed by install-box-health.sh",
+        "box_hygiene.sh": "payload; installed by install-box-health.sh",
+        "deploy-on-merge.sh": "the deploy driver itself; invoked by deploy.yml",
+        "morning-signal-recover.sh": "payload; installed by install-morning-signal.sh",
+        "morning-signal-watchdog.sh": "payload; installed by install-morning-signal-watchdog.sh",
+        "test_deploy_manifest_gate.sh": "test",
+        "test_installer_routing.sh": "test",
+    }
+
+    def _provisioning_scripts(self):
+        out = []
+        for path in sorted((REPO_ROOT / "infrastructure").glob("*.sh")):
+            if path.name in self.NOT_PROVISIONERS:
+                continue
+            body = path.read_text()
+            if any(m in body for m in self.PROVISIONING_MARKERS):
+                out.append(path)
+        return out
+
+    def test_not_provisioner_exemptions_still_exist(self):
+        # An exemption for a deleted file is dead config that silently widens
+        # the guard the next time someone reuses the name.
+        for name in self.NOT_PROVISIONERS:
+            assert (REPO_ROOT / "infrastructure" / name).exists(), (
+                f"NOT_PROVISIONERS names {name}, which no longer exists — "
+                f"remove the entry"
+            )
+
     def test_no_installer_is_orphaned(self):
         sh = (REPO_ROOT / self.DEPLOY).read_text()
         routed = {r[0] for r in self._rows()}
         manual = self._manual()
 
-        for path in sorted((REPO_ROOT / "infrastructure").glob("install-*.sh")):
+        for path in self._provisioning_scripts():
             name = path.name
             # A few predate the table and have bespoke gates; accept a real
             # invocation, not a mere mention (a comment naming a script is how
@@ -542,12 +598,70 @@ class TestInstallerRouting:
                 for wf in (REPO_ROOT / ".github" / "workflows").glob("*.yml")
             )
             assert name in routed or name in manual or invoked or in_ci, (
-                f"{name} is invoked by nothing: add a ROUTED_INSTALLERS row, or "
-                f"a MANUAL_ONLY_INSTALLERS entry stating why it must not run on "
-                f"deploy, or a call from a .github/workflows/*.yml job. An "
-                f"installer nothing calls means the box silently "
-                f"drifts from main (config-I5215)."
+                f"{name} provisions state outside the git tree but is invoked "
+                f"by nothing: add a ROUTED_INSTALLERS row, or a "
+                f"MANUAL_ONLY_INSTALLERS entry stating why it must not run on "
+                f"deploy, or a call from a .github/workflows/*.yml job — or, if "
+                f"it does not actually provision, a NOT_PROVISIONERS entry "
+                f"naming the installer that owns it. A provisioning script "
+                f"nothing calls means the box silently drifts from main "
+                f"(config-I5215), or that main declares config the box was "
+                f"never given (alpha-engine-config-I4791)."
             )
+
+    def test_declared_users_require_the_account_creator_to_be_routed(self):
+        """budget.yaml may not declare `user:` while create-service-users.sh is manual.
+
+        This is the exact coupling that broke the box on 2026-07-28. The
+        `user:` fields and the script that creates those accounts are two
+        halves of one migration; PR #566 merged the half that REFERENCES the
+        accounts without the half that CREATES them, CI was green, and every
+        unit that restarted died with 217/USER.
+
+        Neither half is wrong alone — a declared user with the creator routed
+        is the migration's finished state, and no declared users with the
+        creator manual-only is where it sits today. Only the combination is
+        unbootable, so the combination is what is asserted.
+        """
+        import yaml
+
+        spec = yaml.safe_load(
+            (REPO_ROOT / "infrastructure" / "systemd" / "resource-limits"
+             / "budget.yaml").read_text()
+        )
+        declared = sorted(
+            s["unit"] for s in spec["services"] if s.get("user")
+        )
+        if not declared:
+            return  # migration not activated — nothing to couple
+
+        routed = {r[0] for r in self._rows()}
+        assert "create-service-users.sh" in routed, (
+            f"budget.yaml declares user: for {declared}, which renders "
+            f"User=<account> into their drop-ins — but create-service-users.sh "
+            f"is not in ROUTED_INSTALLERS, so nothing creates those accounts on "
+            f"the box. systemd cannot start a unit whose User= does not resolve "
+            f"(217/USER). Route the creator in the same PR that declares the "
+            f"users (alpha-engine-config-I4791)."
+        )
+
+    def test_renderer_refuses_unresolvable_users(self):
+        """The renderer must verify declared accounts exist before writing.
+
+        Routing the creator is necessary but not sufficient: it can be routed
+        and still have failed, or the accounts can be removed out from under a
+        declaration. The renderer is the last point at which this is cheap to
+        catch, so it checks the host rather than trusting the manifest.
+        """
+        sh = (REPO_ROOT / "infrastructure" / "install-resource-limits.sh").read_text()
+        assert "getent passwd" in sh, (
+            "install-resource-limits.sh must verify every declared user "
+            "resolves before rendering User= into any drop-in"
+        )
+        assert "REFUSING to install" in sh.split("CHANGED=0")[0], (
+            "the user preflight must run BEFORE the render loop — refusing "
+            "after some drop-ins are written leaves the box half-migrated"
+        )
 
     def test_manual_only_entries_state_a_reason(self):
         import re
