@@ -646,20 +646,17 @@ ROUTED_INSTALLERS=(
 # Declared manual-only installers, as `name|reason`. CI requires every
 # install-*.sh to appear either here or in the table above, so a new one cannot
 # be added and silently never run (tests/test_dash_deploy_infra.py).
-MANUAL_ONLY_INSTALLERS=(
-  # CANNOT run from the box, by design. The instance role does not carry
-  # cloudwatch:PutMetricAlarm, so every invocation dies on the first alarm:
-  #   AccessDenied ... assumed-role/alpha-engine-dashboard-role ... is not
-  #   authorized to perform: cloudwatch:PutMetricAlarm
-  # Verified live 2026-07-28. That absence is CORRECT and must not be "fixed"
-  # by widening the role: a host that can rewrite its own alarms can disable
-  # its own detection, which on a shared box running fourteen services with no
-  # per-service isolation (T0-6 unmet) is a real privilege to withhold. Alarm
-  # provisioning belongs in CI/IaC with operator credentials — tracked in
-  # config-I5211. The seven host alarms are currently in place and OK; this
-  # script is how they are updated, from an operator machine.
-  "install-host-alarms.sh|needs cloudwatch:PutMetricAlarm, which the instance role deliberately lacks; alarm provisioning is an operator/CI action (config-I5211)"
-)
+# Declared manual-only installers, as `name|reason`. CI requires every
+# install-*.sh to appear here, in ROUTED_INSTALLERS above, or in a GitHub
+# workflow — so a new one cannot be added and silently never run.
+#
+# Empty since config-I5211: install-host-alarms.sh was the sole entry and now
+# runs in deploy.yml with the OIDC role, which is where it always belonged. It
+# cannot run HERE — the instance role deliberately lacks
+# cloudwatch:PutMetricAlarm, because a host that can rewrite its own alarms can
+# disable its own detection.
+MANUAL_ONLY_INSTALLERS=()
+
 
 installer_inputs_digest() {   # INPUT [INPUT...] -> sha256, empty on any error
     local f
