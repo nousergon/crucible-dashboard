@@ -9,6 +9,16 @@ User=ec2-user
 ExecStart=/usr/local/bin/box_health.sh
 # Region for alpha_engine_lib.alerts SNS publish (Telegram creds load from
 # /home/ec2-user/.alpha-engine.env inside the script).
+# Runtime state directory for the cgroup-throttle baselines. systemd creates
+# /var/lib/box-health owned by User= above and exports $STATE_DIRECTORY.
+#
+# This is NOT cosmetic. The script runs as ec2-user, which cannot mkdir under
+# root-owned /var/lib — so a hand-rolled `mkdir -p` fails, the baseline is never
+# written, and the throttle check goes permanently silent because "no baseline"
+# is its healthy case. Verified live 2026-07-28: the state file did not exist
+# after a successful run. StateDirectory= makes the directory a declared part of
+# the unit rather than something the script has to earn at runtime.
+StateDirectory=box-health
 Environment=AWS_REGION=us-east-1
 # Include /usr/sbin and /sbin: `ss` (the port probe) lives in /usr/sbin and is
 # absent from the default systemd PATH. The script also resolves ss by absolute
