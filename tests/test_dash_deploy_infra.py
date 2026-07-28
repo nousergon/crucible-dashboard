@@ -342,6 +342,11 @@ class TestInfraShellTests:
         # rule could never clear and survived its own remedy (config-I5216).
         self._run("test_box_health_throttle_rate.sh")
 
+    def test_deploy_auto_revert(self):
+        # T1-3: health checks existed but nothing rolled the box back, so a bad
+        # merge left it broken until a human noticed (config-I5250 gap 3).
+        self._run("test_deploy_auto_revert.sh")
+
     def test_deploy_manifest_gate(self):
         # Guards the gate that makes a budget.yaml-only change actually reach
         # the box. Before it, the manifest was generated ONLY by
