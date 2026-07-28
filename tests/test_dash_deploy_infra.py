@@ -336,6 +336,12 @@ class TestInfraShellTests:
         # timer, 144 of 144 runs.
         self._run("test_box_health_timer_deadman.sh")
 
+    def test_box_health_throttle_rate(self):
+        # Guards that cgroup throttling is judged on the counter's MOVEMENT.
+        # memory.events::high is monotonic per-cgroup, so the previous `> 0`
+        # rule could never clear and survived its own remedy (config-I5216).
+        self._run("test_box_health_throttle_rate.sh")
+
     def test_deploy_manifest_gate(self):
         # Guards the gate that makes a budget.yaml-only change actually reach
         # the box. Before it, the manifest was generated ONLY by
