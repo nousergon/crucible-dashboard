@@ -74,7 +74,7 @@ reserve_fraction: 0.15    # kernel + page cache headroom => ceiling 3263 MB
 # accident. If it ever blocks a MEASURED cap again, that is a signal to re-derive
 # it, not to shave the cap to fit.
 max_overcommit_ratio: 1.20      # sum(memory_max) / ceiling. Currently 1.16.
-max_steady_state_fraction: 0.60 # sum(observed_mb) / RAM. Currently 0.35.
+max_steady_state_fraction: 0.60 # sum(observed_mb) / RAM. Currently 0.37.
 
 # memory_high is the SOFT limit: the kernel throttles and reclaims against the
 # service rather than killing it. memory_max is the HARD cap. Setting high at
@@ -136,9 +136,18 @@ services:
 
   - unit: crucible-dash-api.service
     port: 8506
-    observed_mb: 107
+    observed_mb: 185
     memory_high: 245M
     memory_max: 350M
+    note: >-
+      observed_mb corrected 107 -> 185 (measured live 2026-07-28, peak 186
+      against a 245M cap, so uncensored). Found by the STALE-observation check
+      on its FIRST run against the live box -- the number was understating this
+      service by 78 MiB and nothing had ever compared it to reality, because
+      --installed mode was invoked by nothing (see box_health.sh).
+      At 185/245 this sits at 76% of its soft cap: not throttling today, but
+      the tightest ratio on the box after dashboard. Re-measure before assuming
+      headroom here.
 
   - unit: crucible-dash-web.service
     port: 3002
