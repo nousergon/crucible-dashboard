@@ -128,6 +128,145 @@ emit_metrics() {
         2>&1 | head -1 | sed 's/^/box_health: metric publish failed: /' >&2 || true
 }
 
+# classify_timer — decide whether ONE enabled timer is dead, from its systemd
+# properties alone. Echoes a problem line if it will not fire again; echoes
+# nothing when healthy.
+#
+# A pure function of its arguments (no systemd calls) specifically so the
+# classification can be unit-tested against synthetic property blocks — see
+# test_box_health_timer_deadman.sh. The predicate this replaced was never
+# tested, and shipped a defect that fired on 100% of runs (below).
+#
+#   $1 unit name  $2 ActiveState  $3 SubState
+#   $4 NextElapseUSecRealtime  $5 NextElapseUSecMonotonic
+classify_timer() {
+    local name="$1" active="$2" sub="$3" next_real="$4" next_mono="$5"
+
+    # An `enabled` timer that is not `active` will not fire again until a
+    # reboot or a manual `systemctl start`. This is the EXACT signature of the
+    # outage this check exists for: metron-refresh.timer sat `enabled` +
+    # `inactive` for two days after its 2026-07-25 OOM kill (config-I4487).
+    # Named distinctly from the never-fire-again case below because the remedy
+    # differs and is mechanical: `systemctl start <timer>`.
+    if [ "$active" != "active" ]; then
+        echo "timer enabled but not active (will not fire until reboot): $name"
+        return
+    fi
+
+    # SubState=running means the timer's OWN triggered service is executing
+    # right now. systemd deliberately does not compute a next-elapse while a
+    # timer is in that state (NextElapseUSecMonotonic=infinity), and
+    # `systemctl list-timers` renders that as `-` in the NEXT column — visually
+    # identical to a dead timer.
+    #
+    # This is why the previous `NEXT == "-"` table heuristic was wrong. It read
+    # in-flight as dead, and box_health.sh runs INSIDE box-health.service, so
+    # box-health.timer was guaranteed to be mid-trigger at every single sample:
+    # 144 of 144 runs over 36h flagged the watchdog's own timer, paging hourly
+    # (the dedup window) about a timer that was provably firing on schedule.
+    # The same race hits any other timer whose job outlives the confirmation
+    # window — so this is a general defect, not a box-health special case, and
+    # it is fixed by reading state rather than by excluding one unit.
+    if [ "$sub" = "running" ]; then
+        return
+    fi
+
+    # "No next elapse" is spelled differently per timer kind, and BOTH
+    # properties are always present, so neither alone is a sufficient test:
+    #   calendar timer  -> Realtime=<timestamp>   Monotonic=0
+    #   monotonic timer -> Realtime=(empty)       Monotonic=<timespan>
+    #   no next elapse  -> Realtime=(empty)       Monotonic=0 | infinity
+    case "$next_mono" in ""|0|infinity) next_mono="" ;; esac
+    if [ -z "$next_real" ] && [ -z "$next_mono" ]; then
+        echo "timer will never fire again: $name"
+    fi
+}
+
+# human_age — seconds as a compact age ("45m", "31h", "9d") for alert text.
+# A raw second count is unreadable at a glance and the alert is read by a human
+# on a phone, not parsed.
+#
+# Days only past 48h, deliberately. Integer division at a 24h cutoff renders
+# BOTH 26h and 31h as "1d", so a genuinely breached alert reads
+# "has not run in 1d (budget 1d)" — self-contradictory, and the natural
+# reading is that nothing is wrong. Most budgets on this box sit in the
+# 26-30h band precisely because they are daily jobs with slack, so that
+# collision is the common case, not an edge case. Caught by its own test.
+human_age() {
+    local s="$1"
+    if   [ "$s" -ge 172800 ]; then echo "$((s / 86400))d"
+    elif [ "$s" -ge 3600 ];   then echo "$((s / 3600))h"
+    elif [ "$s" -ge 60 ];     then echo "$((s / 60))m"
+    else echo "${s}s"
+    fi
+}
+
+# classify_timer_staleness — decide whether ONE timer's JOB is healthy, as
+# opposed to whether its SCHEDULE is (that is classify_timer above).
+#
+# These are genuinely different questions and the box needs both. A timer whose
+# service exits non-zero on every single fire — or one whose OnCalendar was
+# mis-edited to a far-future date — is `active`, `waiting`, with a perfectly
+# valid next elapse. classify_timer calls it healthy, correctly, because the
+# scheduler IS healthy. Only execution outcome exposes it. metron-refresh's
+# 2026-07-25 OOM kill was caught by the scheduler check purely by luck: it
+# happened to also stop the timer (config-I4487, config-I5209).
+#
+# Pure function of its arguments, same as classify_timer, so the thresholds and
+# the edge cases below are unit-testable without systemd.
+#
+#   $1 unit name          $2 now (epoch seconds)
+#   $3 last trigger (epoch seconds, EMPTY if never triggered)
+#   $4 max staleness (seconds, EMPTY if no budget.yaml row)
+#   $5 triggered service's Result
+classify_timer_staleness() {
+    local name="$1" now="$2" last="$3" budget="$4" result="$5" age
+
+    # No declared budget = unmonitored. NAMED, not skipped: an enabled timer
+    # with no `timers:` row in budget.yaml is a coverage hole, and a coverage
+    # hole that stays quiet is how this whole class of gap presents as green.
+    if [ -z "$budget" ]; then
+        echo "watchdog: timer has no dead-man threshold: $name — add a timers: row to budget.yaml"
+        return
+    fi
+
+    # Execution outcome. Independent of staleness: a job can fail promptly and
+    # on schedule forever, which is stale by no measure and broken by any.
+    if [ -n "$result" ] && [ "$result" != "success" ]; then
+        echo "timer job failing: $name (last run result=$result)"
+    fi
+
+    # Never triggered. Not reportable as stale — there is no baseline to
+    # measure from, and a freshly-installed timer is legitimately in this
+    # state. Whether it will EVER fire is classify_timer's question, and it
+    # answers it. reboot-if-needed.timer sits here in normal operation.
+    [ -n "$last" ] || return
+
+    # A non-numeric last-trigger reaching the arithmetic below is fatal under
+    # `set -u`: bash evaluates bare words inside $(( )) as variable names, so
+    # "Tue 2026-07-28 ..." aborts the ENTIRE snapshot with "Tue: unbound
+    # variable" — taking every other check on the box down with it. That is not
+    # hypothetical: `systemctl show --timestamp=unix` silently does NOT apply
+    # to LastTriggerUSec (verified on systemd 252, 2026-07-28), so the first
+    # live run crashed exactly this way. Reported, never evaluated.
+    case "$last" in
+        ''|*[!0-9]*)
+            echo "watchdog: cannot parse timer last-trigger ($last): $name"
+            return ;;
+    esac
+
+    age=$((now - last))
+    # A last-trigger in the future means a clock step, not a healthy timer.
+    # Reported rather than silently passed by the `>` comparison below.
+    if [ "$age" -lt 0 ]; then
+        echo "watchdog: timer last-trigger is in the future (clock skew?): $name"
+        return
+    fi
+    if [ "$age" -gt "$budget" ]; then
+        echo "timer has not run in $(human_age "$age") (budget $(human_age "$budget")): $name"
+    fi
+}
+
 # snapshot_problems — run the full check ONCE, printing one problem per line.
 # No shared state; the caller samples it repeatedly and keeps the intersection.
 snapshot_problems() {
@@ -197,17 +336,139 @@ snapshot_problems() {
     # die — which is why metron-refresh sat dead for two days after its
     # 2026-07-25 OOM kill with nothing noticing (alpha-engine-config-I4487).
     #
-    # An `enabled` timer whose NEXT is `-` will never fire again. That is the
-    # signal: unambiguous, no interval arithmetic, no false positives from a
-    # job that simply has not come due yet.
-    local dead_timers t
-    dead_timers=$(systemctl list-timers --all --no-pager --legend=false 2>/dev/null \
-                  | awk '$1=="-" && $NF ~ /\.service$/ {print $(NF-1)}')
-    for t in $dead_timers; do
+    # Enumerated from unit FILES, not from `systemctl list-timers`, and judged
+    # on `systemctl show` properties, not on that table's columns. The table is
+    # a human-facing format whose column count varies with timer kind and whose
+    # NEXT field is ambiguous (see classify_timer); reading properties is both
+    # unambiguous and version-stable. Column $1 of list-unit-files is always
+    # the unit name, so enumeration carries no positional fragility.
+    #
+    # TWO checks run per timer, answering different questions:
+    #   classify_timer            — is it scheduled to fire?      (scheduler)
+    #   classify_timer_staleness  — did it run, and did it work?  (execution)
+    # A job that fires on time and fails every run is invisible to the first
+    # and caught only by the second (config-I5209).
+    local t props active sub next_real next_mono timer_units _k _v
+    local svc last_epoch now_epoch result budget staleness_ok
+    now_epoch=$(date +%s)
+
+    # The thresholds live in the generated manifest, so they can be absent for
+    # two different reasons and the difference matters. An empty/undeclared map
+    # means the manifest predates the thresholds (an installer that did not
+    # re-run) — ONE line saying so. Reporting all ~22 timers as individually
+    # unmonitored in that state buries the single actionable cause under its
+    # own symptoms.
+    staleness_ok=1
+    if ! declare -p TIMER_MAX_STALENESS >/dev/null 2>&1 \
+       || [ "${#TIMER_MAX_STALENESS[@]}" -eq 0 ]; then
+        staleness_ok=0
+        [ "${MANIFEST_OK:-0}" -eq 1 ] && echo "watchdog: timer dead-man thresholds absent from manifest — re-run install-box-health.sh"
+    fi
+    timer_units=$(systemctl list-unit-files --type=timer --no-legend 2>/dev/null | awk '{print $1}')
+    if [ -z "$timer_units" ]; then
+        # Fail loud: an empty enumeration is a watchdog malfunction, not a box
+        # with no timers. Silently checking nothing is how this whole class of
+        # gap presents as green.
+        echo "watchdog: timer enumeration returned no units (cannot verify timers)"
+    fi
+    for t in $timer_units; do
+        # Bare TEMPLATE units (`foo@.timer`) are not schedulable — only their
+        # instances are, and an enabled instance gets its own `foo@bar.timer`
+        # row in list-unit-files, so skipping the template loses no coverage.
+        # `systemctl show` on a bare template returns nothing, which would
+        # otherwise trip the unreadable-state guard below on every run:
+        # refresh-policy-routes@.timer did exactly that in pre-merge testing.
+        case "$t" in *@.timer) continue ;; esac
         # A timer that is not enabled is deliberately parked, not broken.
         systemctl is-enabled --quiet "$t" 2>/dev/null || continue
-        echo "timer will never fire again: $t"
+        # One show call carries every property both checks need.
+        #
+        # `--timestamp=unix` is NOT used here: it does not apply to
+        # LastTriggerUSec (verified on systemd 252 — the property still renders
+        # "Tue 2026-07-28 17:03:35 UTC"), so relying on it silently fed a
+        # timestamp string into integer arithmetic. Converted explicitly below.
+        props=$(systemctl show "$t" -p ActiveState -p SubState \
+                    -p NextElapseUSecRealtime -p NextElapseUSecMonotonic \
+                    -p LastTriggerUSec -p Unit 2>/dev/null)
+        if [ -z "$props" ]; then
+            echo "watchdog: cannot read timer state: $t"
+            continue
+        fi
+        # Key-matched, not positional: `systemctl show` makes no ordering
+        # guarantee, and a missing key must stay EMPTY rather than silently
+        # inheriting the neighbouring property's value.
+        active=""; sub=""; next_real=""; next_mono=""; last_raw=""; svc=""
+        while IFS='=' read -r _k _v; do
+            case "$_k" in
+                ActiveState)             active="$_v" ;;
+                SubState)                sub="$_v" ;;
+                NextElapseUSecRealtime)  next_real="$_v" ;;
+                NextElapseUSecMonotonic) next_mono="$_v" ;;
+                Unit)                    svc="$_v" ;;
+                LastTriggerUSec)         last_raw="$_v" ;;
+            esac
+        done <<< "$props"
+        # A blank ActiveState means the parse failed, NOT that the timer is
+        # stopped — report it as a watchdog malfunction instead of paging a
+        # false dead-timer (no-silent-fails, and no silent false alarms).
+        if [ -z "$active" ]; then
+            echo "watchdog: cannot parse timer state: $t"
+            continue
+        fi
+        classify_timer "$t" "$active" "$sub" "$next_real" "$next_mono"
+
+        # Execution-outcome half. Skipped wholesale when the threshold map is
+        # unavailable — that condition is already reported once, above.
+        [ "$staleness_ok" -eq 1 ] || continue
+        budget="${TIMER_MAX_STALENESS[$t]:-}"
+        # Result of the unit this timer triggers, not of the timer itself.
+        result=""
+        [ -n "$svc" ] && result=$(systemctl show "$svc" -p Result --value 2>/dev/null)
+        # Convert systemd's human timestamp to epoch. Guarded on non-empty
+        # because `date -d ""` returns TODAY'S MIDNIGHT and exits 0 — a
+        # never-triggered timer would otherwise acquire a plausible, wrong
+        # last-run time and be judged against it. On a parse failure the raw
+        # value is passed through deliberately: classify_timer_staleness
+        # reports it verbatim rather than evaluating it.
+        last_epoch=""
+        if [ -n "$last_raw" ]; then
+            last_epoch=$(date -d "$last_raw" +%s 2>/dev/null) || last_epoch="$last_raw"
+            [ -n "$last_epoch" ] || last_epoch="$last_raw"
+        fi
+        classify_timer_staleness "$t" "$now_epoch" "$last_epoch" "$budget" "$result"
     done
+
+    # ── per-service cgroup memory pressure (alpha-engine-config-I4512) ─────
+    # The 2026-07-27 failure: two services (litellm-proxy, llm-egress-proxy)
+    # were pinned at their MemoryHigh ceiling with memory.pressure ~60% and
+    # memory.events high in the thousands, yet nothing surfaced this until
+    # they failed to restart. memory.pressure some avg10 > 10 means the
+    # service is spending >10% of time stalled on reclaim — a sustained
+    # throttle. memory.events high > 0 means the cgroup has hit its soft
+    # limit since boot.
+    local cg evt pressure high_count
+    for s in "${SERVICES[@]}"; do
+        # cgroup v2 uses literal unit names under system.slice/ — hyphens and
+        # dots are NOT hex-escaped for service units (confirmed on the actual
+        # box 2026-07-28).  Hex escaping (e.g. \x2d) is only for slice unit
+        # names where the prefixed "system-" separator must be distinguishable
+        # from a hyphen in the unit's own name.
+        cg="/sys/fs/cgroup/system.slice/${s}/memory.pressure"
+        if [ -r "$cg" ]; then
+            pressure=$(awk '/^some avg10/{val=$2+0; if(val>10) print val}' "$cg" 2>/dev/null)
+            if [ -n "$pressure" ]; then
+                echo "memory pressure: $s (avg10 some ${pressure}%)"
+            fi
+        fi
+        evt="/sys/fs/cgroup/system.slice/${s}/memory.events"
+        if [ -r "$evt" ]; then
+            high_count=$(awk '/^high/{if($2>0) print $2}' "$evt" 2>/dev/null)
+            if [ -n "$high_count" ]; then
+                echo "cgroup throttle: $s triggered MemoryHigh ${high_count}x since boot"
+            fi
+        fi
+    done
+    unset cg evt pressure high_count
 
     # listening ports (mnemon/bun has no systemd unit here, so port is the probe).
     if [ -z "$SS_BIN" ]; then

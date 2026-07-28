@@ -10,8 +10,17 @@
 # silently lost on any instance replacement.
 #
 # Usage:
-#   sudo ./install-resource-limits.sh            # install + daemon-reload
-#   sudo ./install-resource-limits.sh --dry-run  # print what would change
+#   sudo ./install-resource-limits.sh                    # install + daemon-reload
+#   sudo ./install-resource-limits.sh --dry-run          # print what would change
+#   sudo ./install-resource-limits.sh --verify           # restart each unit + assert port (acceptance criteria I4512)
+#   sudo ./install-resource-limits.sh --dry-run --verify # print what would restart
+#
+# --verify: after installing limits, restarts each limited service sequentially
+# and asserts it binds its port within a timeout. Catches the defect that hit
+# at the I4451 deploy: a ceiling that permits running but prevents booting.
+# Without this, a unit whose cap is below its startup peak reports active while
+# never binding its port -- the exact failure mode that went undetected on
+# litellm-proxy and llm-egress-proxy (alpha-engine-config-I4512).
 #
 # Policy: nous-ergon-ops/policies/shared-application-host-policy.md T1-1, T1-2.
 
@@ -38,7 +47,13 @@ DROPIN_NAME="99-resource-limits.conf"
 LEGACY_NAMES=("override.conf" "10-memory.conf")
 
 DRY_RUN=0
-[[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
+VERIFY=0
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run) DRY_RUN=1 ;;
+    --verify) VERIFY=1 ;;
+  esac
+done
 
 [[ -f "$BUDGET" ]] || { echo "missing $BUDGET" >&2; exit 1; }
 
@@ -174,3 +189,66 @@ echo "New MemoryMax takes effect on the running cgroup immediately;"
 echo "Restart=/RestartSec= apply to the NEXT start of each unit."
 echo
 echo "Verify with: $HERE/check_memory_budget.py --installed"
+
+# ── Restart smoke test (alpha-engine-config-I4512) ───────────────────────────
+# A ceiling that permits running but prevents booting is the exact failure mode
+# that went undetected on litellm-proxy and llm-egress-proxy.  --verify restarts
+# each service and asserts it binds its port within RESTART_TIMEOUT seconds.
+# This catches the defect at apply time, not at the next incident.
+if [[ $VERIFY -eq 1 ]]; then
+    echo
+    echo "=== Restart smoke test (--verify) ==="
+    RESTART_TIMEOUT=90  # seconds; llm-egress-proxy SSM calls can take >60s
+    FAILED=0
+    while IFS='|' read -r unit port; do
+        [[ -z "$unit" ]] && continue
+        if [[ $DRY_RUN -eq 1 ]]; then
+            echo "would restart $unit and wait for port $port"
+            continue
+        fi
+        echo -n "  restarting $unit ... "
+        if ! systemctl restart "$unit" 2>/dev/null; then
+            echo "FAILED (systemctl restart exited non-zero)"
+            FAILED=1
+            continue
+        fi
+        # Poll for port binding with exponential backoff
+        OK=0
+        for wait in 2 4 8 15 30 31; do
+            sleep "$wait"
+            if ss -tln 2>/dev/null | grep -q ":${port} "; then
+                OK=1
+                break
+            fi
+            # Early-exit if the unit has already failed
+            if ! systemctl is-active --quiet "$unit" 2>/dev/null; then
+                echo "inactive after ${wait}s — service crashed"
+                FAILED=1
+                OK=2
+                break
+            fi
+        done
+        if [[ $OK -eq 1 ]]; then
+            echo "OK (port $port)"
+        elif [[ $OK -eq 0 ]]; then
+            echo "TIMEOUT — port $port not bound after ${RESTART_TIMEOUT}s"
+            FAILED=1
+        fi
+    done < <("$PY" - "$BUDGET" <<'PYEOF'
+import sys, yaml
+spec = yaml.safe_load(open(sys.argv[1]))
+for s in spec["services"]:
+    port = s.get("port", "")
+    print(f"{s['unit']}|{port}")
+PYEOF
+)
+    if [[ $DRY_RUN -eq 0 ]]; then
+        echo
+        if [[ $FAILED -eq 0 ]]; then
+            echo "All ${RESTART_TIMEOUT}s smoke tests passed."
+        else
+            echo "SOME SERVICES FAILED the restart smoke test — review output above." >&2
+            exit 1
+        fi
+    fi
+fi
