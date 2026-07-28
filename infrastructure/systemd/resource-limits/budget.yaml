@@ -63,8 +63,18 @@ reserve_fraction: 0.15    # kernel + page cache headroom => ceiling 3263 MB
 #
 # Policy section 5 T1-1 permits this explicitly: "Overcommit is permitted only
 # as a documented, ratio-stated decision." This is that statement.
-max_overcommit_ratio: 1.20      # sum(memory_max) / ceiling. Currently 1.18.
-max_steady_state_fraction: 0.60 # sum(observed_mb) / RAM. Currently 0.43.
+# NOTE ON THIS RATIO, so the next person does not misread it as physics: it is a
+# DECLARED policy constant, not a measured property of the box. It was set to
+# 1.20 when the sum stood at 1.18 — i.e. fitted to its own current value, which
+# left no room for any legitimate cap increase. On 2026-07-28 that became the
+# stated reason a correct cap could not be applied to dashboard.service, while
+# the box actually had 1.4 GB of MemAvailable. A bound calibrated to the value it
+# bounds does no independent safety work. The bound that governs real operation
+# is max_steady_state_fraction below; this one only prevents the unbounded 2.4x
+# accident. If it ever blocks a MEASURED cap again, that is a signal to re-derive
+# it, not to shave the cap to fit.
+max_overcommit_ratio: 1.20      # sum(memory_max) / ceiling. Currently 1.16.
+max_steady_state_fraction: 0.60 # sum(observed_mb) / RAM. Currently 0.37.
 
 # memory_high is the SOFT limit: the kernel throttles and reclaims against the
 # service rather than killing it. memory_max is the HARD cap. Setting high at
@@ -82,21 +92,41 @@ services:
   # ── alpha-engine ────────────────────────────────────────────────────────
   - unit: dashboard.service
     port: 8501
-    observed_mb: 202
-    memory_high: 260M
-    memory_max: 300M
+    observed_mb: 248
+    memory_high: 340M
+    memory_max: 450M
     note: >-
-      Streamlit private console; spikes on large dataframe renders. memory_high
-      raised 210M -> 260M and observed_mb corrected 82 -> 202 (config-I5237).
-      The 82 was measured ~11 min after a clean boot, before the console had
-      loaded anything; the real steady state is 202 MiB, so the cap sat 8 MiB
-      above the working set and the cgroup throttled continuously — 283
-      MemoryHigh events and still climbing 80s later, unlike metron-api's
-      startup burst which stopped. memory.peak equalled memory.high, the same
-      tell that the reading is censored by the cap, so 202 is a FLOOR and
-      needs re-measuring once it has run un-pinned. memory_max stays 300M: the
-      T1-1 sum is over memory_max and is already at 1.18x of a 1.20x ceiling,
-      so there is no room to raise it without an instance-size decision (T1-7).
+      Streamlit private console. Caps raised 260M/300M -> 340M/450M and
+      observed_mb 202 -> 248, from the first UNCENSORED measurement of this
+      service (2026-07-28). I5237 raised memory_high 210M -> 260M and the
+      service re-pinned within a day, because 202 was never the working set —
+      it was a floor read under the old cap, exactly as that issue's own note
+      predicted.
+
+      Measured from a clean restart, cap well clear of the reading:
+        t=20s   211 MiB      t=120s  231 MiB (peak 240)
+        t=20min 235 MiB idle (peak 240, zero throttle events)
+        in use  248 MiB, peak crossing 261
+      It climbs fast for ~2 minutes and then plateaus. This is NOT a leak, and
+      the growth is not the framework: nous-ergon-live.service runs the same
+      Streamlit/plotly/pandas/boto3 stack from this same repo at 58 MiB, so the
+      215 MiB cold start is application data, not imports.
+
+      The old 260M soft cap sat INSIDE the normal operating band (235 idle ->
+      261 in use), which is why throttling arrived in bursts of 26-102 per
+      10-min tick rather than continuously. 340M clears the in-use peak by ~80
+      MiB for large dataframe renders; 450M leaves a real reclaim window above
+      it. The headroom was paid for by metron-api dropping to one worker below,
+      not by loosening max_overcommit_ratio and not by resizing the instance —
+      policy E3 does not fire (MemAvailable was 1396 MiB, trigger is 250 MiB).
+
+      STILL OUTSTANDING, and not fixed by this cap: the console has 181
+      `@st.cache_data` decorators and NOT ONE sets `max_entries`. Streamlit's
+      default is unbounded — only TTL evicts — so the footprint is a function of
+      distinct queries per TTL window rather than a bounded working set. That
+      violates policy section 4.3 ("bounded, declared resource footprint").
+      Raising a cap against an unbounded quantity is what I5237 did; this cap is
+      sized to the measured plateau, but the plateau itself is not guaranteed.
 
   - unit: nous-ergon-live.service
     port: 8502
@@ -106,9 +136,18 @@ services:
 
   - unit: crucible-dash-api.service
     port: 8506
-    observed_mb: 107
+    observed_mb: 185
     memory_high: 245M
     memory_max: 350M
+    note: >-
+      observed_mb corrected 107 -> 185 (measured live 2026-07-28, peak 186
+      against a 245M cap, so uncensored). Found by the STALE-observation check
+      on its FIRST run against the live box -- the number was understating this
+      service by 78 MiB and nothing had ever compared it to reality, because
+      --installed mode was invoked by nothing (see box_health.sh).
+      At 185/245 this sits at 76% of its soft cap: not throttling today, but
+      the tightest ratio on the box after dashboard. Re-measure before assuming
+      headroom here.
 
   - unit: crucible-dash-web.service
     port: 3002
@@ -119,32 +158,38 @@ services:
   # ── metron ──────────────────────────────────────────────────────────────
   - unit: metron-api.service
     port: 8000
-    observed_mb: 384
-    memory_high: 480M
-    memory_max: 550M
+    observed_mb: 203
+    memory_high: 280M
+    memory_max: 350M
     note: >-
-      largest steady-state consumer on the box (gunicorn + 4 uvicorn workers).
-      memory_high raised 385M -> 480M (config-I5216). This is a STARTUP-PEAK
-      sizing error, not continuous throttling — the same mistake this file
-      already records for litellm-proxy and llm-egress-proxy, and the reason
-      the overcommit note above says caps must be sized for the startup peak.
-      Measured 2026-07-28, cgroup started 17:24:24 UTC: 7347 MemoryHigh events
-      accumulated during worker warm-up and then STOPPED — the counter was
-      static across a 2-minute sample and memory.pressure read 0.00 at avg10,
-      avg60 and avg300 for both `some` and `full`. Steady state fits under the
-      cap; warm-up does not. It fits by 1 MiB: memory.current 384 MiB against
-      memory.high 385 MiB, with memory.peak also 385 MiB — peak EQUAL to the
-      cap is the tell that the reading is censored by the cap itself, so the
-      old observed_mb of 349 was never the working set, only the largest value
-      the ceiling permitted. anon was 380 of those 384 MiB, so there is almost
-      no page cache to reclaim and the kernel throttles rather than freeing
-      anything. Left unfixed this degrades every cold start, which is exactly
-      how litellm-proxy reached "could never cold-start at all". memory_max
-      stays 550M, so the T1-1 aggregate is unchanged (the sum is over
-      memory_max, not memory_high). observed_mb updated to the measured 384 and
-      is STILL a floor — re-measure once it has run un-pinned. The structural
-      question (4 gunicorn workers on a 2-vCPU box, each carrying a full Python
-      heap) is config-I5225, not fixed here: it changes serving capacity.
+      Was the largest consumer on the box at 384 MiB with FOUR gunicorn/uvicorn
+      workers. Now one worker at 202-203 MiB (measured live 2026-07-28,
+      peak 203, zero throttle events, /health 200). That is config-I5225 closed
+      by removing the work rather than re-sizing around it.
+
+      Standing ruling (Brian, 2026-07-28, reaffirming a repeated one): metron is
+      a single-user personal tool and runs ONE worker. UvicornWorker is async, so
+      one event loop already serves concurrent requests, and FastAPI runs sync
+      `def` handlers in a threadpool inside it. Extra workers buy only CPU-bound
+      parallelism — undeliverable on 2 vCPU — and worker-death resilience. What
+      they cost is duplicate Python heaps: 182 MiB of the old 384 was pure
+      duplication. Raising it again needs evidence of a real concurrency
+      requirement, not a preference for headroom. Unit lives in metron-ops.
+
+      Freeing that 182 MiB is what paid for dashboard.service's cap above. It
+      also drained the box's swap from 475 MiB to ~0 and moved MemAvailable
+      1396 -> 1632 MiB. Policy T1-7 calls swapping on EBS "strictly worse than
+      paying for RAM"; this removed it without paying.
+
+      Caps cut 480M/550M -> 280M/350M: 1.4x/1.7x the measured 203 MiB, which is
+      also its startup peak (peak == current 45s after a cold start, with the
+      cap 277 MiB clear of the reading — an uncensored measurement).
+
+      Historical, kept because it is the reason the censored-reading check below
+      exists: at 385M the cgroup logged 7347 MemoryHigh events during worker
+      warm-up with memory.peak EQUAL to memory.high, so the then-recorded
+      observed_mb of 349 was never a working set — only the largest value the
+      ceiling permitted.
 
   - unit: metron-dash-web.service
     port: 3003

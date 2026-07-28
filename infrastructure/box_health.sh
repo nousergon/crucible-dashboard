@@ -53,6 +53,7 @@ set -uo pipefail
 
 ENV_FILE="/home/ec2-user/.alpha-engine.env"
 VENV_PY="/home/ec2-user/alpha-engine-dashboard/.venv/bin/python"
+BUDGET_CHECK="/home/ec2-user/alpha-engine-dashboard/infrastructure/check_memory_budget.py"
 
 # Load Telegram creds etc. (SNS auth comes from the instance role).
 if [ -f "$ENV_FILE" ]; then set -a; . "$ENV_FILE"; set +a; fi
@@ -428,6 +429,37 @@ snapshot_problems() {
     for s in "${SERVICES[@]}"; do
         systemctl is-active --quiet "$s" || echo "service down: $s"
     done
+
+    # Box memory budget: what systemd ACTUALLY loaded vs what budget.yaml
+    # declares, plus the observation-quality checks (censored / stale / orphan).
+    #
+    # WHY THIS IS HERE AT ALL
+    # check_memory_budget.py's own docstring says --installed "is the on-box
+    # mode, run by box_health.sh". It was not. Verified 2026-07-28: nothing on
+    # the box or in CI invoked --installed -- only --declared, from the
+    # installer, which checks budget.yaml against ITSELF and can never see the
+    # box. So every --installed check (cap drift, uncapped service, and now
+    # censored/stale observations and orphan drop-ins) was written, tested, and
+    # never executed. A computed signal with no subscriber is not monitoring,
+    # and the docstring asserting the integration made it look like one.
+    #
+    # STATIC problem string, detail to the journal. This is load-bearing: the
+    # confirm-on-retry intersection matches lines EXACTLY, and this check's
+    # messages carry live byte counts that move between samples ("holds 185 MB
+    # (1.7x)"). Emitting them verbatim would produce a problem that can never
+    # confirm and therefore never alerts -- a guard that looks wired and is not,
+    # which is the same defect this block exists to correct.
+    if [ -r "$BUDGET_CHECK" ]; then
+        local budget_out
+        if ! budget_out=$("$VENV_PY" "$BUDGET_CHECK" --installed --quiet 2>&1); then
+            echo "memory budget: cap drift or unreliable observation (detail in journal)"
+            printf 'box_health: memory budget detail:\n%s\n' "$budget_out" >&2
+        fi
+    else
+        # Same class as the df probe below: a check that cannot run is a
+        # watchdog malfunction, reported distinctly rather than skipped.
+        echo "watchdog: memory budget check missing ($BUDGET_CHECK)"
+    fi
 
     # Manifest presence. Reported as a problem in its own right: running on the
     # fallback list means coverage is frozen at whatever was hardcoded here,
