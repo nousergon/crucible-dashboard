@@ -133,8 +133,23 @@ class TestInfraWiring:
         # Anchor on the "# ── 3." prefix, not a full title — main renames
         # section-3 headings independently of this test's concern.
         installer_block = script[script.index("# ── 2b."):script.index("# ── 3.")]
-        assert installer_block.count("any_file_state_stale") == 4
+        # Intent, not arithmetic. This asserted `count(...) == 4` until §2f
+        # added the table-driven installer router (config-I5215) and the total
+        # became 5. An equality on a count is brittle in both directions: it
+        # breaks on unrelated additions, and it can be restored to passing by
+        # an edit that rebalances the total while a real gate is gone. It also
+        # cannot say WHICH gate regressed — the same objection box_health.sh
+        # records for its own coverage check ("named, not counted").
+        #
+        # What actually matters here is that no gate in this region reverts to
+        # a commit-range diff (the config#2338 defect this test exists for).
+        # That every installer is invoked at all is guarded separately and
+        # exhaustively by TestInstallerRouting.
+        assert "any_file_state_stale" in installer_block
         assert "CURRENT_SHA}~1" not in installer_block
+        # Floor, not equality: gates are only ever added, so this catches a
+        # gate being deleted without breaking when one is added.
+        assert installer_block.count("any_file_state_stale") >= 4
 
     def test_python_parity_self_heal_venv_built_at_final_path_no_relocation(self):
         # config#2835: the 2026-07-17 outage happened because the self-heal
@@ -445,3 +460,104 @@ class TestManifestPropagation:
         body = sh.split("manifest_stale() {", 1)[1].split("\n}", 1)[0]
         assert "--stdout > " in body, "render must go to a file, not $(...) or a pipe"
         assert "rendered=$(" not in body
+
+
+class TestInstallerRouting:
+    """Every install-*.sh must be routed on deploy, or declared manual-only.
+
+    These scripts provision state OUTSIDE the git tree — systemd units,
+    /usr/local/bin copies, agent configs, CloudWatch alarms — which a `git
+    pull` never touches. Six of them were invoked by nothing automated, so the
+    repo and the running box drifted indefinitely while every check read green
+    (config-I5215). The orphans were found by an ad-hoc grep during an
+    unrelated incident; this class is what makes the next one impossible.
+    """
+
+    DEPLOY = "infrastructure/deploy-on-merge.sh"
+
+    def _rows(self):
+        import re
+
+        sh = (REPO_ROOT / self.DEPLOY).read_text()
+        block = re.search(r"ROUTED_INSTALLERS=\((.*?)\n\)", sh, re.S)
+        assert block, "deploy-on-merge.sh must declare ROUTED_INSTALLERS"
+        rows = []
+        for line in block.group(1).splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            rows.append(line.strip('"').split("|"))
+        assert rows, "ROUTED_INSTALLERS is empty"
+        return rows
+
+    def _manual(self):
+        import re
+
+        sh = (REPO_ROOT / self.DEPLOY).read_text()
+        # Anchor the close on a line-start paren: reasons contain parentheses
+        # (e.g. "(config-I5211)"), and a bare `\)` stops at the first of them.
+        block = re.search(r"MANUAL_ONLY_INSTALLERS=\((.*?)\n\)", sh, re.S)
+        assert block is not None, "deploy-on-merge.sh must declare MANUAL_ONLY_INSTALLERS"
+        return {
+            ln.strip().strip('"').split("|")[0]
+            for ln in block.group(1).splitlines()
+            if ln.strip() and not ln.strip().startswith("#")
+        }
+
+    def test_no_installer_is_orphaned(self):
+        sh = (REPO_ROOT / self.DEPLOY).read_text()
+        routed = {r[0] for r in self._rows()}
+        manual = self._manual()
+
+        for path in sorted((REPO_ROOT / "infrastructure").glob("install-*.sh")):
+            name = path.name
+            # A few predate the table and have bespoke gates; accept a real
+            # invocation, not a mere mention (a comment naming a script is how
+            # the original orphan sweep produced a false negative).
+            invoked = f'bash "$REPO_DIR/infrastructure/{name}"' in sh
+            assert name in routed or name in manual or invoked, (
+                f"{name} is invoked by nothing: add a ROUTED_INSTALLERS row, or "
+                f"a MANUAL_ONLY_INSTALLERS entry stating why it must not run on "
+                f"deploy. An installer nothing calls means the box silently "
+                f"drifts from main (config-I5215)."
+            )
+
+    def test_manual_only_entries_state_a_reason(self):
+        import re
+
+        sh = (REPO_ROOT / self.DEPLOY).read_text()
+        block = re.search(r"MANUAL_ONLY_INSTALLERS=\((.*?)\n\)", sh, re.S)
+        for ln in block.group(1).splitlines():
+            ln = ln.strip()
+            if not ln or ln.startswith("#"):
+                continue
+            assert "|" in ln, f"manual-only entry needs `name|reason`: {ln}"
+            assert ln.strip('"').split("|", 1)[1].strip(), f"empty reason: {ln}"
+
+    def test_every_declared_source_path_exists(self):
+        # A typo'd src path makes the gate permanently wrong — always stale
+        # (installer runs every deploy) or, worse, never stale. Neither is
+        # visible at runtime; both are visible here.
+        for name, mode, args in self._rows():
+            for arg in args.split(","):
+                rel = arg.split(":")[0] if mode == "files" else arg
+                assert (REPO_ROOT / "infrastructure" / rel).exists(), (
+                    f"{name}: declared source infrastructure/{rel} does not exist"
+                )
+
+    def test_modes_are_known(self):
+        for name, mode, _args in self._rows():
+            assert mode in {"files", "stamp"}, f"{name}: unknown routing mode {mode!r}"
+
+    def test_file_mode_rows_declare_absolute_destinations(self):
+        for name, mode, args in self._rows():
+            if mode != "files":
+                continue
+            for pair in args.split(","):
+                assert ":" in pair, f"{name}: files row needs src:dst pairs, got {pair!r}"
+                assert pair.split(":", 1)[1].startswith("/"), (
+                    f"{name}: destination must be absolute, got {pair!r}"
+                )
+
+    def test_routing_shell_test(self):
+        TestInfraShellTests()._run("test_installer_routing.sh")
