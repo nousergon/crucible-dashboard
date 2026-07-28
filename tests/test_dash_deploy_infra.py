@@ -289,3 +289,38 @@ class TestInfraWiring:
             "a new service has claimed it — if so, update this test with the "
             "new owner, and give it a `port:` row in budget.yaml"
         )
+
+
+class TestInfraShellTests:
+    """Run the repo's bash test scripts under pytest so CI actually executes them.
+
+    `.github/workflows/ci.yml` runs `pytest tests/` and nothing else — it has
+    no shell-test step. Both scripts below were written as "invoked directly"
+    runners, which means neither had ever run in CI: a test nobody runs is
+    indistinguishable from no test, and it presents as green. Shelling out
+    from pytest is what makes them gates rather than documentation.
+    """
+
+    def _run(self, name):
+        import subprocess
+
+        script = REPO_ROOT / "infrastructure" / name
+        assert script.is_file(), f"{name} is missing"
+        proc = subprocess.run(
+            ["bash", str(script)], capture_output=True, text=True, timeout=120
+        )
+        assert proc.returncode == 0, (
+            f"{name} failed (exit {proc.returncode}):\n"
+            f"{proc.stdout}\n{proc.stderr}"
+        )
+
+    def test_box_health_timer_deadman(self):
+        # Guards classify_timer() — the box's only dead-man monitor for
+        # timer-driven jobs (policy T0-4, config-I4487). Its predecessor read
+        # a mid-trigger timer as dead and paged hourly on the watchdog's own
+        # timer, 144 of 144 runs.
+        self._run("test_box_health_timer_deadman.sh")
+
+    def test_deploy_on_merge_paths_changed(self):
+        # Pre-existing script (config#2242), previously unwired from CI.
+        self._run("test_deploy_on_merge_paths_changed.sh")
