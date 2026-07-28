@@ -2296,16 +2296,26 @@ def load_order_book_rationale_history(n_recent: int = 14) -> list[dict]:
     )
 
 
-# Production run_id format in the cost-tracker is ISO date
-# (``YYYY-MM-DD``, sometimes with a suffix). Test fixtures use
-# strings like ``run-x`` / ``run-budget-test`` / ``run-1``. The
-# anchor regex is the strong structural discriminator.
-_COST_RUN_ID_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(\b|[-_])")
+# NOTE: ``_COST_RUN_ID_RE`` (an ISO-date-prefix run_id discriminator) was
+# REMOVED 2026-07-28. It mirrored a producer-side guard in
+# crucible-research's ``scripts/aggregate_costs`` that silently killed the
+# cost pipeline for 17 days: production run_ids changed shape
+# (``eval_judge`` → artifact-scoped ``276a5be44c7c-EXEL-v5``) and the guard
+# then classified 100% of production rows as test pollution. It was a
+# format coupling wearing an invariant's clothes, and it was redundant —
+# the token ceiling below already catches the 2026-05-13 incident both
+# guards were written for. See alpha-engine-config-I5206. Do not
+# reintroduce a run_id-shape check here.
 
 # Claude Opus 4.7 max context is 1M tokens. 5M is 5x that ceiling so
 # no real API call can produce a per-row count above it. The 2026-05-13
 # pollution had input_tokens=1e9 — 200x the ceiling.
 _COST_MAX_PLAUSIBLE_TOKENS = 5_000_000
+
+# The cost parquet archive is weekly (Saturday ``AggregateCosts``). Two
+# missed cycles means the producer is dead, not merely late — surface it
+# rather than rendering the last good partition as if it were current.
+_COST_STALE_AFTER_DAYS = 15
 
 
 def _drop_implausible_cost_rows(df: pd.DataFrame) -> pd.DataFrame:
@@ -2317,14 +2327,14 @@ def _drop_implausible_cost_rows(df: pd.DataFrame) -> pd.DataFrame:
     run with real AWS creds) doesn't render on the API page until
     the producer-side rewrite of that day's parquet lands.
 
-    Drops rows where ``run_id`` doesn't start with an ISO date, or any
-    token-count column exceeds the Claude API ceiling.
+    Drops rows where any token-count column exceeds the API ceiling.
+
+    **No longer filters on ``run_id`` shape** — see the note above
+    ``_COST_MAX_PLAUSIBLE_TOKENS`` and alpha-engine-config-I5206.
     """
-    if df.empty or "run_id" not in df.columns:
+    if df.empty:
         return df
-    run_id_str = df["run_id"].astype(str).fillna("")
-    ok_run_id = run_id_str.str.match(_COST_RUN_ID_RE)
-    ok = ok_run_id.fillna(False)
+    ok = pd.Series(True, index=df.index)
     for col in ("input_tokens", "output_tokens",
                 "cache_read_tokens", "cache_create_tokens"):
         if col in df.columns:
@@ -2339,14 +2349,59 @@ def _drop_implausible_cost_rows(df: pd.DataFrame) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=_ttl("research"))
+def cost_archive_staleness() -> dict:
+    """Report how current the cost-parquet archive is.
+
+    **Why this exists.** ``load_llm_cost_parquets`` loads the N most recent
+    partitions *regardless of age* and has no way to say "these are old".
+    Between 2026-07-11 and 2026-07-28 the producer wrote nothing and the
+    LLM Cost page kept rendering charts, model breakdowns and totals off
+    the 7/11 partition with no indication the window was stale — an
+    operator checking spend saw a healthy page describing a dead pipeline
+    (alpha-engine-config-I5206).
+
+    Returns ``{"latest": "YYYY-MM-DD"|None, "days_old": int|None,
+    "is_stale": bool, "threshold_days": int}``. ``latest=None`` means the
+    archive is empty, which is reported as stale — an absent producer and
+    a dead producer are the same thing to a reader.
+    """
+    from datetime import datetime, timezone
+
+    bucket = _research_bucket()
+    dates = list_s3_prefixes(bucket, "decision_artifacts/_cost/")
+    if not dates:
+        return {"latest": None, "days_old": None, "is_stale": True,
+                "threshold_days": _COST_STALE_AFTER_DAYS}
+    latest = sorted(dates)[-1]
+    try:
+        latest_dt = datetime.strptime(latest, "%Y-%m-%d").replace(
+            tzinfo=timezone.utc)
+    except ValueError:
+        # A partition name we can't parse is not evidence of freshness.
+        return {"latest": latest, "days_old": None, "is_stale": True,
+                "threshold_days": _COST_STALE_AFTER_DAYS}
+    days_old = (datetime.now(timezone.utc) - latest_dt).days
+    return {
+        "latest": latest,
+        "days_old": days_old,
+        "is_stale": days_old > _COST_STALE_AFTER_DAYS,
+        "threshold_days": _COST_STALE_AFTER_DAYS,
+    }
+
+
+@st.cache_data(ttl=_ttl("research"))
 def load_llm_cost_parquets(n_recent: int = 12) -> pd.DataFrame:
     """Return a concatenated DataFrame of per-call LLM cost rows from the
     `decision_artifacts/_cost/{date}/cost.parquet` archive. Loads up to the
     *n_recent* most recent date partitions; empty DataFrame if the archive
     is empty or every parquet fails to parse.
 
-    Applies a defensive implausibility filter (run_id ISO-date prefix +
-    per-row token ceiling) so test-pollution rows like the 2026-05-13
+    **This function does not know how old its data is** — pair it with
+    :func:`cost_archive_staleness` on any surface that renders it as
+    current. See alpha-engine-config-I5206.
+
+    Applies a defensive implausibility filter (per-row token ceiling) so
+    test-pollution rows like the 2026-05-13
     incident (~$1014 fake spend from a unit-test run with real AWS creds)
     don't reach the page renderer.
     """

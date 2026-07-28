@@ -289,3 +289,159 @@ class TestInfraWiring:
             "a new service has claimed it — if so, update this test with the "
             "new owner, and give it a `port:` row in budget.yaml"
         )
+
+
+class TestInfraShellTests:
+    """Run the repo's bash test scripts under pytest so CI actually executes them.
+
+    `.github/workflows/ci.yml` runs `pytest tests/` and nothing else — it has
+    no shell-test step. Both scripts below were written as "invoked directly"
+    runners, which means neither had ever run in CI: a test nobody runs is
+    indistinguishable from no test, and it presents as green. Shelling out
+    from pytest is what makes them gates rather than documentation.
+    """
+
+    def _run(self, name):
+        import subprocess
+
+        script = REPO_ROOT / "infrastructure" / name
+        assert script.is_file(), f"{name} is missing"
+        proc = subprocess.run(
+            ["bash", str(script)], capture_output=True, text=True, timeout=120
+        )
+        assert proc.returncode == 0, (
+            f"{name} failed (exit {proc.returncode}):\n"
+            f"{proc.stdout}\n{proc.stderr}"
+        )
+
+    def test_box_health_timer_deadman(self):
+        # Guards classify_timer() — the box's only dead-man monitor for
+        # timer-driven jobs (policy T0-4, config-I4487). Its predecessor read
+        # a mid-trigger timer as dead and paged hourly on the watchdog's own
+        # timer, 144 of 144 runs.
+        self._run("test_box_health_timer_deadman.sh")
+
+    def test_deploy_manifest_gate(self):
+        # Guards the gate that makes a budget.yaml-only change actually reach
+        # the box. Before it, the manifest was generated ONLY by
+        # install-resource-limits.sh, which nothing automated invokes.
+        self._run("test_deploy_manifest_gate.sh")
+
+    def test_deploy_on_merge_paths_changed(self):
+        # Pre-existing script (config#2242), previously unwired from CI.
+        self._run("test_deploy_on_merge_paths_changed.sh")
+
+
+class TestTimerDeadManRegistry:
+    """budget.yaml's `timers:` block is the dead-man's threshold registry.
+
+    box_health.sh names any enabled timer with no row here, so the registry is
+    load-bearing: a malformed or missing entry degrades coverage silently on
+    the box unless it fails here first (config-I5209).
+    """
+
+    def _timers(self):
+        import yaml
+
+        spec = yaml.safe_load(
+            (REPO_ROOT / "infrastructure" / "systemd" / "resource-limits"
+             / "budget.yaml").read_text()
+        )
+        assert spec.get("timers"), "budget.yaml must declare a `timers:` block"
+        return spec["timers"]
+
+    def test_every_timer_row_is_well_formed(self):
+        # A threshold that silently became a wrong number is worse than no
+        # threshold, because it reports as covered.
+        import re
+
+        seen = set()
+        for row in self._timers():
+            unit = row["unit"]
+            assert unit.endswith(".timer"), f"{unit} is not a .timer unit"
+            assert unit not in seen, f"{unit} declared twice in budget.yaml"
+            seen.add(unit)
+            assert re.fullmatch(r"[1-9]\d*[smhd]", str(row["max_staleness"])), (
+                f"{unit}: max_staleness must be <positive int><s|m|h|d>, "
+                f"got {row['max_staleness']!r}"
+            )
+            # A bare number is unreviewable — the reasoning is the artifact.
+            assert row.get("note", "").strip(), f"{unit}: needs a `note:` justifying its budget"
+
+    def test_watchdogs_own_timer_is_covered(self):
+        # If box-health.timer itself stops firing, nothing else on the box
+        # notices — every other check runs *from* it.
+        units = {r["unit"] for r in self._timers()}
+        assert "box-health.timer" in units
+
+    def test_manifest_generator_emits_thresholds_in_seconds(self):
+        # The watchdog stays pure bash, so unit conversion happens at install
+        # time. Guard the conversion, not just the YAML.
+        import subprocess
+
+        gen = REPO_ROOT / "infrastructure" / "generate-box-manifest.py"
+        proc = subprocess.run(
+            [sys.executable, str(gen), "--stdout"],
+            capture_output=True, text=True, timeout=60,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert "declare -A TIMER_MAX_STALENESS=(" in proc.stdout
+        assert '["box-health.timer"]=1800' in proc.stdout      # 30m
+        assert '["metron-refresh.timer"]=93600' in proc.stdout  # 26h
+
+    def test_bad_duration_fails_the_install_not_the_watchdog(self):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "genmanifest", REPO_ROOT / "infrastructure" / "generate-box-manifest.py"
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        assert mod.parse_duration("x.timer", "26h") == 93600
+        assert mod.parse_duration("x.timer", "45m") == 2700
+        for bad in ["26", "h", "0h", "-5m", "26 h", "abc", "", "1w"]:
+            try:
+                mod.parse_duration("x.timer", bad)
+            except ValueError:
+                continue
+            raise AssertionError(f"parse_duration accepted invalid duration {bad!r}")
+
+    def test_timer_staleness_shell_test(self):
+        self_ = TestInfraShellTests()
+        self_._run("test_box_health_timer_staleness.sh")
+
+
+class TestManifestPropagation:
+    """The generated manifest must reach the box on merge, not by hand.
+
+    /etc/alpha-engine/box-services.conf is derived from budget.yaml. Its only
+    generator used to be install-resource-limits.sh, which is invoked by no
+    workflow, no deploy path and no CI — so I4492's "one list" premise held in
+    the repo and silently failed on the box. Verified live 2026-07-28: I5209
+    merged and deployed while the installed manifest carried none of its
+    thresholds.
+    """
+
+    def test_box_health_installer_generates_the_manifest(self):
+        sh = (REPO_ROOT / "infrastructure" / "install-box-health.sh").read_text()
+        assert "generate-box-manifest.py" in sh, (
+            "install-box-health.sh must render the manifest — it is box_health.sh's "
+            "input, and the installer is what deploy-on-merge.sh actually calls"
+        )
+
+    def test_deploy_gate_compares_rendered_manifest_not_just_file_pairs(self):
+        sh = (REPO_ROOT / "infrastructure" / "deploy-on-merge.sh").read_text()
+        assert "manifest_stale()" in sh
+        assert "manifest_stale || any_file_state_stale" in sh, (
+            "the box-health gate must consult manifest_stale; a budget.yaml-only "
+            "change leaves every compared src:dst pair byte-identical"
+        )
+
+    def test_gate_does_not_use_command_substitution_for_the_render(self):
+        # $(...) strips trailing newlines, which made the gate report stale on
+        # every deploy — a gate that is always true is not a gate.
+        sh = (REPO_ROOT / "infrastructure" / "deploy-on-merge.sh").read_text()
+        body = sh.split("manifest_stale() {", 1)[1].split("\n}", 1)[0]
+        assert "--stdout > " in body, "render must go to a file, not $(...) or a pipe"
+        assert "rendered=$(" not in body
