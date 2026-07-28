@@ -149,10 +149,21 @@ ${user_directive}
 ${remove_ipc}
 
 # ── sandboxing (alpha-engine-config-I4490) ──────────────────────────────
-# Thirteen services across eight products share the single ec2-user identity.
-# Without these, one compromised service reads every other service's material:
-# the ~/.netrc deploy PAT, both Cloudflare Origin private keys, 17 git
-# checkouts, and whatever the other twelve have resolved from SSM.
+# Thirteen services across eight products share the single ec2-user identity,
+# so one compromised service reads what that identity can reach.
+#
+# MEASURED 2026-07-28, because the previous version of this comment overstated
+# it and that overstatement was load-bearing — it was the stated justification
+# for a per-service-user migration that took the box down (I4791/I155):
+#   - the deploy PAT   READABLE by every service (owned by ec2-user, 0600)
+#   - 16 git checkouts READABLE
+#   - the two Cloudflare Origin private keys  NOT readable — they are
+#     root-owned 0600 under /etc/ssl/private; nginx opens them as root before
+#     dropping privileges. They were never exposed by the shared identity.
+#
+# So the real shared asset is one credential file, not a key vault. That is
+# worth knowing before anyone re-litigates per-service users: the cheaper and
+# strictly better control is to stop keeping a push-capable token on disk.
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=full
