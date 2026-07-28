@@ -536,7 +536,47 @@ fi
 # copies (including the journald drop-in, which install-box-health.sh itself
 # already state-compares internally before restarting journald).
 BOX_HEALTH_INFRA="$REPO_DIR/infrastructure"
-if any_file_state_stale \
+
+# The manifest is DERIVED from budget.yaml, so no src:dst file pair can see it
+# go stale: a change that only edits budget.yaml (a new service, a port, a
+# timer threshold) leaves every file below byte-identical, the installer never
+# runs, and the watchdog keeps its previous registry indefinitely.
+#
+# So compare DESIRED against ACTUAL — render the manifest and diff it against
+# the installed copy — rather than comparing inputs. Verified live 2026-07-28:
+# config-I5209 merged and deployed with box_health.sh updated correctly, while
+# the installed manifest still carried none of its timer thresholds.
+#
+# Fails SAFE: any render error returns "stale", so the installer runs and fails
+# loudly there, rather than a broken generator silently reading as up-to-date.
+# MANIFEST_DST is overridable so this predicate can be exercised against a
+# fixture instead of the live /etc path — see test_deploy_manifest_gate.sh.
+MANIFEST_DST="${MANIFEST_DST:-/etc/alpha-engine/box-services.conf}"
+manifest_stale() {
+    # Rendered to a temp FILE, then cmp'd file-to-file. Deliberately neither
+    # $(...) nor a pipe:
+    #   - command substitution strips trailing newlines, so the render would
+    #     never match the installed file and this would report "stale" on every
+    #     single deploy — a gate that is always true is not a gate. (Caught by
+    #     test_deploy_manifest_gate.sh, which is why it exists.)
+    #   - `gen | cmp -s -` reintroduces the SIGPIPE-under-pipefail hazard this
+    #     script documents at length in paths_changed() above.
+    local tmp rc
+    tmp=$(mktemp) || return 0
+    python3 "$BOX_HEALTH_INFRA/generate-box-manifest.py" --stdout > "$tmp" 2>/dev/null
+    rc=$?
+    if [ "$rc" -ne 0 ] || [ ! -s "$tmp" ]; then
+        rm -f "$tmp"
+        return 0
+    fi
+    cmp -s "$tmp" "$MANIFEST_DST"
+    rc=$?
+    rm -f "$tmp"
+    [ "$rc" -eq 0 ] && return 1
+    return 0
+}
+
+if manifest_stale || any_file_state_stale \
     "$BOX_HEALTH_INFRA/box_health.sh:/usr/local/bin/box_health.sh" \
     "$BOX_HEALTH_INFRA/box_hygiene.sh:/usr/local/bin/box_hygiene.sh" \
     "$BOX_HEALTH_INFRA/systemd/box-health.service:/etc/systemd/system/box-health.service" \
@@ -544,7 +584,7 @@ if any_file_state_stale \
     "$BOX_HEALTH_INFRA/systemd/box-hygiene.service:/etc/systemd/system/box-hygiene.service" \
     "$BOX_HEALTH_INFRA/systemd/box-hygiene.timer:/etc/systemd/system/box-hygiene.timer" \
     "$BOX_HEALTH_INFRA/systemd/journald-size-cap.conf:/etc/systemd/journald.conf.d/size-cap.conf"; then
-    log "box-health/hygiene script or units differ from installed copies — re-installing"
+    log "box-health/hygiene script, units, or generated manifest differ from installed copies — re-installing"
     bash "$REPO_DIR/infrastructure/install-box-health.sh" >>"$LOG" 2>&1 \
         || fail "install-box-health.sh"
     log "re-installed box-health/hygiene"

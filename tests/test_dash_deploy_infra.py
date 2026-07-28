@@ -321,6 +321,12 @@ class TestInfraShellTests:
         # timer, 144 of 144 runs.
         self._run("test_box_health_timer_deadman.sh")
 
+    def test_deploy_manifest_gate(self):
+        # Guards the gate that makes a budget.yaml-only change actually reach
+        # the box. Before it, the manifest was generated ONLY by
+        # install-resource-limits.sh, which nothing automated invokes.
+        self._run("test_deploy_manifest_gate.sh")
+
     def test_deploy_on_merge_paths_changed(self):
         # Pre-existing script (config#2242), previously unwired from CI.
         self._run("test_deploy_on_merge_paths_changed.sh")
@@ -404,3 +410,38 @@ class TestTimerDeadManRegistry:
     def test_timer_staleness_shell_test(self):
         self_ = TestInfraShellTests()
         self_._run("test_box_health_timer_staleness.sh")
+
+
+class TestManifestPropagation:
+    """The generated manifest must reach the box on merge, not by hand.
+
+    /etc/alpha-engine/box-services.conf is derived from budget.yaml. Its only
+    generator used to be install-resource-limits.sh, which is invoked by no
+    workflow, no deploy path and no CI — so I4492's "one list" premise held in
+    the repo and silently failed on the box. Verified live 2026-07-28: I5209
+    merged and deployed while the installed manifest carried none of its
+    thresholds.
+    """
+
+    def test_box_health_installer_generates_the_manifest(self):
+        sh = (REPO_ROOT / "infrastructure" / "install-box-health.sh").read_text()
+        assert "generate-box-manifest.py" in sh, (
+            "install-box-health.sh must render the manifest — it is box_health.sh's "
+            "input, and the installer is what deploy-on-merge.sh actually calls"
+        )
+
+    def test_deploy_gate_compares_rendered_manifest_not_just_file_pairs(self):
+        sh = (REPO_ROOT / "infrastructure" / "deploy-on-merge.sh").read_text()
+        assert "manifest_stale()" in sh
+        assert "manifest_stale || any_file_state_stale" in sh, (
+            "the box-health gate must consult manifest_stale; a budget.yaml-only "
+            "change leaves every compared src:dst pair byte-identical"
+        )
+
+    def test_gate_does_not_use_command_substitution_for_the_render(self):
+        # $(...) strips trailing newlines, which made the gate report stale on
+        # every deploy — a gate that is always true is not a gate.
+        sh = (REPO_ROOT / "infrastructure" / "deploy-on-merge.sh").read_text()
+        body = sh.split("manifest_stale() {", 1)[1].split("\n}", 1)[0]
+        assert "--stdout > " in body, "render must go to a file, not $(...) or a pipe"
+        assert "rendered=$(" not in body
