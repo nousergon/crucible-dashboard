@@ -446,7 +446,8 @@ snapshot_problems() {
     # what, and cannot distinguish a new app service from OS plumbing — a
     # count-based version of this check false-alarmed on dbus aliases and the
     # CloudWatch agent when first deployed 2026-07-27.
-    local u n unmonitored
+    local u n
+    local unmonitored=""   # see the note above: `local u n unmonitored` leaves it UNSET
     for u in /etc/systemd/system/*.service; do
         [ -e "$u" ] || continue
         n=$(basename "$u")
@@ -618,6 +619,43 @@ snapshot_problems() {
         fi
     fi
     unset cg evt pressure high_count throttle_state_seen
+
+    # Durable-state coverage (T1-4, config-I5250). Any on-disk database that
+    # budget.yaml::state[] does not declare is NAMED here.
+    #
+    # The point is not that undeclared state is unbacked — it is that nobody
+    # has DECIDED. T1-4 accepts "replicated" or "accepted-loss with a stated
+    # RPO"; what it forbids is state whose disposition was never considered,
+    # because on disk that is indistinguishable from state someone chose to
+    # risk. Before the 2026-07-28 audit, every database on this box was in that
+    # category, including the shared identity service's.
+    #
+    # Cheap by construction: pruned find over one tree, and skipped entirely
+    # when the manifest is absent (that condition is already reported above).
+    if [ "${MANIFEST_OK:-0}" -eq 1 ] && [ "${#STATE_DECLARED[@]}" -gt 0 ]; then
+        # Initialised, not merely declared: `local x` leaves x UNSET, so the
+        # first `${x}` append aborts the whole snapshot under `set -u`.
+        local f d matched
+        local undeclared_state=""
+        while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            matched=0
+            for d in "${STATE_DECLARED[@]}"; do
+                # Glob-aware: entries may be patterns, and a trailing / means
+                # "anything under this directory".
+                case "$f" in
+                    $d|$d*) matched=1; break ;;
+                esac
+            done
+            [ "$matched" -eq 1 ] || undeclared_state="${undeclared_state}${f} "
+        done < <(find /home/ec2-user -maxdepth 4 -type f \
+                     \( -name '*.db' -o -name '*.sqlite' \) \
+                     -not -path '*/.cache/*' -not -path '*/node_modules/*' \
+                     -not -path '*/.venv/*' -not -path '*/.git/*' 2>/dev/null)
+        if [ -n "${undeclared_state:-}" ]; then
+            echo "watchdog: undeclared durable state: ${undeclared_state%% } — add a state: row to budget.yaml (T1-4)"
+        fi
+    fi
 
     # listening ports (mnemon/bun has no systemd unit here, so port is the probe).
     if [ -z "$SS_BIN" ]; then

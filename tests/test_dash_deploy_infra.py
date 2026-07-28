@@ -342,6 +342,11 @@ class TestInfraShellTests:
         # rule could never clear and survived its own remedy (config-I5216).
         self._run("test_box_health_throttle_rate.sh")
 
+    def test_deploy_auto_revert(self):
+        # T1-3: health checks existed but nothing rolled the box back, so a bad
+        # merge left it broken until a human noticed (config-I5250 gap 3).
+        self._run("test_deploy_auto_revert.sh")
+
     def test_deploy_manifest_gate(self):
         # Guards the gate that makes a budget.yaml-only change actually reach
         # the box. Before it, the manifest was generated ONLY by
@@ -672,3 +677,117 @@ class TestDeployWorkflowSelfConsistency:
 
         for rel in re.findall(r"bash (infrastructure/[\w./-]+)", self._deploy()):
             assert (REPO_ROOT / rel).is_file(), f"deploy.yml references missing {rel}"
+
+
+class TestDurableStateRegistry:
+    """budget.yaml::state[] is the T1-4 inventory, and the only way into backup.
+
+    Policy T1-4: every SQLite file, vault and cert is either replicated or
+    documented as accepted-loss with a stated RPO — "unlisted state is a
+    defect". Audited 2026-07-28: NO application state on the box was
+    replicated, and that was an absence rather than a decision
+    (config-I5250 gap 1).
+    """
+
+    def _state(self):
+        import yaml
+
+        spec = yaml.safe_load(
+            (REPO_ROOT / "infrastructure" / "systemd" / "resource-limits"
+             / "budget.yaml").read_text()
+        )
+        assert spec.get("state"), "budget.yaml must declare a `state:` inventory"
+        return spec["state"]
+
+    def test_every_entry_has_a_decided_disposition(self):
+        seen = set()
+        for e in self._state():
+            path = e["path"]
+            assert path not in seen, f"{path} declared twice"
+            seen.add(path)
+            assert e["disposition"] in {"replicate", "accepted-loss", "external"}, (
+                f"{path}: disposition must be replicate | accepted-loss | external"
+            )
+            assert e.get("note", "").strip(), f"{path}: needs a note stating the reasoning"
+
+    def test_accepted_loss_states_an_rpo(self):
+        # The whole T1-4 proviso: accepted-loss is legitimate ONLY when stated.
+        # Without an RPO, "accepted-loss" and "never considered" are the same row.
+        for e in self._state():
+            if e["disposition"] == "accepted-loss":
+                assert str(e.get("rpo", "")).strip(), (
+                    f"{e['path']}: accepted-loss requires an explicit rpo:"
+                )
+
+    def test_external_states_its_source(self):
+        for e in self._state():
+            if e["disposition"] == "external":
+                assert str(e.get("source", "")).strip(), (
+                    f"{e['path']}: external requires source: naming the real authority"
+                )
+
+    def test_shared_identity_db_is_replicated(self):
+        # Largest blast radius of any single file on the box: losing it
+        # invalidates sessions and users across every product at once.
+        entry = next(e for e in self._state() if "nousergon-auth" in e["path"])
+        assert entry["disposition"] == "replicate"
+
+    def test_private_keys_are_not_replicated(self):
+        # Copying private keys into an object store to survive a box loss
+        # trades a bounded availability problem for an unbounded
+        # confidentiality one. This must stay a deliberate no.
+        entry = next(e for e in self._state() if e["path"].endswith("/.ssh/"))
+        assert entry["disposition"] != "replicate"
+
+    def test_manifest_exports_declared_paths_for_the_coverage_check(self):
+        import subprocess
+
+        gen = REPO_ROOT / "infrastructure" / "generate-box-manifest.py"
+        proc = subprocess.run([sys.executable, str(gen), "--stdout"],
+                              capture_output=True, text=True, timeout=60)
+        assert proc.returncode == 0, proc.stderr
+        assert "STATE_DECLARED=(" in proc.stdout
+        assert "/home/ec2-user/nousergon-auth/auth.sqlite" in proc.stdout
+
+    def test_watchdog_names_undeclared_state(self):
+        sh = (REPO_ROOT / "infrastructure" / "box_health.sh").read_text()
+        assert "undeclared durable state" in sh
+        assert "STATE_DECLARED" in sh
+
+    def test_backup_covers_exactly_the_replicate_entries(self):
+        # The script must not carry its own list — the registry is the only
+        # way in, so that adding a database without declaring it fails loudly
+        # rather than being silently unprotected.
+        src = (REPO_ROOT / "infrastructure" / "backup_box_state.py").read_text()
+        assert 'disposition") != "replicate"' in src
+        for e in self._state():
+            if e["disposition"] == "replicate":
+                assert e["path"] not in src, (
+                    f"{e['path']} is hardcoded in backup_box_state.py — it must "
+                    f"come from budget.yaml only"
+                )
+
+    def test_backup_uses_the_online_backup_api_not_a_file_copy(self):
+        # A byte copy of a live SQLite file is crash-consistent, not
+        # application-consistent, and may need WAL recovery to open.
+        src = (REPO_ROOT / "infrastructure" / "backup_box_state.py").read_text()
+        assert ".backup(" in src
+        assert "mode=ro" in src, "source must be opened read-only"
+
+    def test_backup_timer_is_dead_man_covered(self):
+        import yaml
+
+        spec = yaml.safe_load(
+            (REPO_ROOT / "infrastructure" / "systemd" / "resource-limits"
+             / "budget.yaml").read_text()
+        )
+        units = {t["unit"] for t in spec["timers"]}
+        assert "box-state-backup.timer" in units, (
+            "a backup that stops running must be caught by the timer dead-man"
+        )
+
+    def test_installer_and_deploy_gate_cover_the_new_units(self):
+        inst = (REPO_ROOT / "infrastructure" / "install-box-health.sh").read_text()
+        assert "box-state-backup.service" in inst and "box-state-backup.timer" in inst
+        dep = (REPO_ROOT / "infrastructure" / "deploy-on-merge.sh").read_text()
+        assert "box-state-backup.timer:/etc/systemd/system/box-state-backup.timer" in dep
