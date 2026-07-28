@@ -31,7 +31,12 @@ echo "Installed $SCRIPT_DST"
 install -m 0755 "$REPO_INFRA/box_hygiene.sh" /usr/local/bin/box_hygiene.sh
 echo "Installed /usr/local/bin/box_hygiene.sh"
 
-for unit in box-health.service box-health.timer box-hygiene.service box-hygiene.timer; do
+# box-state-backup runs the script from the REPO path (like substrate-health
+# and daily-news) rather than a /usr/local/bin copy: it reads budget.yaml from
+# a path relative to itself, so splitting the two would need a second copy of
+# the registry — which is the drift this registry exists to end.
+for unit in box-health.service box-health.timer box-hygiene.service box-hygiene.timer \
+            box-state-backup.service box-state-backup.timer; do
     cp "$SYSTEMD_SRC/$unit" "/etc/systemd/system/$unit"
     echo "Installed /etc/systemd/system/$unit"
 done
@@ -68,6 +73,8 @@ systemctl enable box-health.service
 systemctl enable --now box-health.timer
 systemctl enable box-hygiene.service
 systemctl enable --now box-hygiene.timer
+systemctl enable box-state-backup.service
+systemctl enable --now box-state-backup.timer
 
 echo ""
 echo "box-health installed and enabled (runs every 10 min)."
