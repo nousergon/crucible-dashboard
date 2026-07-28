@@ -637,7 +637,7 @@ fi
 # Adding a seventh bespoke `if` block per installer is how this file grew past
 # 600 lines and how the gaps hid in the first place. One declarative table plus
 # one loop means a NEW installer is routed by adding a row — and CI fails if it
-# is added without one (tests/test_dash_deploy_infra.py::TestInstallerRouting).
+# is added without one (tests/test_dash_deploy_infra.py::TestProvisioningScriptRouting).
 #
 # ROW FORMAT:  <installer>|<mode>|<comma-separated args>
 #   files  — desired-vs-actual on `src:dst` pairs, relative to infrastructure/.
@@ -670,19 +670,33 @@ ROUTED_INSTALLERS=(
   "install-resource-limits.sh|stamp|systemd/resource-limits/budget.yaml,install-resource-limits.sh"
 )
 
-# Declared manual-only installers, as `name|reason`. CI requires every
-# install-*.sh to appear either here or in the table above, so a new one cannot
-# be added and silently never run (tests/test_dash_deploy_infra.py).
-# Declared manual-only installers, as `name|reason`. CI requires every
-# install-*.sh to appear here, in ROUTED_INSTALLERS above, or in a GitHub
-# workflow — so a new one cannot be added and silently never run.
+# Declared manual-only provisioning scripts, as `name|reason`. CI requires
+# every script that provisions state outside the git tree to appear here, in
+# ROUTED_INSTALLERS above, or in a GitHub workflow — so a new one cannot be
+# added and silently never run (tests/test_dash_deploy_infra.py).
 #
-# Empty since config-I5211: install-host-alarms.sh was the sole entry and now
-# runs in deploy.yml with the OIDC role, which is where it always belonged. It
-# cannot run HERE — the instance role deliberately lacks
-# cloudwatch:PutMetricAlarm, because a host that can rewrite its own alarms can
-# disable its own detection.
-MANUAL_ONLY_INSTALLERS=()
+# install-host-alarms.sh is NOT here: it runs in deploy.yml with the OIDC role,
+# which is where it always belonged (config-I5211). It cannot run HERE — the
+# instance role deliberately lacks cloudwatch:PutMetricAlarm, because a host
+# that can rewrite its own alarms can disable its own detection.
+MANUAL_ONLY_INSTALLERS=(
+  # Half of an unlanded migration, deliberately not automated YET.
+  #
+  # This script creates thirteen svc-<service> accounts and reassigns file
+  # ownership across seventeen checkouts. Its other half is budget.yaml's
+  # `user:` fields, which the renderer turns into User= lines. On 2026-07-28
+  # the `user:` half merged alone — this script was named create-* while the
+  # routing guard globbed install-*, so nothing invoked it — and every unit
+  # that restarted died with 217/USER (alpha-engine-config-I4791).
+  #
+  # It stays manual-only until the migration is re-landed deliberately: run it
+  # once, confirm `getent passwd svc-<name>` resolves for all thirteen AND that
+  # each service can still read its own checkout, THEN re-add the `user:`
+  # fields and move this to ROUTED_INSTALLERS in the same PR. Routing it now
+  # would run an unrehearsed ownership migration unattended on a deploy, which
+  # is the same class of mistake in the opposite direction.
+  "create-service-users.sh|unlanded per-service-user migration (alpha-engine-config-I4791); must be run and verified by hand, then routed together with budget.yaml's user: fields"
+)
 
 
 installer_inputs_digest() {   # INPUT [INPUT...] -> sha256, empty on any error
