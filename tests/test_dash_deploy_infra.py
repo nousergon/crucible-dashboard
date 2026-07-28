@@ -336,6 +336,14 @@ class TestInfraShellTests:
         # timer, 144 of 144 runs.
         self._run("test_box_health_timer_deadman.sh")
 
+    def test_box_health_unit_identity(self):
+        # Guards classify_identity() — whether a unit's User=/Group= resolves,
+        # i.e. whether it could start AGAIN. `is-active` cannot answer that: on
+        # 2026-07-28 eight units reported active while carrying User=svc-<name>
+        # for accounts nothing had created, one restart from taking the box
+        # down (nous-ergon-ops-I155).
+        self._run("test_box_health_unit_identity.sh")
+
     def test_box_health_throttle_rate(self):
         # Guards that cgroup throttling is judged on the counter's MOVEMENT.
         # memory.events::high is monotonic per-cgroup, so the previous `> 0`
