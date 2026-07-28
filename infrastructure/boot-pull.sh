@@ -264,6 +264,72 @@ if [ -d "$SYSTEMD_SRC" ]; then
     fi
 fi
 
+# ── Sync metron-intraday from nousergon-data (config#1768 Phase 1) ─────────
+# metron-intraday moved OFF ae-trading onto this box (2026-07-21):
+# duplicated the intraday-price-alerts Lambda's work there, and ae-trading
+# is off most of the day while ae-dashboard is always-on — this box is
+# where daily-news already runs the same "always-on box picks up a
+# nousergon-data-owned timer" pattern. Unit files stay canonical in
+# nousergon-data's infrastructure/systemd/ (this box already clones
+# nousergon-data as alpha-engine-data, see REPOS above) rather than being
+# duplicated into this repo's own infrastructure/systemd/.
+#
+# Deliberately scoped to the two exact metron-intraday basenames, NOT a
+# directory-wide glob — that source dir also ships daily-news.{service,
+# timer} (already handled by this box's separate install-daily-news.sh +
+# deploy-daily-news-units.yml merge-time SSM push path — mirroring that
+# path here would double-install/-restart it via two independent
+# mechanisms) and systemd-unit-drift-check.{service,timer} (already
+# installed on this box by that same install-daily-news.sh, which copies
+# both pairs — see its own comment). Only metron-intraday has no install
+# path onto this box yet.
+#
+# Convergence via boot-pull (NOT a merge-time SSM push) is the deliberate
+# choice here, matching existing precedent: deploy-daily-news-units.yml's
+# own header explicitly contrasts the two mechanisms — daily-news gets a
+# merge-time push because retrofitting one for metron-intraday was
+# EXPLICITLY decided against ("relies on boot-pull self-healing ... since
+# the trading box is off most of the day"). That reasoning flips in
+# metron-intraday's favor now that its host is ae-dashboard: this box's
+# boot-pull already runs on a bounded ≤24h daily timer (see file header),
+# so next-boot-pull convergence has the same bounded-drift property a
+# merge-time push would add, without a second deploy mechanism to maintain.
+METRON_INTRADAY_SRC="/home/ec2-user/alpha-engine-data/infrastructure/systemd"
+if [ -d "$METRON_INTRADAY_SRC" ]; then
+    METRON_CHANGED=false
+    for unit in metron-intraday.service metron-intraday.timer; do
+        src="$METRON_INTRADAY_SRC/$unit"
+        [ -f "$src" ] || continue
+        target="/etc/systemd/system/$unit"
+        if [ ! -f "$target" ]; then
+            sudo cp "$src" "$target"
+            log "SYNC $unit (new, src=$METRON_INTRADAY_SRC)"
+            METRON_CHANGED=true
+        elif ! diff -q "$src" "$target" >/dev/null 2>&1; then
+            sudo cp "$src" "$target"
+            log "SYNC $unit (updated, src=$METRON_INTRADAY_SRC)"
+            METRON_CHANGED=true
+        fi
+    done
+    if $METRON_CHANGED; then
+        sudo systemctl daemon-reload
+        log "systemctl daemon-reload (metron-intraday)"
+    fi
+    # Enable-reconcile every boot (not install-only), mirroring
+    # ae-trading's sync_systemd_units_from() self-healing pattern
+    # (config#2352 / the 2026-04-21 SNDK EOD incident class) rather than
+    # this file's own simpler install-once loop above — this is a brand
+    # new unit family for this box, so a manual `systemctl disable` or a
+    # lost timers.target.wants/ symlink would otherwise never self-heal.
+    if [ -f "$METRON_INTRADAY_SRC/metron-intraday.timer" ]; then
+        if sudo systemctl enable --now metron-intraday.timer >> "$LOG" 2>&1; then
+            log "OK   systemd: enable reconciled metron-intraday.timer"
+        else
+            log "WARN systemd: enable reconcile failed: metron-intraday.timer"
+        fi
+    fi
+fi
+
 # ── Restart streamlit services if SSM-hydrated configs changed ─────────────
 # Streamlit reads config.yaml at module import (decorator evaluation in
 # loaders/s3_loader.py via @st.cache_data(ttl=_ttl("trades"))). A config
