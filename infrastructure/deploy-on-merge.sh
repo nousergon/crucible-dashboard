@@ -161,6 +161,16 @@ any_file_state_stale() {
     return 1
 }
 
+# ── Last-known-good SHA, for the §4 auto-revert (T1-3, config-I5250 gap 3) ──
+#
+# Recorded BEFORE anything mutates the box, and read from a file rather than
+# from git: by the time §4 runs, HEAD is the sha that just failed, so `HEAD~1`
+# would be wrong whenever a deploy was skipped or a merge brought several
+# commits. The stamp is only advanced after a deploy passes its health checks,
+# so it always names a sha that was OBSERVED healthy on this box — not one that
+# was merely merged.
+LAST_GOOD_SHA_FILE="/var/lib/dashboard-deploy/last-good-sha"
+
 log "=== deploy-on-merge started — target=$TARGET_SHA ==="
 
 cd "$REPO_DIR" || fail "cd $REPO_DIR"
@@ -846,12 +856,83 @@ fi
 # (wait_for_health itself is defined near the top of this script, above §0,
 # so the Python-parity self-heal can reuse it post-restart.)
 
-wait_for_health "$CONSOLE_URL" "dashboard (console)" || fail "console health"
-wait_for_health "$LIVE_URL" "nous-ergon-live" || fail "live health"
-wait_for_health "$DASH_API_URL" "crucible-dash-api" || fail "crucible-dash-api health"
-if [ -d "$REPO_DIR/dash-web" ]; then
-    wait_for_health "$DASH_WEB_URL" "crucible-dash-web" || fail "crucible-dash-web health"
+# revert_to_last_good REASON — roll the box back to the last sha OBSERVED
+# healthy here, re-run the provisioning that tracks the tree, and alert.
+#
+# Policy T1-3 sets the floor: "pinned-SHA deploy, health check after restart,
+# automatic revert to the previous SHA on failure." Health checks existed; the
+# revert did not, so a bad merge left the box broken until a human noticed.
+#
+# Deliberately NOT a full re-run of this script. Re-invoking deploy-on-merge on
+# the reverted tree could fail the same way and recurse; this does the minimum
+# that makes the rollback real — restore the tree, re-provision from it,
+# restart the services — and then alerts a human either way. A rollback that
+# needs a human is fine; a rollback that loops is not.
+revert_to_last_good() {
+    local reason="$1" good
+    good=$(cat "$LAST_GOOD_SHA_FILE" 2>/dev/null)
+
+    case "$good" in
+        ''|*[!0-9a-f]*)
+            # No stamp yet (first deploy after this shipped) or a corrupt one.
+            # Reverting to a guess is worse than not reverting: it could move
+            # the box somewhere never validated. Alert and stop.
+            log "FAIL $reason — and no usable last-good sha recorded, so NOT reverting"
+            "$ALERT_PY" -m krepis.alerts publish \
+                --message "dashboard deploy FAILED health check ($reason) at $CURRENT_SHA. No last-good sha on file — box left as-is, manual intervention needed." \
+                --severity critical --source deploy-on-merge \
+                --dedup-key "deploy-revert-nostamp" --dedup-window-min 30 >>"$LOG" 2>&1 || true
+            return 1 ;;
+    esac
+
+    if [ "$good" = "$CURRENT_SHA" ]; then
+        log "FAIL $reason — already at the last-good sha $good, nothing to revert to"
+        return 1
+    fi
+
+    log "REVERT $reason — rolling back $CURRENT_SHA -> $good"
+    sudo -u ec2-user git -C "$REPO_DIR" reset --hard "$good" >>"$LOG" 2>&1 \
+        || { log "REVERT FAILED: git reset to $good did not apply"; return 1; }
+
+    # Re-provision from the reverted tree. Without this the box runs old code
+    # under new units — a state neither sha was ever tested in, and worse than
+    # either.
+    bash "$REPO_DIR/infrastructure/install-box-health.sh" >>"$LOG" 2>&1 || true
+    systemctl restart dashboard nous-ergon-live crucible-dash-api >>"$LOG" 2>&1 || true
+
+    if wait_for_health "$CONSOLE_URL" "dashboard (post-revert)"; then
+        log "REVERT OK — box healthy at $good"
+    else
+        log "REVERT INCOMPLETE — still unhealthy at $good"
+    fi
+
+    "$ALERT_PY" -m krepis.alerts publish \
+        --message "dashboard deploy FAILED at $CURRENT_SHA ($reason) — auto-reverted to $good. The merged commit is NOT live; investigate before re-merging." \
+        --severity critical --source deploy-on-merge \
+        --dedup-key "deploy-revert-$CURRENT_SHA" --dedup-window-min 30 >>"$LOG" 2>&1 || true
+    return 1
+}
+
+ALERT_PY="$REPO_DIR/.venv/bin/python"
+
+health_failed=""
+wait_for_health "$CONSOLE_URL" "dashboard (console)"    || health_failed="console"
+[ -n "$health_failed" ] || wait_for_health "$LIVE_URL" "nous-ergon-live"        || health_failed="live"
+[ -n "$health_failed" ] || wait_for_health "$DASH_API_URL" "crucible-dash-api"  || health_failed="dash-api"
+if [ -z "$health_failed" ] && [ -d "$REPO_DIR/dash-web" ]; then
+    wait_for_health "$DASH_WEB_URL" "crucible-dash-web" || health_failed="dash-web"
 fi
+
+if [ -n "$health_failed" ]; then
+    revert_to_last_good "$health_failed health check failed"
+    exit 1
+fi
+
+# Advance the stamp ONLY here — past every health check. This is what makes the
+# recorded sha "observed healthy on this box" rather than "merged".
+mkdir -p "$(dirname "$LAST_GOOD_SHA_FILE")" 2>/dev/null || true
+printf '%s\n' "$CURRENT_SHA" > "$LAST_GOOD_SHA_FILE" 2>/dev/null \
+    || log "WARN could not record last-good sha at $LAST_GOOD_SHA_FILE — auto-revert will not arm"
 
 log "=== deploy-on-merge completed successfully — sha=$CURRENT_SHA ==="
 exit 0
