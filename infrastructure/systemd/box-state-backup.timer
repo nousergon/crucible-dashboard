@@ -1,0 +1,16 @@
+[Unit]
+Description=Nightly replication of declared durable state to S3
+Requires=box-state-backup.service
+
+[Timer]
+# 03:40 UTC — after the DLM snapshot window and well clear of the 04:00 PT
+# morning-signal/daily-news burst, so a 45 MB upload never competes with them.
+OnCalendar=*-*-* 03:40:00
+# Catch up a run missed while the box was down. Unlike a metrics job, a skipped
+# backup leaves a real gap in the history.
+Persistent=true
+RandomizedDelaySec=300
+Unit=box-state-backup.service
+
+[Install]
+WantedBy=timers.target

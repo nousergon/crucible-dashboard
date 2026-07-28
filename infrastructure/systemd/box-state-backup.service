@@ -1,0 +1,20 @@
+[Unit]
+Description=Replicate declared durable state to S3 (T1-4, config-I5250)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ec2-user
+# The venv python: PyYAML is not in the system interpreter, and the script
+# refuses to run rather than silently backing up a subset if it is missing.
+ExecStart=/home/ec2-user/alpha-engine-dashboard/.venv/bin/python \
+    /home/ec2-user/alpha-engine-dashboard/infrastructure/backup_box_state.py
+Environment=AWS_REGION=us-east-1
+# metron/personal.sqlite is ~45 MB; the backup API plus the upload is seconds,
+# but a stalled S3 call must not hold the unit open indefinitely.
+TimeoutStartSec=900
+RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target

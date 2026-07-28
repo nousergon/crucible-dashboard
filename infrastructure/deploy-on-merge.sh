@@ -598,6 +598,8 @@ if manifest_stale || any_file_state_stale \
     "$BOX_HEALTH_INFRA/systemd/box-health.timer:/etc/systemd/system/box-health.timer" \
     "$BOX_HEALTH_INFRA/systemd/box-hygiene.service:/etc/systemd/system/box-hygiene.service" \
     "$BOX_HEALTH_INFRA/systemd/box-hygiene.timer:/etc/systemd/system/box-hygiene.timer" \
+    "$BOX_HEALTH_INFRA/systemd/box-state-backup.service:/etc/systemd/system/box-state-backup.service" \
+    "$BOX_HEALTH_INFRA/systemd/box-state-backup.timer:/etc/systemd/system/box-state-backup.timer" \
     "$BOX_HEALTH_INFRA/systemd/journald-size-cap.conf:/etc/systemd/journald.conf.d/size-cap.conf"; then
     log "box-health/hygiene script, units, or generated manifest differ from installed copies — re-installing"
     bash "$REPO_DIR/infrastructure/install-box-health.sh" >>"$LOG" 2>&1 \
