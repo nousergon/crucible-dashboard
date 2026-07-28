@@ -106,7 +106,22 @@ paths_changed() {
         log "WARN git diff $old_sha $new_sha -- $* failed (exit $diff_rc) — assuming changed: $diff_out"
         return 0
     fi
-    printf '%s\n' "$diff_out" | grep -q '^[+-]'
+    # Here-string, NOT `printf ... | grep -q`. The config#2242 fix moved `git
+    # diff` out of the pipe but left printf IN one, and printf is subject to the
+    # identical race it documents above: grep -q exits on the first match and
+    # closes the pipe, a large diff_out still being written gets SIGPIPE, exits
+    # 141, and pipefail reports the pipeline as failed on a genuinely-true diff.
+    # The gate then reads "unchanged" on a real change and silently skips an
+    # installer re-run — the original config#2242 consequence, at a lower rate.
+    #
+    # Measured: test_deploy_on_merge_paths_changed.sh runs a large multi-file
+    # diff 25x and requires 25/25; it hit 24/25 in CI on 2026-07-28. That test
+    # existed but had never run in CI until it was wired in this session, which
+    # is why a partial fix looked complete for weeks.
+    #
+    # A here-string is fed from a temp file: no writer process to signal, and no
+    # pipeline for pipefail to inspect.
+    grep -q '^[+-]' <<< "$diff_out"
 }
 
 # file_state_stale DST SRC [SRC...]
