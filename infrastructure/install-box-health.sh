@@ -45,6 +45,24 @@ if ! cmp -s "$SYSTEMD_SRC/journald-size-cap.conf" /etc/systemd/journald.conf.d/s
     echo "Installed journald size cap (journald restarted)"
 fi
 
+# The watchdog's service/port/timer registry, rendered from budget.yaml.
+#
+# This belongs HERE, with the watchdog's own installer, because the manifest is
+# box_health.sh's INPUT. It used to live only in install-resource-limits.sh —
+# which nothing automated ever calls (not deploy-on-merge.sh, not CI), so a
+# budget.yaml change reached the box's git checkout and stopped there. The
+# whole point of I4492 was "one list: adding a service to the budget adds it to
+# the watchdog", and the propagation step was manual-only, so the two could
+# drift indefinitely. Verified live 2026-07-28: config-I5209's timer thresholds
+# merged and deployed, and the installed manifest still had none of them.
+#
+# install-resource-limits.sh keeps its own call (it renders the systemd
+# drop-ins from the same file and is still run by hand); both are idempotent
+# and produce byte-identical output, so running either is safe.
+PY=$(command -v python3)
+"$PY" "$REPO_INFRA/generate-box-manifest.py" \
+    || { echo "ERROR: manifest generation failed — box_health.sh would fall back to its stale hardcoded list" >&2; exit 1; }
+
 systemctl daemon-reload
 systemctl enable box-health.service
 systemctl enable --now box-health.timer
