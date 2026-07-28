@@ -896,9 +896,16 @@ revert_to_last_good() {
 
     # Re-provision from the reverted tree. Without this the box runs old code
     # under new units — a state neither sha was ever tested in, and worse than
-    # either.
+    # either. install-resource-limits.sh renders per-service drop-ins from
+    # budget.yaml (including User=, MemoryMax=, sandboxing directives); a
+    # revert without re-rendering those drop-ins leaves the box with new-sha
+    # units under old-sha code — the exact failure mode of 2026-07-28 run
+    # 30404044358, where PR #566's User= migration generated drop-ins
+    # referencing nonexistent users, and the rollback's git reset couldn't
+    # undo them because the drop-ins live outside the git tree.
+    bash "$REPO_DIR/infrastructure/install-resource-limits.sh" >>"$LOG" 2>&1 || true
     bash "$REPO_DIR/infrastructure/install-box-health.sh" >>"$LOG" 2>&1 || true
-    systemctl restart dashboard nous-ergon-live crucible-dash-api >>"$LOG" 2>&1 || true
+    systemctl restart dashboard nous-ergon-live crucible-dash-api crucible-dash-web >>"$LOG" 2>&1 || true
 
     if wait_for_health "$CONSOLE_URL" "dashboard (post-revert)"; then
         log "REVERT OK — box healthy at $good"
