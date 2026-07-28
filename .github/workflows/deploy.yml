@@ -39,6 +39,20 @@ jobs:
       DASHBOARD_INSTANCE_ID: ${{ vars.DASHBOARD_INSTANCE_ID }}
 
     steps:
+      # The deploy job historically needed no checkout — it only sends SSM
+      # commands, and the box runs scripts from its OWN checkout. It does need
+      # one now: the host-alarms step runs infrastructure/install-host-alarms.sh
+      # from the runner, because that script cannot run on the box (the instance
+      # role deliberately lacks cloudwatch:PutMetricAlarm). Without this the step
+      # dies with "No such file or directory" (exit 127), which is exactly how
+      # it failed on the config-I5211 merge.
+      #
+      # Checking out and running the script beats inlining seven put-metric-alarm
+      # calls here: the script stays the single definition of those alarms.
+      # Duplicating them into the workflow would create precisely the two-copies
+      # drift this repo has spent the day removing.
+      - uses: actions/checkout@v7
+
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c  # v6
         with:

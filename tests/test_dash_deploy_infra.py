@@ -638,3 +638,37 @@ class TestOffBoxHealthVerdict:
         block = wf[wf.index("alpha-engine-dashboard-box-disk-critical"):]
         block = block[: block.index("--ok-actions")]
         assert "--treat-missing-data breaching" in block
+
+
+class TestDeployWorkflowSelfConsistency:
+    """A deploy step that runs a repo file needs the repo on the runner.
+
+    The deploy job historically needed no checkout — it only sends SSM commands,
+    and the box runs scripts from its own checkout. When config-I5211 added a
+    step running `bash infrastructure/install-host-alarms.sh` on the RUNNER, the
+    job died with exit 127 "No such file or directory". CI was green: nothing
+    tests a workflow's internal consistency, only its YAML validity.
+    """
+
+    def _deploy(self):
+        return (REPO_ROOT / ".github" / "workflows" / "deploy.yml").read_text()
+
+    def test_repo_scripts_in_deploy_require_a_checkout(self):
+        import re
+
+        wf = self._deploy()
+        runs_repo_file = re.findall(r"bash (infrastructure/[\w./-]+)", wf)
+        if not runs_repo_file:
+            return
+        assert "actions/checkout@" in wf, (
+            f"deploy.yml runs repo file(s) {runs_repo_file} on the runner but "
+            f"never checks the repo out — the step will fail with exit 127"
+        )
+        # Checkout must precede the first such step, or it fails the same way.
+        assert wf.index("actions/checkout@") < wf.index(f"bash {runs_repo_file[0]}")
+
+    def test_referenced_repo_scripts_actually_exist(self):
+        import re
+
+        for rel in re.findall(r"bash (infrastructure/[\w./-]+)", self._deploy()):
+            assert (REPO_ROOT / rel).is_file(), f"deploy.yml references missing {rel}"
