@@ -24,6 +24,10 @@ render_host(
         ("Watch Status", "37_Watch_Status.py"),
         ("Backlog Groom", "42_Backlog_Groom.py"),
         ("Merged PRs", "47_Merged_PRs.py"),
+        # config#2709 — structured per-cycle sweep stats (bucket trends,
+        # merge throughput by path, review-gate verdicts) as a companion to
+        # Backlog Groom's per-run raw digest markdown.
+        ("PR Pipeline", "54_PR_Pipeline.py"),
         # config#646 — the fleet's flow-doctor end-of-run heartbeat ("alive but
         # quiet" vs "suppressing X per flow"), the System Health consumer for the
         # "make it actually kick in" arc.
