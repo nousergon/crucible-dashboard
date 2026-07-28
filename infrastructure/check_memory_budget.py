@@ -41,6 +41,11 @@ except ImportError:  # pragma: no cover - surfaced loudly, never swallowed
 
 BUDGET = pathlib.Path(__file__).parent / "systemd" / "resource-limits" / "budget.yaml"
 
+# Module constants rather than literals inside the readers, so tests can point
+# them at a fixture tree. A check that can only be exercised on the live box is
+# a check that never gets exercised.
+_CGROUP_ROOT = pathlib.Path("/sys/fs/cgroup/system.slice")
+
 _SUFFIX = {"K": 1024, "M": 1024**2, "G": 1024**3}
 
 
@@ -64,6 +69,139 @@ def systemd_show(unit: str, prop: str) -> str:
     if r.returncode != 0:
         raise RuntimeError(f"systemctl show {unit} {prop} failed: {r.stderr.strip()}")
     return r.stdout.strip()
+
+
+def cgroup_value(unit: str, filename: str) -> int | None:
+    """Read one integer from a unit's cgroup v2 file. None if unreadable.
+
+    None is a legitimate answer -- a unit that is not running has no cgroup --
+    and is handled explicitly at every call site rather than defaulted to a
+    number, which would make a missing reading look like a passing one.
+    """
+    p = _CGROUP_ROOT / unit / filename
+    try:
+        raw = p.read_text().strip()
+    except OSError:
+        return None
+    if raw == "max":
+        return sys.maxsize
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def censored_observation(unit: str, declared_observed_mb: int) -> str | None:
+    """Detect an observed_mb that is a FLOOR rather than a measurement.
+
+    `memory.peak >= memory.high` means the cgroup has been held at its soft cap
+    since it last started. Everything measured in that state is bounded by the
+    cap itself, so the number recorded in budget.yaml is the largest value the
+    ceiling permitted -- not the service's working set.
+
+    This tell has been found BY HAND three times on this box (litellm-proxy,
+    metron-api/config-I5216, dashboard/config-I5237) and written into a prose
+    `note:` each time instead of a check. Each time, the cap was then raised to
+    just above the censored floor and the service re-pinned within a day,
+    because the floor was never the working set. config-I5237 raised
+    dashboard.service 210M -> 260M and it was throttling again the next day.
+
+    It matters beyond one service: `max_steady_state_fraction` -- the bound this
+    file calls the one that governs normal operation -- is computed by summing
+    observed_mb. Censored inputs make that bound read safer than it is.
+    """
+    peak = cgroup_value(unit, "memory.peak")
+    high = cgroup_value(unit, "memory.high")
+    if peak is None or high is None or high == sys.maxsize:
+        return None
+    if peak < high:
+        return None
+    return (
+        f"{unit}: CENSORED observation -- memory.peak ({peak // 1024**2} MiB) has "
+        f"reached memory.high ({high // 1024**2} MiB), so this service has been "
+        f"pinned at its soft cap since it last started. observed_mb "
+        f"({declared_observed_mb} MB) is a FLOOR, not a working set. Raise the "
+        f"cap clear of the service, let it run un-pinned, and re-measure -- do "
+        f"NOT re-cap to just above this number."
+    )
+
+
+def stale_observation(unit: str, declared_observed_mb: int) -> str | None:
+    """Detect an observed_mb that the live reading has left behind.
+
+    Distinct from censoring: here the cap is NOT binding, the service is simply
+    using materially more than the file claims. That silently understates
+    max_steady_state_fraction in the same way, without the peak==high tell.
+
+    20% tolerance because observed_mb is a steady-state figure and normal
+    operation moves around it; this is meant to catch a number that is wrong,
+    not one that is imprecise.
+    """
+    current = cgroup_value(unit, "memory.current")
+    if current is None or declared_observed_mb <= 0:
+        return None
+    current_mb = current // 1024**2
+    if current_mb <= declared_observed_mb * 1.20:
+        return None
+    return (
+        f"{unit}: STALE observation -- budget.yaml declares observed_mb="
+        f"{declared_observed_mb} MB but the cgroup currently holds {current_mb} "
+        f"MB ({current_mb / declared_observed_mb:.1f}x). The steady-state bound "
+        f"is the sum of these values, so it is being computed from a number the "
+        f"box disagrees with."
+    )
+
+
+# Memory drop-ins that legitimately exist without a budget.yaml entry.
+# BY NAME WITH A REASON, for the same argument the manifest exclusions carry: a
+# bare "ignore anything unexpected" cannot say what it is ignoring.
+DROPIN_ALLOW = {
+    # timer-driven, out of this budget's scope, already tracked in VCS at
+    # infrastructure/systemd/morning-signal.service.d/10-memory.conf
+    "morning-signal.service",
+}
+
+_DROPIN_ROOT = pathlib.Path("/etc/systemd/system")
+
+
+def orphan_dropins(budget_units: set[str]) -> list[str]:
+    """Find installed memory drop-ins that no budget entry owns.
+
+    install-resource-limits.sh only ever visits units listed in budget.yaml, so
+    a drop-in belonging to a unit that is NOT listed is never inspected, never
+    cleaned up, and never checked -- it is invisible to the whole mechanism
+    while still being live systemd config.
+
+    Found on 2026-07-28: alpha-engine-dashboard.service.d/memory-limit.conf,
+    setting MemoryMax=300M/MemoryHigh=250M for a unit that does not exist at all
+    (`systemctl is-enabled` -> "No such file or directory"). Harmless in that
+    instance only because the unit is absent; the same gap would just as happily
+    hide a stale cap on a unit that IS running, which is precisely the
+    "hand-edited drop-in" class this script's docstring claims to catch.
+    """
+    found = []
+    for conf in sorted(_DROPIN_ROOT.glob("*.service.d/*.conf")):
+        try:
+            body = conf.read_text()
+        except OSError:
+            continue
+        if "MemoryMax=" not in body and "MemoryHigh=" not in body:
+            continue
+        unit = conf.parent.name[: -len(".d")]
+        if unit in budget_units or unit in DROPIN_ALLOW:
+            continue
+        unit_exists = (_DROPIN_ROOT / unit).exists() or any(
+            pathlib.Path(d, unit).exists()
+            for d in ("/usr/lib/systemd/system", "/lib/systemd/system")
+        )
+        found.append(
+            f"ORPHAN drop-in {conf}: sets memory limits for {unit}, which has no "
+            f"budget.yaml entry"
+            + ("" if unit_exists else " and no unit file on disk")
+            + ". Either add it to the budget or delete the drop-in -- an "
+            "unowned limit is live config that nothing reviews."
+        )
+    return found
 
 
 def ram_mb_from_proc() -> int:
@@ -127,12 +265,21 @@ def main() -> int:
                     f"{unit}: MemoryHigh is unset/infinity -- no reclaim window "
                     f"before the hard cap"
                 )
+            # The declared numbers can be internally consistent and still be
+            # wrong about the box. These two catch that.
+            for check in (censored_observation, stale_observation):
+                found = check(unit, int(svc["observed_mb"]))
+                if found:
+                    problems.append(found)
             effective = have
         else:
             effective = want
 
         total_bytes += effective
         rows.append((unit, effective))
+
+    if installed:
+        problems.extend(orphan_dropins({s["unit"] for s in spec["services"]}))
 
     total_mb = total_bytes // 1024**2 if total_bytes < sys.maxsize else -1
 
