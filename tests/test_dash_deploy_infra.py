@@ -500,10 +500,17 @@ class TestInstallerRouting:
         import re
 
         sh = (REPO_ROOT / self.DEPLOY).read_text()
-        # Anchor the close on a line-start paren: reasons contain parentheses
-        # (e.g. "(config-I5211)"), and a bare `\)` stops at the first of them.
+        # Two forms must both parse: an empty `=()` on one line, and a
+        # multi-line list. Anchor the multi-line close on a line-start paren —
+        # reasons contain parentheses (e.g. "(config-I5211)") and a bare `\)`
+        # stops at the first of them.
+        assert "MANUAL_ONLY_INSTALLERS=(" in sh, \
+            "deploy-on-merge.sh must declare MANUAL_ONLY_INSTALLERS"
+        block = re.search(r"MANUAL_ONLY_INSTALLERS=\(\)", sh) and None
+        if block is None and re.search(r"MANUAL_ONLY_INSTALLERS=\(\s*\)", sh):
+            return set()
         block = re.search(r"MANUAL_ONLY_INSTALLERS=\((.*?)\n\)", sh, re.S)
-        assert block is not None, "deploy-on-merge.sh must declare MANUAL_ONLY_INSTALLERS"
+        assert block is not None, "MANUAL_ONLY_INSTALLERS is malformed"
         return {
             ln.strip().strip('"').split("|")[0]
             for ln in block.group(1).splitlines()
@@ -521,10 +528,19 @@ class TestInstallerRouting:
             # invocation, not a mere mention (a comment naming a script is how
             # the original orphan sweep produced a false negative).
             invoked = f'bash "$REPO_DIR/infrastructure/{name}"' in sh
-            assert name in routed or name in manual or invoked, (
+            # An installer may legitimately run in CI rather than on the box —
+            # install-host-alarms.sh must, since the instance role deliberately
+            # lacks cloudwatch:PutMetricAlarm (config-I5211). "Automated
+            # somewhere" is the property that matters, not "automated here".
+            in_ci = any(
+                f"infrastructure/{name}" in wf.read_text()
+                for wf in (REPO_ROOT / ".github" / "workflows").glob("*.yml")
+            )
+            assert name in routed or name in manual or invoked or in_ci, (
                 f"{name} is invoked by nothing: add a ROUTED_INSTALLERS row, or "
                 f"a MANUAL_ONLY_INSTALLERS entry stating why it must not run on "
-                f"deploy. An installer nothing calls means the box silently "
+                f"deploy, or a call from a .github/workflows/*.yml job. An "
+                f"installer nothing calls means the box silently "
                 f"drifts from main (config-I5215)."
             )
 
@@ -533,6 +549,8 @@ class TestInstallerRouting:
 
         sh = (REPO_ROOT / self.DEPLOY).read_text()
         block = re.search(r"MANUAL_ONLY_INSTALLERS=\((.*?)\n\)", sh, re.S)
+        if block is None:
+            return  # empty `=()` — nothing to validate
         for ln in block.group(1).splitlines():
             ln = ln.strip()
             if not ln or ln.startswith("#"):
@@ -567,3 +585,90 @@ class TestInstallerRouting:
 
     def test_routing_shell_test(self):
         TestInfraShellTests()._run("test_installer_routing.sh")
+
+
+class TestOffBoxHealthVerdict:
+    """The watchdog's verdict must reach CloudWatch, not only SNS/Telegram.
+
+    Metrics and alerts are separate code paths with separate failure modes. If
+    only the alert path carries the verdict, a broken alert path means a
+    confirmed problem is found and silently dropped — while emit_metrics keeps
+    publishing, so the box-liveness alarm stays green. The box looks healthy
+    precisely because the part that would say otherwise is the part that broke
+    (config-I5211; the config#1646 silent exit-0 alerts no-op is this class).
+    """
+
+    def test_verdict_is_published_on_every_exit_path(self):
+        sh = (REPO_ROOT / "infrastructure" / "box_health.sh").read_text()
+        assert "publish_verdict()" in sh
+        # Two clean-exit paths (first sample clean, and self-healed during the
+        # confirmation window) plus the problem path. A missed path would leave
+        # a stale non-zero metric latched and page forever.
+        assert sh.count("publish_verdict 0") == 2, (
+            "both clean-exit paths must publish 0; a latched non-zero metric "
+            "would keep the alarm firing after the problem cleared"
+        )
+        assert 'publish_verdict "$(printf' in sh
+
+    def test_verdict_is_published_before_alerting(self):
+        # Ordering is the whole point: a failing alert path must not also
+        # prevent the count being recorded.
+        sh = (REPO_ROOT / "infrastructure" / "box_health.sh").read_text()
+        verdict = sh.index('publish_verdict "$(printf')
+        alert = sh.index("-m krepis.alerts publish")
+        assert verdict < alert, "verdict must be published before the alert attempt"
+
+    def test_alarm_exists_and_does_not_double_page_on_silence(self):
+        wf = (REPO_ROOT / ".github" / "workflows" / "deploy.yml").read_text()
+        block = wf[wf.index("alpha-engine-dashboard-health-problems"):]
+        block = block[: block.index("--ok-actions")]
+        assert "--metric-name health_problems" in block
+        # notBreaching, deliberately: absent data means the box or watchdog is
+        # down, already covered by box-disk-critical's missing-data breach.
+        assert "--treat-missing-data notBreaching" in block, (
+            "missing data must NOT breach here — box-disk-critical already "
+            "breaches on the same silence, and two alarms for one cause "
+            "double-pages"
+        )
+
+    def test_box_liveness_alarm_still_breaches_on_missing(self):
+        # The complement of the above. If this ever flips to notBreaching,
+        # nothing detects a dead box at all.
+        wf = (REPO_ROOT / ".github" / "workflows" / "deploy.yml").read_text()
+        block = wf[wf.index("alpha-engine-dashboard-box-disk-critical"):]
+        block = block[: block.index("--ok-actions")]
+        assert "--treat-missing-data breaching" in block
+
+
+class TestDeployWorkflowSelfConsistency:
+    """A deploy step that runs a repo file needs the repo on the runner.
+
+    The deploy job historically needed no checkout — it only sends SSM commands,
+    and the box runs scripts from its own checkout. When config-I5211 added a
+    step running `bash infrastructure/install-host-alarms.sh` on the RUNNER, the
+    job died with exit 127 "No such file or directory". CI was green: nothing
+    tests a workflow's internal consistency, only its YAML validity.
+    """
+
+    def _deploy(self):
+        return (REPO_ROOT / ".github" / "workflows" / "deploy.yml").read_text()
+
+    def test_repo_scripts_in_deploy_require_a_checkout(self):
+        import re
+
+        wf = self._deploy()
+        runs_repo_file = re.findall(r"bash (infrastructure/[\w./-]+)", wf)
+        if not runs_repo_file:
+            return
+        assert "actions/checkout@" in wf, (
+            f"deploy.yml runs repo file(s) {runs_repo_file} on the runner but "
+            f"never checks the repo out — the step will fail with exit 127"
+        )
+        # Checkout must precede the first such step, or it fails the same way.
+        assert wf.index("actions/checkout@") < wf.index(f"bash {runs_repo_file[0]}")
+
+    def test_referenced_repo_scripts_actually_exist(self):
+        import re
+
+        for rel in re.findall(r"bash (infrastructure/[\w./-]+)", self._deploy()):
+            assert (REPO_ROOT / rel).is_file(), f"deploy.yml references missing {rel}"
