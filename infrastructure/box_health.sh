@@ -128,6 +128,60 @@ emit_metrics() {
         2>&1 | head -1 | sed 's/^/box_health: metric publish failed: /' >&2 || true
 }
 
+# classify_timer — decide whether ONE enabled timer is dead, from its systemd
+# properties alone. Echoes a problem line if it will not fire again; echoes
+# nothing when healthy.
+#
+# A pure function of its arguments (no systemd calls) specifically so the
+# classification can be unit-tested against synthetic property blocks — see
+# test_box_health_timer_deadman.sh. The predicate this replaced was never
+# tested, and shipped a defect that fired on 100% of runs (below).
+#
+#   $1 unit name  $2 ActiveState  $3 SubState
+#   $4 NextElapseUSecRealtime  $5 NextElapseUSecMonotonic
+classify_timer() {
+    local name="$1" active="$2" sub="$3" next_real="$4" next_mono="$5"
+
+    # An `enabled` timer that is not `active` will not fire again until a
+    # reboot or a manual `systemctl start`. This is the EXACT signature of the
+    # outage this check exists for: metron-refresh.timer sat `enabled` +
+    # `inactive` for two days after its 2026-07-25 OOM kill (config-I4487).
+    # Named distinctly from the never-fire-again case below because the remedy
+    # differs and is mechanical: `systemctl start <timer>`.
+    if [ "$active" != "active" ]; then
+        echo "timer enabled but not active (will not fire until reboot): $name"
+        return
+    fi
+
+    # SubState=running means the timer's OWN triggered service is executing
+    # right now. systemd deliberately does not compute a next-elapse while a
+    # timer is in that state (NextElapseUSecMonotonic=infinity), and
+    # `systemctl list-timers` renders that as `-` in the NEXT column — visually
+    # identical to a dead timer.
+    #
+    # This is why the previous `NEXT == "-"` table heuristic was wrong. It read
+    # in-flight as dead, and box_health.sh runs INSIDE box-health.service, so
+    # box-health.timer was guaranteed to be mid-trigger at every single sample:
+    # 144 of 144 runs over 36h flagged the watchdog's own timer, paging hourly
+    # (the dedup window) about a timer that was provably firing on schedule.
+    # The same race hits any other timer whose job outlives the confirmation
+    # window — so this is a general defect, not a box-health special case, and
+    # it is fixed by reading state rather than by excluding one unit.
+    if [ "$sub" = "running" ]; then
+        return
+    fi
+
+    # "No next elapse" is spelled differently per timer kind, and BOTH
+    # properties are always present, so neither alone is a sufficient test:
+    #   calendar timer  -> Realtime=<timestamp>   Monotonic=0
+    #   monotonic timer -> Realtime=(empty)       Monotonic=<timespan>
+    #   no next elapse  -> Realtime=(empty)       Monotonic=0 | infinity
+    case "$next_mono" in ""|0|infinity) next_mono="" ;; esac
+    if [ -z "$next_real" ] && [ -z "$next_mono" ]; then
+        echo "timer will never fire again: $name"
+    fi
+}
+
 # snapshot_problems — run the full check ONCE, printing one problem per line.
 # No shared state; the caller samples it repeatedly and keeps the intersection.
 snapshot_problems() {
@@ -197,16 +251,56 @@ snapshot_problems() {
     # die — which is why metron-refresh sat dead for two days after its
     # 2026-07-25 OOM kill with nothing noticing (alpha-engine-config-I4487).
     #
-    # An `enabled` timer whose NEXT is `-` will never fire again. That is the
-    # signal: unambiguous, no interval arithmetic, no false positives from a
-    # job that simply has not come due yet.
-    local dead_timers t
-    dead_timers=$(systemctl list-timers --all --no-pager --legend=false 2>/dev/null \
-                  | awk '$1=="-" && $NF ~ /\.service$/ {print $(NF-1)}')
-    for t in $dead_timers; do
+    # Enumerated from unit FILES, not from `systemctl list-timers`, and judged
+    # on `systemctl show` properties, not on that table's columns. The table is
+    # a human-facing format whose column count varies with timer kind and whose
+    # NEXT field is ambiguous (see classify_timer); reading properties is both
+    # unambiguous and version-stable. Column $1 of list-unit-files is always
+    # the unit name, so enumeration carries no positional fragility.
+    local t props active sub next_real next_mono timer_units _k _v
+    timer_units=$(systemctl list-unit-files --type=timer --no-legend 2>/dev/null | awk '{print $1}')
+    if [ -z "$timer_units" ]; then
+        # Fail loud: an empty enumeration is a watchdog malfunction, not a box
+        # with no timers. Silently checking nothing is how this whole class of
+        # gap presents as green.
+        echo "watchdog: timer enumeration returned no units (cannot verify timers)"
+    fi
+    for t in $timer_units; do
+        # Bare TEMPLATE units (`foo@.timer`) are not schedulable — only their
+        # instances are, and an enabled instance gets its own `foo@bar.timer`
+        # row in list-unit-files, so skipping the template loses no coverage.
+        # `systemctl show` on a bare template returns nothing, which would
+        # otherwise trip the unreadable-state guard below on every run:
+        # refresh-policy-routes@.timer did exactly that in pre-merge testing.
+        case "$t" in *@.timer) continue ;; esac
         # A timer that is not enabled is deliberately parked, not broken.
         systemctl is-enabled --quiet "$t" 2>/dev/null || continue
-        echo "timer will never fire again: $t"
+        props=$(systemctl show "$t" -p ActiveState -p SubState \
+                    -p NextElapseUSecRealtime -p NextElapseUSecMonotonic 2>/dev/null)
+        if [ -z "$props" ]; then
+            echo "watchdog: cannot read timer state: $t"
+            continue
+        fi
+        # Key-matched, not positional: `systemctl show` makes no ordering
+        # guarantee, and a missing key must stay EMPTY rather than silently
+        # inheriting the neighbouring property's value.
+        active=""; sub=""; next_real=""; next_mono=""
+        while IFS='=' read -r _k _v; do
+            case "$_k" in
+                ActiveState)             active="$_v" ;;
+                SubState)                sub="$_v" ;;
+                NextElapseUSecRealtime)  next_real="$_v" ;;
+                NextElapseUSecMonotonic) next_mono="$_v" ;;
+            esac
+        done <<< "$props"
+        # A blank ActiveState means the parse failed, NOT that the timer is
+        # stopped — report it as a watchdog malfunction instead of paging a
+        # false dead-timer (no-silent-fails, and no silent false alarms).
+        if [ -z "$active" ]; then
+            echo "watchdog: cannot parse timer state: $t"
+            continue
+        fi
+        classify_timer "$t" "$active" "$sub" "$next_real" "$next_mono"
     done
 
     # listening ports (mnemon/bun has no systemd unit here, so port is the probe).
