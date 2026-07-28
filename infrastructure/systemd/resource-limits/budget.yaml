@@ -108,9 +108,21 @@ services:
   # ── metron ──────────────────────────────────────────────────────────────
   - unit: metron-api.service
     port: 8000
-    observed_mb: 349
-    memory_high: 385M
+    observed_mb: 403
+    memory_high: 450M
     memory_max: 550M
+    # 2026-07-28 re-measure (alpha-engine-config-I5216). Steady state had grown
+    # 349 -> 403 MB, so MemoryHigh=385M sat BELOW the working set and the kernel
+    # throttled the cgroup continuously: memory.events showed high=7347 since
+    # boot, with max=0 / oom_kill=0 — never a runaway, just a permanently
+    # under-sized throttle. The host had 1.7 GB free the whole time.
+    #
+    # ONLY memory_high moves. memory_max stays 550M deliberately: the hard cap
+    # was never approached (max=0), and sum(memory_max) is at 1.18 of the 1.20
+    # max_overcommit_ratio — raising it would spend the last of the box's
+    # overcommit headroom to fix a throttle that the cap has nothing to do with.
+    # sum(observed_mb) moves 0.43 -> ~0.44 against a 0.60 ceiling, so the
+    # steady-state invariant is unaffected.
     note: largest steady-state consumer on the box (gunicorn + uvicorn workers)
 
   - unit: metron-dash-web.service
