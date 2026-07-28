@@ -590,6 +590,139 @@ if manifest_stale || any_file_state_stale \
     log "re-installed box-health/hygiene"
 fi
 
+# ── 2f. Route every remaining out-of-tree installer (config-I5215) ──────────
+#
+# WHY THIS BLOCK IS A TABLE AND NOT SIX MORE HAND-WRITTEN GATES
+# -------------------------------------------------------------
+# Every install-*.sh here provisions files OUTSIDE the git tree — systemd
+# units, /usr/local/bin scripts, agent configs, CloudWatch alarms — which a
+# `git pull` never touches. Each one says in its own header that it is
+# idempotent and should be re-run to apply updates. Six of them were invoked
+# by NOTHING automated: not this script, not CI, not boot-pull.
+#
+# The consequence is not theoretical. install-resource-limits.sh renders both
+# the watchdog's manifest AND every unit's MemoryMax=/Restart= drop-in from
+# budget.yaml; on 2026-07-28 config-I5209's timer thresholds merged, deployed
+# green, and the box's manifest contained none of them (crucible-dashboard
+# PR570). The same silence applies to memory caps, the CloudWatch agent
+# config, the host alarms, boot-pull's units and the auto-patching config.
+#
+# Adding a seventh bespoke `if` block per installer is how this file grew past
+# 600 lines and how the gaps hid in the first place. One declarative table plus
+# one loop means a NEW installer is routed by adding a row — and CI fails if it
+# is added without one (tests/test_dash_deploy_infra.py::TestInstallerRouting).
+#
+# ROW FORMAT:  <installer>|<mode>|<comma-separated args>
+#   files  — desired-vs-actual on `src:dst` pairs, relative to infrastructure/.
+#            Strongest form: compares the box's real state to the repo's.
+#   stamp  — sha256 of the listed INPUT files vs a recorded stamp. For
+#            installers whose output is not a local file (CloudWatch alarms) or
+#            is rendered per-unit from a spec (the resource-limit drop-ins), so
+#            there is no single dst to compare. Weaker: it proves the installer
+#            ran for these inputs, not that the result still stands. Hand-edits
+#            to installed units are caught by systemd-unit-drift-check.timer,
+#            which is the complementary control.
+INFRA="$REPO_DIR/infrastructure"
+STAMP_DIR="/etc/alpha-engine/installer-stamps"
+
+ROUTED_INSTALLERS=(
+  "install-boot-pull.sh|files|systemd/boot-pull.service:/etc/systemd/system/boot-pull.service,systemd/boot-pull.timer:/etc/systemd/system/boot-pull.timer"
+  "install-substrate-health-daily.sh|files|systemd/substrate-health-daily.service:/etc/systemd/system/substrate-health-daily.service,systemd/substrate-health-daily.timer:/etc/systemd/system/substrate-health-daily.timer,systemd/alert-on-failure@.service:/etc/systemd/system/alert-on-failure@.service"
+  # STAMP, not files, and the reason is not obvious: the installer writes its
+  # config to CFG_DST and then calls `amazon-cloudwatch-agent-ctl -a
+  # fetch-config -c file:CFG_DST`, which CONSUMES that file and rebuilds the
+  # .d directory with its own `file_`-prefixed copy (the box carries
+  # file_file_amazon-cloudwatch-agent.json). CFG_DST is therefore a staging
+  # path that never persists, so a files-mode gate on it reads stale forever
+  # and would restart the CloudWatch agent on every single deploy. Caught by
+  # running the gate against the live box before merge, not by inspection.
+  "install-cloudwatch-agent-config.sh|stamp|cloudwatch-agent.json,emit_oom_metric.sh,systemd/emit-oom-metric.service,systemd/emit-oom-metric.timer,install-cloudwatch-agent-config.sh"
+  "install-auto-patching.sh|files|dnf-automatic.conf:/etc/dnf/automatic.conf,systemd/dnf-automatic-alert.conf:/etc/systemd/system/dnf-automatic.service.d/10-alert.conf,reboot_if_needed.sh:/usr/local/bin/reboot_if_needed.sh,systemd/reboot-if-needed.service:/etc/systemd/system/reboot-if-needed.service,systemd/reboot-if-needed.timer:/etc/systemd/system/reboot-if-needed.timer"
+  # Drop-ins are rendered per-unit into /etc/systemd/system/<unit>.d/, so there
+  # is no single dst pair; budget.yaml plus the renderer fully determine them.
+  "install-resource-limits.sh|stamp|systemd/resource-limits/budget.yaml,install-resource-limits.sh"
+)
+
+# Declared manual-only installers, as `name|reason`. CI requires every
+# install-*.sh to appear either here or in the table above, so a new one cannot
+# be added and silently never run (tests/test_dash_deploy_infra.py).
+MANUAL_ONLY_INSTALLERS=(
+  # CANNOT run from the box, by design. The instance role does not carry
+  # cloudwatch:PutMetricAlarm, so every invocation dies on the first alarm:
+  #   AccessDenied ... assumed-role/alpha-engine-dashboard-role ... is not
+  #   authorized to perform: cloudwatch:PutMetricAlarm
+  # Verified live 2026-07-28. That absence is CORRECT and must not be "fixed"
+  # by widening the role: a host that can rewrite its own alarms can disable
+  # its own detection, which on a shared box running fourteen services with no
+  # per-service isolation (T0-6 unmet) is a real privilege to withhold. Alarm
+  # provisioning belongs in CI/IaC with operator credentials — tracked in
+  # config-I5211. The seven host alarms are currently in place and OK; this
+  # script is how they are updated, from an operator machine.
+  "install-host-alarms.sh|needs cloudwatch:PutMetricAlarm, which the instance role deliberately lacks; alarm provisioning is an operator/CI action (config-I5211)"
+)
+
+installer_inputs_digest() {   # INPUT [INPUT...] -> sha256, empty on any error
+    local f
+    for f in "$@"; do [ -r "$f" ] || return 1; done
+    cat "$@" | sha256sum | cut -d' ' -f1
+}
+
+installer_stamp_stale() {     # NAME INPUT [INPUT...]
+    local name="$1"; shift
+    local want have
+    # Fail SAFE: an unreadable input reads as stale, so the installer runs and
+    # fails loudly there rather than being silently skipped forever.
+    want=$(installer_inputs_digest "$@") || return 0
+    [ -n "$want" ] || return 0
+    have=$(cat "$STAMP_DIR/$name" 2>/dev/null)
+    [ "$want" = "$have" ] && return 1
+    return 0
+}
+
+installer_stamp_write() {     # NAME INPUT [INPUT...]
+    local name="$1"; shift
+    local digest
+    digest=$(installer_inputs_digest "$@") || return 0
+    mkdir -p "$STAMP_DIR"
+    printf '%s\n' "$digest" > "$STAMP_DIR/$name"
+}
+
+for _row in "${ROUTED_INSTALLERS[@]}"; do
+    _name="${_row%%|*}"
+    _rest="${_row#*|}"
+    _mode="${_rest%%|*}"
+    _args="${_rest#*|}"
+
+    _stale=1
+    _inputs=()
+    case "$_mode" in
+        files)
+            _pairs=()
+            IFS=',' read -ra _raw <<< "$_args"
+            for _p in "${_raw[@]}"; do _pairs+=("$INFRA/${_p%%:*}:${_p#*:}"); done
+            any_file_state_stale "${_pairs[@]}" && _stale=0
+            ;;
+        stamp)
+            IFS=',' read -ra _raw <<< "$_args"
+            for _i in "${_raw[@]}"; do _inputs+=("$INFRA/$_i"); done
+            installer_stamp_stale "$_name" "${_inputs[@]}" && _stale=0
+            ;;
+        *)
+            log "WARN unknown installer routing mode '$_mode' for $_name — treating as stale"
+            _stale=0
+            ;;
+    esac
+
+    if [ "$_stale" -eq 0 ]; then
+        log "$_name: installed state differs from repo — re-installing"
+        bash "$INFRA/$_name" >>"$LOG" 2>&1 || fail "$_name"
+        # Stamp only AFTER a successful run, so a failed install re-runs next
+        # deploy instead of being recorded as done.
+        [ "$_mode" = "stamp" ] && installer_stamp_write "$_name" "${_inputs[@]}"
+        log "re-installed $_name"
+    fi
+done
+
 # ── 3. Self-provision dashboard and nous-ergon-live unit files ──────────────
 # Both services ship in the repo; install/refresh them on unit-file diff
 # (or first deploy) so they can never drift from the repo copy — same
