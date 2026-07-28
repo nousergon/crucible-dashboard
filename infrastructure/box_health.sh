@@ -117,7 +117,12 @@ CGROUP_HIGH_DELTA_MIN=10
 
 # Where the previous run's throttle counters live. /var/lib, not /tmp: a
 # tmpfiles cleanup mid-window would silently re-baseline and hide throttling.
-THROTTLE_STATE="/var/lib/box-health/cgroup-high-counts"
+#
+# $STATE_DIRECTORY is exported by systemd from StateDirectory= in the unit,
+# which is what makes the directory exist AND be writable by User=ec2-user.
+# The literal fallback is for running the script by hand outside systemd.
+THROTTLE_STATE_DIR="${STATE_DIRECTORY:-/var/lib/box-health}"
+THROTTLE_STATE="${THROTTLE_STATE_DIR}/cgroup-high-counts"
 
 RETRY_ATTEMPTS=4                     # samples before a problem is confirmed
 RETRY_DELAY=4                        # seconds between confirmation samples (4x4s ~12s window > metron-api ~5s cold-start)
@@ -327,7 +332,7 @@ throttle_baseline() {
 # call site for why that ordering is load-bearing).
 throttle_baseline_write() {
     local s evt c tmp
-    mkdir -p "$(dirname "$THROTTLE_STATE")" 2>/dev/null || return 0
+    mkdir -p "$THROTTLE_STATE_DIR" 2>/dev/null || return 0
     tmp="${THROTTLE_STATE}.$$"
     : > "$tmp" || return 0
     for s in "${SERVICES[@]}"; do
@@ -546,7 +551,7 @@ snapshot_problems() {
     # service is spending >10% of time stalled on reclaim — a sustained
     # throttle. memory.events high > 0 means the cgroup has hit its soft
     # limit since boot.
-    local cg evt pressure high_count
+    local cg evt pressure high_count throttle_state_seen=0
     for s in "${SERVICES[@]}"; do
         # cgroup v2 uses literal unit names under system.slice/ — hyphens and
         # dots are NOT hex-escaped for service units (confirmed on the actual
@@ -572,9 +577,24 @@ snapshot_problems() {
             # the very mechanism meant to suppress false positives.
             classify_throttle_delta "$s" "$high_count" \
                 "$(throttle_baseline "$s")" "$CGROUP_HIGH_DELTA_MIN"
+            throttle_state_seen=1
         fi
     done
-    unset cg evt pressure high_count
+    # An unwritable state directory makes the throttle check permanently
+    # silent, because "no baseline" is its HEALTHY case — absence of a signal
+    # reading as health is the exact class this whole check exists to end.
+    # Report it rather than inheriting the silence.
+    #
+    # This is not hypothetical: box-health.service runs as User=ec2-user, which
+    # cannot mkdir under root-owned /var/lib, so the first shipped version wrote
+    # no baseline at all and the check was dead on arrival (fixed by
+    # StateDirectory= in the unit).
+    if [ "$throttle_state_seen" -eq 1 ]; then
+        if ! mkdir -p "$THROTTLE_STATE_DIR" 2>/dev/null || [ ! -w "$THROTTLE_STATE_DIR" ]; then
+            echo "watchdog: throttle state dir not writable ($THROTTLE_STATE_DIR) — cgroup throttling is UNMONITORED"
+        fi
+    fi
+    unset cg evt pressure high_count throttle_state_seen
 
     # listening ports (mnemon/bun has no systemd unit here, so port is the probe).
     if [ -z "$SS_BIN" ]; then

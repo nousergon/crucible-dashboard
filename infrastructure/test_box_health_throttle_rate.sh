@@ -101,6 +101,33 @@ else
     FAILURES=$((FAILURES+1))
 fi
 
+echo "== the state directory must be declared in the unit, not mkdir'd at runtime =="
+# box-health.service runs as User=ec2-user, which cannot create a directory
+# under root-owned /var/lib. The first shipped version relied on `mkdir -p` and
+# so never wrote a baseline — and "no baseline" is this check's HEALTHY case,
+# so it was silently dead. Verified live 2026-07-28.
+_unit="$SCRIPT_DIR/systemd/box-health.service"
+if grep -q '^StateDirectory=box-health' "$_unit"; then
+    echo "ok   - box-health.service declares StateDirectory=box-health"
+else
+    echo "FAIL - box-health.service must declare StateDirectory=box-health; a"
+    echo "       runtime mkdir under /var/lib fails as ec2-user and the check dies silently"
+    FAILURES=$((FAILURES+1))
+fi
+if grep -q 'THROTTLE_STATE_DIR="\${STATE_DIRECTORY:-' "$TARGET_SCRIPT"; then
+    echo "ok   - box_health.sh honours \$STATE_DIRECTORY"
+else
+    echo "FAIL - box_health.sh must use \$STATE_DIRECTORY (systemd-provided) with a fallback"
+    FAILURES=$((FAILURES+1))
+fi
+if grep -q 'cgroup throttling is UNMONITORED' "$TARGET_SCRIPT"; then
+    echo "ok   - an unwritable state dir is reported, not silently tolerated"
+else
+    echo "FAIL - an unwritable state dir must be REPORTED: no baseline is the"
+    echo "       healthy case, so silence there means the check is dead"
+    FAILURES=$((FAILURES+1))
+fi
+
 echo
 if [ "$FAILURES" -eq 0 ]; then echo "PASS - all classify_throttle_delta assertions"; exit 0; fi
 echo "FAILED - $FAILURES assertion(s)"; exit 1
