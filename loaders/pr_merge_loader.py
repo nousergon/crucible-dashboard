@@ -182,3 +182,91 @@ def load_merged_prs(days: int = 14) -> tuple[list[dict[str, Any]], int | None]:
     except (urllib.error.URLError, RuntimeError, json.JSONDecodeError) as e:
         logger.error("GitHub merged-PR fetch failed: %s", e)
         raise
+
+
+# ---------------------------------------------------------------------------
+# Open-PR fleet census by pipeline class (config#2709 PR Pipeline page)
+# ---------------------------------------------------------------------------
+#
+# Mirrors ``scripts/pr_sweep_classify.py``'s own scope split (config#2570):
+# dependabot-authored and ``do-not-groom``-labeled PRs are excluded from that
+# classifier's scope entirely; any ``gate:*``-labeled PR is routed to the
+# separate ``gate_pr_actions.py`` pipeline instead. What's left — the
+# classifier's actual in-scope population — is this page's "groom-ready"
+# bucket. A PR that is none of the above (no gate label, not dependabot, not
+# do-not-groom, but also not authored/labeled in a way this heuristic
+# recognizes) falls to "other" rather than being silently mis-bucketed.
+_DO_NOT_GROOM_LABEL = "do-not-groom"
+
+
+def classify_open_pr(row: dict[str, Any]) -> str:
+    """Return one of ``dependabot`` | ``gated`` | ``groom-ready`` | ``other``
+    for an open PR's ``{author, labels}``, mirroring
+    ``pr_sweep_classify.py::in_scope``'s exclusion order (dependabot checked
+    first, then any ``gate:*`` label, then do-not-groom) so a PR that somehow
+    carries both a gate label AND is dependabot-authored — a real state e.g.
+    Dependabot PRs auto-picking up a ``gate:ci-red`` label — lands in the
+    SAME bucket the live sweep pipeline would actually route it to.
+    """
+    author = (row.get("author") or "").lower()
+    labels = {str(x).lower() for x in (row.get("labels") or [])}
+    if "dependabot" in author:
+        return "dependabot"
+    if any(label.startswith("gate:") for label in labels):
+        return "gated"
+    if _DO_NOT_GROOM_LABEL in labels:
+        return "other"
+    return "groom-ready"
+
+
+@st.cache_data(ttl=300)
+def load_open_prs_by_class() -> dict[str, int]:
+    """Live fleet-wide open-PR count by class — current state, not a
+    trailing-window trend (that's :func:`loaders.pr_pipeline.sweep_trend_rows`
+    off the S3 sweep artifacts instead). Raises on GitHub API failure so the
+    console page can render an explicit error rather than a silently-zeroed
+    census.
+    """
+    token = _github_token()
+    if not token:
+        raise RuntimeError(
+            "No GitHub token — set FLOW_DOCTOR_GITHUB_TOKEN (hydrated on the box) "
+            "or run `gh auth login` locally."
+        )
+    query = """
+    query($q: String!, $first: Int!, $after: String) {
+      search(query: $q, type: ISSUE, first: $first, after: $after) {
+        issueCount
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          ... on PullRequest {
+            author { login }
+            labels(first: 20) { nodes { name } }
+          }
+        }
+      }
+    }
+    """
+    q = "org:nousergon is:pr is:open"
+    counts = {"dependabot": 0, "gated": 0, "groom-ready": 0, "other": 0}
+    after: str | None = None
+    # Bounded pagination — the fleet's open-PR count has never approached
+    # this in practice; a genuine runaway (thousands of open PRs) is itself
+    # an incident, not something this census should hang retrieving.
+    for _ in range(20):
+        data = _github_graphql(query, {"q": q, "first": 100, "after": after})
+        search = data.get("search") or {}
+        for node in search.get("nodes") or []:
+            if not node:
+                continue
+            label_nodes = (node.get("labels") or {}).get("nodes") or []
+            row = {
+                "author": (node.get("author") or {}).get("login") or "",
+                "labels": [n.get("name") for n in label_nodes if n.get("name")],
+            }
+            counts[classify_open_pr(row)] += 1
+        page_info = search.get("pageInfo") or {}
+        if not page_info.get("hasNextPage"):
+            break
+        after = page_info.get("endCursor")
+    return counts
