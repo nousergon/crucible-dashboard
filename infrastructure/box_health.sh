@@ -160,6 +160,28 @@ emit_metrics() {
         2>&1 | head -1 | sed 's/^/box_health: metric publish failed: /' >&2 || true
 }
 
+# classify_identity — decide whether ONE unit's User=/Group= makes it
+# unstartable. Echoes a problem line if the account cannot be resolved; echoes
+# nothing when healthy.
+#
+# Pure, for the same reason classify_timer is: the interesting case is the one
+# that must NOT fire. An unset User= is the overwhelmingly common case (the
+# unit inherits root) and is perfectly healthy — a version of this check that
+# treated empty as unresolvable would flag most units on the box, get tuned
+# down, and end up excluding the class it exists to catch. That is precisely
+# the failure mode this check was born from (nous-ergon-ops-I155, the 15th
+# instance of guard-filter-excludes-the-class-it-protects), so the empty case
+# is asserted explicitly in test_box_health_unit_identity.sh rather than left
+# to inspection.
+#
+#   $1 unit name  $2 field (User|Group)  $3 configured value  $4 resolves (yes|no)
+classify_identity() {
+    local unit="$1" field="$2" value="$3" resolves="$4"
+    [ -z "$value" ] && return 0                 # unset — inherits root; healthy
+    [ "$resolves" = "yes" ] && return 0
+    echo "unit cannot restart: $unit has $field=$value, which does not resolve"
+}
+
 # classify_timer — decide whether ONE enabled timer is dead, from its systemd
 # properties alone. Echoes a problem line if it will not fire again; echoes
 # nothing when healthy.
@@ -428,6 +450,34 @@ snapshot_problems() {
     local s
     for s in "${SERVICES[@]}"; do
         systemctl is-active --quiet "$s" || echo "service down: $s"
+    done
+
+    # Unit identity resolvability.
+    #
+    # A unit whose User= (or Group=) does not resolve cannot start: systemd
+    # fails it at step USER with 217/USER, before ExecStart. The critical
+    # property is that this is INVISIBLE to every check above — a service
+    # already running when its User= became unresolvable stays `active` and
+    # reports healthy right up until something restarts it.
+    #
+    # That is not hypothetical. On 2026-07-28 thirteen units were given
+    # User=svc-<name> for accounts nothing had created (nous-ergon-ops-I155).
+    # The five the deploy restarted died immediately; the other eight kept
+    # reporting active and would have died on the next restart — which
+    # reboot-if-needed.timer makes an unattended, all-at-once event. Nothing
+    # here could see the difference between those eight and genuinely healthy
+    # services, because "is it running" and "could it start again" are
+    # different questions and only the first was ever asked.
+    #
+    # Cheap enough to be unconditional: one getent per declared service.
+    local u g
+    for s in "${SERVICES[@]}"; do
+        u=$(systemctl show "$s" -p User --value 2>/dev/null)
+        classify_identity "$s" User "$u" \
+            "$(getent passwd "$u" >/dev/null 2>&1 && echo yes || echo no)"
+        g=$(systemctl show "$s" -p Group --value 2>/dev/null)
+        classify_identity "$s" Group "$g" \
+            "$(getent group "$g" >/dev/null 2>&1 && echo yes || echo no)"
     done
 
     # Box memory budget: what systemd ACTUALLY loaded vs what budget.yaml
