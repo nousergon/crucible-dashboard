@@ -93,6 +93,32 @@ else
     PORTS=(8501 8502 8503 8505 8000 3003 8506 3002 3001 8530 4100 8980 8990 443)
     EXPECTED_SERVICE_COUNT=14
 fi
+# Minimum MemoryHigh events in one 10-min tick before throttling is reported.
+#
+# Not zero. A handful of reclaim events during a deploy restart or a one-off
+# request spike is normal and self-corrects; paging on that would recreate the
+# noise problem in a new form.
+#
+# Sized from measurement, not intuition. metron-api's counter stood at 7347 on
+# 2026-07-28 — which looks like continuous throttling and is not: sampled every
+# 20s for 2 minutes it did not move once, and memory.pressure read 0.00 at
+# avg10/avg60/avg300 for both `some` and `full`. All 7347 events were a startup
+# burst during worker warm-up (cgroup created 17:24:24 UTC) that ended once the
+# service settled. The at-rest rate is ZERO, so 10 events inside a single tick
+# is unambiguously a burst rather than background noise.
+#
+# A restart therefore CAN trip this, and that is intended: a large delta after
+# a restart means the cap is still below the service's startup peak — the exact
+# condition this alert should surface, and the one being corrected for
+# metron-api in budget.yaml (config-I5216). The complementary memory.pressure
+# check above fires independently on sustained stall, so a service suffering
+# continuously is caught by either.
+CGROUP_HIGH_DELTA_MIN=10
+
+# Where the previous run's throttle counters live. /var/lib, not /tmp: a
+# tmpfiles cleanup mid-window would silently re-baseline and hide throttling.
+THROTTLE_STATE="/var/lib/box-health/cgroup-high-counts"
+
 RETRY_ATTEMPTS=4                     # samples before a problem is confirmed
 RETRY_DELAY=4                        # seconds between confirmation samples (4x4s ~12s window > metron-api ~5s cold-start)
 
@@ -264,6 +290,80 @@ classify_timer_staleness() {
     fi
     if [ "$age" -gt "$budget" ]; then
         echo "timer has not run in $(human_age "$age") (budget $(human_age "$budget")): $name"
+    fi
+}
+
+# classify_throttle_delta — decide whether a cgroup's MemoryHigh throttling is
+# ACTIVE, from the counter's movement rather than its total.
+#
+# memory.events::high is MONOTONIC for the life of the cgroup: it only resets
+# when the cgroup is recreated (a service restart or a reboot). Alerting on
+# `> 0` therefore has two defects that make it useless as a signal:
+#
+#   1. One transient spike at 03:00 pages forever. The condition can never
+#      clear on its own.
+#   2. FIXING THE CAP DOES NOT CLEAR IT. The alert survives the remedy, so it
+#      cannot be used to confirm that the remedy worked — which is precisely
+#      what config-I5216's acceptance criteria ask it to do.
+#
+# It also cannot distinguish "throttled 7000 times in the last hour" from
+# "throttled once three weeks ago". Only the delta between samples can.
+#
+# Pure function of its arguments so the threshold behaviour is unit-testable.
+#
+#   $1 unit name  $2 current counter  $3 baseline counter (EMPTY on first run)
+#   $4 minimum delta to report
+# throttle_baseline UNIT — the counter recorded at the end of the previous RUN,
+# or empty if there is none. Empty is a valid, expected state (first run after
+# a deploy or reboot) and classify_throttle_delta treats it as "no comparison".
+throttle_baseline() {
+    [ -r "$THROTTLE_STATE" ] || return 0
+    awk -v u="$1" '$1==u {print $2; found=1} END{if(!found) print ""}' \
+        "$THROTTLE_STATE" 2>/dev/null
+}
+
+# throttle_baseline_write — snapshot every monitored unit's counter. Called
+# ONCE per run, after alerting, never between confirmation samples (see the
+# call site for why that ordering is load-bearing).
+throttle_baseline_write() {
+    local s evt c tmp
+    mkdir -p "$(dirname "$THROTTLE_STATE")" 2>/dev/null || return 0
+    tmp="${THROTTLE_STATE}.$$"
+    : > "$tmp" || return 0
+    for s in "${SERVICES[@]}"; do
+        evt="/sys/fs/cgroup/system.slice/${s}/memory.events"
+        [ -r "$evt" ] || continue
+        c=$(awk '/^high/{print $2}' "$evt" 2>/dev/null)
+        case "$c" in ''|*[!0-9]*) continue ;; esac
+        printf '%s %s\n' "$s" "$c" >> "$tmp"
+    done
+    # Atomic swap: a half-written state file would produce garbage baselines on
+    # the next run, and a garbage baseline reads as a huge delta.
+    mv -f "$tmp" "$THROTTLE_STATE" 2>/dev/null || rm -f "$tmp"
+}
+
+classify_throttle_delta() {
+    local name="$1" current="$2" baseline="$3" floor="$4" delta
+
+    case "$current" in ''|*[!0-9]*)
+        echo "watchdog: cannot read cgroup throttle counter for $name"
+        return ;;
+    esac
+
+    # No baseline yet — first run after a deploy or reboot. Nothing to compare
+    # against, and reporting the lifetime total here would reintroduce exactly
+    # the defect this replaces. Silent by design; the next sample has a
+    # baseline. Sustained throttling is still caught 10 minutes later.
+    case "$baseline" in ''|*[!0-9]*) return ;; esac
+
+    delta=$((current - baseline))
+    # A counter that went BACKWARDS means the cgroup was recreated (service
+    # restarted) between samples. Not an error and not throttling — the next
+    # sample re-baselines.
+    [ "$delta" -lt 0 ] && return
+
+    if [ "$delta" -ge "$floor" ]; then
+        echo "cgroup throttle: $name hit MemoryHigh ${delta}x since the last check"
     fi
 }
 
@@ -462,10 +562,16 @@ snapshot_problems() {
         fi
         evt="/sys/fs/cgroup/system.slice/${s}/memory.events"
         if [ -r "$evt" ]; then
-            high_count=$(awk '/^high/{if($2>0) print $2}' "$evt" 2>/dev/null)
-            if [ -n "$high_count" ]; then
-                echo "cgroup throttle: $s triggered MemoryHigh ${high_count}x since boot"
-            fi
+            high_count=$(awk '/^high/{print $2}' "$evt" 2>/dev/null)
+            # Baseline is read from the file written at the END of the previous
+            # RUN, never updated mid-run. That is load-bearing: snapshot_problems
+            # is sampled up to RETRY_ATTEMPTS times and only problems present in
+            # EVERY sample are reported. A baseline refreshed per sample would
+            # make samples 2..N see a delta of ~0, the intersection would drop
+            # the line, and real throttling would be silently filtered out by
+            # the very mechanism meant to suppress false positives.
+            classify_throttle_delta "$s" "$high_count" \
+                "$(throttle_baseline "$s")" "$CGROUP_HIGH_DELTA_MIN"
         fi
     done
     unset cg evt pressure high_count
@@ -497,6 +603,14 @@ snapshot_problems() {
 
 # Gauges flow on every tick regardless of health outcome (see emit_metrics).
 emit_metrics
+
+# Re-baseline the throttle counters on the way out — once per RUN, after every
+# confirmation sample has read the OLD baseline. An EXIT trap rather than a
+# call at the bottom because the all-healthy path `exit 0`s early; without the
+# trap the baseline would only advance on runs that found a problem, so a
+# healthy box would accumulate an ever-growing delta and eventually page for no
+# reason.
+trap throttle_baseline_write EXIT
 
 # Confirm-on-retry: keep only problems present in EVERY sample. The common
 # all-healthy path takes a single sample and exits without added latency.
