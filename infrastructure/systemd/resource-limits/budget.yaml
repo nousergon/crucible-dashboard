@@ -81,6 +81,7 @@ max_steady_state_fraction: 0.60 # sum(observed_mb) / RAM. Currently 0.43.
 services:
   # ── alpha-engine ────────────────────────────────────────────────────────
   - unit: dashboard.service
+    user: svc-dashboard
     port: 8501
     observed_mb: 82
     memory_high: 210M
@@ -88,18 +89,21 @@ services:
     note: Streamlit private console; spikes on large dataframe renders
 
   - unit: nous-ergon-live.service
+    user: svc-nous-ergon-live
     port: 8502
     observed_mb: 72
     memory_high: 175M
     memory_max: 250M
 
   - unit: crucible-dash-api.service
+    user: svc-crucible-dash-api
     port: 8506
     observed_mb: 195
     memory_high: 245M
     memory_max: 350M
 
   - unit: crucible-dash-web.service
+    user: svc-crucible-dash-web
     port: 3002
     observed_mb: 113
     memory_high: 154M
@@ -107,6 +111,7 @@ services:
 
   # ── metron ──────────────────────────────────────────────────────────────
   - unit: metron-api.service
+    user: svc-metron-api
     port: 8000
     observed_mb: 349
     memory_high: 385M
@@ -114,6 +119,7 @@ services:
     note: largest steady-state consumer on the box (gunicorn + uvicorn workers)
 
   - unit: metron-dash-web.service
+    user: svc-metron-dash-web
     port: 3003
     observed_mb: 104
     memory_high: 154M
@@ -121,24 +127,28 @@ services:
 
   # ── other products ──────────────────────────────────────────────────────
   - unit: telos-web.service
+    user: svc-telos-web
     port: 3001
     observed_mb: 57
     memory_high: 105M
     memory_max: 150M
 
   - unit: vires.service
+    user: svc-vires
     port: 8530
     observed_mb: 79
     memory_high: 112M
     memory_max: 160M
 
   - unit: signal.service
+    user: svc-signal
     port: 8505
     observed_mb: 78
     memory_high: 175M
     memory_max: 250M
 
   - unit: mnemon.service
+    user: svc-mnemon
     port: 8503
     observed_mb: 109
     memory_high: 175M
@@ -149,6 +159,7 @@ services:
       any service on the box while having no reclaim window. Raised.
 
   - unit: nousergon-auth.service
+    user: svc-nousergon-auth
     port: 4100
     observed_mb: 51
     memory_high: 105M
@@ -160,6 +171,7 @@ services:
 
   # ── dev infrastructure ──────────────────────────────────────────────────
   - unit: litellm-proxy.service
+    user: svc-litellm-proxy
     port: 8980
     observed_mb: 308
     memory_high: 350M
@@ -174,6 +186,7 @@ services:
       Restart=always now recycles it on an OOM kill instead of letting it die.
 
   - unit: llm-egress-proxy.service
+    user: svc-llm-egress-proxy
     port: 8990
     observed_mb: 42
     memory_high: 250M
@@ -193,7 +206,7 @@ services:
     observed_mb: 6
     memory_high: 70M
     memory_max: 100M
-    note: sole ingress for all ten vhosts — Restart=always is load-bearing
+    note: sole ingress for all ten vhosts — Restart=always is load-bearing; already runs as its own user, no User= migration needed
 
 # Restart semantics applied uniformly to every unit above (policy T1-2).
 #
@@ -287,10 +300,23 @@ manifest_exclude:
 #   IPC belonging to the other twelve. Safe only once services have per-service
 #   users.
 #
-# THE DEEPER FIX, NOT DONE HERE
-# ----------------------------- 
+# THE DEEPER FIX — PER-SERVICE USERS (alpha-engine-config#4791)
+# ---------------------------------------------------------------
 # Sandboxing narrows what a service can reach; it does not change the fact that
 # all thirteen share one Unix identity and therefore one set of credentials.
-# Per-service system users (User=svc-metron, svc-mnemon, ...) with per-service
-# home directories are the real fix, and they need a file-ownership migration
-# per service. Tracked separately rather than bundled here.
+# Per-service system users (declared via the `user:` field on each service
+# above) are the real fix, generated as `User=svc-<name>` into the drop-in by
+# install-resource-limits.sh. Two companion deliverables complete the arc:
+#
+#   1. create-service-users.sh — creates the system users, migrates ownership
+#      of checkouts / venvs / state directories, and verifies each service
+#      starts under its new identity. Run ONCE on the live box.
+#   2. RemoveIPC=yes — now safe because each service has its own user, so
+#      stopping one cannot destroy another's IPC. Generated conditionally by
+#      install-resource-limits.sh: enabled when `user:` is set, omitted for
+#      nginx (which has no `user:` field and runs as its own user already).
+#
+# Until create-service-users.sh executes on the live box, the `user:` fields
+# are DECLARED but not yet applied — install-resource-limits.sh will generate
+# the User= directive, but the actual users and migrated ownership must exist
+# on the box or the service will fail to start.
