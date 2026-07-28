@@ -209,6 +209,35 @@ snapshot_problems() {
         echo "timer will never fire again: $t"
     done
 
+    # ── per-service cgroup memory pressure (alpha-engine-config-I4512) ─────
+    # The 2026-07-27 failure: two services (litellm-proxy, llm-egress-proxy)
+    # were pinned at their MemoryHigh ceiling with memory.pressure ~60% and
+    # memory.events high in the thousands, yet nothing surfaced this until
+    # they failed to restart. memory.pressure some avg10 > 10 means the
+    # service is spending >10% of time stalled on reclaim — a sustained
+    # throttle. memory.events high > 0 means the cgroup has hit its soft
+    # limit since boot.
+    local cg evt pressure cg_unit
+    for s in "${SERVICES[@]}"; do
+        cg_unit="${s//-/\\x2d}"  # systemd escapes hyphens in cgroup paths
+        cg="/sys/fs/cgroup/system.slice/${cg_unit}/memory.pressure"
+        if [ -r "$cg" ]; then
+            pressure=$(awk '/^some avg10/{val=$2+0; if(val>10) print val}' "$cg" 2>/dev/null)
+            if [ -n "$pressure" ]; then
+                echo "memory pressure: $s (avg10 some ${pressure}%)"
+            fi
+        fi
+        evt="/sys/fs/cgroup/system.slice/${cg_unit}/memory.events"
+        if [ -r "$evt" ]; then
+            local high_count
+            high_count=$(awk '/^high/{if($2>0) print $2}' "$evt" 2>/dev/null)
+            if [ -n "$high_count" ]; then
+                echo "cgroup throttle: $s triggered MemoryHigh ${high_count}x since boot"
+            fi
+        fi
+    done
+    unset cg evt pressure cg_unit high_count
+
     # listening ports (mnemon/bun has no systemd unit here, so port is the probe).
     if [ -z "$SS_BIN" ]; then
         # Fail loud: a missing probe tool is a watchdog malfunction, NOT a port
