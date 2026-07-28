@@ -239,6 +239,120 @@ restart_policy:
 # Exclusions are BY NAME WITH A REASON. A bare count cannot say what is
 # missing, and a count-based check false-alarmed on exactly these units when
 # first deployed 2026-07-27.
+# ── Timer dead-man thresholds (alpha-engine-config-I5209) ─────────────────
+#
+# WHY A DECLARED THRESHOLD AND NOT AN INFERRED ONE
+# ------------------------------------------------
+# box_health.sh's scheduler-state check (classify_timer) answers "is this timer
+# scheduled to fire?" It CANNOT answer "did it actually do its job?" — a timer
+# whose service exits 1 on every single run is `active`, `waiting`, with a
+# perfectly valid next elapse. That is the more common silent failure, and it
+# needs an execution-outcome check with a per-job staleness budget.
+#
+# The budget is declared here rather than derived from the unit's own
+# `OnCalendar=`/`OnUnitActiveSec=` on purpose. Acceptable staleness is a
+# product decision, not a restatement of the schedule: a weekly bakeoff
+# tolerates eight days of silence, a nightly NAV snapshot does not tolerate
+# twenty-six hours. More importantly, inferring the threshold FROM the schedule
+# silently re-derives the wrong threshold in exactly the case where the
+# schedule is the thing that broke.
+#
+# HOW TO SET ONE
+# --------------
+# Start at 2x the nominal interval, then widen for real-world gaps the interval
+# does not express: randomized delay, weekday-only schedules crossing a
+# weekend, multi-fire retry ladders. Every value below is the observed cadence
+# from the live box on 2026-07-28, widened for those, and each carries the
+# reasoning as a `note:` — a bare number here is unreviewable.
+#
+# COVERAGE IS TOTAL, DELIBERATELY. Every enabled timer on the box gets a row,
+# including OS plumbing. box_health.sh NAMES any enabled timer with no row, so
+# a timer added without one surfaces as an alert rather than going quietly
+# unmonitored — the same rule `services:` lives under. OS timers are not exempt
+# because their failures are not cosmetic on this box: logrotate and fstrim
+# guard a 32 GB root volume, dnf-automatic is the T1-5 patching cadence.
+timers:
+  # ── alpha-engine ────────────────────────────────────────────────────────
+  - unit: box-health.timer
+    max_staleness: 30m
+    note: every 10min; 3x covers one missed tick plus a slow confirm window
+  - unit: emit-oom-metric.timer
+    max_staleness: 20m
+    note: every 5min; the OOM counter feeding the T0-3 saturation alarms
+  - unit: boot-pull.timer
+    max_staleness: 26h
+    note: daily 12:00 UTC + up to 5min randomized delay
+  - unit: box-hygiene.timer
+    max_staleness: 8d
+    note: weekly Sun 09:20 UTC; one full missed week is the signal
+  - unit: reboot-if-needed.timer
+    max_staleness: 8d
+    note: weekly Sun 07:00 UTC. Persistent=false, so a box down at 07:00 skips
+          the week entirely — 8d catches the second consecutive skip
+  - unit: substrate-health-daily.timer
+    max_staleness: 4d
+    note: Mon-Fri 22:30 UTC; Fri->Mon is a 3-day gap by design
+  - unit: systemd-unit-drift-check.timer
+    max_staleness: 26h
+    note: daily 06:17 UTC + up to 5min randomized delay
+
+  # ── metron ──────────────────────────────────────────────────────────────
+  - unit: metron-refresh.timer
+    max_staleness: 26h
+    note: three same-evening fires (20:45/21:30/22:30 UTC) are ONE nightly job
+          with a retry ladder, so the real cadence is daily, not 3x daily.
+          This is the job whose 2026-07-25 OOM kill went unnoticed for two days
+  - unit: metron-refresh-flex.timer
+    max_staleness: 4d
+    note: Mon-Fri 13:15 UTC; Fri->Mon is a 3-day gap by design
+
+  # ── morning-signal / the-cyphering ──────────────────────────────────────
+  - unit: morning-signal.timer
+    max_staleness: 26h
+    note: daily 04:00 America/Los_Angeles; DST shifts the UTC hour, not the gap
+  - unit: morning-signal-watchdog.timer
+    max_staleness: 26h
+    note: daily 06:15 America/Los_Angeles
+  - unit: morning-signal-bakeoff.timer
+    max_staleness: 8d
+    note: weekly Wed 05:00 America/Los_Angeles
+  - unit: daily-news.timer
+    max_staleness: 26h
+    note: daily 04:00 America/Los_Angeles
+  - unit: signal-pull.timer
+    max_staleness: 26h
+    note: daily 15:10 UTC
+
+  # ── mnemon ──────────────────────────────────────────────────────────────
+  - unit: mnemon-sync.timer
+    max_staleness: 45m
+    note: every 15min; 3x absorbs one slow sync plus one missed tick
+
+  # ── OS plumbing (covered, not exempt — see the note above) ──────────────
+  - unit: logrotate.timer
+    max_staleness: 26h
+    note: daily; guards the 32 GB root volume against journal/log growth
+  - unit: dnf-automatic.timer
+    max_staleness: 27h
+    note: daily 06:00 + up to 60min randomized delay; the T1-5 patch cadence
+  - unit: fstrim.timer
+    max_staleness: 9d
+    note: weekly + up to 100min randomized delay
+  - unit: sysstat-collect.timer
+    max_staleness: 30m
+    note: every 10min at :00/10
+  - unit: sysstat-summary.timer
+    max_staleness: 26h
+    note: daily 00:07
+  - unit: systemd-tmpfiles-clean.timer
+    max_staleness: 30h
+    note: OnUnitActiveSec=1d, so it drifts later each day rather than pinning
+          to a wall-clock hour
+  - unit: update-motd.timer
+    max_staleness: 30h
+    note: OnUnitActiveSec=720min PLUS RandomizedDelaySec=720min, so the real
+          interval is 12-24h — 2x the nominal 12h would false-alarm
+
 manifest_exclude:
   - unit: "alert-on-failure@.service"
     reason: systemd template unit, never instantiated directly

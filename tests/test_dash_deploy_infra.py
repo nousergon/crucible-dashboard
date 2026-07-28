@@ -324,3 +324,83 @@ class TestInfraShellTests:
     def test_deploy_on_merge_paths_changed(self):
         # Pre-existing script (config#2242), previously unwired from CI.
         self._run("test_deploy_on_merge_paths_changed.sh")
+
+
+class TestTimerDeadManRegistry:
+    """budget.yaml's `timers:` block is the dead-man's threshold registry.
+
+    box_health.sh names any enabled timer with no row here, so the registry is
+    load-bearing: a malformed or missing entry degrades coverage silently on
+    the box unless it fails here first (config-I5209).
+    """
+
+    def _timers(self):
+        import yaml
+
+        spec = yaml.safe_load(
+            (REPO_ROOT / "infrastructure" / "systemd" / "resource-limits"
+             / "budget.yaml").read_text()
+        )
+        assert spec.get("timers"), "budget.yaml must declare a `timers:` block"
+        return spec["timers"]
+
+    def test_every_timer_row_is_well_formed(self):
+        # A threshold that silently became a wrong number is worse than no
+        # threshold, because it reports as covered.
+        import re
+
+        seen = set()
+        for row in self._timers():
+            unit = row["unit"]
+            assert unit.endswith(".timer"), f"{unit} is not a .timer unit"
+            assert unit not in seen, f"{unit} declared twice in budget.yaml"
+            seen.add(unit)
+            assert re.fullmatch(r"[1-9]\d*[smhd]", str(row["max_staleness"])), (
+                f"{unit}: max_staleness must be <positive int><s|m|h|d>, "
+                f"got {row['max_staleness']!r}"
+            )
+            # A bare number is unreviewable — the reasoning is the artifact.
+            assert row.get("note", "").strip(), f"{unit}: needs a `note:` justifying its budget"
+
+    def test_watchdogs_own_timer_is_covered(self):
+        # If box-health.timer itself stops firing, nothing else on the box
+        # notices — every other check runs *from* it.
+        units = {r["unit"] for r in self._timers()}
+        assert "box-health.timer" in units
+
+    def test_manifest_generator_emits_thresholds_in_seconds(self):
+        # The watchdog stays pure bash, so unit conversion happens at install
+        # time. Guard the conversion, not just the YAML.
+        import subprocess
+
+        gen = REPO_ROOT / "infrastructure" / "generate-box-manifest.py"
+        proc = subprocess.run(
+            [sys.executable, str(gen), "--stdout"],
+            capture_output=True, text=True, timeout=60,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert "declare -A TIMER_MAX_STALENESS=(" in proc.stdout
+        assert '["box-health.timer"]=1800' in proc.stdout      # 30m
+        assert '["metron-refresh.timer"]=93600' in proc.stdout  # 26h
+
+    def test_bad_duration_fails_the_install_not_the_watchdog(self):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "genmanifest", REPO_ROOT / "infrastructure" / "generate-box-manifest.py"
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        assert mod.parse_duration("x.timer", "26h") == 93600
+        assert mod.parse_duration("x.timer", "45m") == 2700
+        for bad in ["26", "h", "0h", "-5m", "26 h", "abc", "", "1w"]:
+            try:
+                mod.parse_duration("x.timer", bad)
+            except ValueError:
+                continue
+            raise AssertionError(f"parse_duration accepted invalid duration {bad!r}")
+
+    def test_timer_staleness_shell_test(self):
+        self_ = TestInfraShellTests()
+        self_._run("test_box_health_timer_staleness.sh")
