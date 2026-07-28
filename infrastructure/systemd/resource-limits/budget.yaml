@@ -83,29 +83,40 @@ services:
   - unit: dashboard.service
     user: svc-dashboard
     port: 8501
-    observed_mb: 82
-    memory_high: 210M
+    observed_mb: 202
+    memory_high: 260M
     memory_max: 300M
-    note: Streamlit private console; spikes on large dataframe renders
+    note: >-
+      Streamlit private console; spikes on large dataframe renders. memory_high
+      raised 210M -> 260M and observed_mb corrected 82 -> 202 (config-I5237).
+      The 82 was measured ~11 min after a clean boot, before the console had
+      loaded anything; the real steady state is 202 MiB, so the cap sat 8 MiB
+      above the working set and the cgroup throttled continuously — 283
+      MemoryHigh events and still climbing 80s later, unlike metron-api's
+      startup burst which stopped. memory.peak equalled memory.high, the same
+      tell that the reading is censored by the cap, so 202 is a FLOOR and
+      needs re-measuring once it has run un-pinned. memory_max stays 300M: the
+      T1-1 sum is over memory_max and is already at 1.18x of a 1.20x ceiling,
+      so there is no room to raise it without an instance-size decision (T1-7).
 
   - unit: nous-ergon-live.service
     user: svc-nous-ergon-live
     port: 8502
-    observed_mb: 72
+    observed_mb: 56
     memory_high: 175M
     memory_max: 250M
 
   - unit: crucible-dash-api.service
     user: svc-crucible-dash-api
     port: 8506
-    observed_mb: 195
+    observed_mb: 107
     memory_high: 245M
     memory_max: 350M
 
   - unit: crucible-dash-web.service
     user: svc-crucible-dash-web
     port: 3002
-    observed_mb: 113
+    observed_mb: 56
     memory_high: 154M
     memory_max: 220M
 
@@ -143,7 +154,7 @@ services:
   - unit: metron-dash-web.service
     user: svc-metron-dash-web
     port: 3003
-    observed_mb: 104
+    observed_mb: 90
     memory_high: 154M
     memory_max: 220M
 
@@ -151,28 +162,28 @@ services:
   - unit: telos-web.service
     user: svc-telos-web
     port: 3001
-    observed_mb: 57
+    observed_mb: 56
     memory_high: 105M
     memory_max: 150M
 
   - unit: vires.service
     user: svc-vires
     port: 8530
-    observed_mb: 79
+    observed_mb: 83
     memory_high: 112M
     memory_max: 160M
 
   - unit: signal.service
     user: svc-signal
     port: 8505
-    observed_mb: 78
+    observed_mb: 64
     memory_high: 175M
     memory_max: 250M
 
   - unit: mnemon.service
     user: svc-mnemon
     port: 8503
-    observed_mb: 109
+    observed_mb: 52
     memory_high: 175M
     memory_max: 250M
     note: >
@@ -183,7 +194,7 @@ services:
   - unit: nousergon-auth.service
     user: svc-nousergon-auth
     port: 4100
-    observed_mb: 51
+    observed_mb: 53
     memory_high: 105M
     memory_max: 150M
     note: >
@@ -195,7 +206,7 @@ services:
   - unit: litellm-proxy.service
     user: svc-litellm-proxy
     port: 8980
-    observed_mb: 308
+    observed_mb: 244
     memory_high: 350M
     memory_max: 500M
     note: >
@@ -210,7 +221,7 @@ services:
   - unit: llm-egress-proxy.service
     user: svc-llm-egress-proxy
     port: 8990
-    observed_mb: 42
+    observed_mb: 11
     memory_high: 250M
     memory_max: 400M
     note: >
@@ -225,7 +236,7 @@ services:
   # ── ingress ─────────────────────────────────────────────────────────────
   - unit: nginx.service
     port: 443
-    observed_mb: 6
+    observed_mb: 9
     memory_high: 70M
     memory_max: 100M
     note: sole ingress for all ten vhosts — Restart=always is load-bearing; already runs as its own user, no User= migration needed
@@ -274,6 +285,108 @@ restart_policy:
 # Exclusions are BY NAME WITH A REASON. A bare count cannot say what is
 # missing, and a count-based check false-alarmed on exactly these units when
 # first deployed 2026-07-27.
+# ── Durable state inventory (T1-4, alpha-engine-config-I5250 gap 1) ───────
+#
+# WHY THIS EXISTS
+# ---------------
+# Policy T1-4: "Every SQLite file, vault, and cert on this box is either
+# replicated to S3 on a schedule or documented as accepted-loss with a stated
+# RPO. UNLISTED STATE IS A DEFECT."
+#
+# Audited 2026-07-28. Before that audit NO application state on this box was
+# replicated anywhere, and that was not a decision — it was an absence. The
+# nightly EBS snapshot (T0-1) bounded loss to <=24h by accident rather than by
+# declaration, and an EBS snapshot of a live SQLite file is CRASH-consistent,
+# not APPLICATION-consistent: a snapshot taken mid-write restores a database
+# that needs WAL recovery, which is not the same as a database you can open.
+#
+# A near-miss worth recording: `mnemon-sync.timer` looks like a backup and is
+# the opposite of one. It runs `aws s3 cp s3://mnemon-memory/... -> local`,
+# a one-way PULL. S3 is mnemon's source of truth and the box holds a replica,
+# so mnemon loses nothing on box loss — but reading that timer as "mnemon is
+# backed up" would have been exactly wrong.
+#
+# DISPOSITIONS
+#   replicate     — copied to S3 on the box-state-backup timer. Use for state
+#                   that is irreplaceable or that other products depend on.
+#   accepted-loss — deliberately NOT replicated, with an rpo: stating the
+#                   worst-case loss. Policy §7 permits this for personal tools
+#                   PROVIDED IT IS STATED. That proviso is the whole point:
+#                   accepted-loss and never-considered look identical on disk.
+#   external      — the box copy is a cache/replica; the real source is
+#                   elsewhere. Loss costs a re-fetch.
+#
+# Backups land under s3://alpha-engine-research/dashboard/box-state/. The
+# instance role can PutObject there but NOT DeleteObject — verified 2026-07-28.
+# That asymmetry is deliberate and worth keeping: a compromised or malfunctioning
+# box cannot destroy its own backup history.
+state:
+  - path: /home/ec2-user/nousergon-auth/auth.sqlite
+    owner: nousergon-auth.service
+    disposition: replicate
+    note: >-
+      Shared identity for every product on the box. Losing it invalidates
+      sessions and user records across all of them simultaneously, which is
+      the largest blast radius of any single file here — hence replicate
+      rather than accepted-loss, despite being small.
+  - path: /home/ec2-user/metron/personal.sqlite
+    owner: metron-api.service
+    disposition: replicate
+    note: >-
+      45 MB and the LIVE backend — metron/.env resolves to sqlite:////home/ec...,
+      so the Neon cutover (metron-ops-I237) has not happened. Holds broker
+      history and NAV snapshots that cannot be reconstructed from any upstream.
+  - path: /home/ec2-user/vires/vires.db
+    owner: vires.service
+    disposition: replicate
+    note: actively written (2026-07-28); personal tool but its content is user-authored, not derived
+  - path: /home/ec2-user/.mnemon/default.sqlite
+    owner: mnemon.service
+    disposition: external
+    source: s3://mnemon-memory/mnemon/vaults/default.sqlite
+    note: mnemon-sync.timer PULLS this from S3 every 15 min; S3 is authoritative
+  - path: /home/ec2-user/morning-signal/episodes/flow-doctor.db
+    owner: morning-signal.timer
+    disposition: accepted-loss
+    rpo: 24h
+    note: flow-doctor run telemetry; regenerates on the next run, no product depends on the history
+  - path: /home/ec2-user/metron/web/auth.sqlite
+    owner: none
+    disposition: accepted-loss
+    rpo: total
+    note: >-
+      Last written 2026-07-10 and superseded by nousergon-auth. Declared rather
+      than deleted so its absence from backups is a decision on the record;
+      removal is tracked separately.
+  - path: /home/ec2-user/morning-signal/flow-doctor.db
+    owner: none
+    disposition: accepted-loss
+    rpo: total
+    note: >-
+      Zero bytes — a vestigial file at the repo root, distinct from the live
+      episodes/flow-doctor.db. Found by the coverage check below, NOT by the
+      manual audit that produced this inventory, which is the argument for
+      having the check at all.
+  - path: /home/ec2-user/metron/dev.sqlite
+    owner: none
+    disposition: accepted-loss
+    rpo: total
+    note: zero bytes, last touched 2026-06-25; a dev scratch DB, superseded by personal.sqlite
+  - path: /home/ec2-user/.ssh/
+    owner: none
+    disposition: accepted-loss
+    rpo: total
+    note: >-
+      Contains alpha-engine-key.pem and the cyphering_ops_deploy key. NOT
+      replicated on purpose — copying private keys into an object store to
+      protect against a box loss trades a bounded availability problem for an
+      unbounded confidentiality one. Both are re-issuable from their sources.
+  - path: /home/ec2-user/*/.env
+    owner: various
+    disposition: external
+    source: SSM SecureString /alpha-engine/dashboard/secrets/*
+    note: six .env files; canonical copies live in SSM and are re-materialised on rebuild
+
 # ── Timer dead-man thresholds (alpha-engine-config-I5209) ─────────────────
 #
 # WHY A DECLARED THRESHOLD AND NOT AN INFERRED ONE
@@ -327,6 +440,9 @@ timers:
   - unit: substrate-health-daily.timer
     max_staleness: 4d
     note: Mon-Fri 22:30 UTC; Fri->Mon is a 3-day gap by design
+  - unit: box-state-backup.timer
+    max_staleness: 26h
+    note: nightly 03:40 UTC + up to 5min randomized delay; a skipped run leaves a real gap in the backup history
   - unit: systemd-unit-drift-check.timer
     max_staleness: 26h
     note: daily 06:17 UTC + up to 5min randomized delay
