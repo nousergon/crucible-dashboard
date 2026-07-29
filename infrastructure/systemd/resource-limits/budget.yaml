@@ -571,6 +571,66 @@ timers:
     note: OnUnitActiveSec=720min PLUS RandomizedDelaySec=720min, so the real
           interval is 12-24h — 2x the nominal 12h would false-alarm
 
+# ── Timer-driven jobs (policy §4.3, added 2026-07-29) ─────────────────────
+#
+# WHY THESE ARE DECLARED HERE AND NOT IN `services:`
+# --------------------------------------------------
+# `services:` is a CONCURRENCY bound: every unit in it is running all the time,
+# so their caps can sum above RAM simultaneously and T1-1 exists to stop that.
+# A timer-driven oneshot is not in that set — metron-intraday runs for ~3
+# seconds every 5 minutes.
+#
+# But it is not exempt from having a footprint either. Policy §4.3 requires a
+# measured, declared ceiling for anything installed here, and §4's stricter
+# batch rule says a timer job whose PEAK exceeds the box's steady-state headroom
+# "does not belong here at all — it belongs on a spot instance or Lambda".
+#
+# Until now these lived nowhere. morning-signal.service's caps sat in a drop-in
+# that the budget's own orphan check SUPPRESSED by name (DROPIN_ALLOW in
+# check_memory_budget.py) — "not our problem" rather than "declared". That is the
+# same shape as an undeclared alert source: invisible is not the same as fine.
+# Declaring them removes a suppression instead of adding one.
+#
+# THE BOUND
+#   sum(timer_jobs memory_max) <= RAM - sum(live service steady state)
+#
+# i.e. every timer job must fit in the headroom the long-running services leave,
+# in the worst case where they all fire at once. That is conservative for jobs on
+# disjoint schedules and deliberately so: the cheap direction to be wrong in is
+# the one where a batch peak cannot evict a user-facing service.
+#
+# measured_peak_mb is the observed peak RSS the caps derive from. Unlike the
+# `observed_mb` this file used to carry per service, it is NOT an input to any
+# bound — it is provenance for the cap beside it, so a future edit knows whether
+# it is re-deriving or guessing. Nothing recomputes from it, so it cannot rot
+# into a wrong answer.
+timer_jobs:
+  - unit: metron-intraday.service
+    memory_high: 260M
+    memory_max: 350M
+    measured_peak_mb: 184
+    note: >-
+      Every 5 min, NYSE-session-gated in-process. Measured 2026-07-29 across
+      three real runs: 184 MB peak, 3.2-3.7s wall, 7 quotes + 4 indices + 2
+      fund-proxies. Caps live in the unit file itself (nousergon-data,
+      infrastructure/systemd/metron-intraday.service), not a drop-in.
+      Runs on a DEDICATED .venv-intraday (Python 3.12) — the shared .venv is 3.9
+      and has no pandas/yfinance, which is how this job spent its first hours
+      writing empty artifacts over good ones while reporting success.
+
+  - unit: morning-signal.service
+    memory_high: 600M
+    memory_max: 900M
+    measured_peak_mb: null
+    note: >-
+      Caps in infrastructure/systemd/morning-signal.service.d/10-memory.conf.
+      measured_peak_mb is NULL and that is a gap, not a style: these caps were
+      never derived from a measurement, they are the largest single claim on the
+      box's headroom, and 900M against ~1.6 GB of headroom is over half of it.
+      Declared as-is rather than silently corrected — the previous state was a
+      name on a suppression list, which said less. Measure and re-derive before
+      trusting the number.
+
 manifest_exclude:
   - unit: "alert-on-failure@.service"
     reason: systemd template unit, never instantiated directly
