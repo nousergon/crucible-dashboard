@@ -449,7 +449,14 @@ snapshot_problems() {
     # systemd services
     local s
     for s in "${SERVICES[@]}"; do
-        systemctl is-active --quiet "$s" || echo "service down: $s"
+        if systemctl is-active --quiet "$s"; then
+            # A service can be running but not enabled — nothing detects it
+            # until a reboot loses it (alpha-engine-config-I4790).
+            systemctl is-enabled --quiet "$s" 2>/dev/null \
+                || echo "service active but not enabled: $s"
+        else
+            echo "service down: $s"
+        fi
     done
 
     # Unit identity resolvability.
