@@ -449,7 +449,23 @@ snapshot_problems() {
     # systemd services
     local s
     for s in "${SERVICES[@]}"; do
-        systemctl is-active --quiet "$s" || echo "service down: $s"
+        if ! systemctl is-active --quiet "$s"; then
+            echo "service down: $s"
+        else
+            # Running but not enabled — will silently vanish at the next
+            # reboot (observed live 2026-07-27: nousergon-auth was running
+            # but disabled, did not come back after the dashboard box's
+            # first reboot in 53 days; config#4790).  Checked here because
+            # is-active returns 0 even for a disabled-but-hand-started
+            # service — this gap is invisible while the box stays up.
+            #
+            # Alert-only (not auto-enable): a unit deliberately disabled
+            # (e.g. being decommissioned) must not be silently re-enabled
+            # by a watchdog.  If auto-enable is desired later, it should
+            # be a separate opt-in per unit, guarded by its own
+            # budget.yaml flag (config#4790 acceptance criteria).
+            systemctl is-enabled --quiet "$s" 2>/dev/null || echo "service running but not enabled: $s"
+        fi
     done
 
     # Unit identity resolvability.
