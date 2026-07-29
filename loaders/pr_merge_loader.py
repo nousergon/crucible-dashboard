@@ -26,6 +26,7 @@ from typing import Any
 import streamlit as st
 
 from loaders.s3_loader import _fetch_s3_json, _research_bucket
+from loaders.cache import cached
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +114,7 @@ def classify_merge_source(
     return "human", "default"
 
 
-@st.cache_data(ttl=900)
+@cached(ttl=900)
 def load_merged_prs(days: int = 14) -> tuple[list[dict[str, Any]], int | None]:
     """Return (rows with merge_source + confidence, total_search_count).
 
@@ -219,7 +220,7 @@ def classify_open_pr(row: dict[str, Any]) -> str:
     return "groom-ready"
 
 
-@st.cache_data(ttl=300)
+@cached(ttl=300)
 def load_open_prs_by_class() -> dict[str, int]:
     """Live fleet-wide open-PR count by class — current state, not a
     trailing-window trend (that's :func:`loaders.pr_pipeline.sweep_trend_rows`

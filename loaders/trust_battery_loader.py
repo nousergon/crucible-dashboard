@@ -16,13 +16,14 @@ import urllib.request
 import streamlit as st
 
 from loaders.pr_merge_loader import _github_token
+from loaders.cache import cached
 
 logger = logging.getLogger(__name__)
 
 _OWNER = "nousergon"
 
 
-@st.cache_data(ttl=300)
+@cached(ttl=300)
 def load_ci_verdicts(repos: tuple[str, ...], workflow: str = "ci.yml") -> dict[str, dict]:
     """Latest completed main-branch run of ``workflow`` per repo.
 

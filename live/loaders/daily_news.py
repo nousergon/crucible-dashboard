@@ -28,6 +28,7 @@ from typing import Any
 import streamlit as st
 
 from loaders.s3_loader import _research_bucket, _ttl, get_s3_client
+from loaders.cache import cached
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,7 @@ def _latest_key(prefix: str) -> str:
     return f"{prefix.strip('/')}/latest.json"
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def load_daily_news_rows(prefix: str = DAILY_NEWS_PREFIX) -> list[dict[str, Any]]:
     """Read the latest per-ticker daily news aggregates as a list of dicts.
 

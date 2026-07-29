@@ -31,6 +31,7 @@ from enum import Enum
 from typing import Optional
 
 import streamlit as st
+from loaders.cache import cached
 
 from nousergon_lib.pipeline_status import (
     PipelineExecutionSummary,
@@ -225,7 +226,7 @@ def _read_last_good_cache_for_arn(arn: str) -> tuple[Optional[PipelineRun], Opti
 # ── Public API (Streamlit-cached) ─────────────────────────────────────────
 
 
-@st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner=False)
+@cached(ttl=_CACHE_TTL_SECONDS)
 def _cached_live_read(
     arn: str,
     role_filter_tuple: Optional[tuple[str, ...]] = None,
@@ -253,7 +254,7 @@ def _cached_live_read(
     return run.model_dump(mode="json")
 
 
-@st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner=False)
+@cached(ttl=_CACHE_TTL_SECONDS)
 def _cached_list_recent(
     arn: str, limit: int = 10, role_filter_tuple: Optional[tuple[str, ...]] = None
 ) -> list[dict]:

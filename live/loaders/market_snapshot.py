@@ -27,6 +27,7 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 from loaders.s3_loader import load_intraday_nav, load_live_day_return
+from loaders.cache import cached
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +58,7 @@ def _spy_day_return_pp() -> float | None:
     return load_live_day_return("SPY")
 
 
-@st.cache_data(ttl=60)
+@cached(ttl=60)
 def _vix_level() -> float | None:
     """Spot VIX level (points) from the 15-min-delayed yfinance quote.
 

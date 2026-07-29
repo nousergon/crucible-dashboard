@@ -25,6 +25,7 @@ import streamlit as st
 import yaml
 
 from shared.constants import DEFAULT_CACHE_TTL_SECONDS, ISO_DATE_PATTERN
+from loaders.cache import cached
 
 logger = logging.getLogger(__name__)
 
@@ -331,7 +332,7 @@ def with_s3_error_tracking(fallback: Any = None):
 # ---------------------------------------------------------------------------
 
 
-@st.cache_data(ttl=_ttl("signals"))
+@cached(ttl_key="signals")
 def list_s3_prefixes(bucket: str, prefix: str) -> list[str]:
     """
     Return a sorted list of date-like sub-prefixes under *prefix*.
@@ -361,13 +362,13 @@ def list_s3_prefixes(bucket: str, prefix: str) -> list[str]:
         return []
 
 
-@st.cache_data(ttl=_ttl("signals"))
+@cached(ttl_key="signals")
 def download_s3_json(bucket: str, key: str) -> dict | list | None:
     """Download and parse a JSON file from S3. Returns None on failure."""
     return _fetch_s3_json(bucket, key)
 
 
-@st.cache_data(ttl=_ttl("signals"))
+@cached(ttl_key="signals")
 def download_s3_yaml(bucket: str, key: str) -> dict | list | None:
     """Download and parse a YAML file from S3. Returns None on failure
     (missing key, parse error) — same honest-ABSENT contract as
@@ -384,7 +385,7 @@ def download_s3_yaml(bucket: str, key: str) -> dict | list | None:
         return None
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def load_sector_team_run(eval_date: str, team_id: str) -> dict | None:
     """Load a sector team's full run envelope for one cycle:
     ``archive/sector_team_runs/{eval_date}/{team_id}.json`` (producer:
@@ -403,7 +404,7 @@ def load_sector_team_run(eval_date: str, team_id: str) -> dict | None:
     return inner if isinstance(inner, dict) else data
 
 
-@st.cache_data(ttl=_ttl("trades"))
+@cached(ttl_key="trades")
 def download_s3_csv(bucket: str, key: str) -> pd.DataFrame | None:
     """Download a CSV from S3 and return a DataFrame. Returns None on failure."""
     raw = _s3_get_object(bucket, key)
@@ -417,7 +418,7 @@ def download_s3_csv(bucket: str, key: str) -> pd.DataFrame | None:
         return None
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def download_s3_text(bucket: str, key: str) -> str | None:
     """Download a text file from S3 and return its content. Returns None on failure."""
     raw = _s3_get_object(bucket, key)
@@ -439,7 +440,7 @@ def download_s3_binary(bucket: str, key: str, local_path: str) -> bool:
     return True
 
 
-@st.cache_data(ttl=_ttl("signals"))
+@cached(ttl_key="signals")
 def get_latest_prefix(bucket: str, prefix: str) -> str | None:
     """
     List all keys under *prefix*, extract YYYY-MM-DD date segments,
@@ -451,7 +452,7 @@ def get_latest_prefix(bucket: str, prefix: str) -> str | None:
     return sorted(dates, reverse=True)[0]
 
 
-@st.cache_data(ttl=_ttl("signals"))
+@cached(ttl_key="signals")
 def check_key_exists(bucket: str, key: str) -> bool:
     """Return True if the given S3 key exists."""
     try:
@@ -566,7 +567,7 @@ def load_attractiveness_trajectory(date_str: str | None = None) -> dict | None:
     return download_s3_json(_research_bucket(), key)
 
 
-@st.cache_data(ttl=_ttl("signals"))
+@cached(ttl_key="signals")
 def load_attractiveness_history() -> pd.DataFrame:
     """Load the per-stock attractiveness time-series parquet
     (``scanner/universe/history/attractiveness_history.parquet``) — one row per
@@ -582,7 +583,7 @@ def load_attractiveness_history() -> pd.DataFrame:
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=_ttl("signals"))
+@cached(ttl_key="signals")
 def load_universe_membership_history(limit: int | None = None) -> list[dict]:
     """Every recorded ``universe_membership/{date}/membership.json`` (the cut
     SSoT produced by crucible-research ``scoring/universe_membership.py``),
@@ -611,7 +612,7 @@ def load_universe_membership_history(limit: int | None = None) -> list[dict]:
     return out
 
 
-@st.cache_data(ttl=_ttl("signals"))
+@cached(ttl_key="signals")
 def load_report_card(date_str: str | None = None) -> dict | None:
     """Load the evaluator Report Card v2 (the 7-tile MetricRecord substrate).
 
@@ -628,7 +629,7 @@ def load_report_card(date_str: str | None = None) -> dict | None:
     return download_s3_json(bucket, f"evaluator/{date_str}/report_card.json")
 
 
-@st.cache_data(ttl=_ttl("signals"))
+@cached(ttl_key="signals")
 def load_action_plan(date_str: str | None = None) -> dict | None:
     """Load the Director's weekly action plan (Layer C advisory output).
 
@@ -647,7 +648,7 @@ def load_action_plan(date_str: str | None = None) -> dict | None:
     return download_s3_json(bucket, f"director/{date_str}/action_plan.json")
 
 
-@st.cache_data(ttl=_ttl("signals"))
+@cached(ttl_key="signals")
 def load_carryover_ledger() -> dict | None:
     """Load the Director's carry-over ledger.
 
@@ -659,7 +660,7 @@ def load_carryover_ledger() -> dict | None:
     return download_s3_json(_research_bucket(), "director/carryover_ledger.json")
 
 
-@st.cache_data(ttl=_ttl("signals"))
+@cached(ttl_key="signals")
 def list_director_dates() -> list[str]:
     """Sorted ISO dates (newest first) that have a Director action plan — the
     date picker / deep-link target list. Scans the ``director/`` prefix and
@@ -685,7 +686,7 @@ def load_eod_pnl() -> pd.DataFrame | None:
     return download_s3_csv(_trades_bucket(), key)
 
 
-@st.cache_data(ttl=_ttl("trades"))
+@cached(ttl_key="trades")
 def load_eod_report(date_str: str) -> dict | None:
     """Load the structured EOD report artifact for a trading day.
 
@@ -701,7 +702,7 @@ def load_eod_report(date_str: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-@st.cache_data(ttl=_ttl("trades"))
+@cached(ttl_key="trades")
 def list_eod_report_dates() -> list[str]:
     """Return available EOD report dates, newest first.
 
@@ -733,7 +734,7 @@ def list_eod_report_dates() -> list[str]:
 _SATURDAY_SF_WATCH_PREFIX = "consolidated/saturday_sf_watch/"
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def list_saturday_sf_watch_dates() -> list[str]:
     """Return Saturday SF Watch log dates, newest first.
 
@@ -762,7 +763,7 @@ def list_saturday_sf_watch_dates() -> list[str]:
         return []
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def load_saturday_sf_watch(date_str: str) -> dict | None:
     """Load ``consolidated/saturday_sf_watch/{date}.json`` from the research
     bucket — the watch-log written by the saturday-sf-watch-dispatcher Lambda
@@ -781,7 +782,7 @@ def load_saturday_sf_watch(date_str: str) -> dict | None:
 _CI_WATCH_PREFIX = "consolidated/ci_watch/"
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def list_ci_watch_dates() -> list[str]:
     """Return Fleet CI Watch log dates, newest first.
 
@@ -810,7 +811,7 @@ def list_ci_watch_dates() -> list[str]:
         return []
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def load_ci_watch(date_str: str) -> dict | None:
     """Load ``consolidated/ci_watch/{date}.json`` from the research bucket —
     the watch-log written by the Fleet CI Watch dispatch (schema_version 2,
@@ -869,13 +870,13 @@ def _latest_canary(prefix: str, label: str) -> dict | None:
         return None
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def load_latest_sf_watch_canary() -> dict | None:
     """Newest Saturday-SF-Watch canary drill heartbeat, or None."""
     return _latest_canary(_SF_WATCH_CANARY_PREFIX, "saturday_sf_watch")
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def load_latest_ci_watch_canary() -> dict | None:
     """Newest Fleet-CI-Watch canary drill heartbeat, or None."""
     return _latest_canary(_CI_WATCH_CANARY_PREFIX, "ci_watch")
@@ -890,7 +891,7 @@ _GROOM_RUNS_PREFIX = "groom/"
 _GROOM_RUN_KEY_RE = re.compile(r"^groom/\d{4}-\d{2}-\d{2}/[^/]+\.json$")
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def list_groom_run_keys(limit: int = 30) -> list[str]:
     """Return the most recent groom run-artifact S3 keys, newest first.
 
@@ -925,7 +926,7 @@ def list_groom_run_keys(limit: int = 30) -> list[str]:
         return []
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def list_groom_run_keys_since(days: int = 14) -> list[str]:
     """Return ALL groom run-artifact keys (coverage + sweep) for the last
     *days* calendar dates, newest first — unlike :func:`list_groom_run_keys`,
@@ -962,7 +963,7 @@ def list_groom_run_keys_since(days: int = 14) -> list[str]:
         return []
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def load_groom_run(key: str) -> dict | None:
     """Load a single groom run artifact (schema_version, run_start, model,
     issue_filter, stop_reason, floor_fail, issues: [{repo, number, title,
@@ -1014,7 +1015,7 @@ _GROOM_DECISIONS_KEY_RE = re.compile(
 KNOWN_GROOM_SLOTS: tuple[str, ...] = ("trigger-0100", "trigger-0700", "trigger-1900")
 
 
-@st.cache_data(ttl=_ttl("groom_decisions"))
+@cached(ttl_key="groom_decisions")
 def list_groom_decision_keys(days: int = 3) -> list[str]:
     """Return ``groom/decisions/{date}/{slot}.json`` keys for the last *days*
     calendar dates (including today), newest first.
@@ -1049,7 +1050,7 @@ def list_groom_decision_keys(days: int = 3) -> list[str]:
         return []
 
 
-@st.cache_data(ttl=_ttl("groom_decisions"))
+@cached(ttl_key="groom_decisions")
 def load_groom_decision(key: str) -> dict | None:
     """Load a single slot-decision record (schema_version 1 or 2 — see
     module docstring above ``_GROOM_DECISIONS_PREFIX``). Returns the raw
@@ -1118,7 +1119,7 @@ _GROOM_AUDIT_PREFIX = "groom/audit/"
 _GROOM_AUDIT_KEY_RE = re.compile(r"^groom/audit/\d{4}-\d{2}-\d{2}\.json$")
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def list_groom_audit_keys(limit: int = 8) -> list[str]:
     """Return ``groom/audit/{date}.json`` keys, newest first.
 
@@ -1146,7 +1147,7 @@ def list_groom_audit_keys(limit: int = 8) -> list[str]:
         return []
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def load_groom_audit(key: str) -> dict | None:
     """Load one disposition-audit artifact (schema_version 1: date,
     window_days, samples, pass_count, fail_count, error_count, actions).
@@ -1159,7 +1160,7 @@ def load_groom_audit(key: str) -> dict | None:
 _GROOM_USAGE_PREFIX = "claude_code_usage/groom/"
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def list_groom_usage_records(days: int = 21) -> list[dict]:
     """Lightweight index of groom usage files for run-efficiency joins.
 
@@ -1203,7 +1204,7 @@ def list_groom_usage_records(days: int = 21) -> list[dict]:
 _SATURDAY_INTEGRITY_PREFIX = "consolidated/saturday_integrity/"
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def list_saturday_integrity_dates() -> list[str]:
     """Return Saturday Integrity marker dates, newest first.
 
@@ -1233,7 +1234,7 @@ def list_saturday_integrity_dates() -> list[str]:
         return []
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def load_saturday_integrity(date_str: str) -> dict | None:
     """Load ``consolidated/saturday_integrity/{date}.json`` from the research
     bucket — the GO/NO-GO marker written by the integrity gate (config#1227 §8).
@@ -1245,7 +1246,7 @@ def load_saturday_integrity(date_str: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-@st.cache_data(ttl=_ttl("trades"))
+@cached(ttl_key="trades")
 def load_uptime_history(max_sessions: int = 20) -> list[dict]:
     """List recent uptime/*.json files and load the most recent `max_sessions`.
 
@@ -1278,7 +1279,7 @@ def load_uptime_history(max_sessions: int = 20) -> list[dict]:
     return records
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def load_latest_grading() -> dict | None:
     """Return the newest `backtest/{date}/grading.json` from the research bucket.
 
@@ -1319,7 +1320,7 @@ def load_latest_grading() -> dict | None:
     return None
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def load_latest_provenance_grounding() -> dict | None:
     """Return the newest `backtest/{date}/provenance_grounding.json` from
     the research bucket.
@@ -1387,7 +1388,7 @@ def load_scoring_weights_history() -> list[dict]:
     return history
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def load_executor_params() -> dict | None:
     """Load the LIVE `config/executor_params.json` from the research
     bucket — the auto-tuned params the executor's
@@ -1410,7 +1411,7 @@ def load_executor_params() -> dict | None:
     return download_s3_json(_research_bucket(), "config/executor_params.json")
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def load_executor_params_history() -> list[dict]:
     """Return executor_params_history records sorted oldest → newest.
 
@@ -1441,7 +1442,7 @@ def load_executor_params_history() -> list[dict]:
     return history
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def load_optimizer_risk_history() -> list[dict]:
     """Return one flat optimizer risk-posture record per trading day, sorted
     oldest → newest, sourced from the DAILY optimizer shadow log.
@@ -1501,7 +1502,7 @@ def load_optimizer_risk_history() -> list[dict]:
     return history
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def list_optimizer_shadow_dates() -> list[str]:
     """Return the available daily optimizer-shadow dates (YYYY-MM-DD), oldest →
     newest. Sourced from `predictor/optimizer_shadow/{date}.json` keys; skips
@@ -1526,7 +1527,7 @@ def list_optimizer_shadow_dates() -> list[str]:
     return sorted(dates)
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def load_optimizer_shadow(run_date: str) -> dict | None:
     """Load the FULL daily optimizer shadow log for `run_date` — the complete
     per-ticker decision record (parallel arrays: tickers, target_weights,
@@ -1538,7 +1539,7 @@ def load_optimizer_shadow(run_date: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def load_rag_manifest() -> dict | None:
     """Load `rag/manifest/latest.json` — RAG corpus inventory snapshot.
 
@@ -1560,7 +1561,7 @@ def load_rag_manifest() -> dict | None:
     return _fetch_s3_json(_research_bucket(), "rag/manifest/latest.json")
 
 
-@st.cache_data(ttl=_ttl("trades"))
+@cached(ttl_key="trades")
 def load_daily_data_health() -> dict | None:
     """Load `health/daily_data.json` — runtime ingestion attribution.
 
@@ -1576,7 +1577,7 @@ def load_daily_data_health() -> dict | None:
     return _fetch_s3_json(_research_bucket(), "health/daily_data.json")
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def load_regime_substrate_latest() -> dict | None:
     """Load the most recent regime substrate artifact.
 
@@ -1599,7 +1600,7 @@ def load_regime_substrate_latest() -> dict | None:
     )
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def load_fast_signal_latest() -> dict | None:
     """Load the most recent daily fast-signal artifact (Stage F2).
 
@@ -1618,7 +1619,7 @@ def load_fast_signal_latest() -> dict | None:
     )
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def load_drawdown_leg_latest() -> dict | None:
     """Load the most recent daily drawdown-leg artifact (3rd ensemble leg).
 
@@ -1639,7 +1640,7 @@ def load_drawdown_leg_latest() -> dict | None:
     )
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def load_drawdown_leg_history(n_days: int = 14) -> list[dict]:
     """List recent daily drawdown-leg artifacts, oldest → newest.
 
@@ -1659,7 +1660,7 @@ def load_drawdown_leg_history(n_days: int = 14) -> list[dict]:
     )
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def load_regime_substrate_history(n_weeks: int = 26) -> list[dict]:
     """List recent regime substrate artifacts, oldest → newest.
 
@@ -1681,7 +1682,7 @@ def load_regime_substrate_history(n_weeks: int = 26) -> list[dict]:
     )
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def load_regime_retrospective_eval_latest() -> dict | None:
     """Load the most recent T1 retrospective HMM smoothing eval artifact.
 
@@ -1707,7 +1708,7 @@ def load_regime_retrospective_eval_latest() -> dict | None:
     )
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def load_regime_stratified_sortino_latest() -> dict | None:
     """Load the most recent T2 downstream-stratified Sortino eval artifact.
 
@@ -1731,7 +1732,7 @@ def load_regime_stratified_sortino_latest() -> dict | None:
     )
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def load_regime_retrospective_eval_history(n_weeks: int = 26) -> list[dict]:
     """List recent T1 retrospective eval artifacts, oldest → newest.
 
@@ -1748,7 +1749,7 @@ def load_regime_retrospective_eval_history(n_weeks: int = 26) -> list[dict]:
     )
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def load_regime_stratified_sortino_history(n_weeks: int = 26) -> list[dict]:
     """List recent T2 stratified-Sortino eval artifacts, oldest → newest.
 
@@ -1765,7 +1766,7 @@ def load_regime_stratified_sortino_history(n_weeks: int = 26) -> list[dict]:
     )
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def load_research_params() -> dict | None:
     """Load `config/research_params.json` (CIO mode flag + reason).
 
@@ -1804,7 +1805,7 @@ def load_backtest_file(date_str: str, filename: str) -> dict | list | pd.DataFra
         return download_s3_text(_research_bucket(), key)
 
 
-@st.cache_data(ttl=_ttl("signals"), show_spinner=False)
+@cached(ttl_key="signals",  show_spinner=False)
 def load_predictions_json(date_str: str | None = None) -> dict:
     """Load predictor predictions from S3. Returns {} on any failure."""
     key = _predictions_key(date_str)
@@ -1815,7 +1816,7 @@ def load_predictions_json(date_str: str | None = None) -> dict:
     return {p["ticker"]: p for p in pred_list if "ticker" in p}
 
 
-@st.cache_data(ttl=_ttl("signals"), show_spinner=False)
+@cached(ttl_key="signals",  show_spinner=False)
 def list_predictions_dates() -> list[str]:
     """Return available predictor predictions dates, newest first.
 
@@ -1928,7 +1929,7 @@ def load_flow_doctor_heartbeat_latest(flow: str) -> dict | None:
 _MODEL_ZOO_LEADERBOARD_PREFIX = "predictor/model_zoo/leaderboard/"
 
 
-@st.cache_data(ttl=_ttl("research"), show_spinner=False)
+@cached(ttl_key="research",  show_spinner=False)
 def load_model_zoo_leaderboard(date_str: str | None = None) -> dict:
     """Load the weekly model-zoo selection leaderboard (L4544/L4571) from S3.
 
@@ -1943,13 +1944,13 @@ def load_model_zoo_leaderboard(date_str: str | None = None) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-@st.cache_data(ttl=_ttl("research"), show_spinner=False)
+@cached(ttl_key="research",  show_spinner=False)
 def list_model_zoo_leaderboard_dates() -> list[str]:
     """Sorted ISO dates that have a model-zoo leaderboard (for the history picker)."""
     return list_s3_prefixes(_research_bucket(), _MODEL_ZOO_LEADERBOARD_PREFIX)
 
 
-@st.cache_data(ttl=_ttl("research"), show_spinner=False)
+@cached(ttl_key="research",  show_spinner=False)
 def load_model_zoo_history(limit: int = 26) -> list[dict]:
     """Compact per-cycle promotion summary across the leaderboard archive, newest
     first — the multi-week view the Model Zoo console renders as the promotion
@@ -2162,7 +2163,7 @@ def load_feature_importance() -> dict:
     return data if isinstance(data, dict) else {}
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def load_population_json() -> dict | None:
     """Load population/latest.json from the research bucket.
 
@@ -2172,7 +2173,7 @@ def load_population_json() -> dict | None:
     return download_s3_json(_research_bucket(), _POPULATION_KEY)
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def load_distillation_corpus_stats() -> dict | None:
     """Distillation SFT-corpus stats — deduped counts, teacher segregation,
     per-task breakdown, growth history, and kill-gate trigger progress.
@@ -2186,7 +2187,7 @@ def load_distillation_corpus_stats() -> dict | None:
     )
 
 
-@st.cache_data(ttl=_ttl("signals"))
+@cached(ttl_key="signals")
 def load_order_book_summary(date_str: str) -> dict | None:
     """Load order_book_summary.json for a given date from the research bucket.
 
@@ -2195,7 +2196,7 @@ def load_order_book_summary(date_str: str) -> dict | None:
     return download_s3_json(_research_bucket(), _order_book_key(date_str))
 
 
-@st.cache_data(ttl=_ttl("signals"))
+@cached(ttl_key="signals")
 def load_intraday_heartbeat() -> dict | None:
     """Daemon liveness/surveillance heartbeat (intraday/heartbeat.json).
 
@@ -2206,7 +2207,7 @@ def load_intraday_heartbeat() -> dict | None:
     return _fetch_s3_json(_research_bucket(), "intraday/heartbeat.json")
 
 
-@st.cache_data(ttl=_ttl("signals"))
+@cached(ttl_key="signals")
 def load_intraday_latest_prices() -> dict | None:
     """Daemon-published latest IB snapshot prices (intraday/latest_prices.json)."""
     return _fetch_s3_json(_research_bucket(), "intraday/latest_prices.json")
@@ -2215,7 +2216,7 @@ def load_intraday_latest_prices() -> dict | None:
 # Live-NAV artifacts get a short 60s TTL (vs the signals TTL above) — they're
 # the live-curve substrate, refreshed each 60s daemon poll, so a fresher cache
 # buys nothing and a longer one would lag the live view.
-@st.cache_data(ttl=60)
+@cached(ttl=60)
 def load_intraday_nav() -> dict | None:
     """Daemon-published live NAV snapshot (intraday/nav.json).
 
@@ -2227,7 +2228,7 @@ def load_intraday_nav() -> dict | None:
     return _fetch_s3_json(_research_bucket(), "intraday/nav.json")
 
 
-@st.cache_data(ttl=60)
+@cached(ttl=60)
 def load_intraday_nav_series(trading_day: str) -> dict | None:
     """Daemon-published per-day NAV series (intraday/nav_series/{day}.json).
 
@@ -2241,7 +2242,7 @@ def load_intraday_nav_series(trading_day: str) -> dict | None:
     return _fetch_s3_json(_research_bucket(), f"intraday/nav_series/{trading_day}.json")
 
 
-@st.cache_data(ttl=_ttl("signals"))
+@cached(ttl_key="signals")
 def load_open_orders_latest() -> dict | None:
     """Daemon-published open-IB-orders snapshot (trades/open_orders/latest.json).
 
@@ -2253,7 +2254,7 @@ def load_open_orders_latest() -> dict | None:
     return _fetch_s3_json(_research_bucket(), "trades/open_orders/latest.json")
 
 
-@st.cache_data(ttl=_ttl("signals"))
+@cached(ttl_key="signals")
 def list_dated_artifact_keys(
     prefix: str,
     *,
@@ -2307,7 +2308,7 @@ def list_dated_artifact_keys(
         return []
 
 
-@st.cache_data(ttl=_ttl("signals"))
+@cached(ttl_key="signals")
 def load_order_book_rationale_history(n_recent: int = 14) -> list[dict]:
     """List recent per-ticker order-book rationale artifacts, oldest → newest.
 
@@ -2385,7 +2386,7 @@ def _drop_implausible_cost_rows(df: pd.DataFrame) -> pd.DataFrame:
     return df[ok].copy()
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def cost_archive_staleness() -> dict:
     """Report how current the cost-parquet archive is.
 
@@ -2426,7 +2427,7 @@ def cost_archive_staleness() -> dict:
     }
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def load_llm_cost_parquets(n_recent: int = 12) -> pd.DataFrame:
     """Return a concatenated DataFrame of per-call LLM cost rows from the
     `decision_artifacts/_cost/{date}/cost.parquet` archive. Loads up to the
@@ -2471,7 +2472,7 @@ def load_llm_cost_parquets(n_recent: int = 12) -> pd.DataFrame:
 _NEWS_ARTICLES_PREFIX = "data/news_articles_daily/"
 
 
-@st.cache_data(ttl=_ttl("signals"))
+@cached(ttl_key="signals")
 def list_news_article_runs(n_recent: int = 45) -> list[dict]:
     """List available daily raw-article runs, newest date first.
 
@@ -2513,7 +2514,7 @@ def list_news_article_runs(n_recent: int = 45) -> list[dict]:
     return runs[:n_recent]
 
 
-@st.cache_data(ttl=_ttl("signals"))
+@cached(ttl_key="signals")
 def load_news_articles(key: str) -> pd.DataFrame:
     """Load one daily raw-article parquet by S3 key. Returns an empty
     DataFrame on missing key / parse failure (page renders empty notice)."""
@@ -2528,7 +2529,7 @@ def load_news_articles(key: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=900)
+@cached(ttl=900)
 def load_claude_code_usage(n_days: int = 35):
     """Load Brian's Claude Code Max-plan usage from S3. Two key layouts coexist:
 
@@ -2595,7 +2596,7 @@ def load_claude_code_usage(n_days: int = 35):
     return pd.DataFrame(model_rows), pd.DataFrame(hour_rows)
 
 
-@st.cache_data(ttl=900)
+@cached(ttl=900)
 def load_usage_pacing_config() -> dict | None:
     """SSoT for the weekly WET ceiling + reset anchor (config#2043) —
     ``config/usage_pacing.json``, written by alpha-engine-config's
@@ -2607,7 +2608,7 @@ def load_usage_pacing_config() -> dict | None:
     return download_s3_json(_research_bucket(), "config/usage_pacing.json")
 
 
-@st.cache_data(ttl=900)
+@cached(ttl=900)
 def load_expense_report() -> dict | None:
     """All-provider monthly expense rollup (``expenses/latest.json``) — one row
     per external service (AWS, Anthropic API, OpenRouter, DeepSeek, Neon,
@@ -2620,7 +2621,7 @@ def load_expense_report() -> dict | None:
     return download_s3_json(_research_bucket(), "expenses/latest.json")
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def load_expense_reconciliation(period: str) -> dict | None:
     """Month-close true-up for one CLOSED period (``expenses/reconciliation/
     {period}.json``, ``period`` like ``"2026-06"``) — alpha-engine-config#2849.
@@ -2640,7 +2641,7 @@ def load_expense_reconciliation(period: str) -> dict | None:
 _THINKTANK_RUNS_PREFIX = "thinktank/runs/"
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def load_thinktank_ratings() -> dict | None:
     """Load the think-tank ratings board (``thinktank/ratings/latest.json``) —
     one row per covered name: the analyst's independent 0-100 ``rating`` (the
@@ -2652,7 +2653,7 @@ def load_thinktank_ratings() -> dict | None:
     return download_s3_json(_research_bucket(), "thinktank/ratings/latest.json")
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def load_thinktank_thesis(ticker: str, version: int | None = None) -> dict | None:
     """Load one covered name's thesis — ``latest.json`` or a specific
     ``v{N}.json``. The ``thesis`` sub-dict carries the narrative sections
@@ -2665,7 +2666,7 @@ def load_thinktank_thesis(ticker: str, version: int | None = None) -> dict | Non
     return download_s3_json(_research_bucket(), key)
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def load_thinktank_theme(kind: str, key: str) -> dict | None:
     """Load a theme thesis latest (kind='macro', key='macro' — or
     kind='sector', key=<sector name>). Seed → churn-gated daily update →
@@ -2675,7 +2676,7 @@ def load_thinktank_theme(kind: str, key: str) -> dict | None:
     )
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def list_thinktank_manifest_keys(limit: int = 30) -> list[str]:
     """Most recent think-tank run-manifest keys, newest first
     (``thinktank/runs/{trading_day}/manifest_{run_id}.json`` — weekend runs
@@ -2698,7 +2699,7 @@ def list_thinktank_manifest_keys(limit: int = 30) -> list[str]:
         return []
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def load_thinktank_month_costs(month: str) -> dict | None:
     """Load the month cost ledger (``thinktank/costs/{YYYY-MM}.json``) —
     spent_usd vs the SSM budget cap, one row per run."""
@@ -2735,19 +2736,19 @@ def _list_dated_json_keys(prefix: str) -> list[str]:
         return []
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def list_leaderboard_dates(prefix: str) -> list[str]:
     """Sorted build dates for a leaderboard family (see module comment)."""
     return _list_dated_json_keys(prefix)
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def load_leaderboard(prefix: str, date: str) -> dict | None:
     """One leaderboard build: ``{prefix}{date}.json``."""
     return download_s3_json(_research_bucket(), f"{prefix}{date}.json")
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def list_shadow_cohort_dates(prefix: str) -> list[str]:
     """Sorted cohort dates under a shadow prefix (date-named sub-prefixes),
     e.g. ``signals_shadow/no_agent_quant/`` → ['2026-07-02', ...]."""
@@ -2764,7 +2765,7 @@ _AUTOAPPLY_CONFIG_KEYS = {
 }
 
 
-@st.cache_data(ttl=_ttl("signals"))
+@cached(ttl_key="signals")
 def load_apply_audit() -> dict | None:
     """Load the auto-apply outcome audit (backtester config#1848).
 
@@ -2777,7 +2778,7 @@ def load_apply_audit() -> dict | None:
     return download_s3_json(_research_bucket(), "config/apply_audit/latest.json")
 
 
-@st.cache_data(ttl=_ttl("signals"))
+@cached(ttl_key="signals")
 def load_autoapply_config_meta() -> dict:
     """Presence + last-modified + top-level keys of the four auto-apply
     config artifacts the backtester may write. A missing artifact is an
@@ -2818,7 +2819,7 @@ _CHAMPION_AUDIT_PREFIX = "config/apply_audit/producer_champion/"
 _CHAMPION_LEADERBOARD_PREFIX = "research/producer_leaderboard_champion_gate/"
 
 
-@st.cache_data(ttl=_ttl("signals"))
+@cached(ttl_key="signals")
 def load_champion_pointer() -> dict | None:
     """Load the live champion pointer -- schema v1: ``{schema_version,
     champion, promoted_at, promotion_source}``. None until the first
@@ -2828,7 +2829,7 @@ def load_champion_pointer() -> dict | None:
     return download_s3_json(_research_bucket(), _CHAMPION_POINTER_KEY)
 
 
-@st.cache_data(ttl=_ttl("signals"))
+@cached(ttl_key="signals")
 def list_champion_audit_dates() -> list[str]:
     """Sorted dates for the weekly champion-promotion audit history. Written
     UNCONDITIONALLY every Saturday evaluate.py run regardless of outcome
@@ -2837,7 +2838,7 @@ def list_champion_audit_dates() -> list[str]:
     return _list_dated_json_keys(_CHAMPION_AUDIT_PREFIX)
 
 
-@st.cache_data(ttl=_ttl("signals"))
+@cached(ttl_key="signals")
 def load_champion_audit(date: str) -> dict | None:
     """One weekly champion-promotion audit record (contracts/
     producer_champion_audit.schema.json v1): outcome/champion_before/
@@ -2846,7 +2847,7 @@ def load_champion_audit(date: str) -> dict | None:
     return download_s3_json(_research_bucket(), f"{_CHAMPION_AUDIT_PREFIX}{date}.json")
 
 
-@st.cache_data(ttl=_ttl("signals"))
+@cached(ttl_key="signals")
 def load_champion_audit_latest() -> dict | None:
     """Latest champion-promotion audit record -- same shape as
     ``load_champion_audit``, fetched directly at the ``latest.json`` mirror
@@ -2854,7 +2855,7 @@ def load_champion_audit_latest() -> dict | None:
     return download_s3_json(_research_bucket(), f"{_CHAMPION_AUDIT_PREFIX}latest.json")
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def list_champion_leaderboard_dates() -> list[str]:
     """Sorted build dates for the champion-gate leaderboard -- the promotion
     engine's own weekly sector-neutral 21d lift history for the challenger
@@ -2863,7 +2864,7 @@ def list_champion_leaderboard_dates() -> list[str]:
     return _list_dated_json_keys(_CHAMPION_LEADERBOARD_PREFIX)
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def load_champion_leaderboard(date: str) -> dict | None:
     """One champion-gate leaderboard build."""
     return download_s3_json(_research_bucket(), f"{_CHAMPION_LEADERBOARD_PREFIX}{date}.json")
@@ -2883,7 +2884,7 @@ _DAILY_CLOSES_PREFIX = "staging/daily_closes/"
 _DAILY_CLOSES_LOOKBACK_DAYS = 10  # covers the 7-day lifecycle + a long weekend
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def load_daily_closes(date_str: str) -> pd.DataFrame:
     """Load one day's daily_closes parquet (``staging/daily_closes/{date}.parquet``).
 
@@ -2902,7 +2903,7 @@ def load_daily_closes(date_str: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def load_latest_daily_closes(lookback_days: int = _DAILY_CLOSES_LOOKBACK_DAYS) -> pd.DataFrame:
     """Load the most recent available daily_closes parquet, walking back up
     to *lookback_days* calendar days (mirrors health_checker.py's same
@@ -2916,7 +2917,7 @@ def load_latest_daily_closes(lookback_days: int = _DAILY_CLOSES_LOOKBACK_DAYS) -
     return pd.DataFrame()
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def load_daily_closes_row(date_str: str, ticker: str) -> dict | None:
     """Return the single daily_closes row for *ticker* on *date_str* as a
     dict (including any ``xsource_*`` columns present), or None if the

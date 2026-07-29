@@ -67,6 +67,7 @@ from loaders.s3_loader import (
     load_saturday_sf_watch,
 )
 from trading_calendar import is_trading_day
+from loaders.cache import cached
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +119,7 @@ def _parse_iso(raw) -> datetime | None:
 # ── AWS control plane ───────────────────────────────────────────────────────
 
 
-@st.cache_data(ttl=_TTL_SECONDS, show_spinner=False)
+@cached(ttl=_TTL_SECONDS)
 def _ec2_snapshot() -> dict:
     """{"available": bool, "error": str|None, "state": str|None, "ping": str|None}
 
@@ -261,7 +262,7 @@ def _pipeline_snapshots() -> dict[str, PipelineSnapshot]:
 # ── S3 artifacts ────────────────────────────────────────────────────────────
 
 
-@st.cache_data(ttl=_TTL_SECONDS, show_spinner=False)
+@cached(ttl=_TTL_SECONDS)
 def _intraday_nav_age_s() -> float | None:
     """Age (s) of the daemon's intraday/nav.json heartbeat, None if absent."""
     try:
@@ -278,14 +279,14 @@ def _intraday_nav_age_s() -> float | None:
         return None
 
 
-@st.cache_data(ttl=_TTL_SECONDS, show_spinner=False)
+@cached(ttl=_TTL_SECONDS)
 def _freshness_artifacts() -> tuple[dict | None, dict | None]:
     hb = download_s3_json(_research_bucket(), _HEARTBEAT_KEY)
     cr = download_s3_json(_research_bucket(), _CHECK_RESULTS_KEY)
     return (hb if isinstance(hb, dict) else None, cr if isinstance(cr, dict) else None)
 
 
-@st.cache_data(ttl=_TTL_SECONDS, show_spinner=False)
+@cached(ttl=_TTL_SECONDS)
 def _groom_snapshot_raw() -> dict:
     """Marker + newest-run fields, JSON-able for st.cache_data."""
     out: dict = {
@@ -324,7 +325,7 @@ def _groom_snapshot(ec2: dict) -> GroomSnapshot:
     )
 
 
-@st.cache_data(ttl=_TTL_SECONDS, show_spinner=False)
+@cached(ttl=_TTL_SECONDS)
 def _module_health_rows() -> list[dict]:
     """health/{module}.json self-reports — module list derived from lib
     (config#1728: never a hand-kept copy)."""
@@ -372,7 +373,7 @@ _SF_WATCH_ALERT_TITLE = "SF-watch dispatch failed to launch"
 _CI_WATCH_ALERT_TITLE = "CI-watch dispatch failed to launch"
 
 
-@st.cache_data(ttl=_WATCH_ALERT_TTL, show_spinner=False)
+@cached(ttl=_WATCH_ALERT_TTL)
 def _open_watch_dispatch_issues() -> list[dict]:
     """Open P1 issues on alpha-engine-config, for dispatch-failure title
     matching. [] on missing token or fetch failure — logged, never silently
@@ -413,7 +414,7 @@ def _watch_dispatch_alert(title_substr: str) -> str | None:
     return None
 
 
-@st.cache_data(ttl=_TTL_SECONDS, show_spinner=False)
+@cached(ttl=_TTL_SECONDS)
 def _sf_watch_snapshot() -> dict:
     dates = list_saturday_sf_watch_dates()
     last_date = dates[0] if dates else None
@@ -429,7 +430,7 @@ def _sf_watch_snapshot() -> dict:
     }
 
 
-@st.cache_data(ttl=_TTL_SECONDS, show_spinner=False)
+@cached(ttl=_TTL_SECONDS)
 def _ci_watch_snapshot() -> dict:
     dates = list_ci_watch_dates()
     last_date = dates[0] if dates else None
@@ -464,7 +465,7 @@ def _canary_age_hrs(now: datetime, heartbeat: dict | None) -> float | None:
 # ── Local box services ──────────────────────────────────────────────────────
 
 
-@st.cache_data(ttl=_TTL_SECONDS, show_spinner=False)
+@cached(ttl=_TTL_SECONDS)
 def _live_service_ok() -> bool | None:
     """systemd is the authority for the sibling live service; only probed
     where the unit exists (off-box dev ⇒ None ⇒ gray, never a false red)."""

@@ -42,6 +42,7 @@ import os
 from pathlib import Path
 
 import streamlit as st
+from loaders.cache import cached
 
 # Tabs that surface a single top-level file (label -> path under private-docs/).
 SYSTEM_STATE_INDEX = "SYSTEM_STATE.md"
@@ -93,7 +94,7 @@ def _resolve_path(relative_path: str) -> Path | None:
     return None
 
 
-@st.cache_data(ttl=900)
+@cached(ttl=900)
 def load_doc(relative_path: str) -> dict[str, str] | None:
     """Read one private-docs file as text.
 

@@ -44,6 +44,7 @@ from datetime import datetime, timezone
 
 import boto3
 import streamlit as st
+from loaders.cache import cached
 
 logger = logging.getLogger(__name__)
 
@@ -198,7 +199,7 @@ def _fetch_schedule() -> tuple[dict, str | None, str | None]:
     return manifest, etag, None
 
 
-@st.cache_data(ttl=60)
+@cached(ttl=60)
 def load_schedule() -> tuple[dict, str | None, str | None]:
     """Cached ``(manifest, etag, error)`` for page renders (60s TTL —
     writes clear the cache immediately, so staleness only shows edits
@@ -206,7 +207,7 @@ def load_schedule() -> tuple[dict, str | None, str | None]:
     return _fetch_schedule()
 
 
-@st.cache_data(ttl=300)
+@cached(ttl=300)
 def load_applied_markers() -> dict[str, dict]:
     """Generator-written "aired" markers keyed ``{date}-{edition}``.
 
@@ -235,7 +236,7 @@ def load_applied_markers() -> dict[str, dict]:
     return markers
 
 
-@st.cache_data(ttl=300)
+@cached(ttl=300)
 def load_llm_decisions() -> dict[str, dict]:
     """Which model actually generated each aired episode, keyed
     ``{date}-{edition}`` — mirrors :func:`load_applied_markers` exactly

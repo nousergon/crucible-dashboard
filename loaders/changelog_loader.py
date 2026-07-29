@@ -23,6 +23,7 @@ import pandas as pd
 import streamlit as st
 
 from loaders.s3_loader import _research_bucket, get_s3_client
+from loaders.cache import cached
 
 _ENTRY_PREFIX = "changelog/entries"
 
@@ -61,7 +62,7 @@ def _entry_to_row(entry: dict) -> dict:
     }
 
 
-@st.cache_data(ttl=900)
+@cached(ttl=900)
 def load_changelog_entries(days: int = 30) -> pd.DataFrame:
     """Read changelog entries from the last ``days`` days into a DataFrame.
 
