@@ -32,7 +32,7 @@ def test_box_health_invokes_the_installed_budget_check():
     assert "BUDGET_CHECK" in BOX_HEALTH
 
 
-def test_budget_problem_string_is_static():
+def test_budget_problem_strings_are_static():
     """LOAD-BEARING: box_health confirms problems by EXACT line intersection.
 
     snapshot_problems() is sampled repeatedly and only lines present in every
@@ -41,17 +41,58 @@ def test_budget_problem_string_is_static():
     verbatim would produce a problem that can NEVER confirm -- a guard that
     looks wired and silently never fires.
 
-    The emitted line must therefore contain no digits-with-units.
+    Every emitted line must therefore contain no digits-with-units.
     """
-    m = re.search(r'^\s*echo "(memory budget:[^"]*)"', BOX_HEALTH, re.M)
-    assert m, "expected a static `memory budget: ...` problem line"
-    emitted = m.group(1)
-    assert not re.search(r"\d+\s*(MB|MiB|GB|%|x)", emitted), (
-        f"problem string {emitted!r} embeds a live measurement; it will never "
-        "survive the confirm-on-retry intersection"
-    )
+    emitted = re.findall(r'echo "(memory budget:[^"]*)"', BOX_HEALTH)
+    emitted += re.findall(r'echo "(notice: memory budget[^"]*)"', BOX_HEALTH)
+    assert emitted, "expected at least one static `memory budget: ...` problem line"
+    for line in emitted:
+        assert not re.search(r"\d+\s*(MB|MiB|GB|%|x)", line), (
+            f"problem string {line!r} embeds a live measurement; it will never "
+            "survive the confirm-on-retry intersection"
+        )
     # The detail still has to reach the operator -- just via the journal.
     assert "memory budget detail" in BOX_HEALTH
+
+
+def test_budget_exit_codes_are_tiered_by_severity():
+    """rc=1 and rc=2 are different events and must not produce one alert.
+
+    The checker separates an INVARIANT BREACH (the box is over budget) from
+    OBSERVATION HYGIENE (the box is fine; something is degrading our ability to
+    measure it). If box_health.sh collapses them back into one line, the page
+    rate tracks bookkeeping rather than health -- which is the condition this
+    split exists to end, and which is invisible unless something asserts the
+    branches stay distinct.
+    """
+    assert re.search(r'1\)\s*echo "memory budget: BREACH', BOX_HEALTH), (
+        "rc=1 must emit an alert-class line"
+    )
+    assert re.search(r'2\)\s*echo "notice: memory budget', BOX_HEALTH), (
+        "rc=2 must emit a notice-class line -- an un-prefixed line pages"
+    )
+    # rc=3 (and anything unexpected) is a watchdog malfunction, not a verdict.
+    assert "memory budget check failed to run" in BOX_HEALTH
+
+
+def test_notice_lines_do_not_page_and_alerts_do():
+    """The severity split itself.
+
+    krepis.alerts pushes a phone notification for error/critical only; warning
+    and info are silent in-channel. Before 2026-07-29 every box-health problem
+    published at `warning`, so a service being DOWN pushed exactly as loudly as
+    a missing budget row: not at all. Both halves are asserted because getting
+    one right and the other wrong is the likely regression.
+    """
+    assert re.search(r"publish_problems error\s+\d+", BOX_HEALTH), (
+        "alert-class problems must publish at `error` so they actually push"
+    )
+    assert re.search(r"publish_problems info\s+\d+", BOX_HEALTH), (
+        "notice-class problems must publish at `info` (silent in-channel)"
+    )
+    assert "grep -v '^notice: '" in BOX_HEALTH and "grep '^notice: '" in BOX_HEALTH, (
+        "the two tiers must be partitioned by the `notice: ` prefix"
+    )
 
 
 def test_missing_check_is_reported_not_skipped():
@@ -67,5 +108,19 @@ def test_check_is_invoked_with_the_venv_interpreter():
     """The script needs PyYAML, which the system python3 on this box lacks."""
     assert re.search(r'"\$VENV_PY"\s+"\$BUDGET_CHECK"', BOX_HEALTH), (
         "budget check must run under the venv interpreter -- system python3 "
-        "has no PyYAML and the check exits 2"
+        "has no PyYAML and the check exits 3"
     )
+
+
+def test_budget_exit_code_is_captured_not_masked():
+    """`local x=$(cmd)` returns local's status, not the command's.
+
+    The severity tiering is driven entirely by the checker's exit code, so
+    capturing it wrongly would silently route every outcome to one branch. The
+    declaration must be separate from the assignment.
+    """
+    assert re.search(r"local budget_out budget_rc", BOX_HEALTH), (
+        "declare before assigning -- `local budget_out=$(...)` masks the "
+        "command's exit status behind local's own"
+    )
+    assert re.search(r"budget_rc=\$\?", BOX_HEALTH)

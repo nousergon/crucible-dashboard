@@ -114,6 +114,51 @@ assert_problem "enabled timer with no declared budget is NAMED, not skipped" \
     "no dead-man threshold" \
     "$((NOW - 60))" "" success
 
+echo "== the coverage hole must not suppress the check it is a hole in =="
+# THE 2026-07-29 DEFECT. The no-budget branch returned EARLY, above the
+# execution-outcome check. So a timer installed without a `timers:` row -- the
+# exact state every brand-new timer is in -- had its outcome check skipped
+# entirely, and the watchdog reported the missing row instead of the failure.
+# Live: metron-intraday.timer had failed 48 of 48 runs on an S3 AccessDenied and
+# box_health.sh said only "add a timers: row to budget.yaml". A guard filtering
+# out the class it exists to protect, again.
+#
+# The outcome check needs NOTHING from budget.yaml, so it must run first and
+# unconditionally. Both facts must be reported, not one.
+out=$(classify_timer_staleness "metron-intraday.timer" "$NOW" "$((NOW - 60))" "" failed)
+if [[ "$out" == *"timer job failing"* ]] && [[ "$out" == *"no dead-man threshold"* ]]; then
+    echo "ok   - a FAILING timer with no budget row reports the failure, not just the gap"
+else
+    echo "FAIL - expected both the job-failure line and the coverage line, got: $out"
+    FAILURES=$((FAILURES + 1))
+fi
+
+# Ordering matters for the human reading the alert: the outage comes first.
+if [[ "${out%%$'\n'*}" == *"timer job failing"* ]]; then
+    echo "ok   - the job-failure line is reported before the coverage line"
+else
+    echo "FAIL - the job-failure line must come FIRST, got: $out"
+    FAILURES=$((FAILURES + 1))
+fi
+
+echo "== the coverage line is notice-class, the failure line is not =="
+# Severity is a property of the invariant breached, not of the check that
+# emitted it (overseer-policy invariant 17). box_health.sh partitions on the
+# `notice: ` prefix: prefixed lines go out at info, everything else pushes.
+# A missing budget row must never push; a failing job always must.
+if [[ "$(classify_timer_staleness "u.timer" "$NOW" "$((NOW - 60))" "" success)" == notice:* ]]; then
+    echo "ok   - the missing-row line carries the notice: prefix"
+else
+    echo "FAIL - the missing-row line must be notice-class or it pages"
+    FAILURES=$((FAILURES + 1))
+fi
+if [[ "$(classify_timer_staleness "u.timer" "$NOW" "$((NOW - 60))" 1800 failed)" == notice:* ]]; then
+    echo "FAIL - a failing job must NOT be notice-class"
+    FAILURES=$((FAILURES + 1))
+else
+    echo "ok   - a failing job stays alert-class"
+fi
+
 echo "== malfunction cases are distinct from job failures =="
 assert_problem "last trigger in the future (clock skew) is not silently passed" \
     "clock skew" \
