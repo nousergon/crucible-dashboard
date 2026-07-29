@@ -242,6 +242,10 @@ class FleetInputs:
     intraday_nav_age_s: Optional[float] = None
     # Pipelines keyed weekly|preopen|postclose.
     pipelines: dict = field(default_factory=dict)
+    # Fleet check results (ops/checks/<id>/latest.json), already
+    # staleness-interpreted by loaders.fleet_checks_loader. Empty tuple
+    # means the probe did not run; see resolve_fleet_checks.
+    check_envelopes: tuple = ()
     # Freshness monitor artifacts (raw JSON dicts).
     heartbeat: Optional[dict] = None
     check_results: Optional[dict] = None
@@ -938,6 +942,65 @@ def resolve_ci_watch(inp: FleetInputs) -> ComponentStatus:
     )
 
 
+def resolve_fleet_checks(inp: FleetInputs) -> ComponentStatus:
+    """One row for every scheduled check publishing `ops/checks/<id>/latest.json`.
+
+    ONE component, not one per check. Fleet Status is already 13 rows and the
+    fleet has a growing number of scheduled checks; a row each would bury the
+    infrastructure signals this page exists for. The rollup dot is the worst
+    check, and the expander names each one — which is the shape §118 rule 4's
+    per-component evidence link is satisfied by here, since each finding
+    carries its own deep link.
+
+    A check that STOPPED RUNNING is not healthy. The loader already converts an
+    artifact older than ~2.5 cadences into STATUS_STALE regardless of the
+    status it last wrote, because the last thing a dying check writes is
+    usually "ok" — the same absence-read-as-benign failure that let four
+    scheduled workflows sit dark on 2026-07-29 (alpha-engine-config-I5507).
+    """
+    cid, label = "fleet_checks", "Fleet checks (scheduled)"
+    checks = inp.check_envelopes
+    if not checks:
+        return ComponentStatus(
+            cid, label, GROUP_JOBS, GRAY,
+            "no check results found under ops/checks/ (probe unavailable, or "
+            "no check has published yet)",
+            deep_link="fleet-checks",
+        )
+
+    bad = [c for c in checks if c.status in ("error", "unreadable")]
+    stale = [c for c in checks if c.status == "stale"]
+    attention = [c for c in checks if c.status == "attention"]
+    newest = max((c.ran_at for c in checks if c.ran_at), default=None)
+    detail = tuple(
+        {"check": c.label, "status": c.status, "summary": c.summary,
+         "ran_at": c.ran_at.strftime("%Y-%m-%d %H:%M UTC") if c.ran_at else "—",
+         "findings": len(c.findings), "link": c.deep_link or ""}
+        for c in checks
+    )
+
+    if bad or stale:
+        first = (bad + stale)[0]
+        return ComponentStatus(
+            cid, label, GROUP_JOBS, RED,
+            f"{len(bad) + len(stale)} of {len(checks)} check(s) failing or stale "
+            f"— e.g. {first.label}: {first.summary}",
+            newest, detail, deep_link="fleet-checks",
+        )
+    if attention:
+        return ComponentStatus(
+            cid, label, GROUP_JOBS, YELLOW,
+            f"{len(attention)} of {len(checks)} check(s) want attention — "
+            f"e.g. {attention[0].label}: {attention[0].summary}",
+            newest, detail, deep_link="fleet-checks",
+        )
+    return ComponentStatus(
+        cid, label, GROUP_JOBS, GREEN,
+        f"{len(checks)} check(s) green and current", newest, detail,
+        deep_link="fleet-checks",
+    )
+
+
 def resolve_fleet(inp: FleetInputs) -> list[ComponentStatus]:
     """All components, in render order (grouped)."""
     return [
@@ -951,6 +1014,7 @@ def resolve_fleet(inp: FleetInputs) -> list[ComponentStatus]:
         resolve_groomer(inp),
         resolve_sf_watch(inp),
         resolve_ci_watch(inp),
+        resolve_fleet_checks(inp),
         resolve_freshness_monitor(inp),
         resolve_artifact_freshness(inp),
         resolve_module_self_reports(inp),
