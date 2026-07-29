@@ -622,10 +622,15 @@ class TestCiWatch:
 
 class TestResolveFleet:
     def test_returns_all_components_in_known_groups(self):
+        # 13 → 14: `fleet_checks` added (config-I5548). The pinned count is
+        # deliberate — it forces a conscious call whenever the Fleet Status row
+        # set changes, since adding rows is how a status page stops being
+        # readable. `fleet_checks` is ONE rolled-up row for every scheduled
+        # check precisely to keep that number from growing per check.
         statuses = resolve_fleet(_inputs())
-        assert len(statuses) == 13
+        assert len(statuses) == 14
         assert {s.group for s in statuses} <= set(GROUP_ORDER)
-        assert len({s.component_id for s in statuses}) == 13
+        assert len({s.component_id for s in statuses}) == 14
 
     def test_worst_dot_severity_order(self):
         statuses = resolve_fleet(_inputs(trading_instance_state="stopped"))

@@ -485,6 +485,19 @@ def _live_service_ok() -> bool | None:
 # ── Public API ──────────────────────────────────────────────────────────────
 
 
+def _check_envelopes() -> tuple:
+    """Fleet check results, already staleness-interpreted. Never raises: a
+    probe failure yields an empty tuple, which resolve_fleet_checks renders
+    GRAY ("probe unavailable") rather than GREEN — an unreadable check surface
+    must not look like a healthy one."""
+    try:
+        from loaders.fleet_checks_loader import load_check_results
+        return tuple(load_check_results())
+    except Exception:  # noqa: BLE001 -- rendered as GRAY by the resolver
+        logger.warning("fleet check results unavailable", exc_info=True)
+        return ()
+
+
 def gather_fleet_inputs() -> FleetInputs:
     """One coherent snapshot for fleet_status.resolve_fleet."""
     now = datetime.now(timezone.utc)
@@ -494,6 +507,7 @@ def gather_fleet_inputs() -> FleetInputs:
     ci_watch = _ci_watch_snapshot()
     return FleetInputs(
         now=now,
+        check_envelopes=_check_envelopes(),
         is_trading_day=is_trading_day(date.today()),
         ec2_available=ec2["available"],
         ec2_error=ec2["error"],

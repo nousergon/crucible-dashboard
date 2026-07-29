@@ -37,6 +37,10 @@ jobs:
       # so the box identifier lives in one place. Set via: gh variable set
       # DASHBOARD_INSTANCE_ID. Non-secret identifier — a variable, not a secret.
       DASHBOARD_INSTANCE_ID: ${{ vars.DASHBOARD_INSTANCE_ID }}
+      # Bounded AWS SDK retry for throttling resilience across all alarm puts
+      # (config#5518 — a throttled alarm step was skipping the other two).
+      AWS_MAX_ATTEMPTS: 5
+      AWS_RETRY_MODE: adaptive
 
     steps:
       # The deploy job historically needed no checkout — it only sends SSM
@@ -152,6 +156,7 @@ jobs:
             --query 'StandardErrorContent' --output text
 
       - name: Ensure box disk alarm exists (alarm-as-code, config#2227)
+        if: always()
         run: |
           # Idempotent: put-metric-alarm creates or updates in place. Pages the
           # alpha-engine-alerts SNS (Telegram) when the box's root disk crosses
@@ -172,6 +177,7 @@ jobs:
             --ok-actions arn:aws:sns:us-east-1:711398986525:alpha-engine-alerts
 
       - name: Host alarms (alarm-as-code, config-I5211)
+        if: always()
         run: |
           # install-host-alarms.sh CANNOT run on the box: the instance role
           # deliberately lacks cloudwatch:PutMetricAlarm, because a host that can
@@ -182,6 +188,7 @@ jobs:
           bash infrastructure/install-host-alarms.sh
 
       - name: Watchdog-verdict alarm (alarm-as-code, config-I5211)
+        if: always()
         run: |
           # The off-box half of the dead-man. box_health.sh publishes its own
           # confirmed-problem COUNT every run, on the metrics path — which is a
