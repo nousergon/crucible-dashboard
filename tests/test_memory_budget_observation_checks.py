@@ -1,22 +1,21 @@
-"""budget.yaml's observed_mb values must be checkable against the live box.
+"""The steady-state bound must be MEASURED from the box, and honest about it.
 
 WHY THESE EXIST
 ---------------
-`observed_mb` feeds `max_steady_state_fraction` -- the bound budget.yaml itself
-calls "the one that governs normal operation". Until now nothing verified those
-numbers against the box, and they were wrong three separate times in the same
-way: measured while the service was pinned at its own soft cap, so the reading
-was bounded by the cap rather than by the service.
+`max_steady_state_fraction` is the bound budget.yaml itself calls "the one that
+governs normal operation". Until 2026-07-29 its left-hand side was a
+hand-maintained `observed_mb:` per service -- a fixed number describing a
+continuously-moving quantity, which went wrong the only way it could. It was
+re-measured by hand three times (litellm-proxy, metron-api/config-I5216,
+dashboard/config-I5237), and on the first day anything compared it to the box,
+three of fourteen units disagreed with their own entry, one by 2.8x.
 
-`memory.peak >= memory.high` is the tell. It was found BY HAND three times
-(litellm-proxy, metron-api/config-I5216, dashboard/config-I5237) and written
-into a prose `note:` each time instead of a check. Each time the cap was then
-raised to just above the censored floor, and each time the service re-pinned --
-config-I5237 moved dashboard.service 210M -> 260M and it was throttling again
-within a day, because 202 MiB was never its working set.
-
-A defect found three times by hand and recorded in prose is a check waiting to
-be written. This is that check.
+`observed_mb` is gone; the sum is read from each unit's `memory.current`. What
+survives is the check that says when that reading cannot be trusted:
+`memory.peak >= memory.high` means the cgroup has been pinned at its soft cap,
+so the reading is a floor. That matters MORE now, not less, because the floor
+now feeds the bound directly -- which is why steady_state_mb returns its
+caveats rather than a bare number.
 """
 
 import importlib.util
@@ -59,24 +58,24 @@ class TestCensoredObservation:
         """The exact dashboard.service shape on 2026-07-28, pre-fix."""
         _cgroup(cgroup_root, "dashboard.service",
                 current=250 * MB, peak=260 * MB, high=260 * MB)
-        msg = cmb.censored_observation("dashboard.service", 202)
+        msg = cmb.censored_observation("dashboard.service")
         assert msg is not None
         assert "CENSORED" in msg
         # The actionable instruction is the point of the message, not the label.
         assert "FLOOR" in msg
-        assert "do NOT re-cap to just above this number" in msg
+        assert "do NOT re-cap to just above the pinned number" in msg
 
     def test_peak_above_high_is_censored(self, cgroup_root):
         """peak can exceed high -- high throttles, it does not hard-stop."""
         _cgroup(cgroup_root, "svc.service",
                 current=250 * MB, peak=261 * MB, high=260 * MB)
-        assert cmb.censored_observation("svc.service", 202) is not None
+        assert cmb.censored_observation("svc.service") is not None
 
     def test_peak_clear_of_high_is_not_censored(self, cgroup_root):
         """metron-api after the single-worker cut: 203 peak against a 280 cap."""
         _cgroup(cgroup_root, "metron-api.service",
                 current=202 * MB, peak=203 * MB, high=280 * MB)
-        assert cmb.censored_observation("metron-api.service", 203) is None
+        assert cmb.censored_observation("metron-api.service") is None
 
     def test_infinite_high_is_not_censored(self, cgroup_root):
         """No cap means the reading cannot be bounded by one.
@@ -87,41 +86,63 @@ class TestCensoredObservation:
         """
         _cgroup(cgroup_root, "svc.service",
                 current=900 * MB, peak=900 * MB, high="max")
-        assert cmb.censored_observation("svc.service", 100) is None
+        assert cmb.censored_observation("svc.service") is None
 
     def test_missing_cgroup_returns_none_rather_than_passing(self, cgroup_root):
         """A unit that is not running has no cgroup. That is not a finding."""
-        assert cmb.censored_observation("absent.service", 100) is None
+        assert cmb.censored_observation("absent.service") is None
 
     def test_unreadable_value_does_not_crash_the_whole_check(self, cgroup_root):
         d = _cgroup(cgroup_root, "svc.service", peak=100 * MB, high=200 * MB)
         (d / "memory.peak").write_text("garbage\n")
-        assert cmb.censored_observation("svc.service", 50) is None
+        assert cmb.censored_observation("svc.service") is None
 
 
-class TestStaleObservation:
-    def test_current_far_above_declared_is_reported(self, cgroup_root):
-        """The config-I5237 shape: declared 82, actually 202."""
-        _cgroup(cgroup_root, "dashboard.service",
-                current=202 * MB, peak=205 * MB, high=400 * MB)
-        msg = cmb.stale_observation("dashboard.service", 82)
-        assert msg is not None
-        assert "STALE" in msg
-        assert "82" in msg and "202" in msg
+class TestSteadyStateIsMeasured:
+    """The bound's left-hand side comes from the box, with its caveats attached.
 
-    def test_within_tolerance_is_quiet(self, cgroup_root):
-        """observed_mb is a steady-state figure; normal drift is not a defect."""
-        _cgroup(cgroup_root, "svc.service", current=110 * MB, high=400 * MB)
-        assert cmb.stale_observation("svc.service", 100) is None
+    A declared `observed_mb` could be wrong in the safe direction indefinitely
+    and nothing would know. A measured sum can only be wrong in two ways --
+    a unit it could not read, and a unit whose reading is pinned -- and both are
+    knowable, so both are returned rather than folded into the number.
+    """
 
-    def test_using_less_than_declared_is_not_stale(self, cgroup_root):
-        """Only understatement corrupts the steady-state SUM upward."""
-        _cgroup(cgroup_root, "svc.service", current=40 * MB, high=400 * MB)
-        assert cmb.stale_observation("svc.service", 100) is None
+    def test_sums_live_readings(self, cgroup_root):
+        _cgroup(cgroup_root, "a.service", current=100 * MB, peak=50 * MB, high=400 * MB)
+        _cgroup(cgroup_root, "b.service", current=59 * MB, peak=50 * MB, high=400 * MB)
+        total, unmeasurable, censored = cmb.steady_state_mb(["a.service", "b.service"])
+        assert total == 159
+        assert unmeasurable == [] and censored == []
 
-    def test_zero_declared_does_not_divide_by_zero(self, cgroup_root):
-        _cgroup(cgroup_root, "svc.service", current=40 * MB, high=400 * MB)
-        assert cmb.stale_observation("svc.service", 0) is None
+    def test_declared_values_cannot_influence_the_sum(self, cgroup_root):
+        """The regression that motivated the whole change.
+
+        nous-ergon-live declared 56 MB and held 159 MB. Under the old code the
+        bound was computed from 56 and the 159 produced a page about the file.
+        There is now no path by which a number in budget.yaml can reach this
+        sum at all -- which is what makes the failure class extinct rather than
+        merely fixed.
+        """
+        _cgroup(cgroup_root, "nous-ergon-live.service",
+                current=159 * MB, peak=60 * MB, high=175 * MB)
+        total, _, _ = cmb.steady_state_mb(["nous-ergon-live.service"])
+        assert total == 159
+
+    def test_unreadable_unit_is_named_not_counted_as_zero(self, cgroup_root):
+        """Counting a missing unit as 0 makes the bound read safer than it is."""
+        _cgroup(cgroup_root, "a.service", current=100 * MB, peak=10 * MB, high=400 * MB)
+        total, unmeasurable, _ = cmb.steady_state_mb(["a.service", "gone.service"])
+        assert total == 100
+        assert unmeasurable == ["gone.service"]
+
+    def test_censored_unit_is_counted_but_flagged(self, cgroup_root):
+        """Its reading is a floor: usable as a lower bound, not as proof."""
+        _cgroup(cgroup_root, "pinned.service",
+                current=340 * MB, peak=340 * MB, high=340 * MB)
+        total, unmeasurable, censored = cmb.steady_state_mb(["pinned.service"])
+        assert total == 340
+        assert unmeasurable == []
+        assert censored == ["pinned.service"]
 
 
 class TestOrphanDropins:
@@ -183,3 +204,40 @@ class TestBudgetFileIsInternallyConsistent:
             assert cmb.main() == 0
         finally:
             sys.argv = argv
+
+    def test_no_service_declares_a_steady_state_number(self):
+        """`observed_mb` must not come back.
+
+        It is the natural thing to re-add -- it reads like documentation and it
+        makes --declared able to check the steady-state bound again. Both are
+        traps: it is a cache of a live value with no invalidation, and the
+        version of the bound it enables is only as good as numbers nobody can
+        verify. The failure class is extinct only while the field is absent, so
+        the absence is asserted rather than trusted to review.
+        """
+        import yaml
+
+        spec = yaml.safe_load(
+            (REPO_ROOT / "infrastructure" / "systemd" / "resource-limits"
+             / "budget.yaml").read_text()
+        )
+        offenders = [s["unit"] for s in spec["services"] if "observed_mb" in s]
+        assert not offenders, (
+            f"{offenders} declare observed_mb. Steady state is measured from "
+            "memory.current at check time -- see the module docstring in "
+            "check_memory_budget.py."
+        )
+
+    def test_steady_state_bound_is_still_declared(self):
+        """Removing the measurements must not remove the LIMIT.
+
+        The fraction is the half a human legitimately owns; deleting it along
+        with the numbers would quietly retire the bound entirely.
+        """
+        import yaml
+
+        spec = yaml.safe_load(
+            (REPO_ROOT / "infrastructure" / "systemd" / "resource-limits"
+             / "budget.yaml").read_text()
+        )
+        assert 0 < float(spec["max_steady_state_fraction"]) <= 1

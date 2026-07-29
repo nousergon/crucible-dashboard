@@ -276,18 +276,36 @@ human_age() {
 classify_timer_staleness() {
     local name="$1" now="$2" last="$3" budget="$4" result="$5" age
 
-    # No declared budget = unmonitored. NAMED, not skipped: an enabled timer
-    # with no `timers:` row in budget.yaml is a coverage hole, and a coverage
-    # hole that stays quiet is how this whole class of gap presents as green.
-    if [ -z "$budget" ]; then
-        echo "watchdog: timer has no dead-man threshold: $name — add a timers: row to budget.yaml"
-        return
-    fi
-
-    # Execution outcome. Independent of staleness: a job can fail promptly and
-    # on schedule forever, which is stale by no measure and broken by any.
+    # Execution outcome. FIRST, and before any coverage guard, because it needs
+    # NOTHING from budget.yaml: a job can fail promptly and on schedule forever,
+    # which is stale by no measure and broken by any.
+    #
+    # This used to sit BELOW the no-budget guard, which returned early. So a
+    # timer installed without a `timers:` row — the exact state a brand-new
+    # timer is in — had its outcome check skipped, and the watchdog reported the
+    # missing row instead of the failure. Live on 2026-07-29: metron-intraday
+    # had failed 48 of 48 runs on an S3 AccessDenied and box_health.sh said only
+    # "add a timers: row to budget.yaml". The coverage-hole branch was
+    # suppressing the very check it was a hole in — the guard-excludes-the-class-
+    # it-protects shape, again, and the reason the ordering here is load-bearing
+    # rather than stylistic. Asserted in test_box_health_timer_staleness.sh.
     if [ -n "$result" ] && [ "$result" != "success" ]; then
         echo "timer job failing: $name (last run result=$result)"
+    fi
+
+    # No declared budget = the STALENESS half is unmonitored. NAMED, not
+    # skipped: a coverage hole that stays quiet is how this class of gap
+    # presents as green.
+    #
+    # `notice:` because of what remains covered without the row. The scheduler
+    # check (classify_timer) still sees a timer that stopped firing, and the
+    # outcome check above still sees one that fails. What is missing is only the
+    # narrow case of a timer that is active, has a valid next elapse, and whose
+    # last trigger is nonetheless ancient — a mis-edited OnCalendar. Real, worth
+    # fixing, and not a reason to push a phone notification.
+    if [ -z "$budget" ]; then
+        echo "notice: timer has no dead-man threshold: $name — add a timers: row to budget.yaml"
+        return
     fi
 
     # Never triggered. Not reportable as stale — there is no baseline to
@@ -500,10 +518,22 @@ snapshot_problems() {
     # confirm and therefore never alerts -- a guard that looks wired and is not,
     # which is the same defect this block exists to correct.
     if [ -r "$BUDGET_CHECK" ]; then
-        local budget_out
-        if ! budget_out=$("$VENV_PY" "$BUDGET_CHECK" --installed --quiet 2>&1); then
-            echo "memory budget: cap drift or unreliable observation (detail in journal)"
-            printf 'box_health: memory budget detail:\n%s\n' "$budget_out" >&2
+        local budget_out budget_rc
+        budget_out=$("$VENV_PY" "$BUDGET_CHECK" --installed --quiet 2>&1)
+        budget_rc=$?
+        # Exit code carries the severity, because the two findings are not the
+        # same event: 1 = the box is out of budget, 2 = the box is fine and
+        # something is degrading our ability to measure it, 3 = the check could
+        # not run. Collapsing 1 and 2 into one alert is what made the page rate
+        # track bookkeeping instead of health.
+        case "$budget_rc" in
+            0) ;;
+            1) echo "memory budget: BREACH (detail in journal)" ;;
+            2) echo "notice: memory budget observation hygiene (detail in journal)" ;;
+            *) echo "watchdog: memory budget check failed to run (rc=$budget_rc)" ;;
+        esac
+        if [ "$budget_rc" -ne 0 ]; then
+            printf 'box_health: memory budget detail (rc=%s):\n%s\n' "$budget_rc" "$budget_out" >&2
         fi
     else
         # Same class as the df probe below: a check that cannot run is a
@@ -801,24 +831,61 @@ fi
 # (no S3 dedup-marker archaeology needed).
 printf 'box_health: confirmed problems after %d samples:\n%s\n' "$attempt" "$confirmed" >&2
 
-# Publish the verdict BEFORE alerting, so a broken alert path cannot also
-# prevent the count being recorded — that ordering is the whole point.
-publish_verdict "$(printf '%s\n' "$confirmed" | grep -c .)"
+# ── Severity split ──────────────────────────────────────────────────────
+#
+# Every confirmed problem used to publish at `--severity warning`, which has two
+# consequences that pull in opposite directions and were both wrong:
+#
+#   1. krepis.alerts pushes a phone notification for `error`/`critical` ONLY —
+#      `warning` is silent in-channel. So a service being DOWN, or MemAvailable
+#      under 150 MB, never pushed. The loudest condition on this box was
+#      delivered as quietly as the quietest.
+#   2. Bookkeeping findings — a censored reading, a timer missing its declared
+#      staleness budget — arrived at the same severity and the same 60-minute
+#      cadence as a real outage. That is how a channel gets tuned out, and it is
+#      what prompted this change (2026-07-29).
+#
+# So: lines a check marked `notice: ` are hygiene about the MONITORING, and the
+# substantive check they sit beside still runs (see classify_timer_staleness and
+# the budget-check exit codes). They go out at `info`, once a day. Everything
+# else is a statement about the BOX and pushes.
+#
+# Severity is a property of the invariant breached, not of the check that
+# emitted it — overseer-policy.md invariant 17.
+alerts=$(printf '%s\n' "$confirmed" | grep -v '^notice: ' || true)
+notices=$(printf '%s\n' "$confirmed" | grep '^notice: ' || true)
 
-# build message + a dedup key derived from the problem set, so the same
-# ongoing issue alerts once per dedup window rather than every 10 min.
-mapfile -t problems <<< "$confirmed"
-msg="dashboard EC2 (${INSTANCE_ID}) health alert:"
-for p in "${problems[@]}"; do msg="$msg"$'\n'" - $p"; done
-dkey="boxhealth-$(printf '%s' "${problems[*]}" | tr ' /' '__' | cut -c1-72)"
+# The verdict metric counts ALERT-class problems only. It answers "is the box
+# unhealthy", and a notice by definition is not evidence that it is. Notices are
+# not dropped from view — they have their own delivery below; this is a
+# deliberate scoping of one signal, not a silent one.
+publish_verdict "$(printf '%s\n' "$alerts" | grep -c .)"
 
-# krepis.alerts is the canonical CLI (config#1649): nousergon_lib.alerts is a
-# re-export shim since lib v0.66.0 — guard-less under `python -m` on 0.81.0
-# (silent exit-0 no-op, the config#1646 class). Invoke the real module.
-"$VENV_PY" -m krepis.alerts publish \
-    --message "$msg" \
-    --severity warning \
-    --source box-health \
-    --dedup-key "$dkey" \
-    --dedup-window-min 60 \
-    || echo "box_health: alert publish failed" >&2
+# publish_problems SEVERITY DEDUP_MIN PREFIX LINES
+# One path for both tiers so they cannot drift apart in formatting, dedup
+# behaviour, or failure reporting.
+publish_problems() {
+    local severity="$1" dedup_min="$2" prefix="$3" lines="$4"
+    [ -z "$lines" ] && return 0
+    local msg dkey p
+    mapfile -t _problems <<< "$lines"
+    msg="dashboard EC2 (${INSTANCE_ID}) ${prefix}:"
+    for p in "${_problems[@]}"; do msg="$msg"$'\n'" - $p"; done
+    # dedup key derived from the problem set, so the same ongoing issue alerts
+    # once per window rather than every 10 min. Namespaced by severity so a
+    # notice cannot suppress an alert that happens to share its text.
+    dkey="boxhealth-${severity}-$(printf '%s' "${_problems[*]}" | tr ' /' '__' | cut -c1-64)"
+    # krepis.alerts is the canonical CLI (config#1649): nousergon_lib.alerts is a
+    # re-export shim since lib v0.66.0 — guard-less under `python -m` on 0.81.0
+    # (silent exit-0 no-op, the config#1646 class). Invoke the real module.
+    "$VENV_PY" -m krepis.alerts publish \
+        --message "$msg" \
+        --severity "$severity" \
+        --source box-health \
+        --dedup-key "$dkey" \
+        --dedup-window-min "$dedup_min" \
+        || echo "box_health: $severity publish failed" >&2
+}
+
+publish_problems error 60   "health alert" "$alerts"
+publish_problems info  1440 "monitoring hygiene (no action urgent)" "$notices"

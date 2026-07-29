@@ -14,11 +14,27 @@
 #
 # THE TWO INVARIANTS
 # ------------------
-#   sum(memory_max_mb) <= ceiling * max_overcommit_ratio    (bounded overcommit)
-#   sum(observed_mb)   <= RAM_MB * max_steady_state_fraction (steady-state safety)
+#   sum(memory_max_mb)      <= ceiling * max_overcommit_ratio    (bounded overcommit)
+#   sum(live memory.current) <= RAM_MB * max_steady_state_fraction (steady-state safety)
 #
 # where ceiling = RAM_MB * (1 - reserve_fraction). See the overcommit note below
 # for why the first bound is a ratio rather than 1.0.
+#
+# NOTE WHICH SIDE OF EACH BOUND IS DECLARED. The first is declared on both
+# sides: caps are a policy choice and belong in a file. The second is declared
+# only on the RIGHT — the fraction. Its left side is MEASURED from each unit's
+# cgroup at check time.
+#
+# It used to be declared too, as an `observed_mb:` per service, and that was
+# wrong in a way worth recording because it will be tempting to add back. A
+# fixed number describing a continuously-moving quantity is a cache with no
+# invalidation: it was hand-re-measured three times (litellm-proxy,
+# metron-api/config-I5216, dashboard/config-I5237), and the day a check finally
+# compared it to the box, three of fourteen units disagreed with their own
+# entry — one by 2.8x. Every one of those findings was TRUE and none was
+# actionable beyond editing the number back. Removed 2026-07-29; the sum is now
+# read from `memory.current`, and the failure mode it generated cannot recur
+# because the value it needed no longer exists.
 #
 # Per-service caps bound ONE runaway. They do nothing about several services
 # growing toward their individually-legal ceilings at once — the kernel OOM
@@ -58,8 +74,11 @@ reserve_fraction: 0.15    # kernel + page cache headroom => ceiling 3263 MB
 # services cold-start serially, not simultaneously (the one exception is boot,
 # where systemd's own ordering staggers them).
 #
-# What actually governs steady-state safety is the observed sum, tracked
-# separately below. Both bounds are enforced by check_memory_budget.py.
+# What actually governs steady-state safety is the live sum, measured from the
+# cgroups. Both bounds are enforced by check_memory_budget.py — the caps bound
+# in either mode, the steady-state bound in --installed mode only, because
+# off-box there is nothing to measure and a declared substitute is what this
+# file just finished removing.
 #
 # Policy section 5 T1-1 permits this explicitly: "Overcommit is permitted only
 # as a documented, ratio-stated decision." This is that statement.
@@ -74,19 +93,18 @@ reserve_fraction: 0.15    # kernel + page cache headroom => ceiling 3263 MB
 # accident. If it ever blocks a MEASURED cap again, that is a signal to re-derive
 # it, not to shave the cap to fit.
 max_overcommit_ratio: 1.20      # sum(memory_max) / ceiling. Currently 1.16.
-max_steady_state_fraction: 0.60 # sum(observed_mb) / RAM. Currently 0.37.
+max_steady_state_fraction: 0.60 # sum(live memory.current) / RAM. 0.37 on 2026-07-29.
 
 # memory_high is the SOFT limit: the kernel throttles and reclaims against the
 # service rather than killing it. memory_max is the HARD cap. Setting high at
 # ~70% of max gives every service a reclaim window before it hits the wall —
 # a service with only a hard cap goes from unconstrained straight to a kill.
 #
-# observed_mb is steady-state RSS measured 2026-07-27 ~11 min after a clean
-# boot on t3.medium. Caps are sized for each service's STARTUP PEAK, which for
-# most units is ~2-3x observed but for the two proxies is far more (see their
-# notes). Re-measure and re-budget when the service set or instance type
-# changes; a unit whose note says DO NOT LOWER was calibrated against a real
-# failure, and lowering it reproduces that failure.
+# Caps are sized for each service's STARTUP PEAK, which for most units is ~2-3x
+# its steady state but for the two proxies is far more (see their notes).
+# Re-budget when the service set or instance type changes; a unit whose note
+# says DO NOT LOWER was calibrated against a real failure, and lowering it
+# reproduces that failure.
 #
 # `user:` IS A SUPPORTED FIELD AND IS DELIBERATELY UNSET ON EVERY SERVICE.
 # ------------------------------------------------------------------------
@@ -112,14 +130,13 @@ services:
   # ── alpha-engine ────────────────────────────────────────────────────────
   - unit: dashboard.service
     port: 8501
-    observed_mb: 248
     memory_high: 340M
     memory_max: 450M
     note: >-
-      Streamlit private console. Caps raised 260M/300M -> 340M/450M and
-      observed_mb 202 -> 248, from the first UNCENSORED measurement of this
-      service (2026-07-28). I5237 raised memory_high 210M -> 260M and the
-      service re-pinned within a day, because 202 was never the working set —
+      Streamlit private console. Caps raised 260M/300M -> 340M/450M on the
+      first UNCENSORED measurement of this service (2026-07-28: 248 MiB in use,
+      against a then-recorded 202). I5237 raised memory_high 210M -> 260M and
+      the service re-pinned within a day, because 202 was never the working set —
       it was a floor read under the old cap, exactly as that issue's own note
       predicted.
 
@@ -150,35 +167,32 @@ services:
 
   - unit: nous-ergon-live.service
     port: 8502
-    observed_mb: 56
     memory_high: 175M
     memory_max: 250M
 
   - unit: crucible-dash-api.service
     port: 8506
-    observed_mb: 185
     memory_high: 245M
     memory_max: 350M
     note: >-
-      observed_mb corrected 107 -> 185 (measured live 2026-07-28, peak 186
-      against a 245M cap, so uncensored). Found by the STALE-observation check
-      on its FIRST run against the live box -- the number was understating this
+      Measured live 2026-07-28 at 185 MiB (peak 186 against a 245M cap, so
+      uncensored) against a then-recorded 107. Surfaced by the FIRST run of
+      --installed against the live box: the declared number understated this
       service by 78 MiB and nothing had ever compared it to reality, because
-      --installed mode was invoked by nothing (see box_health.sh).
+      --installed mode was invoked by nothing (see box_health.sh). That class of
+      finding is gone with the declared field; the sum is measured now.
       At 185/245 this sits at 76% of its soft cap: not throttling today, but
       the tightest ratio on the box after dashboard. Re-measure before assuming
       headroom here.
 
   - unit: crucible-dash-web.service
     port: 3002
-    observed_mb: 56
     memory_high: 154M
     memory_max: 220M
 
   # ── metron ──────────────────────────────────────────────────────────────
   - unit: metron-api.service
     port: 8000
-    observed_mb: 203
     memory_high: 280M
     memory_max: 350M
     note: >-
@@ -207,38 +221,33 @@ services:
 
       Historical, kept because it is the reason the censored-reading check below
       exists: at 385M the cgroup logged 7347 MemoryHigh events during worker
-      warm-up with memory.peak EQUAL to memory.high, so the then-recorded
-      observed_mb of 349 was never a working set — only the largest value the
-      ceiling permitted.
+      warm-up with memory.peak EQUAL to memory.high, so the then-recorded figure
+      of 349 was never a working set — only the largest value the ceiling
+      permitted.
 
   - unit: metron-dash-web.service
     port: 3003
-    observed_mb: 90
     memory_high: 154M
     memory_max: 220M
 
   # ── other products ──────────────────────────────────────────────────────
   - unit: telos-web.service
     port: 3001
-    observed_mb: 56
     memory_high: 105M
     memory_max: 150M
 
   - unit: vires.service
     port: 8530
-    observed_mb: 83
     memory_high: 112M
     memory_max: 160M
 
   - unit: signal.service
     port: 8505
-    observed_mb: 64
     memory_high: 175M
     memory_max: 250M
 
   - unit: mnemon.service
     port: 8503
-    observed_mb: 52
     memory_high: 175M
     memory_max: 250M
     note: >
@@ -248,7 +257,6 @@ services:
 
   - unit: nousergon-auth.service
     port: 4100
-    observed_mb: 53
     memory_high: 105M
     memory_max: 150M
     note: >
@@ -259,7 +267,6 @@ services:
   # ── dev infrastructure ──────────────────────────────────────────────────
   - unit: litellm-proxy.service
     port: 8980
-    observed_mb: 244
     memory_high: 350M
     memory_max: 500M
     note: >
@@ -273,7 +280,6 @@ services:
 
   - unit: llm-egress-proxy.service
     port: 8990
-    observed_mb: 11
     memory_high: 250M
     memory_max: 400M
     note: >
@@ -288,7 +294,6 @@ services:
   # ── ingress ─────────────────────────────────────────────────────────────
   - unit: nginx.service
     port: 443
-    observed_mb: 9
     memory_high: 70M
     memory_max: 100M
     note: sole ingress for all ten vhosts — Restart=always is load-bearing; already runs as its own user, no User= migration needed
@@ -508,6 +513,16 @@ timers:
   - unit: metron-refresh-flex.timer
     max_staleness: 4d
     note: Mon-Fri 13:15 UTC; Fri->Mon is a 3-day gap by design
+
+  - unit: metron-intraday.timer
+    max_staleness: 20m
+    note: >-
+      Every 5 min unconditionally; the collector gates each tick on the NYSE
+      session in-process, so an off-session tick is a fast successful no-op and
+      the cadence never pauses. 4x covers one missed tick plus a slow S3 round
+      trip. Installed 2026-07-29 with no row here, which is how it reached the
+      box failing 48/48 runs on an S3 AccessDenied while box_health.sh reported
+      only that the row was missing.
 
   # ── morning-signal / the-cyphering ──────────────────────────────────────
   - unit: morning-signal.timer

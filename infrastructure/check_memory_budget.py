@@ -22,9 +22,49 @@ Two modes:
                It catches drift -- a hand-edited drop-in, a unit whose limits
                were never installed, or a service running with no cap at all.
 
-Exit 0 = within budget and (in --installed mode) no drift. Exit 1 = violation.
+STEADY STATE IS MEASURED, NEVER DECLARED
+----------------------------------------
+`max_steady_state_fraction` is the bound that governs normal operation. Until
+2026-07-29 it was computed by summing a hand-maintained `observed_mb:` per
+service in budget.yaml -- a fixed number describing a continuously-moving
+quantity. It went wrong the only way it could: three separate hand
+re-measurements (litellm-proxy, metron-api/config-I5216,
+dashboard/config-I5237), and on the day the check that compares them to the box
+first ran, three of fourteen units disagreed with their declaration, one by
+2.8x. Each round produced a true, unactionable finding whose only remedy was
+editing the number back.
 
-Policy: nous-ergon-ops/policies/shared-application-host-policy.md T1-1.
+A declared value the live system can measure is not a declaration, it is a
+cache -- and an uninvalidated cache generates a permanent stream of correct
+alerts about itself. `observed_mb` is therefore GONE. In --installed mode the
+steady-state sum is read from each unit's `memory.current`. budget.yaml now
+declares only the BOUND (`max_steady_state_fraction`), which is a policy
+decision a human legitimately owns.
+
+Consequence, stated rather than hidden: the steady-state bound cannot be
+evaluated off-box, so --declared no longer checks it. That is honest -- the CI
+version of this bound was only ever as good as numbers nobody could verify --
+and the loss is covered by box_health.sh running --installed every 10 minutes.
+
+SEVERITY IS A PROPERTY OF THE INVARIANT, NOT OF THIS CHECK
+----------------------------------------------------------
+Two findings that are not the same event must not exit the same way. A box over
+its memory budget is a page; a censored reading or an unowned drop-in is
+bookkeeping about how well we can see the box. Emitting both at one severity
+makes the page rate track hygiene rather than health, which is how a class gets
+tuned out. Hence:
+
+  0  every invariant holds and nothing impairs the reading
+  1  INVARIANT BREACH -- caps over the declared overcommit, steady state over
+     its limit, RAM drift, a cap that does not match the budget, a service with
+     no cap or no reclaim window. Pages.
+  2  OBSERVATION HYGIENE ONLY -- every invariant above holds; something is
+     degrading the measurement (censored reading, unmeasurable unit, orphan
+     drop-in). Recorded, does not page.
+  3  the check could not run at all (watchdog malfunction).
+
+Policy: nous-ergon-ops/policies/shared-application-host-policy.md T1-1;
+severity tiering per overseer-policy.md invariant 17.
 """
 from __future__ import annotations
 
@@ -37,7 +77,7 @@ try:
     import yaml
 except ImportError:  # pragma: no cover - surfaced loudly, never swallowed
     print("check_memory_budget: PyYAML not available", file=sys.stderr)
-    sys.exit(2)
+    sys.exit(3)  # cannot run -- a watchdog malfunction, not a budget verdict
 
 BUDGET = pathlib.Path(__file__).parent / "systemd" / "resource-limits" / "budget.yaml"
 
@@ -91,13 +131,13 @@ def cgroup_value(unit: str, filename: str) -> int | None:
         return None
 
 
-def censored_observation(unit: str, declared_observed_mb: int) -> str | None:
-    """Detect an observed_mb that is a FLOOR rather than a measurement.
+def censored_observation(unit: str) -> str | None:
+    """Detect a live reading that is a FLOOR rather than a measurement.
 
     `memory.peak >= memory.high` means the cgroup has been held at its soft cap
     since it last started. Everything measured in that state is bounded by the
-    cap itself, so the number recorded in budget.yaml is the largest value the
-    ceiling permitted -- not the service's working set.
+    cap itself, so `memory.current` is the largest value the ceiling permitted --
+    not the service's working set.
 
     This tell has been found BY HAND three times on this box (litellm-proxy,
     metron-api/config-I5216, dashboard/config-I5237) and written into a prose
@@ -106,9 +146,12 @@ def censored_observation(unit: str, declared_observed_mb: int) -> str | None:
     because the floor was never the working set. config-I5237 raised
     dashboard.service 210M -> 260M and it was throttling again the next day.
 
-    It matters beyond one service: `max_steady_state_fraction` -- the bound this
-    file calls the one that governs normal operation -- is computed by summing
-    observed_mb. Censored inputs make that bound read safer than it is.
+    It survived the removal of `observed_mb` -- and matters MORE without it --
+    because the steady-state sum is now read straight from these cgroups. A
+    censored unit makes that sum read safer than it is, so the bound is reported
+    as a floor rather than as a pass. That is the difference between an unproven
+    invariant and a satisfied one, and this is the only thing that can tell them
+    apart.
     """
     peak = cgroup_value(unit, "memory.peak")
     high = cgroup_value(unit, "memory.high")
@@ -117,39 +160,37 @@ def censored_observation(unit: str, declared_observed_mb: int) -> str | None:
     if peak < high:
         return None
     return (
-        f"{unit}: CENSORED observation -- memory.peak ({peak // 1024**2} MiB) has "
+        f"{unit}: CENSORED reading -- memory.peak ({peak // 1024**2} MiB) has "
         f"reached memory.high ({high // 1024**2} MiB), so this service has been "
-        f"pinned at its soft cap since it last started. observed_mb "
-        f"({declared_observed_mb} MB) is a FLOOR, not a working set. Raise the "
-        f"cap clear of the service, let it run un-pinned, and re-measure -- do "
-        f"NOT re-cap to just above this number."
+        f"pinned at its soft cap since it last started. Its memory.current is a "
+        f"FLOOR, not a working set, and the steady-state sum below understates "
+        f"by an unknown amount. Raise the cap clear of the service and let it "
+        f"run un-pinned -- do NOT re-cap to just above the pinned number."
     )
 
 
-def stale_observation(unit: str, declared_observed_mb: int) -> str | None:
-    """Detect an observed_mb that the live reading has left behind.
+def steady_state_mb(units: list[str]) -> tuple[int, list[str], list[str]]:
+    """Measure the steady-state total from the cgroups, with its caveats.
 
-    Distinct from censoring: here the cap is NOT binding, the service is simply
-    using materially more than the file claims. That silently understates
-    max_steady_state_fraction in the same way, without the peak==high tell.
+    Returns (total_mb, unmeasurable_units, censored_units).
 
-    20% tolerance because observed_mb is a steady-state figure and normal
-    operation moves around it; this is meant to catch a number that is wrong,
-    not one that is imprecise.
+    The two caveat lists are returned rather than folded into the total because
+    they change what the total MEANS. A sum missing a unit understates; a sum
+    including a censored unit understates by an unknown amount. Reporting
+    "1410 MB, within the limit" while either is true would be the same defect
+    the declared numbers had -- a bound that reads satisfied because its input
+    is wrong in the safe direction.
     """
-    current = cgroup_value(unit, "memory.current")
-    if current is None or declared_observed_mb <= 0:
-        return None
-    current_mb = current // 1024**2
-    if current_mb <= declared_observed_mb * 1.20:
-        return None
-    return (
-        f"{unit}: STALE observation -- budget.yaml declares observed_mb="
-        f"{declared_observed_mb} MB but the cgroup currently holds {current_mb} "
-        f"MB ({current_mb / declared_observed_mb:.1f}x). The steady-state bound "
-        f"is the sum of these values, so it is being computed from a number the "
-        f"box disagrees with."
-    )
+    total, unmeasurable, censored = 0, [], []
+    for unit in units:
+        current = cgroup_value(unit, "memory.current")
+        if current is None or current == sys.maxsize:
+            unmeasurable.append(unit)
+            continue
+        total += current // 1024**2
+        if censored_observation(unit):
+            censored.append(unit)
+    return total, unmeasurable, censored
 
 
 # Memory drop-ins that legitimately exist without a budget.yaml entry.
@@ -225,13 +266,19 @@ def main() -> int:
     spec = yaml.safe_load(BUDGET.read_text())
     reserve = float(spec["reserve_fraction"])
 
+    # Two lists, deliberately not one. `breaches` are invariant violations and
+    # page; `hygiene` are findings about the QUALITY OF THE MEASUREMENT and do
+    # not. Merging them is what made a stale number page like a full box.
+    breaches: list[str] = []
+    hygiene: list[str] = []
+
     # In --installed mode the real RAM is authoritative: it catches a resize
     # that nobody reflected back into budget.yaml, in either direction.
     if installed:
         ram_mb = ram_mb_from_proc()
         declared_ram = int(spec["ram_mb"])
         if abs(ram_mb - declared_ram) > declared_ram * 0.05:
-            print(f"DRIFT: budget.yaml declares ram_mb={declared_ram} but the box "
+            print(f"BREACH: budget.yaml declares ram_mb={declared_ram} but the box "
                   f"has {ram_mb} MB. Re-budget after an instance resize.",
                   file=sys.stderr)
             return 1
@@ -241,7 +288,7 @@ def main() -> int:
     ceiling_mb = int(ram_mb * (1 - reserve))
 
     total_bytes = 0
-    rows, problems = [], []
+    rows = []
 
     for svc in spec["services"]:
         unit = svc["unit"]
@@ -252,25 +299,19 @@ def main() -> int:
                 have = parse_bytes(systemd_show(unit, "MemoryMax"))
                 have_high = parse_bytes(systemd_show(unit, "MemoryHigh"))
             except RuntimeError as e:
-                problems.append(f"{unit}: {e}")
+                breaches.append(f"{unit}: {e}")
                 continue
             if have != want:
-                problems.append(
+                breaches.append(
                     f"{unit}: MemoryMax drift -- budget declares "
                     f"{svc['memory_max']} but systemd has "
                     f"{'infinity' if have == sys.maxsize else str(have // 1024**2) + 'M'}"
                 )
             if have_high == sys.maxsize:
-                problems.append(
+                breaches.append(
                     f"{unit}: MemoryHigh is unset/infinity -- no reclaim window "
                     f"before the hard cap"
                 )
-            # The declared numbers can be internally consistent and still be
-            # wrong about the box. These two catch that.
-            for check in (censored_observation, stale_observation):
-                found = check(unit, int(svc["observed_mb"]))
-                if found:
-                    problems.append(found)
             effective = have
         else:
             effective = want
@@ -279,7 +320,7 @@ def main() -> int:
         rows.append((unit, effective))
 
     if installed:
-        problems.extend(orphan_dropins({s["unit"] for s in spec["services"]}))
+        hygiene.extend(orphan_dropins({s["unit"] for s in spec["services"]}))
 
     total_mb = total_bytes // 1024**2 if total_bytes < sys.maxsize else -1
 
@@ -293,14 +334,38 @@ def main() -> int:
     over = total_mb > allowed_mb or total_mb < 0
 
     # Bound 2: steady-state safety. This is the one that governs normal
-    # operation -- the sum of what the services ACTUALLY use must leave real
-    # headroom, independent of how generous the caps are.
+    # operation -- what the services ACTUALLY use must leave real headroom,
+    # independent of how generous the caps are. MEASURED from the cgroups, never
+    # declared; see the module docstring for why the declared version had to go.
+    #
+    # Off-box there is nothing to measure, so this bound is SKIPPED and says so.
+    # A silent skip here would be the worse of the two options by far: a CI run
+    # printing nothing about the bound is indistinguishable from one that
+    # checked it and was satisfied.
     max_ss = float(spec["max_steady_state_fraction"])
-    ss_mb = sum(int(s["observed_mb"]) for s in spec["services"])
     ss_allowed = int(ram_mb * max_ss)
-    ss_over = ss_mb > ss_allowed
+    ss_over = False
+    ss_mb = 0
+    unmeasurable: list[str] = []
+    censored: list[str] = []
+    if installed:
+        ss_mb, unmeasurable, censored = steady_state_mb(
+            [s["unit"] for s in spec["services"]]
+        )
+        ss_over = ss_mb > ss_allowed
+        for unit in censored:
+            hygiene.append(censored_observation(unit) or f"{unit}: censored")
+        if unmeasurable:
+            hygiene.append(
+                "steady state measured over "
+                f"{len(rows) - len(unmeasurable)} of {len(rows)} units -- no "
+                f"cgroup for: {', '.join(unmeasurable)}. The sum below "
+                f"understates by whatever those are using. (A unit that is not "
+                f"running is reported by box_health.sh's service check, not "
+                f"here.)"
+            )
 
-    if not args.quiet or over or ss_over or problems:
+    if not args.quiet or over or ss_over or breaches or hygiene:
         label = "installed" if installed else "declared"
         print(f"memory budget ({label}): RAM {ram_mb} MB, reserve {reserve:.0%}, "
               f"ceiling {ceiling_mb} MB, max overcommit {max_ratio:.2f}x "
@@ -310,25 +375,39 @@ def main() -> int:
         print(f"  {'TOTAL (caps)':<28} {total_mb:>5} MB  "
               f"{ratio:.2f}x ceiling "
               f"({'OVER' if over else 'within declared overcommit'})")
-        print(f"  {'TOTAL (steady state)':<28} {ss_mb:>5} MB  "
-              f"{ss_mb / ram_mb:.0%} of RAM "
-              f"({'OVER' if ss_over else 'ok'}, limit {max_ss:.0%})")
+        if installed:
+            # "FLOOR" rather than "ok" whenever the reading is impaired: the
+            # bound is unproven, not satisfied, and the word has to say so.
+            impaired = bool(censored or unmeasurable)
+            verdict = "OVER" if ss_over else ("FLOOR, unproven" if impaired else "ok")
+            print(f"  {'TOTAL (steady state)':<28} {ss_mb:>5} MB  "
+                  f"{ss_mb / ram_mb:.0%} of RAM "
+                  f"({verdict}, limit {max_ss:.0%})")
+        else:
+            print(f"  {'TOTAL (steady state)':<28} {'--':>5}     "
+                  f"not evaluable off-box (measured from cgroups by "
+                  f"box_health.sh --installed; limit {max_ss:.0%})")
 
-    for p in problems:
-        print(f"DRIFT: {p}", file=sys.stderr)
+    for p in breaches:
+        print(f"BREACH: {p}", file=sys.stderr)
+    for p in hygiene:
+        print(f"HYGIENE: {p}", file=sys.stderr)
 
     if over:
-        print(f"FAIL: aggregate MemoryMax {total_mb} MB is {ratio:.2f}x the "
+        print(f"BREACH: aggregate MemoryMax {total_mb} MB is {ratio:.2f}x the "
               f"{ceiling_mb} MB ceiling, above the declared "
               f"max_overcommit_ratio {max_ratio:.2f}x. Either lower a cap, raise "
               f"the ratio WITH a written rationale, or move a service off this "
               f"box (policy T1-1 / decision framework section 4).", file=sys.stderr)
     if ss_over:
-        print(f"FAIL: steady-state total {ss_mb} MB is {ss_mb / ram_mb:.0%} of "
+        print(f"BREACH: steady-state total {ss_mb} MB is {ss_mb / ram_mb:.0%} of "
               f"RAM, above the {max_ss:.0%} limit. This is the bound that governs "
               f"normal operation -- the box is genuinely too small for what it "
               f"runs (policy T1-7 / exit trigger E3).", file=sys.stderr)
-    return 1 if (over or ss_over or problems) else 0
+
+    if over or ss_over or breaches:
+        return 1
+    return 2 if hygiene else 0
 
 
 if __name__ == "__main__":
