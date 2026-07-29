@@ -196,11 +196,15 @@ def steady_state_mb(units: list[str]) -> tuple[int, list[str], list[str]]:
 # Memory drop-ins that legitimately exist without a budget.yaml entry.
 # BY NAME WITH A REASON, for the same argument the manifest exclusions carry: a
 # bare "ignore anything unexpected" cannot say what it is ignoring.
-DROPIN_ALLOW = {
-    # timer-driven, out of this budget's scope, already tracked in VCS at
-    # infrastructure/systemd/morning-signal.service.d/10-memory.conf
-    "morning-signal.service",
-}
+#
+# EMPTY as of 2026-07-29. Its only entry was morning-signal.service, suppressed
+# as "timer-driven, out of this budget's scope" -- which meant its 900M cap, the
+# largest single claim on the box's headroom, was known to this file only as a
+# name on an ignore list. It is now DECLARED in budget.yaml's `timer_jobs:`
+# instead, so it is drift-checked and counted like everything else. Prefer
+# declaring to suppressing: an entry here says "we looked and it is fine", and
+# nothing re-examines that claim.
+DROPIN_ALLOW: set[str] = set()
 
 _DROPIN_ROOT = pathlib.Path("/etc/systemd/system")
 
@@ -319,8 +323,35 @@ def main() -> int:
         total_bytes += effective
         rows.append((unit, effective))
 
+    timer_jobs = spec.get("timer_jobs") or []
+
     if installed:
-        hygiene.extend(orphan_dropins({s["unit"] for s in spec["services"]}))
+        hygiene.extend(orphan_dropins(
+            {s["unit"] for s in spec["services"]} | {t["unit"] for t in timer_jobs}
+        ))
+        # Timer jobs are drift-checked exactly like services -- a declared cap
+        # that was never installed is the same defect either way. They are only
+        # excluded from the SUM below, not from verification.
+        for job in timer_jobs:
+            unit = job["unit"]
+            try:
+                have = parse_bytes(systemd_show(unit, "MemoryMax"))
+                have_high = parse_bytes(systemd_show(unit, "MemoryHigh"))
+            except RuntimeError as e:
+                breaches.append(f"{unit}: {e}")
+                continue
+            if have != parse_bytes(job["memory_max"]):
+                breaches.append(
+                    f"{unit} (timer job): MemoryMax drift -- budget declares "
+                    f"{job['memory_max']} but systemd has "
+                    f"{'infinity' if have == sys.maxsize else str(have // 1024**2) + 'M'}"
+                )
+            if have_high != parse_bytes(job["memory_high"]):
+                breaches.append(
+                    f"{unit} (timer job): MemoryHigh drift -- budget declares "
+                    f"{job['memory_high']} but systemd has "
+                    f"{'infinity' if have_high == sys.maxsize else str(have_high // 1024**2) + 'M'}"
+                )
 
     total_mb = total_bytes // 1024**2 if total_bytes < sys.maxsize else -1
 
@@ -365,7 +396,22 @@ def main() -> int:
                 f"here.)"
             )
 
-    if not args.quiet or over or ss_over or breaches or hygiene:
+    # Bound 3: batch headroom (policy §4.3 + §4's batch-job rule). A timer job
+    # allocates ON TOP of whatever the long-running services are already holding,
+    # so the bound is not "does it fit in RAM" but "does it fit in what is LEFT".
+    #
+    # Summed rather than maxed: the worst case is every timer firing at once, and
+    # the cheap direction to be wrong in is the one where a batch peak cannot
+    # evict a user-facing service. Conservative for disjoint schedules, and
+    # deliberately so.
+    #
+    # Installed mode only -- it is measured against the live steady state, and a
+    # declared substitute for that is what this file removed on 2026-07-29.
+    tj_mb = sum(parse_bytes(t["memory_max"]) for t in timer_jobs) // 1024**2 if timer_jobs else 0
+    tj_headroom_mb = ram_mb - ss_mb if installed else 0
+    tj_over = bool(installed and timer_jobs and tj_mb > tj_headroom_mb)
+
+    if not args.quiet or over or ss_over or tj_over or breaches or hygiene:
         label = "installed" if installed else "declared"
         print(f"memory budget ({label}): RAM {ram_mb} MB, reserve {reserve:.0%}, "
               f"ceiling {ceiling_mb} MB, max overcommit {max_ratio:.2f}x "
@@ -387,6 +433,16 @@ def main() -> int:
             print(f"  {'TOTAL (steady state)':<28} {'--':>5}     "
                   f"not evaluable off-box (measured from cgroups by "
                   f"box_health.sh --installed; limit {max_ss:.0%})")
+        if timer_jobs:
+            for t in sorted(timer_jobs, key=lambda t: -parse_bytes(t["memory_max"])):
+                print(f"  [timer] {t['unit']:<20} {parse_bytes(t['memory_max']) // 1024**2:>5} MB")
+            if installed:
+                print(f"  {'TOTAL (timer job caps)':<28} {tj_mb:>5} MB  "
+                      f"vs {tj_headroom_mb} MB headroom "
+                      f"({'OVER' if tj_over else 'ok'})")
+            else:
+                print(f"  {'TOTAL (timer job caps)':<28} {tj_mb:>5} MB  "
+                      f"headroom not evaluable off-box")
 
     for p in breaches:
         print(f"BREACH: {p}", file=sys.stderr)
@@ -405,7 +461,15 @@ def main() -> int:
               f"normal operation -- the box is genuinely too small for what it "
               f"runs (policy T1-7 / exit trigger E3).", file=sys.stderr)
 
-    if over or ss_over or breaches:
+    if tj_over:
+        print(f"BREACH: timer-job caps total {tj_mb} MB against only "
+              f"{tj_headroom_mb} MB of headroom left by the running services. A "
+              f"batch peak that cannot fit in the headroom evicts a user-facing "
+              f"service instead. Either lower a cap against a fresh measurement "
+              f"or move the job to a spot instance or Lambda (policy section 4, "
+              f"batch-job rule).", file=sys.stderr)
+
+    if over or ss_over or tj_over or breaches:
         return 1
     return 2 if hygiene else 0
 

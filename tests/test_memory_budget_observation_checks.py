@@ -145,6 +145,82 @@ class TestSteadyStateIsMeasured:
         assert censored == ["pinned.service"]
 
 
+class TestTimerJobBudget:
+    """Timer-driven jobs are DECLARED, not suppressed.
+
+    `services:` is a concurrency bound — everything in it runs continuously, so
+    the caps can sum above RAM at the same instant. A timer oneshot is not in
+    that set (metron-intraday runs ~3s every 5 min) but it still allocates ON TOP
+    of whatever the services hold, so it needs its own bound: it must fit in the
+    headroom they leave.
+
+    Before 2026-07-29 these were invisible. morning-signal.service's 900M cap —
+    the largest single claim on this box's headroom — was known to the budget
+    only as a name on `DROPIN_ALLOW`, an ignore list. Invisible is not the same
+    as fine.
+    """
+
+    def _spec(self):
+        import yaml
+        return yaml.safe_load(
+            (REPO_ROOT / "infrastructure" / "systemd" / "resource-limits"
+             / "budget.yaml").read_text()
+        )
+
+    def test_every_timer_job_declares_both_caps(self):
+        for job in self._spec().get("timer_jobs", []):
+            assert job.get("memory_max"), f"{job['unit']} has no memory_max"
+            assert job.get("memory_high"), (
+                f"{job['unit']} has no memory_high — no reclaim window before the "
+                "hard cap, the same defect the services list records for mnemon"
+            )
+
+    def test_dropin_allowlist_is_empty(self):
+        """A suppression and a declaration are not interchangeable.
+
+        An entry on the allowlist asserts "we looked and it is fine" and nothing
+        ever re-examines it; a `timer_jobs:` row is drift-checked every 10
+        minutes. If a unit needs to come off the check, it should get a row, not
+        a name here.
+        """
+        assert cmb.DROPIN_ALLOW == set(), (
+            f"{cmb.DROPIN_ALLOW} is suppressed rather than declared — add a "
+            "timer_jobs: row instead"
+        )
+
+    def test_declared_timer_units_are_not_reported_as_orphans(self, tmp_path, monkeypatch):
+        """The declaration has to actually satisfy the orphan check.
+
+        Removing the allowlist without wiring timer_jobs into orphan_dropins
+        would turn morning-signal's drop-in into a permanent finding — trading a
+        silent suppression for a permanent alert, which is not an improvement.
+        """
+        monkeypatch.setattr(cmb, "_DROPIN_ROOT", tmp_path)
+        d = tmp_path / "morning-signal.service.d"
+        d.mkdir(parents=True)
+        (d / "10-memory.conf").write_text("[Service]\nMemoryHigh=600M\nMemoryMax=900M\n")
+        spec = self._spec()
+        known = ({s["unit"] for s in spec["services"]}
+                 | {t["unit"] for t in spec.get("timer_jobs", [])})
+        assert cmb.orphan_dropins(known) == []
+
+    def test_timer_caps_fit_the_headroom_the_services_leave(self):
+        """The bound itself, against the live steady state measured 2026-07-29.
+
+        Uses a recorded figure rather than reading cgroups so it runs in CI; the
+        live version of this check runs on the box every 10 minutes.
+        """
+        spec = self._spec()
+        tj = sum(cmb.parse_bytes(t["memory_max"]) for t in spec.get("timer_jobs", []))
+        measured_steady_state_mb = 1207  # box, 2026-07-29, sum of memory.current
+        headroom = (int(spec["ram_mb"]) - measured_steady_state_mb) * 1024**2
+        assert tj <= headroom, (
+            f"timer caps {tj // 1024**2} MB exceed the {headroom // 1024**2} MB "
+            "left by the running services — a batch peak that does not fit "
+            "evicts a user-facing service (policy section 4, batch-job rule)"
+        )
+
+
 class TestOrphanDropins:
     def _dropin(self, root, unit, name, body):
         d = root / f"{unit}.d"
@@ -174,11 +250,20 @@ class TestOrphanDropins:
                      "[Service]\nMemoryMax=450M\nMemoryHigh=340M\n")
         assert cmb.orphan_dropins({"dashboard.service"}) == []
 
-    def test_allowlisted_unit_is_not_an_orphan(self, dropin_root):
-        """morning-signal is timer-driven and deliberately out of budget scope."""
+    def test_a_declared_timer_job_is_not_an_orphan(self, dropin_root):
+        """morning-signal is exempt because it is DECLARED, not allowlisted.
+
+        It used to be excluded by name in `DROPIN_ALLOW`. Since 2026-07-29 it has
+        a `timer_jobs:` row instead, and the caller passes those units in — so
+        the exemption now comes from a declaration that is itself drift-checked,
+        rather than from a hardcoded set nothing re-examines.
+        """
         self._dropin(dropin_root, "morning-signal.service", "10-memory.conf",
                      "[Service]\nMemoryHigh=600M\n")
-        assert cmb.orphan_dropins({"dashboard.service"}) == []
+        assert cmb.orphan_dropins({"dashboard.service"}) != [], (
+            "with an empty allowlist, an UNDECLARED drop-in must still be caught"
+        )
+        assert cmb.orphan_dropins({"dashboard.service", "morning-signal.service"}) == []
 
     def test_dropin_without_memory_settings_is_ignored(self, dropin_root):
         """This check owns memory limits only, not every drop-in on the box."""
