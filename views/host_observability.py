@@ -8,6 +8,10 @@ from shared.view_host import render_host
 render_host(
     [
         ("Artifact Freshness", "26_Artifact_Freshness.py"),
+        # Every SCHEDULED check in the fleet, discovered by S3 prefix
+        # (ops/checks/*/latest.json) so a new check surfaces on its first run
+        # without a console deploy — config-I5548 / I5507.
+        ("Fleet Checks", "Fleet_Checks.py"),
         ("Active Observations", "27_Active_Observations.py"),
         # Changelog + Retros + Quarantine consolidated into one Incidents tab
         # (three lenses on the same changelog corpus) — console-IA phase 1,

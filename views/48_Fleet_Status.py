@@ -51,6 +51,7 @@ st.caption(
 _URL_BY_SLUG = {
     "pipeline-status": "pipeline-status",  # standalone st.Page, pinned slug
     "artifact-freshness": "host_observability?tab=Artifact+Freshness",
+    "fleet-checks": "host_observability?tab=Fleet+Checks",
     "backlog-groom": "host_system_health?tab=Backlog+Groom",
     "saturday-sf-watch": "host_system_health?tab=Watch+Status",
 }
