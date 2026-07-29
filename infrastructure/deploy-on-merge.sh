@@ -29,7 +29,6 @@ TARGET_SHA="${1:-HEAD}"
 # cutover), which moves ALL its routes — including health — under /live.
 CONSOLE_URL="http://localhost:8501/_stcore/health"
 LIVE_URL="http://localhost:8502/live/_stcore/health"
-DASH_URL="http://localhost:8504/dash/_stcore/health"
 DASH_API_URL="http://localhost:8506/api/health"
 DASH_WEB_URL="http://localhost:3002/dash"
 
@@ -107,7 +106,22 @@ paths_changed() {
         log "WARN git diff $old_sha $new_sha -- $* failed (exit $diff_rc) — assuming changed: $diff_out"
         return 0
     fi
-    printf '%s\n' "$diff_out" | grep -q '^[+-]'
+    # Here-string, NOT `printf ... | grep -q`. The config#2242 fix moved `git
+    # diff` out of the pipe but left printf IN one, and printf is subject to the
+    # identical race it documents above: grep -q exits on the first match and
+    # closes the pipe, a large diff_out still being written gets SIGPIPE, exits
+    # 141, and pipefail reports the pipeline as failed on a genuinely-true diff.
+    # The gate then reads "unchanged" on a real change and silently skips an
+    # installer re-run — the original config#2242 consequence, at a lower rate.
+    #
+    # Measured: test_deploy_on_merge_paths_changed.sh runs a large multi-file
+    # diff 25x and requires 25/25; it hit 24/25 in CI on 2026-07-28. That test
+    # existed but had never run in CI until it was wired in this session, which
+    # is why a partial fix looked complete for weeks.
+    #
+    # A here-string is fed from a temp file: no writer process to signal, and no
+    # pipeline for pipefail to inspect.
+    grep -q '^[+-]' <<< "$diff_out"
 }
 
 # file_state_stale DST SRC [SRC...]
@@ -147,6 +161,16 @@ any_file_state_stale() {
     return 1
 }
 
+# ── Last-known-good SHA, for the §4 auto-revert (T1-3, config-I5250 gap 3) ──
+#
+# Recorded BEFORE anything mutates the box, and read from a file rather than
+# from git: by the time §4 runs, HEAD is the sha that just failed, so `HEAD~1`
+# would be wrong whenever a deploy was skipped or a merge brought several
+# commits. The stamp is only advanced after a deploy passes its health checks,
+# so it always names a sha that was OBSERVED healthy on this box — not one that
+# was merely merged.
+LAST_GOOD_SHA_FILE="/var/lib/dashboard-deploy/last-good-sha"
+
 log "=== deploy-on-merge started — target=$TARGET_SHA ==="
 
 cd "$REPO_DIR" || fail "cd $REPO_DIR"
@@ -171,10 +195,25 @@ if [ -f "$PYVER_SSOT_FILE" ] && [ -f "$REPO_DIR/.venv/bin/python" ]; then
         log "WARN Python-parity self-heal: could not parse major.minor from $PYVER_SSOT_FILE (got '$SSOT_PYVER') — skipping"
     elif [ -z "$BOX_VENV_PYVER" ]; then
         log "WARN Python-parity self-heal: could not determine box venv's Python version — skipping"
-    elif [ "$BOX_VENV_PYVER" = "$SSOT_PYVER_MAJOR_MINOR" ]; then
-        log "OK   Python-parity self-heal: box venv already on $BOX_VENV_PYVER, matches SSoT $SSOT_PYVER_MAJOR_MINOR — no-op"
+    elif [ "$BOX_VENV_PYVER" = "$SSOT_PYVER_MAJOR_MINOR" ] \
+        && sudo -u ec2-user "$REPO_DIR/.venv/bin/python" -m pip --version >>"$LOG" 2>&1; then
+        log "OK   Python-parity self-heal: box venv already on $BOX_VENV_PYVER, matches SSoT $SSOT_PYVER_MAJOR_MINOR, pip functional — no-op"
     else
-        log "Python-parity self-heal: box venv is $BOX_VENV_PYVER, SSoT ($PYVER_SSOT_FILE) requires $SSOT_PYVER_MAJOR_MINOR — rebuilding venv"
+        # Two distinct trigger conditions land here: (a) version drift, the
+        # original §0 scope; (b) version MATCHES SSoT but the functionality
+        # probe (`python -m pip --version`) failed — the class the 2026-07-18
+        # incident (config#2955, crucible-dashboard#478/#479) exposed: a venv
+        # can pass the version check while its console-script wrappers or
+        # site-packages are otherwise broken, and the version-only guard
+        # would no-op right past it. Both drive the SAME rebuild+rollback
+        # path below — this is a new entry condition into a proven path, not
+        # a new rebuild path (config#2835's atomic-build-at-final-path +
+        # rollback-on-health-gate-failure semantics are untouched).
+        if [ "$BOX_VENV_PYVER" = "$SSOT_PYVER_MAJOR_MINOR" ]; then
+            log "Python-parity self-heal: box venv on $BOX_VENV_PYVER (matches SSoT) but functionality probe failed ('python -m pip --version') — venv unhealthy, rebuilding"
+        else
+            log "Python-parity self-heal: box venv is $BOX_VENV_PYVER, SSoT ($PYVER_SSOT_FILE) requires $SSOT_PYVER_MAJOR_MINOR — rebuilding venv"
+        fi
 
         # 1. Install the target interpreter via dnf if not already present
         # (AL2023 amazonlinux repo carries pythonX.Y packages directly).
@@ -199,9 +238,9 @@ if [ -f "$PYVER_SSOT_FILE" ] && [ -f "$REPO_DIR/.venv/bin/python" ]; then
         # to not exist at the final path while we build, hence stopping
         # services first — this is now brief PLANNED downtime, not a live
         # swap out from under running processes.)
-        systemctl stop dashboard nous-ergon-live crucible-dash crucible-dash-api 2>>"$LOG" \
+        systemctl stop dashboard nous-ergon-live crucible-dash-api 2>>"$LOG" \
             || fail "python-parity self-heal: stop services before venv rebuild"
-        log "stopped dashboard, nous-ergon-live, crucible-dash, crucible-dash-api for venv rebuild"
+        log "stopped dashboard, nous-ergon-live, crucible-dash-api for venv rebuild"
 
         # 3. Preserve the old venv for rollback, then build+install the new
         # venv DIRECTLY at the final $REPO_DIR/.venv path (no relocation).
@@ -221,10 +260,9 @@ if [ -f "$PYVER_SSOT_FILE" ] && [ -f "$REPO_DIR/.venv/bin/python" ]; then
                 log "FAIL python-parity self-heal: rollback mv itself failed — box has NO venv at $REPO_DIR/.venv, manual intervention required NOW"
                 return 1
             fi
-            systemctl restart dashboard nous-ergon-live crucible-dash crucible-dash-api 2>>"$LOG"
+            systemctl restart dashboard nous-ergon-live crucible-dash-api 2>>"$LOG"
             wait_for_health "$CONSOLE_URL" "dashboard (console) [post-rollback]" \
                 && wait_for_health "$LIVE_URL" "nous-ergon-live [post-rollback]" \
-                && wait_for_health "$DASH_URL" "crucible-dash [post-rollback]" \
                 && wait_for_health "$DASH_API_URL" "crucible-dash-api [post-rollback]"
         }
 
@@ -243,14 +281,14 @@ if [ -f "$PYVER_SSOT_FILE" ] && [ -f "$REPO_DIR/.venv/bin/python" ]; then
         rm -rf "$NEW_VENV_PIP_TMPDIR"
         log "built venv directly at final path $REPO_DIR/.venv on $SSOT_PYVER_MAJOR_MINOR — no relocation, shebangs are correct by construction (old venv preserved at $OLD_VENV_BACKUP for rollback)"
 
-        # 4. Restart the 4 Python-venv-backed services (dashboard,
-        # nous-ergon-live, crucible-dash + its crucible-dash-api sibling;
-        # crucible-dash-web is Node/Next.js, not Python — untouched here).
+        # 4. Restart the 3 Python-venv-backed services (dashboard,
+        # nous-ergon-live, crucible-dash-api; crucible-dash-web is
+        # Node/Next.js, not Python — untouched here. crucible-dash (the
+        # retired Streamlit /dash skin) no longer runs — config#1973 tail).
         systemctl restart dashboard 2>>"$LOG" || { _rollback_venv; fail "python-parity self-heal: restart dashboard (rolled back to previous venv)"; }
         systemctl restart nous-ergon-live 2>>"$LOG" || { _rollback_venv; fail "python-parity self-heal: restart nous-ergon-live (rolled back to previous venv)"; }
-        systemctl restart crucible-dash 2>>"$LOG" || { _rollback_venv; fail "python-parity self-heal: restart crucible-dash (rolled back to previous venv)"; }
         systemctl restart crucible-dash-api 2>>"$LOG" || { _rollback_venv; fail "python-parity self-heal: restart crucible-dash-api (rolled back to previous venv)"; }
-        log "restarted dashboard, nous-ergon-live, crucible-dash, crucible-dash-api on new venv"
+        log "restarted dashboard, nous-ergon-live, crucible-dash-api on new venv"
 
         # 5. Reuse the script's existing health-gate (§4) immediately, so a
         # bad interpreter swap is caught and visible NOW rather than only at
@@ -258,15 +296,14 @@ if [ -f "$PYVER_SSOT_FILE" ] && [ -f "$REPO_DIR/.venv/bin/python" ]; then
         # AUTO-ROLLBACK (defect 2) instead of leaving the broken venv live.
         if ! wait_for_health "$CONSOLE_URL" "dashboard (console) [python-parity swap]" \
             || ! wait_for_health "$LIVE_URL" "nous-ergon-live [python-parity swap]" \
-            || ! wait_for_health "$DASH_URL" "crucible-dash [python-parity swap]" \
             || ! wait_for_health "$DASH_API_URL" "crucible-dash-api [python-parity swap]"; then
             if _rollback_venv; then
-                fail "python-parity self-heal: post-swap health gate failed on $SSOT_PYVER_MAJOR_MINOR venv — ROLLED BACK to previous venv successfully, all 4 services healthy again on old venv"
+                fail "python-parity self-heal: post-swap health gate failed on $SSOT_PYVER_MAJOR_MINOR venv — ROLLED BACK to previous venv successfully, all 3 services healthy again on old venv"
             else
                 fail "python-parity self-heal: post-swap health gate failed on $SSOT_PYVER_MAJOR_MINOR venv AND rollback also failed — box may have NO working venv, manual intervention required NOW"
             fi
         fi
-        log "OK   Python-parity self-heal: all 4 services healthy on $SSOT_PYVER_MAJOR_MINOR"
+        log "OK   Python-parity self-heal: all 3 services healthy on $SSOT_PYVER_MAJOR_MINOR"
 
         # requirements.txt is already installed fresh into the new venv
         # above (it must be, to build a working venv at all) — skip §1's
@@ -381,6 +418,29 @@ if [ "${SKIP_REQUIREMENTS_INSTALL:-0}" != "1" ] && [ -x ".venv/bin/python" ] && 
     # lived here from the @main era; post-rename it matched only a stale
     # comment and tried to upgrade a dist name that no longer exists, emitting
     # a misleading "WARN alpha-engine-lib upgrade failed" every deploy. Removed.
+fi
+
+# ── 1b. Package-version-drift check (config#3157) ──────────────────────────
+# The state-compare gate above only guards against a MISSED pip install; it
+# says nothing about whether the venv's INSTALLED krepis/nousergon-lib
+# actually satisfies what requirements.in currently declares. That's exactly
+# how the box ran krepis 0.14.0 for days after the repo's floor said
+# `krepis[openai]>=0.16.2` — the stamp/install machinery never asked the
+# reverse question, and the drift was only caught by a human manually
+# running `krepis.__version__`. Run this every deploy (not just when the
+# install block above ran) so an out-of-band venv desync — a manual pip
+# install, a venv restored from an older snapshot, or the §0 self-heal
+# venv-rebuild path using a stale requirements.txt — is also caught, not
+# just a missed install. Uses the box venv's own interpreter so the
+# versions checked are the ones actually live for the running services.
+if [ -x ".venv/bin/python" ]; then
+    if ! sudo -u ec2-user .venv/bin/python infrastructure/check_package_drift.py 2>>"$LOG"; then
+        tail -20 "$LOG"
+        fail "package-version drift detected (krepis/nousergon-lib vs requirements.in) — see check_package_drift output above"
+    fi
+    log "OK   package-version drift check (krepis/nousergon-lib match requirements.in)"
+else
+    log "WARN package-version drift check skipped — no .venv/bin/python"
 fi
 
 # ── 2. Reload nginx if infrastructure/nginx.conf changed ──────────────────
@@ -501,24 +561,211 @@ fi
 # copies (including the journald drop-in, which install-box-health.sh itself
 # already state-compares internally before restarting journald).
 BOX_HEALTH_INFRA="$REPO_DIR/infrastructure"
-if any_file_state_stale \
+
+# The manifest is DERIVED from budget.yaml, so no src:dst file pair can see it
+# go stale: a change that only edits budget.yaml (a new service, a port, a
+# timer threshold) leaves every file below byte-identical, the installer never
+# runs, and the watchdog keeps its previous registry indefinitely.
+#
+# So compare DESIRED against ACTUAL — render the manifest and diff it against
+# the installed copy — rather than comparing inputs. Verified live 2026-07-28:
+# config-I5209 merged and deployed with box_health.sh updated correctly, while
+# the installed manifest still carried none of its timer thresholds.
+#
+# Fails SAFE: any render error returns "stale", so the installer runs and fails
+# loudly there, rather than a broken generator silently reading as up-to-date.
+# MANIFEST_DST is overridable so this predicate can be exercised against a
+# fixture instead of the live /etc path — see test_deploy_manifest_gate.sh.
+MANIFEST_DST="${MANIFEST_DST:-/etc/alpha-engine/box-services.conf}"
+manifest_stale() {
+    # Rendered to a temp FILE, then cmp'd file-to-file. Deliberately neither
+    # $(...) nor a pipe:
+    #   - command substitution strips trailing newlines, so the render would
+    #     never match the installed file and this would report "stale" on every
+    #     single deploy — a gate that is always true is not a gate. (Caught by
+    #     test_deploy_manifest_gate.sh, which is why it exists.)
+    #   - `gen | cmp -s -` reintroduces the SIGPIPE-under-pipefail hazard this
+    #     script documents at length in paths_changed() above.
+    local tmp rc
+    tmp=$(mktemp) || return 0
+    python3 "$BOX_HEALTH_INFRA/generate-box-manifest.py" --stdout > "$tmp" 2>/dev/null
+    rc=$?
+    if [ "$rc" -ne 0 ] || [ ! -s "$tmp" ]; then
+        rm -f "$tmp"
+        return 0
+    fi
+    cmp -s "$tmp" "$MANIFEST_DST"
+    rc=$?
+    rm -f "$tmp"
+    [ "$rc" -eq 0 ] && return 1
+    return 0
+}
+
+if manifest_stale || any_file_state_stale \
     "$BOX_HEALTH_INFRA/box_health.sh:/usr/local/bin/box_health.sh" \
     "$BOX_HEALTH_INFRA/box_hygiene.sh:/usr/local/bin/box_hygiene.sh" \
     "$BOX_HEALTH_INFRA/systemd/box-health.service:/etc/systemd/system/box-health.service" \
     "$BOX_HEALTH_INFRA/systemd/box-health.timer:/etc/systemd/system/box-health.timer" \
     "$BOX_HEALTH_INFRA/systemd/box-hygiene.service:/etc/systemd/system/box-hygiene.service" \
     "$BOX_HEALTH_INFRA/systemd/box-hygiene.timer:/etc/systemd/system/box-hygiene.timer" \
+    "$BOX_HEALTH_INFRA/systemd/box-state-backup.service:/etc/systemd/system/box-state-backup.service" \
+    "$BOX_HEALTH_INFRA/systemd/box-state-backup.timer:/etc/systemd/system/box-state-backup.timer" \
     "$BOX_HEALTH_INFRA/systemd/journald-size-cap.conf:/etc/systemd/journald.conf.d/size-cap.conf"; then
-    log "box-health/hygiene script or units differ from installed copies — re-installing"
+    log "box-health/hygiene script, units, or generated manifest differ from installed copies — re-installing"
     bash "$REPO_DIR/infrastructure/install-box-health.sh" >>"$LOG" 2>&1 \
         || fail "install-box-health.sh"
     log "re-installed box-health/hygiene"
 fi
 
+# ── 2f. Route every remaining out-of-tree installer (config-I5215) ──────────
+#
+# WHY THIS BLOCK IS A TABLE AND NOT SIX MORE HAND-WRITTEN GATES
+# -------------------------------------------------------------
+# Every install-*.sh here provisions files OUTSIDE the git tree — systemd
+# units, /usr/local/bin scripts, agent configs, CloudWatch alarms — which a
+# `git pull` never touches. Each one says in its own header that it is
+# idempotent and should be re-run to apply updates. Six of them were invoked
+# by NOTHING automated: not this script, not CI, not boot-pull.
+#
+# The consequence is not theoretical. install-resource-limits.sh renders both
+# the watchdog's manifest AND every unit's MemoryMax=/Restart= drop-in from
+# budget.yaml; on 2026-07-28 config-I5209's timer thresholds merged, deployed
+# green, and the box's manifest contained none of them (crucible-dashboard
+# PR570). The same silence applies to memory caps, the CloudWatch agent
+# config, the host alarms, boot-pull's units and the auto-patching config.
+#
+# Adding a seventh bespoke `if` block per installer is how this file grew past
+# 600 lines and how the gaps hid in the first place. One declarative table plus
+# one loop means a NEW installer is routed by adding a row — and CI fails if it
+# is added without one (tests/test_dash_deploy_infra.py::TestProvisioningScriptRouting).
+#
+# ROW FORMAT:  <installer>|<mode>|<comma-separated args>
+#   files  — desired-vs-actual on `src:dst` pairs, relative to infrastructure/.
+#            Strongest form: compares the box's real state to the repo's.
+#   stamp  — sha256 of the listed INPUT files vs a recorded stamp. For
+#            installers whose output is not a local file (CloudWatch alarms) or
+#            is rendered per-unit from a spec (the resource-limit drop-ins), so
+#            there is no single dst to compare. Weaker: it proves the installer
+#            ran for these inputs, not that the result still stands. Hand-edits
+#            to installed units are caught by systemd-unit-drift-check.timer,
+#            which is the complementary control.
+INFRA="$REPO_DIR/infrastructure"
+STAMP_DIR="/etc/alpha-engine/installer-stamps"
+
+ROUTED_INSTALLERS=(
+  "install-boot-pull.sh|files|systemd/boot-pull.service:/etc/systemd/system/boot-pull.service,systemd/boot-pull.timer:/etc/systemd/system/boot-pull.timer"
+  "install-substrate-health-daily.sh|files|systemd/substrate-health-daily.service:/etc/systemd/system/substrate-health-daily.service,systemd/substrate-health-daily.timer:/etc/systemd/system/substrate-health-daily.timer,systemd/alert-on-failure@.service:/etc/systemd/system/alert-on-failure@.service"
+  # STAMP, not files, and the reason is not obvious: the installer writes its
+  # config to CFG_DST and then calls `amazon-cloudwatch-agent-ctl -a
+  # fetch-config -c file:CFG_DST`, which CONSUMES that file and rebuilds the
+  # .d directory with its own `file_`-prefixed copy (the box carries
+  # file_file_amazon-cloudwatch-agent.json). CFG_DST is therefore a staging
+  # path that never persists, so a files-mode gate on it reads stale forever
+  # and would restart the CloudWatch agent on every single deploy. Caught by
+  # running the gate against the live box before merge, not by inspection.
+  "install-cloudwatch-agent-config.sh|stamp|cloudwatch-agent.json,emit_oom_metric.sh,systemd/emit-oom-metric.service,systemd/emit-oom-metric.timer,install-cloudwatch-agent-config.sh"
+  "install-auto-patching.sh|files|dnf-automatic.conf:/etc/dnf/automatic.conf,systemd/dnf-automatic-alert.conf:/etc/systemd/system/dnf-automatic.service.d/10-alert.conf,reboot_if_needed.sh:/usr/local/bin/reboot_if_needed.sh,systemd/reboot-if-needed.service:/etc/systemd/system/reboot-if-needed.service,systemd/reboot-if-needed.timer:/etc/systemd/system/reboot-if-needed.timer"
+  # Drop-ins are rendered per-unit into /etc/systemd/system/<unit>.d/, so there
+  # is no single dst pair; budget.yaml plus the renderer fully determine them.
+  "install-resource-limits.sh|stamp|systemd/resource-limits/budget.yaml,install-resource-limits.sh"
+)
+
+# Declared manual-only provisioning scripts, as `name|reason`. CI requires
+# every script that provisions state outside the git tree to appear here, in
+# ROUTED_INSTALLERS above, or in a GitHub workflow — so a new one cannot be
+# added and silently never run (tests/test_dash_deploy_infra.py).
+#
+# install-host-alarms.sh is NOT here: it runs in deploy.yml with the OIDC role,
+# which is where it always belonged (config-I5211). It cannot run HERE — the
+# instance role deliberately lacks cloudwatch:PutMetricAlarm, because a host
+# that can rewrite its own alarms can disable its own detection.
+MANUAL_ONLY_INSTALLERS=(
+  # Half of an unlanded migration, deliberately not automated YET.
+  #
+  # This script creates thirteen svc-<service> accounts and reassigns file
+  # ownership across seventeen checkouts. Its other half is budget.yaml's
+  # `user:` fields, which the renderer turns into User= lines. On 2026-07-28
+  # the `user:` half merged alone — this script was named create-* while the
+  # routing guard globbed install-*, so nothing invoked it — and every unit
+  # that restarted died with 217/USER (alpha-engine-config-I4791).
+  #
+  # It stays manual-only until the migration is re-landed deliberately: run it
+  # once, confirm `getent passwd svc-<name>` resolves for all thirteen AND that
+  # each service can still read its own checkout, THEN re-add the `user:`
+  # fields and move this to ROUTED_INSTALLERS in the same PR. Routing it now
+  # would run an unrehearsed ownership migration unattended on a deploy, which
+  # is the same class of mistake in the opposite direction.
+  "create-service-users.sh|unlanded per-service-user migration (alpha-engine-config-I4791); must be run and verified by hand, then routed together with budget.yaml's user: fields"
+)
+
+
+installer_inputs_digest() {   # INPUT [INPUT...] -> sha256, empty on any error
+    local f
+    for f in "$@"; do [ -r "$f" ] || return 1; done
+    cat "$@" | sha256sum | cut -d' ' -f1
+}
+
+installer_stamp_stale() {     # NAME INPUT [INPUT...]
+    local name="$1"; shift
+    local want have
+    # Fail SAFE: an unreadable input reads as stale, so the installer runs and
+    # fails loudly there rather than being silently skipped forever.
+    want=$(installer_inputs_digest "$@") || return 0
+    [ -n "$want" ] || return 0
+    have=$(cat "$STAMP_DIR/$name" 2>/dev/null)
+    [ "$want" = "$have" ] && return 1
+    return 0
+}
+
+installer_stamp_write() {     # NAME INPUT [INPUT...]
+    local name="$1"; shift
+    local digest
+    digest=$(installer_inputs_digest "$@") || return 0
+    mkdir -p "$STAMP_DIR"
+    printf '%s\n' "$digest" > "$STAMP_DIR/$name"
+}
+
+for _row in "${ROUTED_INSTALLERS[@]}"; do
+    _name="${_row%%|*}"
+    _rest="${_row#*|}"
+    _mode="${_rest%%|*}"
+    _args="${_rest#*|}"
+
+    _stale=1
+    _inputs=()
+    case "$_mode" in
+        files)
+            _pairs=()
+            IFS=',' read -ra _raw <<< "$_args"
+            for _p in "${_raw[@]}"; do _pairs+=("$INFRA/${_p%%:*}:${_p#*:}"); done
+            any_file_state_stale "${_pairs[@]}" && _stale=0
+            ;;
+        stamp)
+            IFS=',' read -ra _raw <<< "$_args"
+            for _i in "${_raw[@]}"; do _inputs+=("$INFRA/$_i"); done
+            installer_stamp_stale "$_name" "${_inputs[@]}" && _stale=0
+            ;;
+        *)
+            log "WARN unknown installer routing mode '$_mode' for $_name — treating as stale"
+            _stale=0
+            ;;
+    esac
+
+    if [ "$_stale" -eq 0 ]; then
+        log "$_name: installed state differs from repo — re-installing"
+        bash "$INFRA/$_name" >>"$LOG" 2>&1 || fail "$_name"
+        # Stamp only AFTER a successful run, so a failed install re-runs next
+        # deploy instead of being recorded as done.
+        [ "$_mode" = "stamp" ] && installer_stamp_write "$_name" "${_inputs[@]}"
+        log "re-installed $_name"
+    fi
+done
+
 # ── 3. Self-provision dashboard and nous-ergon-live unit files ──────────────
 # Both services ship in the repo; install/refresh them on unit-file diff
 # (or first deploy) so they can never drift from the repo copy — same
-# idempotent pattern as crucible-dash/dash-api/dash-web (§3b-3d).
+# idempotent pattern as dash-api/dash-web (§3c-3d; §3b tears down the
+# retired crucible-dash Streamlit skin instead of provisioning it).
 DASHBOARD_UNIT_SRC="$REPO_DIR/infrastructure/dashboard.service"
 DASHBOARD_UNIT_DST="/etc/systemd/system/dashboard.service"
 if [ ! -f "$DASHBOARD_UNIT_DST" ] || ! cmp -s "$DASHBOARD_UNIT_SRC" "$DASHBOARD_UNIT_DST"; then
@@ -546,23 +793,22 @@ sleep 2
 systemctl restart nous-ergon-live 2>>"$LOG" || fail "restart nous-ergon-live"
 log "restarted nous-ergon-live.service"
 
-# ── 3b. Crucible /dash service (config#1957) — idempotent self-provision ────
-# Same pattern as the dashboard/nous-ergon-live units above (§3).
-# The unit ships in this repo; install/refresh it on unit-file diff (or first
-# deploy) so the service can never drift from the repo copy — mirrors the CF
-# Pages project self-provision precedent (#328): a new box or a unit change
-# needs no manual step.
-DASH_UNIT_SRC="$REPO_DIR/infrastructure/crucible-dash.service"
-DASH_UNIT_DST="/etc/systemd/system/crucible-dash.service"
-if [ ! -f "$DASH_UNIT_DST" ] || ! cmp -s "$DASH_UNIT_SRC" "$DASH_UNIT_DST"; then
-    cp "$DASH_UNIT_SRC" "$DASH_UNIT_DST" 2>>"$LOG" || fail "install crucible-dash unit"
-    systemctl daemon-reload 2>>"$LOG" || fail "daemon-reload for crucible-dash"
-    systemctl enable crucible-dash 2>>"$LOG" || fail "enable crucible-dash"
-    log "installed/refreshed crucible-dash.service unit"
+# ── 3b. Crucible /dash Streamlit skin (config#1957) — RETIRED (config#1973) ──
+# The Streamlit skin was kept running on :8504 only as the 9-D cutover's
+# one-line-rollback safety net (nginx /dash routed to :3002 the Next.js
+# surface from 2026-07-08; see infrastructure/nginx.conf). It was never
+# reverted to during the soak week (~2026-07-15) and the repo's
+# infrastructure/crucible-dash.service source is now gone (dash/ removed
+# alongside it) — teardown here mirrors the self-provision idempotency of
+# §3/§3c/§3d: a box still running the old unit (or a fresh box that never
+# saw it) both converge to "not installed" with no manual SSM step.
+if [ -f /etc/systemd/system/crucible-dash.service ]; then
+    systemctl stop crucible-dash 2>>"$LOG" || log "WARN stop crucible-dash (retiring anyway)"
+    systemctl disable crucible-dash 2>>"$LOG" || log "WARN disable crucible-dash (retiring anyway)"
+    rm -f /etc/systemd/system/crucible-dash.service
+    systemctl daemon-reload 2>>"$LOG" || fail "daemon-reload after crucible-dash teardown"
+    log "retired crucible-dash.service (config#1973 Streamlit-skin retirement)"
 fi
-sleep 2
-systemctl restart crucible-dash 2>>"$LOG" || fail "restart crucible-dash"
-log "restarted crucible-dash.service"
 
 # ── 3c. Crucible dash-api service (config#1973 9-B) — same idempotent
 # self-provision pattern as 3b.
@@ -624,13 +870,90 @@ fi
 # (wait_for_health itself is defined near the top of this script, above §0,
 # so the Python-parity self-heal can reuse it post-restart.)
 
-wait_for_health "$CONSOLE_URL" "dashboard (console)" || fail "console health"
-wait_for_health "$LIVE_URL" "nous-ergon-live" || fail "live health"
-wait_for_health "$DASH_URL" "crucible-dash" || fail "crucible-dash health"
-wait_for_health "$DASH_API_URL" "crucible-dash-api" || fail "crucible-dash-api health"
-if [ -d "$REPO_DIR/dash-web" ]; then
-    wait_for_health "$DASH_WEB_URL" "crucible-dash-web" || fail "crucible-dash-web health"
+# revert_to_last_good REASON — roll the box back to the last sha OBSERVED
+# healthy here, re-run the provisioning that tracks the tree, and alert.
+#
+# Policy T1-3 sets the floor: "pinned-SHA deploy, health check after restart,
+# automatic revert to the previous SHA on failure." Health checks existed; the
+# revert did not, so a bad merge left the box broken until a human noticed.
+#
+# Deliberately NOT a full re-run of this script. Re-invoking deploy-on-merge on
+# the reverted tree could fail the same way and recurse; this does the minimum
+# that makes the rollback real — restore the tree, re-provision from it,
+# restart the services — and then alerts a human either way. A rollback that
+# needs a human is fine; a rollback that loops is not.
+revert_to_last_good() {
+    local reason="$1" good
+    good=$(cat "$LAST_GOOD_SHA_FILE" 2>/dev/null)
+
+    case "$good" in
+        ''|*[!0-9a-f]*)
+            # No stamp yet (first deploy after this shipped) or a corrupt one.
+            # Reverting to a guess is worse than not reverting: it could move
+            # the box somewhere never validated. Alert and stop.
+            log "FAIL $reason — and no usable last-good sha recorded, so NOT reverting"
+            "$ALERT_PY" -m krepis.alerts publish \
+                --message "dashboard deploy FAILED health check ($reason) at $CURRENT_SHA. No last-good sha on file — box left as-is, manual intervention needed." \
+                --severity critical --source deploy-on-merge \
+                --dedup-key "deploy-revert-nostamp" --dedup-window-min 30 >>"$LOG" 2>&1 || true
+            return 1 ;;
+    esac
+
+    if [ "$good" = "$CURRENT_SHA" ]; then
+        log "FAIL $reason — already at the last-good sha $good, nothing to revert to"
+        return 1
+    fi
+
+    log "REVERT $reason — rolling back $CURRENT_SHA -> $good"
+    sudo -u ec2-user git -C "$REPO_DIR" reset --hard "$good" >>"$LOG" 2>&1 \
+        || { log "REVERT FAILED: git reset to $good did not apply"; return 1; }
+
+    # Re-provision from the reverted tree. Without this the box runs old code
+    # under new units — a state neither sha was ever tested in, and worse than
+    # either. install-resource-limits.sh renders per-service drop-ins from
+    # budget.yaml (including User=, MemoryMax=, sandboxing directives); a
+    # revert without re-rendering those drop-ins leaves the box with new-sha
+    # units under old-sha code — the exact failure mode of 2026-07-28 run
+    # 30404044358, where PR #566's User= migration generated drop-ins
+    # referencing nonexistent users, and the rollback's git reset couldn't
+    # undo them because the drop-ins live outside the git tree.
+    bash "$REPO_DIR/infrastructure/install-resource-limits.sh" >>"$LOG" 2>&1 || true
+    bash "$REPO_DIR/infrastructure/install-box-health.sh" >>"$LOG" 2>&1 || true
+    systemctl restart dashboard nous-ergon-live crucible-dash-api crucible-dash-web >>"$LOG" 2>&1 || true
+
+    if wait_for_health "$CONSOLE_URL" "dashboard (post-revert)"; then
+        log "REVERT OK — box healthy at $good"
+    else
+        log "REVERT INCOMPLETE — still unhealthy at $good"
+    fi
+
+    "$ALERT_PY" -m krepis.alerts publish \
+        --message "dashboard deploy FAILED at $CURRENT_SHA ($reason) — auto-reverted to $good. The merged commit is NOT live; investigate before re-merging." \
+        --severity critical --source deploy-on-merge \
+        --dedup-key "deploy-revert-$CURRENT_SHA" --dedup-window-min 30 >>"$LOG" 2>&1 || true
+    return 1
+}
+
+ALERT_PY="$REPO_DIR/.venv/bin/python"
+
+health_failed=""
+wait_for_health "$CONSOLE_URL" "dashboard (console)"    || health_failed="console"
+[ -n "$health_failed" ] || wait_for_health "$LIVE_URL" "nous-ergon-live"        || health_failed="live"
+[ -n "$health_failed" ] || wait_for_health "$DASH_API_URL" "crucible-dash-api"  || health_failed="dash-api"
+if [ -z "$health_failed" ] && [ -d "$REPO_DIR/dash-web" ]; then
+    wait_for_health "$DASH_WEB_URL" "crucible-dash-web" || health_failed="dash-web"
 fi
+
+if [ -n "$health_failed" ]; then
+    revert_to_last_good "$health_failed health check failed"
+    exit 1
+fi
+
+# Advance the stamp ONLY here — past every health check. This is what makes the
+# recorded sha "observed healthy on this box" rather than "merged".
+mkdir -p "$(dirname "$LAST_GOOD_SHA_FILE")" 2>/dev/null || true
+printf '%s\n' "$CURRENT_SHA" > "$LAST_GOOD_SHA_FILE" 2>/dev/null \
+    || log "WARN could not record last-good sha at $LAST_GOOD_SHA_FILE — auto-revert will not arm"
 
 log "=== deploy-on-merge completed successfully — sha=$CURRENT_SHA ==="
 exit 0

@@ -45,7 +45,18 @@ yfinance>=1.5.1
 # alpha-engine-ssm-read policy, no new IAM. v0.12.2 is the earliest tag
 # carrying the OpenRouter unresolved/leaked-tool-call safety fix in
 # krepis.llm; the >=0.14.0 floor here already clears that.
-krepis[openai]>=0.16.2
+# Floor raised to 0.18.8 (2026-07-27): the weekly SF's spot boxes build THIS
+# repo's venv and run `python -m krepis.ssm_log_capture run --correlation-id ...`.
+# That flag does not exist before 0.18.8, and 0.18.8 is also where the
+# correlation id became MANDATORY — both halves of one contract. The compiled
+# lockfile was resolving to 0.18.0, which argparse-failed every SSM stage on a
+# freshly-built box ("the following arguments are required: --slug, --log",
+# because the unknown --correlation-id swallowed --slug as its value).
+#
+# This only surfaced once nousergon-data#975 moved weekly dispatch onto a
+# per-execution spot box that builds this venv from scratch; the long-lived
+# dashboard box had 0.18.8 installed out-of-band, masking the stale pin.
+krepis[openai]>=0.18.8
 # nousergon-lib (renamed from alpha-engine-lib at v0.60.0) provides
 # setup_logging used by app.py + health_checker.py
 # to attach the FlowDoctorHandler when FLOW_DOCTOR_ENABLED=1, the
@@ -136,3 +147,12 @@ nousergon-lib[flow-doctor,github_app] @ git+https://github.com/nousergon/nouserg
 fastapi>=0.139.2
 uvicorn>=0.51.0
 httpx>=0.27          # fastapi TestClient transport (tests/test_dash_api.py)
+
+# flow-doctor floor (alpha-engine-config-I3226): explicit floor so the uv-compiled
+# lockfile never resolves below 0.8.7. Prior to this pin, the trading box was stuck
+# at 0.8.1 because boot-pull's plain `pip install -r requirements.txt` treated
+# an already-satisfied floating dependency (transitively via krepis[flow_doctor]) as
+# permanent. The compiled lockfile `requirements.txt` pins the exact resolved version;
+# this floor ensures the next `uv pip compile` doesn't silently drop back below 0.8.7.
+flow-doctor>=0.8.7
+

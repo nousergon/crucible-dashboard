@@ -583,6 +583,35 @@ def load_attractiveness_history() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=_ttl("signals"))
+def load_universe_membership_history(limit: int | None = None) -> list[dict]:
+    """Every recorded ``universe_membership/{date}/membership.json`` (the cut
+    SSoT produced by crucible-research ``scoring/universe_membership.py``),
+    oldest first — the substrate for the Universe Churn page.
+
+    ``limit`` keeps only the most recent N cycles. Dated keys are read (never
+    ``latest.json``): the pointer duplicates whichever dated cycle is newest,
+    and including it would double-count that cycle in every churn calculation.
+
+    A cycle whose object is unreadable is SKIPPED with a warning rather than
+    failing the page — one bad cycle should cost one point on the chart, not
+    the whole history. Empty list when the prefix is absent (page degrades to
+    its explainer)."""
+    dates = list_s3_prefixes(_research_bucket(), "universe_membership/")
+    if limit:
+        dates = dates[-limit:]
+    out: list[dict] = []
+    for date in dates:
+        doc = download_s3_json(
+            _research_bucket(), f"universe_membership/{date}/membership.json"
+        )
+        if isinstance(doc, dict) and doc.get("cuts"):
+            out.append(doc)
+        else:
+            logger.warning("universe membership %s unreadable or has no cuts", date)
+    return out
+
+
+@st.cache_data(ttl=_ttl("signals"))
 def load_report_card(date_str: str | None = None) -> dict | None:
     """Load the evaluator Report Card v2 (the 7-tile MetricRecord substrate).
 
@@ -892,6 +921,43 @@ def list_groom_run_keys(limit: int = 30) -> list[str]:
         return keys[:limit]
     except Exception as e:
         logger.error("Failed to list groom run keys: %s", e)
+        _record_s3_error(bucket, _GROOM_RUNS_PREFIX, type(e).__name__, str(e))
+        return []
+
+
+@st.cache_data(ttl=_ttl("research"))
+def list_groom_run_keys_since(days: int = 14) -> list[str]:
+    """Return ALL groom run-artifact keys (coverage + sweep) for the last
+    *days* calendar dates, newest first — unlike :func:`list_groom_run_keys`,
+    NOT capped to a fixed count. Needed by the PR Pipeline page (config#2709):
+    the fleet writes ~8-11 run artifacts/day across coverage + sweep runs, so
+    a 14-day trend window needs 100+ keys — well past
+    ``list_groom_run_keys``'s ``limit=30`` default, which exists for the
+    Backlog Groom page's much shorter "recent runs" table. Same date-prefixed
+    listing pattern as :func:`list_groom_decision_keys`. Returns ``[]`` on any
+    listing error (page renders the "no data" state, never a stack trace).
+    """
+    import datetime as _dt
+
+    bucket = _research_bucket()
+    today = _dt.date.today()
+    wanted_dates = {(today - _dt.timedelta(days=i)).isoformat() for i in range(days)}
+    try:
+        client = get_s3_client()
+        paginator = client.get_paginator("list_objects_v2")
+        keys: list[str] = []
+        for page in paginator.paginate(Bucket=bucket, Prefix=_GROOM_RUNS_PREFIX):
+            for obj in page.get("Contents", []):
+                k = obj.get("Key", "")
+                if not _GROOM_RUN_KEY_RE.match(k):
+                    continue
+                date_part = k.removeprefix(_GROOM_RUNS_PREFIX).split("/", 1)[0]
+                if date_part in wanted_dates:
+                    keys.append(k)
+        keys.sort(reverse=True)
+        return keys
+    except Exception as e:
+        logger.error("Failed to list groom run keys since: %s", e)
         _record_s3_error(bucket, _GROOM_RUNS_PREFIX, type(e).__name__, str(e))
         return []
 
@@ -2267,16 +2333,26 @@ def load_order_book_rationale_history(n_recent: int = 14) -> list[dict]:
     )
 
 
-# Production run_id format in the cost-tracker is ISO date
-# (``YYYY-MM-DD``, sometimes with a suffix). Test fixtures use
-# strings like ``run-x`` / ``run-budget-test`` / ``run-1``. The
-# anchor regex is the strong structural discriminator.
-_COST_RUN_ID_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(\b|[-_])")
+# NOTE: ``_COST_RUN_ID_RE`` (an ISO-date-prefix run_id discriminator) was
+# REMOVED 2026-07-28. It mirrored a producer-side guard in
+# crucible-research's ``scripts/aggregate_costs`` that silently killed the
+# cost pipeline for 17 days: production run_ids changed shape
+# (``eval_judge`` → artifact-scoped ``276a5be44c7c-EXEL-v5``) and the guard
+# then classified 100% of production rows as test pollution. It was a
+# format coupling wearing an invariant's clothes, and it was redundant —
+# the token ceiling below already catches the 2026-05-13 incident both
+# guards were written for. See alpha-engine-config-I5206. Do not
+# reintroduce a run_id-shape check here.
 
 # Claude Opus 4.7 max context is 1M tokens. 5M is 5x that ceiling so
 # no real API call can produce a per-row count above it. The 2026-05-13
 # pollution had input_tokens=1e9 — 200x the ceiling.
 _COST_MAX_PLAUSIBLE_TOKENS = 5_000_000
+
+# The cost parquet archive is weekly (Saturday ``AggregateCosts``). Two
+# missed cycles means the producer is dead, not merely late — surface it
+# rather than rendering the last good partition as if it were current.
+_COST_STALE_AFTER_DAYS = 15
 
 
 def _drop_implausible_cost_rows(df: pd.DataFrame) -> pd.DataFrame:
@@ -2288,14 +2364,14 @@ def _drop_implausible_cost_rows(df: pd.DataFrame) -> pd.DataFrame:
     run with real AWS creds) doesn't render on the API page until
     the producer-side rewrite of that day's parquet lands.
 
-    Drops rows where ``run_id`` doesn't start with an ISO date, or any
-    token-count column exceeds the Claude API ceiling.
+    Drops rows where any token-count column exceeds the API ceiling.
+
+    **No longer filters on ``run_id`` shape** — see the note above
+    ``_COST_MAX_PLAUSIBLE_TOKENS`` and alpha-engine-config-I5206.
     """
-    if df.empty or "run_id" not in df.columns:
+    if df.empty:
         return df
-    run_id_str = df["run_id"].astype(str).fillna("")
-    ok_run_id = run_id_str.str.match(_COST_RUN_ID_RE)
-    ok = ok_run_id.fillna(False)
+    ok = pd.Series(True, index=df.index)
     for col in ("input_tokens", "output_tokens",
                 "cache_read_tokens", "cache_create_tokens"):
         if col in df.columns:
@@ -2310,14 +2386,59 @@ def _drop_implausible_cost_rows(df: pd.DataFrame) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=_ttl("research"))
+def cost_archive_staleness() -> dict:
+    """Report how current the cost-parquet archive is.
+
+    **Why this exists.** ``load_llm_cost_parquets`` loads the N most recent
+    partitions *regardless of age* and has no way to say "these are old".
+    Between 2026-07-11 and 2026-07-28 the producer wrote nothing and the
+    LLM Cost page kept rendering charts, model breakdowns and totals off
+    the 7/11 partition with no indication the window was stale — an
+    operator checking spend saw a healthy page describing a dead pipeline
+    (alpha-engine-config-I5206).
+
+    Returns ``{"latest": "YYYY-MM-DD"|None, "days_old": int|None,
+    "is_stale": bool, "threshold_days": int}``. ``latest=None`` means the
+    archive is empty, which is reported as stale — an absent producer and
+    a dead producer are the same thing to a reader.
+    """
+    from datetime import datetime, timezone
+
+    bucket = _research_bucket()
+    dates = list_s3_prefixes(bucket, "decision_artifacts/_cost/")
+    if not dates:
+        return {"latest": None, "days_old": None, "is_stale": True,
+                "threshold_days": _COST_STALE_AFTER_DAYS}
+    latest = sorted(dates)[-1]
+    try:
+        latest_dt = datetime.strptime(latest, "%Y-%m-%d").replace(
+            tzinfo=timezone.utc)
+    except ValueError:
+        # A partition name we can't parse is not evidence of freshness.
+        return {"latest": latest, "days_old": None, "is_stale": True,
+                "threshold_days": _COST_STALE_AFTER_DAYS}
+    days_old = (datetime.now(timezone.utc) - latest_dt).days
+    return {
+        "latest": latest,
+        "days_old": days_old,
+        "is_stale": days_old > _COST_STALE_AFTER_DAYS,
+        "threshold_days": _COST_STALE_AFTER_DAYS,
+    }
+
+
+@st.cache_data(ttl=_ttl("research"))
 def load_llm_cost_parquets(n_recent: int = 12) -> pd.DataFrame:
     """Return a concatenated DataFrame of per-call LLM cost rows from the
     `decision_artifacts/_cost/{date}/cost.parquet` archive. Loads up to the
     *n_recent* most recent date partitions; empty DataFrame if the archive
     is empty or every parquet fails to parse.
 
-    Applies a defensive implausibility filter (run_id ISO-date prefix +
-    per-row token ceiling) so test-pollution rows like the 2026-05-13
+    **This function does not know how old its data is** — pair it with
+    :func:`cost_archive_staleness` on any surface that renders it as
+    current. See alpha-engine-config-I5206.
+
+    Applies a defensive implausibility filter (per-row token ceiling) so
+    test-pollution rows like the 2026-05-13
     incident (~$1014 fake spend from a unit-test run with real AWS creds)
     don't reach the page renderer.
     """

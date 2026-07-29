@@ -1,0 +1,626 @@
+# Dashboard box — box-level memory budget and restart semantics.
+#
+# WHY THIS FILE EXISTS, AND WHY IT LIVES IN THIS REPO
+# ---------------------------------------------------
+# This box runs 14 long-running services across eight products (alpha-engine,
+# metron, telos, vires, the-cyphering, mnemon, nousergon-auth, plus dev
+# infrastructure). Most of those services are OWNED by other repos.
+#
+# The memory budget is nonetheless a property of the BOX, not of any one app,
+# because the invariant is about the SUM. No single app repo can enforce
+# "everything fits in RAM" — only the repo that owns the box's infrastructure
+# can, and that is this one (it already owns nginx.conf, box_health.sh,
+# boot-pull.sh, all of which are similarly cross-product).
+#
+# THE TWO INVARIANTS
+# ------------------
+#   sum(memory_max_mb) <= ceiling * max_overcommit_ratio    (bounded overcommit)
+#   sum(observed_mb)   <= RAM_MB * max_steady_state_fraction (steady-state safety)
+#
+# where ceiling = RAM_MB * (1 - reserve_fraction). See the overcommit note below
+# for why the first bound is a ratio rather than 1.0.
+#
+# Per-service caps bound ONE runaway. They do nothing about several services
+# growing toward their individually-legal ceilings at once — the kernel OOM
+# killer then fires against whatever it picks, which need not be the service
+# that caused the pressure. That is exactly what happened on 2026-07-25
+# (metron-refresh OOM-killed while doing legitimate work) and again on
+# 2026-07-27, when the sum stood at ~4650 MB against 1913 MB of RAM (2.4x)
+# and the box cascaded: MemAvailable hit 44 MB, metron-dash stopped answering,
+# and the SSM agent was starved badly enough that the box could not be managed
+# remotely at all.
+#
+# Enforced by `infrastructure/check_memory_budget.py`, which is run by
+# `box_health.sh` and can be run in CI.
+#
+# Governing policy: nous-ergon-ops/policies/shared-application-host-policy.md
+#   T1-1 (aggregate limits <= RAM), T1-2 (uniform restart semantics),
+#   T1-7 (right-sized instance).
+
+ram_mb: 3839              # t3.medium, as reported by `free -m` total
+reserve_fraction: 0.15    # kernel + page cache headroom => ceiling 3263 MB
+
+# THE OVERCOMMIT RATIO IS DELIBERATE, MEASURED, AND BOUNDED
+# ---------------------------------------------------------
+# Caps must be sized for each service's STARTUP PEAK, not its steady state.
+# Two services on this box proved that painfully on 2026-07-27:
+#
+#   litellm-proxy    at 150M/300M could never cold-start at all -- importing
+#                    litellm's dependency tree exceeded the cap, so the unit
+#                    reported active while never binding :8980.
+#   llm-egress-proxy at 50M/100M throttled 11385 times with ~60% memory stall;
+#                    a single `ssm get-parameter` hung for >113s. It shells out
+#                    to the AWS CLI 5x (~150M peak each) during startup.
+#
+# Sizing every cap for its startup peak makes the SUM exceed the ceiling. That
+# is acceptable here and is NOT the same defect as the 2.4x accidental
+# overcommit that cascaded the box, because startup peaks DO NOT COINCIDE --
+# services cold-start serially, not simultaneously (the one exception is boot,
+# where systemd's own ordering staggers them).
+#
+# What actually governs steady-state safety is the observed sum, tracked
+# separately below. Both bounds are enforced by check_memory_budget.py.
+#
+# Policy section 5 T1-1 permits this explicitly: "Overcommit is permitted only
+# as a documented, ratio-stated decision." This is that statement.
+# NOTE ON THIS RATIO, so the next person does not misread it as physics: it is a
+# DECLARED policy constant, not a measured property of the box. It was set to
+# 1.20 when the sum stood at 1.18 — i.e. fitted to its own current value, which
+# left no room for any legitimate cap increase. On 2026-07-28 that became the
+# stated reason a correct cap could not be applied to dashboard.service, while
+# the box actually had 1.4 GB of MemAvailable. A bound calibrated to the value it
+# bounds does no independent safety work. The bound that governs real operation
+# is max_steady_state_fraction below; this one only prevents the unbounded 2.4x
+# accident. If it ever blocks a MEASURED cap again, that is a signal to re-derive
+# it, not to shave the cap to fit.
+max_overcommit_ratio: 1.20      # sum(memory_max) / ceiling. Currently 1.16.
+max_steady_state_fraction: 0.60 # sum(observed_mb) / RAM. Currently 0.37.
+
+# memory_high is the SOFT limit: the kernel throttles and reclaims against the
+# service rather than killing it. memory_max is the HARD cap. Setting high at
+# ~70% of max gives every service a reclaim window before it hits the wall —
+# a service with only a hard cap goes from unconstrained straight to a kill.
+#
+# observed_mb is steady-state RSS measured 2026-07-27 ~11 min after a clean
+# boot on t3.medium. Caps are sized for each service's STARTUP PEAK, which for
+# most units is ~2-3x observed but for the two proxies is far more (see their
+# notes). Re-measure and re-budget when the service set or instance type
+# changes; a unit whose note says DO NOT LOWER was calibrated against a real
+# failure, and lowering it reproduces that failure.
+#
+# `user:` IS A SUPPORTED FIELD AND IS DELIBERATELY UNSET ON EVERY SERVICE.
+# ------------------------------------------------------------------------
+# The renderer emits User=<value> (plus RemoveIPC=yes) for any service that
+# declares one. On 2026-07-28 all thirteen were declared in one commit while
+# the accounts they name did not exist on the box: every unit that restarted
+# died with 217/USER and the console was down until the drop-ins were
+# regenerated by hand. See alpha-engine-config-I4791.
+#
+# Do NOT re-add `user:` on its own. It is one half of a migration whose other
+# half is create-service-users.sh actually having run on the box. Re-land both
+# together, in this order:
+#   1. route create-service-users.sh in deploy-on-merge.sh's ROUTED_INSTALLERS
+#      (CI's TestProvisioningScriptRouting now requires this)
+#   2. deploy, and confirm `getent passwd svc-<name>` resolves for all thirteen
+#   3. only then re-add the `user:` fields here
+# install-resource-limits.sh refuses to write anything if a declared user does
+# not resolve, so getting this wrong now fails the deploy loudly instead of
+# silently rendering fourteen unbootable units — but a failed deploy still
+# blocks the queue, so the ordering above is the point, not a formality.
+
+services:
+  # ── alpha-engine ────────────────────────────────────────────────────────
+  - unit: dashboard.service
+    port: 8501
+    observed_mb: 248
+    memory_high: 340M
+    memory_max: 450M
+    note: >-
+      Streamlit private console. Caps raised 260M/300M -> 340M/450M and
+      observed_mb 202 -> 248, from the first UNCENSORED measurement of this
+      service (2026-07-28). I5237 raised memory_high 210M -> 260M and the
+      service re-pinned within a day, because 202 was never the working set —
+      it was a floor read under the old cap, exactly as that issue's own note
+      predicted.
+
+      Measured from a clean restart, cap well clear of the reading:
+        t=20s   211 MiB      t=120s  231 MiB (peak 240)
+        t=20min 235 MiB idle (peak 240, zero throttle events)
+        in use  248 MiB, peak crossing 261
+      It climbs fast for ~2 minutes and then plateaus. This is NOT a leak, and
+      the growth is not the framework: nous-ergon-live.service runs the same
+      Streamlit/plotly/pandas/boto3 stack from this same repo at 58 MiB, so the
+      215 MiB cold start is application data, not imports.
+
+      The old 260M soft cap sat INSIDE the normal operating band (235 idle ->
+      261 in use), which is why throttling arrived in bursts of 26-102 per
+      10-min tick rather than continuously. 340M clears the in-use peak by ~80
+      MiB for large dataframe renders; 450M leaves a real reclaim window above
+      it. The headroom was paid for by metron-api dropping to one worker below,
+      not by loosening max_overcommit_ratio and not by resizing the instance —
+      policy E3 does not fire (MemAvailable was 1396 MiB, trigger is 250 MiB).
+
+      STILL OUTSTANDING, and not fixed by this cap: the console has 181
+      `@st.cache_data` decorators and NOT ONE sets `max_entries`. Streamlit's
+      default is unbounded — only TTL evicts — so the footprint is a function of
+      distinct queries per TTL window rather than a bounded working set. That
+      violates policy section 4.3 ("bounded, declared resource footprint").
+      Raising a cap against an unbounded quantity is what I5237 did; this cap is
+      sized to the measured plateau, but the plateau itself is not guaranteed.
+
+  - unit: nous-ergon-live.service
+    port: 8502
+    observed_mb: 56
+    memory_high: 175M
+    memory_max: 250M
+
+  - unit: crucible-dash-api.service
+    port: 8506
+    observed_mb: 185
+    memory_high: 245M
+    memory_max: 350M
+    note: >-
+      observed_mb corrected 107 -> 185 (measured live 2026-07-28, peak 186
+      against a 245M cap, so uncensored). Found by the STALE-observation check
+      on its FIRST run against the live box -- the number was understating this
+      service by 78 MiB and nothing had ever compared it to reality, because
+      --installed mode was invoked by nothing (see box_health.sh).
+      At 185/245 this sits at 76% of its soft cap: not throttling today, but
+      the tightest ratio on the box after dashboard. Re-measure before assuming
+      headroom here.
+
+  - unit: crucible-dash-web.service
+    port: 3002
+    observed_mb: 56
+    memory_high: 154M
+    memory_max: 220M
+
+  # ── metron ──────────────────────────────────────────────────────────────
+  - unit: metron-api.service
+    port: 8000
+    observed_mb: 203
+    memory_high: 280M
+    memory_max: 350M
+    note: >-
+      Was the largest consumer on the box at 384 MiB with FOUR gunicorn/uvicorn
+      workers. Now one worker at 202-203 MiB (measured live 2026-07-28,
+      peak 203, zero throttle events, /health 200). That is config-I5225 closed
+      by removing the work rather than re-sizing around it.
+
+      Standing ruling (Brian, 2026-07-28, reaffirming a repeated one): metron is
+      a single-user personal tool and runs ONE worker. UvicornWorker is async, so
+      one event loop already serves concurrent requests, and FastAPI runs sync
+      `def` handlers in a threadpool inside it. Extra workers buy only CPU-bound
+      parallelism — undeliverable on 2 vCPU — and worker-death resilience. What
+      they cost is duplicate Python heaps: 182 MiB of the old 384 was pure
+      duplication. Raising it again needs evidence of a real concurrency
+      requirement, not a preference for headroom. Unit lives in metron-ops.
+
+      Freeing that 182 MiB is what paid for dashboard.service's cap above. It
+      also drained the box's swap from 475 MiB to ~0 and moved MemAvailable
+      1396 -> 1632 MiB. Policy T1-7 calls swapping on EBS "strictly worse than
+      paying for RAM"; this removed it without paying.
+
+      Caps cut 480M/550M -> 280M/350M: 1.4x/1.7x the measured 203 MiB, which is
+      also its startup peak (peak == current 45s after a cold start, with the
+      cap 277 MiB clear of the reading — an uncensored measurement).
+
+      Historical, kept because it is the reason the censored-reading check below
+      exists: at 385M the cgroup logged 7347 MemoryHigh events during worker
+      warm-up with memory.peak EQUAL to memory.high, so the then-recorded
+      observed_mb of 349 was never a working set — only the largest value the
+      ceiling permitted.
+
+  - unit: metron-dash-web.service
+    port: 3003
+    observed_mb: 90
+    memory_high: 154M
+    memory_max: 220M
+
+  # ── other products ──────────────────────────────────────────────────────
+  - unit: telos-web.service
+    port: 3001
+    observed_mb: 56
+    memory_high: 105M
+    memory_max: 150M
+
+  - unit: vires.service
+    port: 8530
+    observed_mb: 83
+    memory_high: 112M
+    memory_max: 160M
+
+  - unit: signal.service
+    port: 8505
+    observed_mb: 64
+    memory_high: 175M
+    memory_max: 250M
+
+  - unit: mnemon.service
+    port: 8503
+    observed_mb: 52
+    memory_high: 175M
+    memory_max: 250M
+    note: >
+      Was capped at 150M with MemoryHigh=infinity — 109M observed against a
+      150M hard cap and no soft limit at all, i.e. closest to its ceiling of
+      any service on the box while having no reclaim window. Raised.
+
+  - unit: nousergon-auth.service
+    port: 4100
+    observed_mb: 53
+    memory_high: 105M
+    memory_max: 150M
+    note: >
+      Shared identity service. Found DISABLED (not enabled at boot) on
+      2026-07-27 — it was running only because someone had started it by hand,
+      and it did not survive the first reboot. Enabled since.
+
+  # ── dev infrastructure ──────────────────────────────────────────────────
+  - unit: litellm-proxy.service
+    port: 8980
+    observed_mb: 244
+    memory_high: 350M
+    memory_max: 500M
+    note: >
+      DO NOT LOWER without re-testing a cold start. Calibrated 2026-07-27
+      (alpha-engine-config-I4441/I4451): at 150M/300M this unit could never
+      cold-start — importing litellm's dependency tree exceeded the cap, the
+      cgroup throttled continuously, and the service reported active while
+      never binding :8980. Steady state 308M; the gap between that and 500M is
+      startup headroom, not slack. Separately has known memory growth (I4441);
+      Restart=always now recycles it on an OOM kill instead of letting it die.
+
+  - unit: llm-egress-proxy.service
+    port: 8990
+    observed_mb: 11
+    memory_high: 250M
+    memory_max: 400M
+    note: >
+      DO NOT LOWER — steady state (42M) is wildly unrepresentative of startup.
+      Calibrated 2026-07-27 (alpha-engine-config-I4451): at 50M/100M the cgroup
+      throttled 11385 times with ~60% memory stall and a single
+      `ssm get-parameter` hung for >113s, so the service never finished booting.
+      Startup shells out to the AWS CLI 5x (~150M peak each) to resolve provider
+      keys, then runs gitleaks subprocesses per scan. The 6x gap between
+      observed and cap is entirely startup and subprocess spikes.
+
+  # ── ingress ─────────────────────────────────────────────────────────────
+  - unit: nginx.service
+    port: 443
+    observed_mb: 9
+    memory_high: 70M
+    memory_max: 100M
+    note: sole ingress for all ten vhosts — Restart=always is load-bearing; already runs as its own user, no User= migration needed
+
+# Restart semantics applied uniformly to every unit above (policy T1-2).
+#
+# `Restart=always` IS the restart-on-OOM mechanism. There is no
+# `OOMPolicy=restart` -- systemd.service(5) takes only `continue`, `stop`, or
+# `kill`, and an invalid value is SILENTLY IGNORED (systemd falls back to the
+# default and logs nothing at the unit level). Verified live on systemd 252:
+# a drop-in carrying `OOMPolicy=restart` left `systemctl show -p OOMPolicy`
+# reporting `stop`, while `Restart=` and `MemoryMax=` from the same block
+# applied normally. Anything that "looks applied" here must be read back from
+# `systemctl show`, never assumed from the file on disk.
+#
+# The working combination is:
+#   OOMPolicy=stop   -> on an OOM kill systemd terminates the unit cleanly,
+#                       stopping its remaining processes rather than letting a
+#                       multi-process unit limp on with a dead worker (which is
+#                       what `continue` would do).
+#   Restart=always   -> systemd then restarts it 5s later, because `always`
+#                       restarts on ANY stop, including that clean termination.
+#
+# CORRECTION to the original I4491 analysis: `OOMPolicy=stop` was NOT the
+# mechanism that kept metron-refresh dead for two days. `stop` is systemd's
+# default and is correct here. metron-refresh is `Type=oneshot`, `static`, and
+# timer-triggered -- a failed oneshot batch job legitimately does not restart.
+# Its real defects were that nothing ALERTED on the failure and that its timer
+# went inactive; both are tracked in I4487, not fixed by restart semantics.
+#
+# StartLimitBurst bounds the loop: a genuinely broken service still lands in
+# `failed` after 5 restarts in 300s, where box_health.sh sees it. Restart=always
+# without a limit is its own failure mode.
+restart_policy:
+  Restart: always
+  RestartSec: 5s
+  OOMPolicy: stop
+  StartLimitIntervalSec: 300      # [Unit] section
+  StartLimitBurst: 5              # [Unit] section
+
+# Units that are legitimately NOT under box_health.sh coverage. The watchdog's
+# coverage self-check reports any enabled, non-oneshot unit that is neither in
+# `services:` above nor excluded here — so a new app service surfaces as an
+# alert instead of going quietly unmonitored, while OS plumbing stays quiet.
+#
+# Exclusions are BY NAME WITH A REASON. A bare count cannot say what is
+# missing, and a count-based check false-alarmed on exactly these units when
+# first deployed 2026-07-27.
+# ── Durable state inventory (T1-4, alpha-engine-config-I5250 gap 1) ───────
+#
+# WHY THIS EXISTS
+# ---------------
+# Policy T1-4: "Every SQLite file, vault, and cert on this box is either
+# replicated to S3 on a schedule or documented as accepted-loss with a stated
+# RPO. UNLISTED STATE IS A DEFECT."
+#
+# Audited 2026-07-28. Before that audit NO application state on this box was
+# replicated anywhere, and that was not a decision — it was an absence. The
+# nightly EBS snapshot (T0-1) bounded loss to <=24h by accident rather than by
+# declaration, and an EBS snapshot of a live SQLite file is CRASH-consistent,
+# not APPLICATION-consistent: a snapshot taken mid-write restores a database
+# that needs WAL recovery, which is not the same as a database you can open.
+#
+# A near-miss worth recording: `mnemon-sync.timer` looks like a backup and is
+# the opposite of one. It runs `aws s3 cp s3://mnemon-memory/... -> local`,
+# a one-way PULL. S3 is mnemon's source of truth and the box holds a replica,
+# so mnemon loses nothing on box loss — but reading that timer as "mnemon is
+# backed up" would have been exactly wrong.
+#
+# DISPOSITIONS
+#   replicate     — copied to S3 on the box-state-backup timer. Use for state
+#                   that is irreplaceable or that other products depend on.
+#   accepted-loss — deliberately NOT replicated, with an rpo: stating the
+#                   worst-case loss. Policy §7 permits this for personal tools
+#                   PROVIDED IT IS STATED. That proviso is the whole point:
+#                   accepted-loss and never-considered look identical on disk.
+#   external      — the box copy is a cache/replica; the real source is
+#                   elsewhere. Loss costs a re-fetch.
+#
+# Backups land under s3://alpha-engine-research/dashboard/box-state/. The
+# instance role can PutObject there but NOT DeleteObject — verified 2026-07-28.
+# That asymmetry is deliberate and worth keeping: a compromised or malfunctioning
+# box cannot destroy its own backup history.
+state:
+  - path: /home/ec2-user/nousergon-auth/auth.sqlite
+    owner: nousergon-auth.service
+    disposition: replicate
+    note: >-
+      Shared identity for every product on the box. Losing it invalidates
+      sessions and user records across all of them simultaneously, which is
+      the largest blast radius of any single file here — hence replicate
+      rather than accepted-loss, despite being small.
+  - path: /home/ec2-user/metron/personal.sqlite
+    owner: metron-api.service
+    disposition: replicate
+    note: >-
+      45 MB and the LIVE backend — metron/.env resolves to sqlite:////home/ec...,
+      so the Neon cutover (metron-ops-I237) has not happened. Holds broker
+      history and NAV snapshots that cannot be reconstructed from any upstream.
+  - path: /home/ec2-user/vires/vires.db
+    owner: vires.service
+    disposition: replicate
+    note: actively written (2026-07-28); personal tool but its content is user-authored, not derived
+  - path: /home/ec2-user/.mnemon/default.sqlite
+    owner: mnemon.service
+    disposition: external
+    source: s3://mnemon-memory/mnemon/vaults/default.sqlite
+    note: mnemon-sync.timer PULLS this from S3 every 15 min; S3 is authoritative
+  - path: /home/ec2-user/morning-signal/episodes/flow-doctor.db
+    owner: morning-signal.timer
+    disposition: accepted-loss
+    rpo: 24h
+    note: flow-doctor run telemetry; regenerates on the next run, no product depends on the history
+  - path: /home/ec2-user/metron/web/auth.sqlite
+    owner: none
+    disposition: accepted-loss
+    rpo: total
+    note: >-
+      Last written 2026-07-10 and superseded by nousergon-auth. Declared rather
+      than deleted so its absence from backups is a decision on the record;
+      removal is tracked separately.
+  - path: /home/ec2-user/morning-signal/flow-doctor.db
+    owner: none
+    disposition: accepted-loss
+    rpo: total
+    note: >-
+      Zero bytes — a vestigial file at the repo root, distinct from the live
+      episodes/flow-doctor.db. Found by the coverage check below, NOT by the
+      manual audit that produced this inventory, which is the argument for
+      having the check at all.
+  - path: /home/ec2-user/metron/dev.sqlite
+    owner: none
+    disposition: accepted-loss
+    rpo: total
+    note: zero bytes, last touched 2026-06-25; a dev scratch DB, superseded by personal.sqlite
+  - path: /home/ec2-user/.ssh/
+    owner: none
+    disposition: accepted-loss
+    rpo: total
+    note: >-
+      Contains alpha-engine-key.pem and the cyphering_ops_deploy key. NOT
+      replicated on purpose — copying private keys into an object store to
+      protect against a box loss trades a bounded availability problem for an
+      unbounded confidentiality one. Both are re-issuable from their sources.
+  - path: /home/ec2-user/*/.env
+    owner: various
+    disposition: external
+    source: SSM SecureString /alpha-engine/dashboard/secrets/*
+    note: six .env files; canonical copies live in SSM and are re-materialised on rebuild
+
+# ── Timer dead-man thresholds (alpha-engine-config-I5209) ─────────────────
+#
+# WHY A DECLARED THRESHOLD AND NOT AN INFERRED ONE
+# ------------------------------------------------
+# box_health.sh's scheduler-state check (classify_timer) answers "is this timer
+# scheduled to fire?" It CANNOT answer "did it actually do its job?" — a timer
+# whose service exits 1 on every single run is `active`, `waiting`, with a
+# perfectly valid next elapse. That is the more common silent failure, and it
+# needs an execution-outcome check with a per-job staleness budget.
+#
+# The budget is declared here rather than derived from the unit's own
+# `OnCalendar=`/`OnUnitActiveSec=` on purpose. Acceptable staleness is a
+# product decision, not a restatement of the schedule: a weekly bakeoff
+# tolerates eight days of silence, a nightly NAV snapshot does not tolerate
+# twenty-six hours. More importantly, inferring the threshold FROM the schedule
+# silently re-derives the wrong threshold in exactly the case where the
+# schedule is the thing that broke.
+#
+# HOW TO SET ONE
+# --------------
+# Start at 2x the nominal interval, then widen for real-world gaps the interval
+# does not express: randomized delay, weekday-only schedules crossing a
+# weekend, multi-fire retry ladders. Every value below is the observed cadence
+# from the live box on 2026-07-28, widened for those, and each carries the
+# reasoning as a `note:` — a bare number here is unreviewable.
+#
+# COVERAGE IS TOTAL, DELIBERATELY. Every enabled timer on the box gets a row,
+# including OS plumbing. box_health.sh NAMES any enabled timer with no row, so
+# a timer added without one surfaces as an alert rather than going quietly
+# unmonitored — the same rule `services:` lives under. OS timers are not exempt
+# because their failures are not cosmetic on this box: logrotate and fstrim
+# guard a 32 GB root volume, dnf-automatic is the T1-5 patching cadence.
+timers:
+  # ── alpha-engine ────────────────────────────────────────────────────────
+  - unit: box-health.timer
+    max_staleness: 30m
+    note: every 10min; 3x covers one missed tick plus a slow confirm window
+  - unit: emit-oom-metric.timer
+    max_staleness: 20m
+    note: every 5min; the OOM counter feeding the T0-3 saturation alarms
+  - unit: boot-pull.timer
+    max_staleness: 26h
+    note: daily 12:00 UTC + up to 5min randomized delay
+  - unit: box-hygiene.timer
+    max_staleness: 8d
+    note: weekly Sun 09:20 UTC; one full missed week is the signal
+  - unit: reboot-if-needed.timer
+    max_staleness: 8d
+    note: weekly Sun 07:00 UTC. Persistent=false, so a box down at 07:00 skips
+          the week entirely — 8d catches the second consecutive skip
+  - unit: substrate-health-daily.timer
+    max_staleness: 4d
+    note: Mon-Fri 22:30 UTC; Fri->Mon is a 3-day gap by design
+  - unit: box-state-backup.timer
+    max_staleness: 26h
+    note: nightly 03:40 UTC + up to 5min randomized delay; a skipped run leaves a real gap in the backup history
+  - unit: systemd-unit-drift-check.timer
+    max_staleness: 26h
+    note: daily 06:17 UTC + up to 5min randomized delay
+
+  # ── metron ──────────────────────────────────────────────────────────────
+  - unit: metron-refresh.timer
+    max_staleness: 26h
+    note: three same-evening fires (20:45/21:30/22:30 UTC) are ONE nightly job
+          with a retry ladder, so the real cadence is daily, not 3x daily.
+          This is the job whose 2026-07-25 OOM kill went unnoticed for two days
+  - unit: metron-refresh-flex.timer
+    max_staleness: 4d
+    note: Mon-Fri 13:15 UTC; Fri->Mon is a 3-day gap by design
+
+  # ── morning-signal / the-cyphering ──────────────────────────────────────
+  - unit: morning-signal.timer
+    max_staleness: 26h
+    note: daily 04:00 America/Los_Angeles; DST shifts the UTC hour, not the gap
+  - unit: morning-signal-watchdog.timer
+    max_staleness: 26h
+    note: daily 06:15 America/Los_Angeles
+  - unit: morning-signal-bakeoff.timer
+    max_staleness: 8d
+    note: weekly Wed 05:00 America/Los_Angeles
+  - unit: daily-news.timer
+    max_staleness: 26h
+    note: daily 04:00 America/Los_Angeles
+  - unit: signal-pull.timer
+    max_staleness: 26h
+    note: daily 15:10 UTC
+
+  # ── mnemon ──────────────────────────────────────────────────────────────
+  - unit: mnemon-sync.timer
+    max_staleness: 45m
+    note: every 15min; 3x absorbs one slow sync plus one missed tick
+
+  # ── OS plumbing (covered, not exempt — see the note above) ──────────────
+  - unit: logrotate.timer
+    max_staleness: 26h
+    note: daily; guards the 32 GB root volume against journal/log growth
+  - unit: dnf-automatic.timer
+    max_staleness: 27h
+    note: daily 06:00 + up to 60min randomized delay; the T1-5 patch cadence
+  - unit: fstrim.timer
+    max_staleness: 9d
+    note: weekly + up to 100min randomized delay
+  - unit: sysstat-collect.timer
+    max_staleness: 30m
+    note: every 10min at :00/10
+  - unit: sysstat-summary.timer
+    max_staleness: 26h
+    note: daily 00:07
+  - unit: systemd-tmpfiles-clean.timer
+    max_staleness: 30h
+    note: OnUnitActiveSec=1d, so it drifts later each day rather than pinning
+          to a wall-clock hour
+  - unit: update-motd.timer
+    max_staleness: 30h
+    note: OnUnitActiveSec=720min PLUS RandomizedDelaySec=720min, so the real
+          interval is 12-24h — 2x the nominal 12h would false-alarm
+
+manifest_exclude:
+  - unit: "alert-on-failure@.service"
+    reason: systemd template unit, never instantiated directly
+  - unit: amazon-cloudwatch-agent.service
+    reason: AWS agent, has its own supervision and its own alarms
+  - unit: dbus.service
+    reason: OS plumbing
+  - unit: dbus-org.freedesktop.home1.service
+    reason: OS plumbing (dbus alias)
+  - unit: dbus-org.freedesktop.network1.service
+    reason: OS plumbing (dbus alias)
+  - unit: dbus-org.freedesktop.resolve1.service
+    reason: OS plumbing (dbus alias)
+
+# ── Sandboxing (alpha-engine-config-I4490) ────────────────────────────────
+# Applied uniformly by install-resource-limits.sh to every unit above:
+#
+#   NoNewPrivileges=yes       no privilege escalation via setuid/fscaps
+#   PrivateTmp=yes            per-service /tmp namespace
+#   ProtectSystem=full        /usr, /boot, /efi, /etc read-only
+#   ProtectKernelTunables=yes /proc/sys, /sys read-only
+#   ProtectKernelModules=yes  no module (un)loading
+#   ProtectControlGroups=yes  /sys/fs/cgroup read-only
+#   RestrictSUIDSGID=yes      cannot create setuid/setgid files
+#
+# THREE SETTINGS DELIBERATELY NOT USED, each of which would break this box
+# ------------------------------------------------------------------------
+# `ProtectHome=` — NOT SET. Every service on this box runs FROM
+#   /home/ec2-user/<repo> (verified 2026-07-27: WorkingDirectory is
+#   /home/ec2-user/... for all of dashboard, metron-api, mnemon, vires, signal,
+#   telos-web, nousergon-auth). Any ProtectHome= value makes /home invisible or
+#   read-only and breaks all thirteen simultaneously. I4490's own issue body
+#   suggested `ProtectHome=read-only`; that was wrong for this box.
+#
+# `ProtectSystem=strict` — NOT USED, `full` instead. `strict` makes the ENTIRE
+#   filesystem hierarchy read-only, /home included, so every service would need
+#   its own ReadWritePaths= for its checkout, venv, and any local SQLite. That
+#   is per-service work with a real breakage surface; `full` protects /usr,
+#   /boot, /efi and /etc while leaving /home writable, which is where the whole
+#   attack surface of a shared-user box actually is. I4490's issue body
+#   suggested `strict`; downgraded deliberately, not by omission.
+#
+# `RemoveIPC=` — NOT SET, and this one is a genuine hazard here. It removes ALL
+#   IPC objects owned by the user when the unit stops. With thirteen services
+#   sharing the single ec2-user identity, stopping one service could destroy
+#   IPC belonging to the other twelve. Safe only once services have per-service
+#   users.
+#
+# THE DEEPER FIX — PER-SERVICE USERS (alpha-engine-config#4791)
+# ---------------------------------------------------------------
+# Sandboxing narrows what a service can reach; it does not change the fact that
+# all thirteen share one Unix identity and therefore one set of credentials.
+# Per-service system users (declared via the `user:` field on each service
+# above) are the real fix, generated as `User=svc-<name>` into the drop-in by
+# install-resource-limits.sh. Two companion deliverables complete the arc:
+#
+#   1. create-service-users.sh — creates the system users, migrates ownership
+#      of checkouts / venvs / state directories, and verifies each service
+#      starts under its new identity. Run ONCE on the live box.
+#   2. RemoveIPC=yes — now safe because each service has its own user, so
+#      stopping one cannot destroy another's IPC. Generated conditionally by
+#      install-resource-limits.sh: enabled when `user:` is set, omitted for
+#      nginx (which has no `user:` field and runs as its own user already).
+#
+# Until create-service-users.sh executes on the live box, the `user:` fields
+# are DECLARED but not yet applied — install-resource-limits.sh will generate
+# the User= directive, but the actual users and migrated ownership must exist
+# on the box or the service will fail to start.

@@ -129,27 +129,37 @@ class TestImplausibleCostRowDefense:
     producer-side cleanup of that day's parquet lands.
     """
 
-    def test_drops_test_fixture_run_ids(self):
+    def test_run_id_shape_no_longer_gates_a_row(self):
+        """A non-ISO run_id must NOT be dropped (alpha-engine-config-I5206).
+
+        This previously asserted the opposite. The run_id-shape filter
+        mirrored a producer-side guard that classified 100% of production
+        rows as pollution once ``eval_judge`` moved to artifact-scoped
+        run_ids like ``276a5be44c7c-EXEL-v5`` — killing the cost surface
+        for 17 days while this page kept rendering. Inverted deliberately
+        so a reintroduction fails here.
+
+        Rows are now separated purely by the token ceiling, which is what
+        actually caught the 2026-05-13 incident both guards cited.
+        """
         mod = _import_s3_loader()
-        # Mix of real + the exact 2026-05-13 pollution shape.
         rows = [
             {"run_id": "2026-05-13", "agent_id": "sector_team:tech",
              "cost_usd": 0.012, "input_tokens": 4000, "output_tokens": 1200},
+            # The real I5206 row shape — non-ISO run_id, plausible counts.
+            {"run_id": "276a5be44c7c-EXEL-v5", "agent_id": "eval_judge",
+             "cost_usd": 0.049008, "input_tokens": 10011, "output_tokens": 0},
+            # Genuine pollution: 1e9 tokens, caught by the ceiling alone.
             {"run_id": "run-x", "agent_id": "big_spender",
              "cost_usd": 1000.0, "input_tokens": 1_000_000_000, "output_tokens": 0},
-            {"run_id": "run-budget-test", "agent_id": "runaway_agent",
-             "cost_usd": 10.0, "input_tokens": 10_000_000, "output_tokens": 0},
-            {"run_id": "run-1", "agent_id": "a",
-             "cost_usd": 1.0, "input_tokens": 1_000_000, "output_tokens": 0},
         ]
         parquet = _make_cost_parquet_bytes(rows)
         with patch.object(mod, "list_s3_prefixes", return_value=["2026-05-13"]):
             with patch.object(mod, "_s3_get_object", return_value=parquet):
                 df = mod.load_llm_cost_parquets()
-        # Only the real production row survives.
-        assert len(df) == 1
-        assert df.iloc[0]["agent_id"] == "sector_team:tech"
-        assert df["cost_usd"].sum() == pytest.approx(0.012)
+        assert len(df) == 2, "the non-ISO production row must survive"
+        assert set(df["agent_id"]) == {"sector_team:tech", "eval_judge"}
+        assert df["cost_usd"].sum() == pytest.approx(0.061008)
 
     def test_drops_implausibly_high_token_count(self):
         mod = _import_s3_loader()
@@ -249,3 +259,62 @@ class TestSectorTeamColumnPreservation:
         # The page's fillna("(none)") should produce the expected key.
         filled = df["sector_team_id"].fillna("(none)").astype(str)
         assert set(filled) == {"tech", "(none)"}
+
+
+class TestCostArchiveStaleness:
+    """The staleness gate that alpha-engine-config-I5206 was missing.
+
+    ``load_llm_cost_parquets`` loads the N most recent partitions with no
+    age check, so between 2026-07-11 and 2026-07-28 this page rendered a
+    dead pipeline as a healthy one. These lock the reporting contract.
+    """
+
+    def test_empty_archive_reports_stale(self):
+        mod = _import_s3_loader()
+        with patch.object(mod, "list_s3_prefixes", return_value=[]):
+            out = mod.cost_archive_staleness()
+        assert out["is_stale"] is True
+        assert out["latest"] is None, "an empty archive has no latest date"
+
+    def test_fresh_partition_is_not_stale(self):
+        import datetime as _dt
+        mod = _import_s3_loader()
+        today = _dt.datetime.now(_dt.timezone.utc)
+        recent = (today - _dt.timedelta(days=3)).strftime("%Y-%m-%d")
+        with patch.object(mod, "list_s3_prefixes", return_value=["2026-05-13", recent]):
+            out = mod.cost_archive_staleness()
+        assert out["is_stale"] is False
+        assert out["latest"] == recent
+        assert out["days_old"] == 3
+
+    def test_two_missed_weekly_cycles_is_stale(self):
+        """The real I5206 shape: last write 17 days back, threshold 15."""
+        import datetime as _dt
+        mod = _import_s3_loader()
+        today = _dt.datetime.now(_dt.timezone.utc)
+        old = (today - _dt.timedelta(days=17)).strftime("%Y-%m-%d")
+        with patch.object(mod, "list_s3_prefixes", return_value=[old]):
+            out = mod.cost_archive_staleness()
+        assert out["is_stale"] is True
+        assert out["days_old"] == 17
+
+    def test_latest_is_max_not_last_listed(self):
+        """Ordering must not depend on how S3 returns the prefixes."""
+        import datetime as _dt
+        mod = _import_s3_loader()
+        today = _dt.datetime.now(_dt.timezone.utc)
+        newest = (today - _dt.timedelta(days=2)).strftime("%Y-%m-%d")
+        with patch.object(
+            mod, "list_s3_prefixes", return_value=[newest, "2026-01-01"]
+        ):
+            out = mod.cost_archive_staleness()
+        assert out["latest"] == newest
+        assert out["is_stale"] is False
+
+    def test_unparseable_partition_name_is_treated_as_stale(self):
+        """An unreadable date is not evidence of freshness."""
+        mod = _import_s3_loader()
+        with patch.object(mod, "list_s3_prefixes", return_value=["not-a-date"]):
+            out = mod.cost_archive_staleness()
+        assert out["is_stale"] is True
+        assert out["days_old"] is None

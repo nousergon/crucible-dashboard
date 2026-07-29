@@ -264,6 +264,72 @@ if [ -d "$SYSTEMD_SRC" ]; then
     fi
 fi
 
+# ── Sync metron-intraday from nousergon-data (config#1768 Phase 1) ─────────
+# metron-intraday moved OFF ae-trading onto this box (2026-07-21):
+# duplicated the intraday-price-alerts Lambda's work there, and ae-trading
+# is off most of the day while ae-dashboard is always-on — this box is
+# where daily-news already runs the same "always-on box picks up a
+# nousergon-data-owned timer" pattern. Unit files stay canonical in
+# nousergon-data's infrastructure/systemd/ (this box already clones
+# nousergon-data as alpha-engine-data, see REPOS above) rather than being
+# duplicated into this repo's own infrastructure/systemd/.
+#
+# Deliberately scoped to the two exact metron-intraday basenames, NOT a
+# directory-wide glob — that source dir also ships daily-news.{service,
+# timer} (already handled by this box's separate install-daily-news.sh +
+# deploy-daily-news-units.yml merge-time SSM push path — mirroring that
+# path here would double-install/-restart it via two independent
+# mechanisms) and systemd-unit-drift-check.{service,timer} (already
+# installed on this box by that same install-daily-news.sh, which copies
+# both pairs — see its own comment). Only metron-intraday has no install
+# path onto this box yet.
+#
+# Convergence via boot-pull (NOT a merge-time SSM push) is the deliberate
+# choice here, matching existing precedent: deploy-daily-news-units.yml's
+# own header explicitly contrasts the two mechanisms — daily-news gets a
+# merge-time push because retrofitting one for metron-intraday was
+# EXPLICITLY decided against ("relies on boot-pull self-healing ... since
+# the trading box is off most of the day"). That reasoning flips in
+# metron-intraday's favor now that its host is ae-dashboard: this box's
+# boot-pull already runs on a bounded ≤24h daily timer (see file header),
+# so next-boot-pull convergence has the same bounded-drift property a
+# merge-time push would add, without a second deploy mechanism to maintain.
+METRON_INTRADAY_SRC="/home/ec2-user/alpha-engine-data/infrastructure/systemd"
+if [ -d "$METRON_INTRADAY_SRC" ]; then
+    METRON_CHANGED=false
+    for unit in metron-intraday.service metron-intraday.timer; do
+        src="$METRON_INTRADAY_SRC/$unit"
+        [ -f "$src" ] || continue
+        target="/etc/systemd/system/$unit"
+        if [ ! -f "$target" ]; then
+            sudo cp "$src" "$target"
+            log "SYNC $unit (new, src=$METRON_INTRADAY_SRC)"
+            METRON_CHANGED=true
+        elif ! diff -q "$src" "$target" >/dev/null 2>&1; then
+            sudo cp "$src" "$target"
+            log "SYNC $unit (updated, src=$METRON_INTRADAY_SRC)"
+            METRON_CHANGED=true
+        fi
+    done
+    if $METRON_CHANGED; then
+        sudo systemctl daemon-reload
+        log "systemctl daemon-reload (metron-intraday)"
+    fi
+    # Enable-reconcile every boot (not install-only), mirroring
+    # ae-trading's sync_systemd_units_from() self-healing pattern
+    # (config#2352 / the 2026-04-21 SNDK EOD incident class) rather than
+    # this file's own simpler install-once loop above — this is a brand
+    # new unit family for this box, so a manual `systemctl disable` or a
+    # lost timers.target.wants/ symlink would otherwise never self-heal.
+    if [ -f "$METRON_INTRADAY_SRC/metron-intraday.timer" ]; then
+        if sudo systemctl enable --now metron-intraday.timer >> "$LOG" 2>&1; then
+            log "OK   systemd: enable reconciled metron-intraday.timer"
+        else
+            log "WARN systemd: enable reconcile failed: metron-intraday.timer"
+        fi
+    fi
+fi
+
 # ── Restart streamlit services if SSM-hydrated configs changed ─────────────
 # Streamlit reads config.yaml at module import (decorator evaluation in
 # loaders/s3_loader.py via @st.cache_data(ttl=_ttl("trades"))). A config
@@ -277,39 +343,50 @@ if [ "$CONFIGS_CHANGED" -eq 1 ]; then
     log "RESTART dashboard + nous-ergon-live (config-driven)"
 fi
 
-# ── Report failures to flow-doctor if any occurred ──────────────────────────
-# Don't rely on the log file alone — flow-doctor's GitHub notifier gives a
-# visible red badge on the repo so the failure isn't invisible in
-# /var/log/boot-pull.log until someone happens to look.
+# ── Report failures if any occurred ─────────────────────────────────────────
+# The log file alone is not a signal — nobody reads /var/log/boot-pull.log
+# until something else has already gone wrong.
+#
+# This used to construct flow-doctor by hand in a heredoc. It had been BROKEN
+# since some earlier flow-doctor release and nobody knew, because the thing
+# that was broken was the failure reporter itself (alpha-engine-config-I4509).
+# Two independent faults, either one fatal:
+#
+#   1. `flow_doctor.init()` does not exist. flow-doctor 0.8.7 exports
+#      FlowDoctor/FlowDoctorBuilder and no `init`; the call raised
+#      AttributeError every time. The only trace was one stderr line,
+#      `[boot-pull] flow-doctor report failed: module 'flow_doctor' has no
+#      attribute 'init'`, inside a log nobody reads.
+#   2. The env hydration was incomplete anyway. flow-doctor.yaml references
+#      EIGHT ${VAR}s; the heredoc hydrated FOUR. Even with the API call fixed,
+#      construction fails with ConfigError on TELEGRAM_BOT_TOKEN.
+#
+# Both faults come from the same root cause: this call site hand-rolled
+# something the fleet already has a maintained interface for. `krepis.alerts`
+# is the canonical alert CLI (config#1649) and is what box_health.sh on this
+# same box already uses — verified reaching both SNS and Telegram. It resolves
+# its own secrets, so there is no env-hydration list here to drift out of sync
+# with flow-doctor.yaml.
 if [ "$PULL_FAILURES" -gt 0 ]; then
     log "=== boot-pull completed with $PULL_FAILURES failure(s): ${FAILED_REPOS[*]} ==="
-    # Fire-and-forget report. If flow-doctor itself is broken, the log
-    # above is the fallback signal.
-    FD_VENV="/home/ec2-user/alpha-engine-dashboard/.venv/bin/python"
-    if [ -x "$FD_VENV" ]; then
-        "$FD_VENV" - <<PYEOF 2>> "$LOG" || true
-import os
-import sys
-sys.path.insert(0, "/home/ec2-user/alpha-engine-dashboard")
-try:
-    from nousergon_lib.secrets import get_secret
-    for _name in ("EMAIL_SENDER", "EMAIL_RECIPIENTS", "GMAIL_APP_PASSWORD", "FLOW_DOCTOR_GITHUB_TOKEN"):
-        _val = get_secret(_name, required=False)
-        if _val is not None and _name not in os.environ:
-            os.environ[_name] = _val
-    import flow_doctor
-    fd = flow_doctor.init(
-        config_path="/home/ec2-user/alpha-engine-dashboard/flow-doctor.yaml",
-    )
-    fd.report(
-        RuntimeError("boot-pull failed: ${FAILED_REPOS[*]}"),
-        severity="error",
-        context={"site": "boot-pull", "failures": "${FAILED_REPOS[*]}"},
-    )
-except Exception as e:
-    print(f"[boot-pull] flow-doctor report failed: {e}", file=sys.stderr)
-PYEOF
+
+    ALERT_PY="/home/ec2-user/alpha-engine-dashboard/.venv/bin/python"
+    if [ -x "$ALERT_PY" ]; then
+        # Dedup on the failing repo set, not the message: the same repo failing
+        # every boot should alert once a day, not once per boot. A NEW repo
+        # failing changes the key and pages immediately.
+        _dkey="boot-pull-$(printf '%s' "${FAILED_REPOS[*]}" | tr ' /' '__' | cut -c1-72)"
+        "$ALERT_PY" -m krepis.alerts publish \
+            --message "boot-pull FAILED on $(hostname): ${PULL_FAILURES} repo(s) could not be updated — ${FAILED_REPOS[*]}. The box may be running stale code. See /var/log/boot-pull.log." \
+            --severity error \
+            --source boot-pull \
+            --dedup-key "$_dkey" \
+            --dedup-window-min 1440 \
+            || log "ALERT PUBLISH FAILED — boot-pull failure is UNREPORTED"
+    else
+        log "ALERT PUBLISH SKIPPED — $ALERT_PY missing; boot-pull failure is UNREPORTED"
     fi
+
     exit 1
 fi
 

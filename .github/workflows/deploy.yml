@@ -39,8 +39,22 @@ jobs:
       DASHBOARD_INSTANCE_ID: ${{ vars.DASHBOARD_INSTANCE_ID }}
 
     steps:
+      # The deploy job historically needed no checkout — it only sends SSM
+      # commands, and the box runs scripts from its OWN checkout. It does need
+      # one now: the host-alarms step runs infrastructure/install-host-alarms.sh
+      # from the runner, because that script cannot run on the box (the instance
+      # role deliberately lacks cloudwatch:PutMetricAlarm). Without this the step
+      # dies with "No such file or directory" (exit 127), which is exactly how
+      # it failed on the config-I5211 merge.
+      #
+      # Checking out and running the script beats inlining seven put-metric-alarm
+      # calls here: the script stays the single definition of those alarms.
+      # Duplicating them into the workflow would create precisely the two-copies
+      # drift this repo has spent the day removing.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
       - name: Configure AWS credentials via OIDC
-        uses: aws-actions/configure-aws-credentials@517a711dbcd0e402f90c77e7e2f81e849156e31d  # v6
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c  # v6
         with:
           role-to-assume: arn:aws:iam::711398986525:role/github-actions-lambda-deploy
           aws-region: us-east-1
@@ -157,9 +171,43 @@ jobs:
             --alarm-actions arn:aws:sns:us-east-1:711398986525:alpha-engine-alerts \
             --ok-actions arn:aws:sns:us-east-1:711398986525:alpha-engine-alerts
 
+      - name: Host alarms (alarm-as-code, config-I5211)
+        run: |
+          # install-host-alarms.sh CANNOT run on the box: the instance role
+          # deliberately lacks cloudwatch:PutMetricAlarm, because a host that can
+          # rewrite its own alarms can disable its own detection. It ran nowhere
+          # at all until now (config-I5215). Here it runs with the OIDC role,
+          # whose `alpha-engine-box-alarm-as-code` inline policy is scoped to
+          # alarm:alpha-engine-* — the least privilege that makes this possible.
+          bash infrastructure/install-host-alarms.sh
+
+      - name: Watchdog-verdict alarm (alarm-as-code, config-I5211)
+        run: |
+          # The off-box half of the dead-man. box_health.sh publishes its own
+          # confirmed-problem COUNT every run, on the metrics path — which is a
+          # different code path from the SNS/Telegram alert path, with different
+          # failure modes. So a broken alert path (the config#1646 silent-no-op
+          # class) still surfaces here.
+          #
+          # treat-missing-data is notBreaching ON PURPOSE: absent data means the
+          # box or the watchdog is down, and that is already covered by
+          # box-disk-critical's own missing-data breach above. Two alarms
+          # breaching on the same silence would double-page for one cause.
+          aws cloudwatch put-metric-alarm \
+            --alarm-name alpha-engine-dashboard-health-problems \
+            --alarm-description "box_health.sh confirmed >=1 problem it may not have been able to alert about (config-I5211)" \
+            --namespace AlphaEngine/Box --metric-name health_problems \
+            --dimensions Name=InstanceId,Value=${DASHBOARD_INSTANCE_ID} \
+            --statistic Maximum --period 600 \
+            --evaluation-periods 2 --datapoints-to-alarm 2 \
+            --threshold 1 --comparison-operator GreaterThanOrEqualToThreshold \
+            --treat-missing-data notBreaching \
+            --alarm-actions arn:aws:sns:us-east-1:711398986525:alpha-engine-alerts \
+            --ok-actions arn:aws:sns:us-east-1:711398986525:alpha-engine-alerts
+
       - name: Append to system-wide deploy changelog
         if: always()
-        uses: nousergon/nousergon-docs/.github/actions/append-changelog@main
+        uses: nousergon/nousergon-docs/.github/actions/append-changelog@765aa682f6c5b7e1e5fc241c7bac1e9e0d6ca326  # main
         with:
           deploy_status: ${{ job.status == 'success' && 'success' || 'failure' }}
           deploy_workflow: deploy.yml
@@ -169,5 +217,5 @@ jobs:
   notify-main-failure:
     needs: [deploy]
     if: ${{ failure() && github.ref == 'refs/heads/main' }}
-    uses: nousergon/nousergon-lib/.github/workflows/notify-ci-failure.yml@main
+    uses: nousergon/nousergon-lib/.github/workflows/notify-ci-failure.yml@6c4bdb834f0869efc5de3166b285a812053ea709  # main
     secrets: inherit
