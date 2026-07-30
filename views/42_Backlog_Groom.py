@@ -379,6 +379,7 @@ for k, run, eff in loaded_runs[:_HISTORY_N]:
         "Run": _run_label(k),
         "Kind": "🔧 sweep" if run_kind == "sweep" else "🧹 coverage",
         "Model": short_model_name(run.get("model")),
+        "Backend": run.get("backend", "claude"),
         "Tier": run.get("issue_filter", "—"),
         "Coverage": ("—" if run_kind == "sweep" else
                      f"{run.get('processed', len(run_issues))}/{run.get('total_issues', len(run_issues))}"),
@@ -446,6 +447,75 @@ else:
     st.caption(
         "No real runs (`engaged > 0`) in the trailing window to score."
     )
+
+# ── Backend comparison — per-tier claude vs deepseek aggregates (config#3489) ─
+st.subheader("Backend comparison")
+st.caption(
+    "Per-tier, per-backend aggregates across the same trailing runs as "
+    "Run history. **Cost** labels the billing units honestly: Claude runs "
+    "incur no marginal $ (Max subscription, WET-equivalent), DeepSeek runs "
+    "are actual per-token USD from `collect_usage.py` pricing. Historical "
+    "runs with no `backend` field default to claude."
+)
+_backend_groups: dict[tuple[str, str], dict[str, Any]] = {}
+for _k, run, eff in loaded_runs[:_HISTORY_N]:
+    run_kind = run.get("run_kind", "coverage")
+    if run_kind == "sweep":
+        continue
+    backend = run.get("backend", "claude")
+    tier = run.get("issue_filter") or "—"
+    key = (backend, tier)
+    g = _backend_groups.setdefault(key, {
+        "runs": 0, "engaged": 0, "closed": 0, "prs": 0, "commented": 0,
+        "untouched": 0, "wet_sum": 0.0, "elapsed": 0, "queued": 0,
+        "cost_sum": 0.0,
+    })
+    g["runs"] += 1
+    issues = run.get("issues") or []
+    counts = {d: sum(1 for i in issues if i.get("disposition") == d)
+              for d in ("closed", "pr_opened", "commented", "untouched")}
+    g["closed"] += counts["closed"]
+    g["prs"] += counts["pr_opened"]
+    g["commented"] += counts["commented"]
+    g["untouched"] += counts["untouched"]
+    g["engaged"] += sum(counts.values())
+    wet = eff.get("wet")
+    if wet is not None:
+        g["wet_sum"] += wet
+    g["elapsed"] += int(run.get("elapsed_min") or 0)
+    g["queued"] += int(run.get("total_issues") or len(issues) or 0)
+    cost = eff.get("cost")
+    if cost is not None:
+        g["cost_sum"] += cost
+
+if _backend_groups:
+    _bc_rows = []
+    for (backend, tier), g in sorted(_backend_groups.items()):
+        engaged = g["engaged"]
+        hard = g["closed"] + g["prs"]
+        _bc_rows.append({
+            "Backend": backend,
+            "Tier": tier,
+            "Runs": g["runs"],
+            "Issues/min": f"{engaged / max(g['elapsed'], 1):.2f}" if g["elapsed"] else "—",
+            "Hard outcomes": hard,
+            "Closed": g["closed"],
+            "PRs": g["prs"],
+            "Comment %": f"{100 * g['commented'] / max(engaged, 1):.0f}%" if engaged else "—",
+            "Untouched %": f"{100 * g['untouched'] / max(g['queued'], 1):.0f}%" if g["queued"] else "—",
+            "⌀ WET/run": f"{g['wet_sum'] / g['runs'] / 1e6:.1f}M" if g["wet_sum"] else "—",
+            "Cost": f"${g['cost_sum']:.2f}" if g["cost_sum"] else " (Max sub.)",
+        })
+    st.dataframe(
+        pd.DataFrame(_bc_rows),
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Backend": st.column_config.TextColumn("Backend", help="claude=Max subscription (no marginal $); deepseek=per-token billing"),
+        },
+    )
+else:
+    st.caption("No coverage runs in the trailing window to compare.")
 
 col_sel, col_meta = st.columns([1, 3])
 with col_sel:
