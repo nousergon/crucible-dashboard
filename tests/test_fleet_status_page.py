@@ -340,29 +340,90 @@ class TestPipelineSnapshots:
         snaps = fsl._pipeline_snapshots()
         assert snaps["postclose"].status == "NO_EXECUTIONS"
 
+    def test_exercise_row_refuses_a_role_fallback_read(self, monkeypatch):
+        # config#5590: the exercise row shares the weekly SF's ARN, so a
+        # LIVE_ROLE_FALLBACK ("no exercise run matched — here's the most
+        # recent overall") would render a CADENCE run on the exercise row.
+        # It must read as "no exercise run yet" instead.
+        from nousergon_lib.pipeline_status import PipelineRun
+
+        from loaders.pipeline_status_loader import LoadOutcome
+
+        import loaders.fleet_status_loader as fsl
+
+        cadence = PipelineRun.model_validate({
+            "state_machine_arn": "arn:x", "pretty_label": "Weekly Freshness SF",
+            "execution_arn": "arn:e", "execution_name": "weekly-1",
+            "status": "FAILED", "start_utc": "2026-07-25T20:17:00Z",
+            "pipeline_role": "weekly", "tasks": [],
+        })
+        monkeypatch.setattr(
+            fsl, "read_pipeline_state_with_fallback",
+            lambda arn, role_filter=None: self._load_result(
+                run=cadence, outcome=LoadOutcome.LIVE_ROLE_FALLBACK),
+        )
+        snaps = fsl._pipeline_snapshots()
+        assert snaps["weekly_exercise"].status == "NO_EXECUTIONS"
+        assert snaps["weekly_exercise"].role is None
+        # The cadence row still accepts the fallback (pre-existing behavior).
+        assert snaps["weekly"].status == "FAILED"
+
+    def test_exercise_row_refuses_an_arn_keyed_cache_read(self, monkeypatch):
+        from nousergon_lib.pipeline_status import PipelineRun
+
+        from loaders.pipeline_status_loader import LoadOutcome
+
+        import loaders.fleet_status_loader as fsl
+
+        cached = PipelineRun.model_validate({
+            "state_machine_arn": "arn:x", "pretty_label": "Weekly Freshness SF",
+            "execution_arn": "arn:e", "execution_name": "weekly-1",
+            "status": "SUCCEEDED", "start_utc": "2026-07-25T20:17:00Z",
+            "pipeline_role": "weekly", "tasks": [],
+        })
+        monkeypatch.setattr(
+            fsl, "read_pipeline_state_with_fallback",
+            lambda arn, role_filter=None: self._load_result(
+                run=cached, outcome=LoadOutcome.CACHE,
+                error_message="SFN unreachable — last-good cache"),
+        )
+        snaps = fsl._pipeline_snapshots()
+        assert snaps["weekly_exercise"].status == "UNAVAILABLE"
+        assert snaps["weekly_exercise"].error
+
     def test_role_filter_unions_cadence_and_recovery_roles(self, monkeypatch):
         """config#3085: the role_filter passed to read_pipeline_state_with_
         fallback must include the cadence role AND every recovery role, so
         the loader's newest-first walk can resolve to a running/succeeded
         recovery overlay instead of pinning to a stale scheduled failure.
-        Smoke/shell/backfill roles must NOT be in the filter (Option-D)."""
-        from fleet_status import RECOVERY_PIPELINE_ROLES
+        Smoke/shell/backfill roles must NOT be in the filter (Option-D).
+
+        The exercise row (config#5489) is the ONE exception: it shares the
+        weekly SF's ARN, so it is keyed by pipeline key here, and its filter
+        is ``{"exercise"}`` alone — a recovery overlay is not an exercise
+        run, and an exercise run never completes the cadence cycle."""
+        from fleet_status import EXERCISE_PIPELINE_ROLES, RECOVERY_PIPELINE_ROLES
 
         import loaders.fleet_status_loader as fsl
 
-        seen_filters = {}
+        seen_filters = []
 
         def _fake(arn, role_filter=None):
-            seen_filters[arn] = role_filter
+            seen_filters.append((arn, role_filter))
             return self._load_result()
 
         monkeypatch.setattr(fsl, "read_pipeline_state_with_fallback", _fake)
         fsl._pipeline_snapshots()
-        assert len(seen_filters) == 3
-        for arn, role_filter in seen_filters.items():
-            assert RECOVERY_PIPELINE_ROLES <= role_filter
+        by_key = dict(zip(fsl._PIPELINES, (f for _, f in seen_filters)))
+        assert len(seen_filters) == 4
+        for key, role_filter in by_key.items():
             assert "smoke" not in role_filter
             assert "shell-run" not in role_filter
+            if key == "weekly_exercise":
+                assert role_filter == set(EXERCISE_PIPELINE_ROLES)
+            else:
+                assert RECOVERY_PIPELINE_ROLES <= role_filter
+                assert not (EXERCISE_PIPELINE_ROLES & role_filter)
 
     def test_role_passthrough_for_recovery_completion(self, monkeypatch):
         from nousergon_lib.pipeline_status import PipelineRun
@@ -386,6 +447,81 @@ class TestPipelineSnapshots:
         )
         snaps = fsl._pipeline_snapshots()
         assert snaps["weekly"].role == "watch-rerun"
+
+
+class TestUnrecognizedRoleScan:
+    """config#5590 — the loader half of the pipeline_role total classifier."""
+
+    def _summary(self, role, name="e1"):
+        from nousergon_lib.pipeline_status import PipelineExecutionSummary
+
+        return PipelineExecutionSummary.model_validate({
+            "execution_arn": f"arn:e:{name}", "name": name, "status": "SUCCEEDED",
+            "start_utc": "2026-07-29T20:53:00Z", "pipeline_role": role,
+        })
+
+    def test_known_and_untagged_roles_are_not_findings(self, monkeypatch):
+        import loaders.fleet_status_loader as fsl
+
+        monkeypatch.setattr(
+            fsl, "list_recent_pipeline_runs_for_arn",
+            lambda arn, limit=5: [
+                self._summary("exercise"), self._summary("weekly"),
+                self._summary(None),  # untagged manual run — legitimate
+            ],
+        )
+        assert fsl._unrecognized_roles() == ()
+
+    def test_unmodelled_role_is_reported_with_its_state_machine(self, monkeypatch):
+        import loaders.fleet_status_loader as fsl
+
+        monkeypatch.setattr(
+            fsl, "list_recent_pipeline_runs_for_arn",
+            lambda arn, limit=5: [self._summary("exercise-v2")],
+        )
+        found = fsl._unrecognized_roles()
+        # One entry per STATE MACHINE, not per row — weekly and
+        # weekly_exercise share an ARN and must not double-report.
+        assert len(found) == 3
+        assert {r for _, r, _ in found} == {"exercise-v2"}
+        assert "ne-weekly-freshness-pipeline" in {sm for sm, _, _ in found}
+
+    def test_scan_failure_degrades_without_raising(self, monkeypatch):
+        import loaders.fleet_status_loader as fsl
+
+        def _boom(arn, limit=5):
+            raise RuntimeError("SFN throttled")
+
+        monkeypatch.setattr(fsl, "list_recent_pipeline_runs_for_arn", _boom)
+        assert fsl._unrecognized_roles() == ()
+
+
+class TestPrevSessionClose:
+    """config#5489 — the exercise deadline's anchor."""
+
+    def test_returns_todays_close_once_it_has_passed(self):
+        import loaders.fleet_status_loader as fsl
+
+        # Tue 2026-07-07 23:00 UTC — today's 20:00 UTC close is past.
+        now = datetime(2026, 7, 7, 23, 0, tzinfo=timezone.utc)
+        assert fsl._prev_session_close_utc(now) == datetime(
+            2026, 7, 7, 20, 0, tzinfo=timezone.utc)
+
+    def test_walks_back_past_an_unclosed_session(self):
+        import loaders.fleet_status_loader as fsl
+
+        # Tue 2026-07-07 15:00 UTC — mid-session, so the anchor is MONDAY.
+        now = datetime(2026, 7, 7, 15, 0, tzinfo=timezone.utc)
+        assert fsl._prev_session_close_utc(now) == datetime(
+            2026, 7, 6, 20, 0, tzinfo=timezone.utc)
+
+    def test_walks_back_over_the_weekend(self):
+        import loaders.fleet_status_loader as fsl
+
+        # Sun 2026-07-12 15:00 UTC — anchor is Friday 2026-07-10's close.
+        now = datetime(2026, 7, 12, 15, 0, tzinfo=timezone.utc)
+        assert fsl._prev_session_close_utc(now) == datetime(
+            2026, 7, 10, 20, 0, tzinfo=timezone.utc)
 
 
 class TestWatchDispatchAlerts:
