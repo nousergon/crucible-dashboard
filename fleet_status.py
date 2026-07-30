@@ -47,7 +47,7 @@ DST never skews the daemon expectation.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, time as dtime, timedelta, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -87,6 +87,10 @@ DAEMON_STALE_S = 300.0
 DAEMON_OPEN_GRACE = timedelta(minutes=5)
 # Post-close pipeline expected complete by close + this.
 POSTCLOSE_DUE_LAG = timedelta(hours=2)
+# The daily exercise run is LAUNCHED by postclose's last state, so it can
+# only be overdue once postclose itself is past due plus a margin for the
+# postclose run's own duration (config#5489).
+EXERCISE_LAUNCH_MARGIN = timedelta(hours=2)
 # Freshness-monitor Lambda runs every 15 min.
 FRESHNESS_HEARTBEAT_STALE_S = 25 * 60.0
 FRESHNESS_HEARTBEAT_DEAD_S = 60 * 60.0
@@ -137,6 +141,41 @@ RECOVERY_PIPELINE_ROLES = frozenset({"watch-rerun", "recovery"})
 # deterministic fast-path rerun (see NOTE above) — the one recovery overlay
 # that can't be told apart from a first-try cadence run by role alone.
 FAST_PATH_RERUN_NAME_PREFIX = "fast-path-rerun-"
+
+# The daily EXERCISE run (config#5489, Brian ruling 2026-07-29):
+# ne-postclose's ``LaunchWeeklyExerciseRun`` fires the FULL weekly pipeline
+# after every trading day's postclose with ``pipeline_role="exercise"``, so
+# the pipeline gets ~5 iteration cycles a week instead of 1 while its bugs
+# are worked out (measured: 11 of the last 60 executions reached a
+# successful terminal state).
+#
+# Deliberately NOT a member of RECOVERY_PIPELINE_ROLES: an exercise run is
+# a debugging cycle, never the week's belief refresh, so it must never mark
+# the Saturday cadence cycle COMPLETE — a Tuesday exercise success masking
+# a failed Saturday cadence run is exactly the "silence read as health"
+# failure this taxonomy exists to prevent. It gets its OWN component row
+# instead (``pipeline_weekly_exercise``), and the cadence row carries a
+# cross-reference note so a live exercise run is never invisible. Same
+# posture the sf-watch dispatcher already takes on the repair side
+# (config#5502 caps its dispatch ceiling for exercise runs).
+EXERCISE_PIPELINE_ROLES = frozenset({"exercise"})
+
+# Every ``pipeline_role`` the fleet's producers are known to mint, as of
+# 2026-07-29 — cadence + recovery + exercise + the ad-hoc Option-D set.
+# This is a TOTAL CLASSIFIER, not decoration: :func:`resolve_pipeline_role_coverage`
+# turns a role outside this set into a visible YELLOW row rather than the
+# silent staleness that shipped on 2026-07-29, when ``exercise`` was minted
+# in nousergon-data and no dashboard consumer knew about it — the weekly row
+# went on reporting a 4-day-old FAILED cadence run while an exercise run was
+# executing (config#5590). The role vocabulary is minted in a PRODUCER repo
+# and allow-listed in CONSUMER repos with no contract binding them; until
+# that contract exists (config#5592), this row is the detector.
+KNOWN_PIPELINE_ROLES = frozenset(
+    {"weekly", "daily", "eod"}  # cron cadence
+    | {"watch-rerun", "recovery"}  # recovery overlays
+    | {"exercise"}  # daily exercise cadence (config#5489)
+    | {"smoke", "shell-run", "backfill", "operator-replay"}  # ad-hoc
+)
 
 
 @dataclass(frozen=True)
@@ -240,8 +279,19 @@ class FleetInputs:
     live_service_ok: Optional[bool] = None  # None ⇒ probe n/a (off-box dev)
     # Daemon heartbeat: age (s) of intraday/nav.json; None ⇒ artifact absent.
     intraday_nav_age_s: Optional[float] = None
-    # Pipelines keyed weekly|preopen|postclose.
+    # Pipelines keyed weekly|weekly_exercise|preopen|postclose.
     pipelines: dict = field(default_factory=dict)
+    # (state_machine, role, started_at_iso) for each recent execution whose
+    # ``pipeline_role`` is a non-empty value OUTSIDE KNOWN_PIPELINE_ROLES.
+    # Empty is the healthy state; a non-empty tuple means a producer minted
+    # a role no consumer here classifies, so a pipeline row may be pinned to
+    # an older run than what actually ran (config#5590).
+    unrecognized_roles: tuple = ()
+    # Close (UTC) of the most recently COMPLETED trading session — the anchor
+    # the postclose-chained exercise run's deadline hangs off (config#5489).
+    # None ⇒ the loader could not resolve one; the expectation degrades to
+    # "not expected" rather than guessing.
+    prev_session_close_utc: Optional[datetime] = None
     # Fleet check results (ops/checks/<id>/latest.json), already
     # staleness-interpreted by loaders.fleet_checks_loader. Empty tuple
     # means the probe did not run; see resolve_fleet_checks.
@@ -503,11 +553,28 @@ def _pipeline_expectation(key: str, inp: FleetInputs) -> tuple[bool, Optional[da
         _, close_utc = market_hours_utc(now)
         due = close_utc + POSTCLOSE_DUE_LAG
         return now >= due, due
+    if key == "weekly_exercise":
+        # Chained off the END of postclose (config#5489) rather than a cron,
+        # so its deadline is postclose's own due plus a run margin —
+        # anchored to the most recently COMPLETED session, not to "today".
+        # Anchoring on today's close would put the deadline at or past
+        # midnight UTC, and the same-UTC-day "did it run" comparison then
+        # rolls over before the deadline is ever reached: the detector
+        # would have an EMPTY window and could never fire. ``None`` (the
+        # loader could not resolve a previous session) degrades to
+        # not-expected — never a false alarm on unknown calendar state.
+        if inp.prev_session_close_utc is None:
+            return False, None
+        due = (
+            inp.prev_session_close_utc + POSTCLOSE_DUE_LAG + EXERCISE_LAUNCH_MARGIN
+        )
+        return now >= due, due
     return False, None
 
 
 _PIPELINE_LABELS = {
     "weekly": "Weekly pipeline (ne-weekly-freshness)",
+    "weekly_exercise": "Weekly pipeline — daily EXERCISE run",
     "preopen": "Pre-open pipeline (ne-preopen-trading)",
     "postclose": "Post-close pipeline (ne-postclose-trading)",
 }
@@ -516,12 +583,68 @@ _PIPELINE_LABELS = {
 # reads as "on schedule" rather than "unexplained inactivity".
 _PIPELINE_CADENCE = {
     "weekly": "runs weekly, Sat 09:00 UTC",
+    "weekly_exercise": "runs every trading day, chained off postclose",
     "preopen": "runs weekdays, 12:45 UTC",
     "postclose": "runs weekdays, ~market close + 2h",
 }
 
+# Dot a FAILED cycle earns, per pipeline. The exercise cadence is a
+# DEBUGGING loop whose whole premise is that the pipeline is currently
+# broken (11 of 60 successful when Brian ruled it in) — pinning the fleet
+# rollup RED every trading day for the expected state would train exactly
+# the alarm-blindness the console exists to avoid. Its failures are YELLOW
+# and named; the Saturday cadence keeps RED, because a failed belief
+# refresh is a real outage.
+_PIPELINE_FAILED_DOT = {"weekly_exercise": YELLOW}
+
+
+def _exercise_cross_reference(inp: FleetInputs) -> str:
+    """Suffix for the weekly CADENCE row naming the exercise run when it is
+    live or newer than the cadence run.
+
+    Without this the console reads as "nothing has happened since the last
+    cadence failure" while a full pipeline run is executing — the exact
+    confusion hit on 2026-07-29 (config#5590)."""
+    snap = inp.pipelines.get("weekly_exercise")
+    if snap is None or snap.status in ("NO_EXECUTIONS", "UNAVAILABLE"):
+        return ""
+    if snap.status == "RUNNING":
+        state = f" at {snap.current_state}" if snap.current_state else ""
+        return (
+            f" — a daily EXERCISE run is RUNNING{state} "
+            f"(started {_ago(inp.now, snap.started_at)}); see its own row"
+        )
+    cadence = inp.pipelines.get("weekly")
+    cadence_at = cadence.started_at if cadence else None
+    if (
+        snap.started_at is not None
+        and cadence_at is not None
+        and snap.started_at <= cadence_at
+    ):
+        return ""
+    verdict = snap.verdict or snap.status
+    return (
+        f" — newer daily EXERCISE run {verdict} "
+        f"({_ago(inp.now, snap.stopped_at or snap.started_at)}); see its own row"
+    )
+
 
 def resolve_pipeline(key: str, inp: FleetInputs) -> ComponentStatus:
+    """Cadence/exercise row for one pipeline.
+
+    The weekly CADENCE row is post-processed with an exercise
+    cross-reference (config#5590) — the exercise run never displaces the
+    cadence verdict, but it must never be invisible from it either."""
+    status = _resolve_pipeline(key, inp)
+    if key != "weekly":
+        return status
+    note = _exercise_cross_reference(inp)
+    if not note:
+        return status
+    return replace(status, reason=f"{status.reason}{note}")
+
+
+def _resolve_pipeline(key: str, inp: FleetInputs) -> ComponentStatus:
     cid = f"pipeline_{key}"
     label = _PIPELINE_LABELS[key]
     cadence = _PIPELINE_CADENCE[key]
@@ -548,9 +671,18 @@ def resolve_pipeline(key: str, inp: FleetInputs) -> ComponentStatus:
         )
 
     expected, due = _pipeline_expectation(key, inp)
-    ran_today = (
-        snap.started_at is not None and snap.started_at.date() == inp.now.date()
-    )
+    if key == "weekly_exercise":
+        # Same anchor as the deadline: "did the run for the session that
+        # just closed happen", not "did anything happen today (UTC)".
+        ran_today = (
+            snap.started_at is not None
+            and inp.prev_session_close_utc is not None
+            and snap.started_at >= inp.prev_session_close_utc
+        )
+    else:
+        ran_today = (
+            snap.started_at is not None and snap.started_at.date() == inp.now.date()
+        )
     if expected and not ran_today:
         return ComponentStatus(
             cid, label, GROUP_PIPELINES, YELLOW,
@@ -580,9 +712,48 @@ def resolve_pipeline(key: str, inp: FleetInputs) -> ComponentStatus:
             snap.stopped_at or snap.started_at, deep_link="pipeline-status",
         )
     return ComponentStatus(
-        cid, label, GROUP_PIPELINES, RED,
+        cid, label, GROUP_PIPELINES, _PIPELINE_FAILED_DOT.get(key, RED),
         f"last cycle FAILED ({when})",
         snap.stopped_at or snap.started_at, deep_link="pipeline-status",
+    )
+
+
+def resolve_pipeline_role_coverage(inp: FleetInputs) -> ComponentStatus:
+    """Is every recently-minted ``pipeline_role`` one this module classifies?
+
+    The pipeline rows above resolve by role allow-list, so a role minted by
+    a producer repo that no consumer knows about does not read as an error —
+    it reads as SILENCE, and the row goes on reporting an older run. That
+    shipped live on 2026-07-29: nousergon-data began launching the weekly SF
+    with ``pipeline_role="exercise"`` and the weekly row kept reporting a
+    4-day-old FAILED cadence run while an exercise run was executing
+    (config#5590).
+
+    This row is the total classifier that makes the NEXT one loud. An
+    execution with NO role is not a finding — untagged manual runs are
+    legitimate and common; only a non-empty role outside
+    :data:`KNOWN_PIPELINE_ROLES` counts."""
+    cid, label = "pipeline_role_coverage", "Pipeline role vocabulary"
+    if not inp.unrecognized_roles:
+        return ComponentStatus(
+            cid, label, GROUP_PIPELINES, GREEN,
+            "every recent execution carries a pipeline_role this console "
+            "classifies",
+            deep_link="pipeline-status",
+        )
+    named = ", ".join(
+        sorted({f"{role!r} on {sm}" for sm, role, _ in inp.unrecognized_roles})
+    )
+    return ComponentStatus(
+        cid, label, GROUP_PIPELINES, YELLOW,
+        f"unrecognized pipeline_role: {named} — a producer minted a role no "
+        "row here classifies, so that pipeline's row may be pinned to an "
+        "older run than what actually ran",
+        deep_link="pipeline-status",
+        detail=tuple(
+            {"state_machine": sm, "pipeline_role": role, "started_utc": started}
+            for sm, role, started in inp.unrecognized_roles
+        ),
     )
 
 
@@ -1009,8 +1180,10 @@ def resolve_fleet(inp: FleetInputs) -> list[ComponentStatus]:
         resolve_console_service(inp),
         resolve_live_service(inp),
         resolve_pipeline("weekly", inp),
+        resolve_pipeline("weekly_exercise", inp),
         resolve_pipeline("preopen", inp),
         resolve_pipeline("postclose", inp),
+        resolve_pipeline_role_coverage(inp),
         resolve_groomer(inp),
         resolve_sf_watch(inp),
         resolve_ci_watch(inp),
