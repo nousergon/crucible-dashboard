@@ -20,9 +20,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from fleet_status import (  # noqa: E402
+    EXERCISE_PIPELINE_ROLES,
     GRAY,
     GREEN,
     GROUP_ORDER,
+    KNOWN_PIPELINE_ROLES,
     RECOVERY_PIPELINE_ROLES,
     RED,
     YELLOW,
@@ -41,6 +43,7 @@ from fleet_status import (  # noqa: E402
     resolve_live_service,
     resolve_module_self_reports,
     resolve_pipeline,
+    resolve_pipeline_role_coverage,
     resolve_sf_watch,
     resolve_trading_instance,
     trading_instance_window,
@@ -364,6 +367,184 @@ class TestPipelineRecoveryRoles:
         assert {"watch-rerun", "recovery"} == set(RECOVERY_PIPELINE_ROLES)
 
 
+# ── Daily EXERCISE cadence (config#5489 / #5520) ─────────────────────────────
+
+
+def _weekly_pair(cadence, exercise, now=TRADING_MID, trading=True):
+    """Resolve the weekly CADENCE row with an exercise snapshot present."""
+    return resolve_pipeline(
+        "weekly",
+        _inputs(
+            now=now,
+            trading=trading,
+            pipelines={"weekly": cadence, "weekly_exercise": exercise},
+        ),
+    )
+
+
+class TestWeeklyExerciseRun:
+    """The postclose-chained exercise run (pipeline_role="exercise") gets its
+    OWN row and never displaces the Saturday cadence verdict."""
+
+    def test_exercise_role_is_not_a_recovery_overlay(self):
+        # The masking guard: were "exercise" a recovery role, a Tuesday
+        # exercise SUCCESS would render the weekly cadence cycle COMPLETE
+        # and hide a failed Saturday run.
+        assert not (EXERCISE_PIPELINE_ROLES & RECOVERY_PIPELINE_ROLES)
+        assert "exercise" in KNOWN_PIPELINE_ROLES
+
+    def test_running_exercise_is_green_on_its_own_row(self):
+        s = _pipe("weekly_exercise", PipelineSnapshot(
+            status="RUNNING", role="exercise", current_state="RunResearch",
+            started_at=TRADING_MID - timedelta(minutes=30)))
+        assert s.dot == GREEN
+        assert s.component_id == "pipeline_weekly_exercise"
+        assert "RunResearch" in s.reason
+
+    def test_failed_exercise_is_yellow_not_red(self):
+        # The exercise cadence exists BECAUSE the pipeline is currently
+        # broken; a red fleet rollup every trading day for the expected
+        # state trains alarm-blindness. Named, not alarming.
+        s = _pipe("weekly_exercise", PipelineSnapshot(
+            status="FAILED", verdict="FAILED", role="exercise",
+            started_at=TRADING_MID - timedelta(hours=3),
+            stopped_at=TRADING_MID - timedelta(hours=1)))
+        assert s.dot == YELLOW
+        assert "last cycle FAILED" in s.reason
+
+    def test_failed_weekly_cadence_stays_red(self):
+        # Same snapshot on the CADENCE row keeps RED — a failed belief
+        # refresh is a real outage.
+        s = _pipe("weekly", PipelineSnapshot(
+            status="FAILED", verdict="FAILED", role="weekly",
+            started_at=TRADING_MID - timedelta(hours=3),
+            stopped_at=TRADING_MID - timedelta(hours=1)))
+        assert s.dot == RED
+
+    def test_live_exercise_run_is_named_on_the_cadence_row(self):
+        # The 2026-07-29 report, exactly: cadence run FAILED 3.8 d ago, an
+        # exercise run RUNNING right now, and the console said only the
+        # former. The verdict stays RED (the cadence really did fail) but
+        # the reason must not read as "nothing has happened since".
+        s = _weekly_pair(
+            PipelineSnapshot(
+                status="FAILED", verdict="FAILED", role="weekly",
+                started_at=TRADING_MID - timedelta(days=3, hours=19),
+                stopped_at=TRADING_MID - timedelta(days=3, hours=18)),
+            PipelineSnapshot(
+                status="RUNNING", role="exercise", current_state="RunResearch",
+                started_at=TRADING_MID - timedelta(minutes=12)),
+        )
+        assert s.dot == RED
+        assert "last cycle FAILED" in s.reason
+        assert "EXERCISE run is RUNNING" in s.reason
+        assert "RunResearch" in s.reason
+
+    def test_newer_completed_exercise_is_named_but_does_not_clear_cadence(self):
+        s = _weekly_pair(
+            PipelineSnapshot(
+                status="FAILED", verdict="FAILED", role="weekly",
+                started_at=TRADING_MID - timedelta(days=4),
+                stopped_at=TRADING_MID - timedelta(days=4)),
+            PipelineSnapshot(
+                status="SUCCEEDED", verdict="COMPLETE", role="exercise",
+                started_at=TRADING_MID - timedelta(hours=5),
+                stopped_at=TRADING_MID - timedelta(hours=1)),
+        )
+        assert s.dot == RED  # NOT cleared by the exercise success
+        assert "newer daily EXERCISE run COMPLETE" in s.reason
+
+    def test_older_exercise_run_adds_no_note(self):
+        s = _weekly_pair(
+            PipelineSnapshot(
+                status="SUCCEEDED", verdict="COMPLETE", role="weekly",
+                started_at=TRADING_MID - timedelta(hours=2),
+                stopped_at=TRADING_MID - timedelta(hours=1)),
+            PipelineSnapshot(
+                status="FAILED", verdict="FAILED", role="exercise",
+                started_at=TRADING_MID - timedelta(days=2),
+                stopped_at=TRADING_MID - timedelta(days=2)),
+        )
+        assert s.dot == GRAY
+        assert "EXERCISE" not in s.reason
+
+    def test_no_exercise_snapshot_leaves_cadence_reason_untouched(self):
+        snap = PipelineSnapshot(
+            status="FAILED", verdict="FAILED", role="weekly",
+            started_at=TRADING_MID - timedelta(days=4),
+            stopped_at=TRADING_MID - timedelta(days=4))
+        assert _pipe("weekly", snap).reason == _weekly_pair(
+            snap, PipelineSnapshot(status="NO_EXECUTIONS")).reason
+
+    def test_exercise_overdue_is_anchored_to_the_last_session_close(self):
+        # Mon 2026-07-06 close (20:00 UTC) + 2h postclose + 2h margin ⇒ the
+        # exercise run for Monday's session is due by Tue 00:00 UTC. At
+        # TRADING_MID (Tue 15:00 UTC) that deadline is long past.
+        prev_close = datetime(2026, 7, 6, 20, 0, tzinfo=timezone.utc)
+
+        def _ex(snap):
+            return resolve_pipeline("weekly_exercise", _inputs(
+                pipelines={"weekly_exercise": snap},
+                prev_session_close_utc=prev_close))
+
+        # Ran after Monday's close — on schedule.
+        ok = _ex(PipelineSnapshot(
+            status="SUCCEEDED", verdict="COMPLETE", role="exercise",
+            started_at=prev_close + timedelta(minutes=53),
+            stopped_at=prev_close + timedelta(hours=4)))
+        assert ok.dot == GRAY
+
+        # Newest run predates Monday's close ⇒ Monday's exercise never ran.
+        # This is the case a same-UTC-day comparison could never catch: the
+        # deadline lands at midnight, after the day it belongs to has rolled.
+        missed = _ex(PipelineSnapshot(
+            status="SUCCEEDED", verdict="COMPLETE", role="exercise",
+            started_at=prev_close - timedelta(days=1),
+            stopped_at=prev_close - timedelta(days=1)))
+        assert missed.dot == YELLOW
+        assert "overdue" in missed.reason
+
+    def test_exercise_expectation_declines_without_a_session_anchor(self):
+        # prev_session_close_utc=None (loader could not resolve one) must
+        # degrade to "not expected" — never a false overdue.
+        s = _pipe("weekly_exercise", PipelineSnapshot(
+            status="SUCCEEDED", verdict="COMPLETE", role="exercise",
+            started_at=TRADING_MID - timedelta(days=9),
+            stopped_at=TRADING_MID - timedelta(days=9)))
+        assert s.dot == GRAY
+        assert "overdue" not in s.reason
+
+
+class TestPipelineRoleCoverage:
+    """The total classifier over pipeline_role (config#5590): a role minted
+    by a producer that no row here classifies must be LOUD, not silent."""
+
+    def test_green_when_every_role_is_classified(self):
+        s = resolve_pipeline_role_coverage(_inputs())
+        assert s.dot == GREEN
+        assert s.component_id == "pipeline_role_coverage"
+
+    def test_yellow_names_the_unrecognized_role_and_state_machine(self):
+        s = resolve_pipeline_role_coverage(_inputs(unrecognized_roles=(
+            ("ne-weekly-freshness-pipeline", "exercise-v2",
+             "2026-07-07T14:00:00+00:00"),
+        )))
+        assert s.dot == YELLOW
+        assert "exercise-v2" in s.reason
+        assert "ne-weekly-freshness-pipeline" in s.reason
+        assert s.detail[0]["pipeline_role"] == "exercise-v2"
+
+    def test_known_roles_cover_the_producer_vocabulary(self):
+        # Every role the fleet's producers mint today. A new one added to a
+        # producer repo without landing here is what this row detects.
+        assert {"weekly", "daily", "eod"} <= KNOWN_PIPELINE_ROLES
+        assert RECOVERY_PIPELINE_ROLES <= KNOWN_PIPELINE_ROLES
+        assert EXERCISE_PIPELINE_ROLES <= KNOWN_PIPELINE_ROLES
+        assert {"smoke", "shell-run", "backfill", "operator-replay"} <= (
+            KNOWN_PIPELINE_ROLES
+        )
+
+
 # ── Groomer ─────────────────────────────────────────────────────────────────
 
 
@@ -622,10 +803,21 @@ class TestCiWatch:
 
 class TestResolveFleet:
     def test_returns_all_components_in_known_groups(self):
+        # 13 → 14: `fleet_checks` added (config-I5548).
+        # 14 → 16 (config#5590): `pipeline_weekly_exercise` — the weekly SF
+        # now runs a SECOND cadence (postclose-chained exercise runs,
+        # config#5489) whose verdict must not be folded into the Saturday
+        # cadence row — and `pipeline_role_coverage`, the total classifier
+        # that makes the next unmodelled pipeline_role loud instead of
+        # silent. The pinned count is deliberate — it forces a conscious
+        # call whenever the Fleet Status row set changes, since adding rows
+        # is how a status page stops being readable. `fleet_checks` is ONE
+        # rolled-up row for every scheduled check precisely to keep that
+        # number from growing per check.
         statuses = resolve_fleet(_inputs())
-        assert len(statuses) == 13
+        assert len(statuses) == 16
         assert {s.group for s in statuses} <= set(GROUP_ORDER)
-        assert len({s.component_id for s in statuses}) == 13
+        assert len({s.component_id for s in statuses}) == 16
 
     def test_worst_dot_severity_order(self):
         statuses = resolve_fleet(_inputs(trading_instance_state="stopped"))

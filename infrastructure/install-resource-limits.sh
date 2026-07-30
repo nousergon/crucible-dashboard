@@ -41,9 +41,13 @@ DROPIN_NAME="99-resource-limits.conf"
 # ExecStart, Environment, or other settings — so removing them loses nothing.
 # They are removed rather than left in place because dead config that no longer
 # takes effect is exactly the drift this mechanism exists to eliminate.
-# NOTE: morning-signal.service.d/10-memory.conf is deliberately NOT touched —
-# morning-signal is timer-driven, out of this budget's scope, and its drop-in
-# is already tracked in VCS.
+# NOTE: morning-signal.service.d/10-memory.conf is deliberately NOT touched.
+# It is a TIMER JOB: since 2026-07-29 it is declared in budget.yaml's
+# `timer_jobs:` and IS checked (drift + the batch-headroom bound), but it is not
+# RENDERED here — this script only writes drop-ins for `services:`, and a timer
+# job's caps live with the unit that owns them. Checked, not rendered; the older
+# note said "out of this budget's scope", which stopped being true when the
+# declaration replaced the suppression.
 LEGACY_NAMES=("override.conf" "10-memory.conf")
 
 DRY_RUN=0
