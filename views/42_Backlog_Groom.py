@@ -47,6 +47,8 @@ Page layout (2026-07-14 readability redesign):
 
 from __future__ import annotations
 
+from typing import Any
+
 import datetime as _dt
 import os
 import sys
