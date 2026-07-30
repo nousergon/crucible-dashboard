@@ -1,5 +1,5 @@
 [Unit]
-Description=Publish cgroup OOM-kill delta to CloudWatch (alpha-engine-config-I4486)
+Description=Publish cgroup memory-kill delta to CloudWatch (alpha-engine-config-I4486)
 Documentation=https://github.com/nousergon/nous-ergon-ops/blob/main/policies/shared-application-host-policy.md
 After=network-online.target
 Wants=network-online.target
