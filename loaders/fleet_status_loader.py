@@ -35,11 +35,13 @@ import os
 import subprocess
 import urllib.error
 import urllib.request
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time as dtime, timedelta, timezone
 
 import streamlit as st
 
 from fleet_status import (
+    EXERCISE_PIPELINE_ROLES,
+    KNOWN_PIPELINE_ROLES,
     RECOVERY_PIPELINE_ROLES,
     FleetInputs,
     GroomSnapshot,
@@ -49,6 +51,7 @@ from fleet_status import (
 from loaders.pipeline_status_loader import (
     LoadOutcome,
     derive_cycle_verdict,
+    list_recent_pipeline_runs_for_arn,
     read_pipeline_state_with_fallback,
 )
 from loaders.pr_merge_loader import _github_token
@@ -93,11 +96,41 @@ _LIVE_UNIT_FILE = "/etc/systemd/system/nous-ergon-live.service"
 # (Option-D: cadence runs, not smoke/recovery overlays).
 _REGION = "us-east-1"
 _ACCOUNT_ID = "711398986525"
-_PIPELINES = {
-    "weekly": ("ne-weekly-freshness-pipeline", "weekly"),
-    "preopen": ("ne-preopen-trading-pipeline", "daily"),
-    "postclose": ("ne-postclose-trading-pipeline", "eod"),
+#
+# Each entry is (state-machine name, role_filter). The filter is explicit
+# per row rather than derived, because the rows do NOT all want the same
+# rule: a cadence row unions its cadence role with the recovery overlays
+# that can complete its cycle (config#3085), while the exercise row
+# (config#5489) is scoped to ``exercise`` ALONE — a recovery overlay is not
+# an exercise run, and an exercise run never completes the cadence cycle.
+_PIPELINES: dict[str, tuple[str, frozenset]] = {
+    "weekly": (
+        "ne-weekly-freshness-pipeline",
+        frozenset({"weekly"}) | RECOVERY_PIPELINE_ROLES,
+    ),
+    "preopen": (
+        "ne-preopen-trading-pipeline",
+        frozenset({"daily"}) | RECOVERY_PIPELINE_ROLES,
+    ),
+    "postclose": (
+        "ne-postclose-trading-pipeline",
+        frozenset({"eod"}) | RECOVERY_PIPELINE_ROLES,
+    ),
+    "weekly_exercise": ("ne-weekly-freshness-pipeline", EXERCISE_PIPELINE_ROLES),
 }
+
+# Rows whose snapshot must come from a LIVE role-matched read or not at all.
+# ``read_pipeline_state_with_fallback`` degrades two ways that are safe for a
+# cadence row and WRONG for the exercise row, because both fall back to a run
+# of a different role on the SAME state machine: LIVE_ROLE_FALLBACK (no
+# role match in the search window ⇒ most-recent overall) and CACHE (the S3
+# last-good cache is keyed by ARN alone, and this SF now has two rows). For
+# these keys a degraded read is reported as unavailable rather than
+# rendered as somebody else's run.
+_ROLE_STRICT_KEYS = frozenset({"weekly_exercise"})
+
+# How many recent executions per SF to classify for unrecognized roles.
+_ROLE_SCAN_LIMIT = 5
 
 
 def _arn_for(sf_name: str) -> str:
@@ -222,14 +255,34 @@ def _pipeline_snapshots() -> dict[str, PipelineSnapshot]:
     role already in this set; fleet_status.py's resolver tells it apart
     from a first-try run via the execution-name prefix instead (see
     fleet_status.FAST_PATH_RERUN_NAME_PREFIX).
+
+    The ``weekly_exercise`` row (config#5489/#5520) shares the weekly SF's
+    ARN with the cadence row but filters to ``exercise`` alone, and is
+    strict about degraded reads — see ``_ROLE_STRICT_KEYS``.
     """
     snaps: dict[str, PipelineSnapshot] = {}
-    for key, (sf_name, role) in _PIPELINES.items():
+    for key, (sf_name, role_filter) in _PIPELINES.items():
         result = read_pipeline_state_with_fallback(
-            _arn_for(sf_name), role_filter={role} | RECOVERY_PIPELINE_ROLES
+            _arn_for(sf_name), role_filter=set(role_filter)
         )
         if result.outcome == LoadOutcome.NO_EXECUTIONS:
             snaps[key] = PipelineSnapshot(status="NO_EXECUTIONS")
+            continue
+        if key in _ROLE_STRICT_KEYS and result.outcome != LoadOutcome.LIVE:
+            # A non-LIVE outcome on a shared ARN means "a run of some OTHER
+            # role" — for this row that is indistinguishable from "no
+            # exercise run yet", so say so rather than render it.
+            if result.outcome == LoadOutcome.LIVE_ROLE_FALLBACK:
+                snaps[key] = PipelineSnapshot(status="NO_EXECUTIONS")
+            else:
+                snaps[key] = PipelineSnapshot(
+                    status="UNAVAILABLE",
+                    error=(
+                        result.error_message
+                        or "role-scoped live read unavailable (ARN-keyed cache "
+                        "cannot be attributed to this role)"
+                    ),
+                )
             continue
         if result.run is None:
             snaps[key] = PipelineSnapshot(
@@ -257,6 +310,79 @@ def _pipeline_snapshots() -> dict[str, PipelineSnapshot]:
             execution_name=run.execution_name,
         )
     return snaps
+
+
+def _prev_session_close_utc(now: datetime) -> datetime | None:
+    """Close (UTC) of the most recently COMPLETED NYSE session.
+
+    The exercise run is launched by postclose, so "should it have run by
+    now" hangs off the last session that actually closed — walking back
+    over weekends and holidays instead of assuming yesterday (config#5489).
+    Returns None if no closed session is found in the lookback window; the
+    resolver then declines to judge rather than raise a false alarm.
+    """
+    from fleet_status import market_hours_utc
+
+    day = now.date()
+    for _ in range(12):  # covers the longest fleet holiday gap with margin
+        if is_trading_day(day):
+            # NOON UTC, not midnight: market_hours_utc resolves the session
+            # in exchange-local time, and 00:00 UTC is still the PREVIOUS
+            # day in New York — anchoring there silently returns the wrong
+            # session's close (measured while writing this).
+            _, close_utc = market_hours_utc(
+                datetime.combine(day, dtime(12, 0), tzinfo=timezone.utc)
+            )
+            if close_utc <= now:
+                return close_utc
+        day -= timedelta(days=1)
+    logger.warning(
+        "fleet_status: no completed trading session within lookback of %s", now
+    )
+    return None
+
+
+def _unrecognized_roles() -> tuple[tuple[str, str, str], ...]:
+    """(state_machine, pipeline_role, started_utc) for recent executions whose
+    role is outside :data:`fleet_status.KNOWN_PIPELINE_ROLES`.
+
+    Backs ``resolve_pipeline_role_coverage``. Scans the newest
+    ``_ROLE_SCAN_LIMIT`` executions per state machine with NO role filter —
+    the point is precisely to see the roles the filters would drop. An
+    execution with no role at all is skipped: untagged manual runs are
+    legitimate, only a role nobody classifies is a finding (config#5590).
+
+    Errors WARN and return what was collected — this is a detector on top of
+    the pipeline rows, and it must never take the page down with it.
+    """
+    found: list[tuple[str, str, str]] = []
+    seen_arns: set[str] = set()
+    for _key, (sf_name, _roles) in _PIPELINES.items():
+        arn = _arn_for(sf_name)
+        if arn in seen_arns:  # weekly + weekly_exercise share one SF
+            continue
+        seen_arns.add(arn)
+        try:
+            summaries = list_recent_pipeline_runs_for_arn(
+                arn, limit=_ROLE_SCAN_LIMIT
+            )
+        except Exception as exc:  # noqa: BLE001 — detector must not break page
+            logger.warning(
+                "fleet_status role-coverage scan failed for %s: %s", sf_name, exc
+            )
+            continue
+        for summary in summaries:
+            role = summary.pipeline_role
+            if not role or role in KNOWN_PIPELINE_ROLES:
+                continue
+            found.append(
+                (
+                    sf_name,
+                    role,
+                    summary.start_utc.isoformat() if summary.start_utc else "",
+                )
+            )
+    return tuple(found)
 
 
 # ── S3 artifacts ────────────────────────────────────────────────────────────
@@ -486,6 +612,19 @@ def _live_service_ok() -> bool | None:
 # ── Public API ──────────────────────────────────────────────────────────────
 
 
+def _check_envelopes() -> tuple:
+    """Fleet check results, already staleness-interpreted. Never raises: a
+    probe failure yields an empty tuple, which resolve_fleet_checks renders
+    GRAY ("probe unavailable") rather than GREEN — an unreadable check surface
+    must not look like a healthy one."""
+    try:
+        from loaders.fleet_checks_loader import load_check_results
+        return tuple(load_check_results())
+    except Exception:  # noqa: BLE001 -- rendered as GRAY by the resolver
+        logger.warning("fleet check results unavailable", exc_info=True)
+        return ()
+
+
 def gather_fleet_inputs() -> FleetInputs:
     """One coherent snapshot for fleet_status.resolve_fleet."""
     now = datetime.now(timezone.utc)
@@ -495,6 +634,7 @@ def gather_fleet_inputs() -> FleetInputs:
     ci_watch = _ci_watch_snapshot()
     return FleetInputs(
         now=now,
+        check_envelopes=_check_envelopes(),
         is_trading_day=is_trading_day(date.today()),
         ec2_available=ec2["available"],
         ec2_error=ec2["error"],
@@ -503,6 +643,8 @@ def gather_fleet_inputs() -> FleetInputs:
         live_service_ok=_live_service_ok(),
         intraday_nav_age_s=_intraday_nav_age_s(),
         pipelines=_pipeline_snapshots(),
+        unrecognized_roles=_unrecognized_roles(),
+        prev_session_close_utc=_prev_session_close_utc(now),
         heartbeat=hb,
         check_results=cr,
         groom=_groom_snapshot(ec2),
