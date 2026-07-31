@@ -37,8 +37,8 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 import pandas as pd
-import streamlit as st
 
+from loaders.cache import cached
 from loaders.s3_loader import (
     _fetch_s3_json,
     _research_bucket,
@@ -244,7 +244,7 @@ def _iter_eval_artifacts_in_window(
     return out
 
 
-@st.cache_data(ttl=900)
+@cached(ttl=900)
 def load_eval_artifacts(
     start_date: date | None = None,
     end_date: date | None = None,
@@ -295,7 +295,7 @@ _RUBRIC_PATH_TEMPLATE = "research/prompts/{rubric_id}.txt"
 _RUBRIC_PACKAGE_PATH_TEMPLATE = "experiments/{experiment_id}/research/prompts/{rubric_id}.txt"
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@cached(ttl=86400)
 def load_rubric_text(rubric_id: str) -> str | None:
     """Fetch the rubric prompt's explicit 1/3/5 anchor text for display.
 
@@ -386,7 +386,7 @@ def _score_uncertainty(dim_scores: list[dict] | None, rubric_midpoint: float = 3
     return sum(abs(s - rubric_midpoint) for s in scores) / len(scores)
 
 
-@st.cache_data(ttl=300)
+@cached(ttl=300)
 def load_recent_eval_artifacts_for_review(
     n: int = 10,
     *,
@@ -476,7 +476,7 @@ def _list_reviewed_keys(bucket: str) -> list[str]:
     return keys
 
 
-@st.cache_data(ttl=60)
+@cached(ttl=60)
 def load_reviewed_ids(*, bucket: str | None = None) -> set[str]:
     """All ``review_id``s already submitted across the per-date JSONL
     archives. Short TTL so the UI's submit-then-refresh flow reflects
@@ -570,7 +570,7 @@ def save_calibration_review(review: dict, *, bucket: str | None = None) -> bool:
 _SPOTCHECK_PREFIX = "decision_artifacts/_spotcheck/"
 
 
-@st.cache_data(ttl=300)
+@cached(ttl=300)
 def load_recent_evals_for_spotcheck(
     n: int = 10,
     *,
@@ -620,7 +620,7 @@ def load_recent_evals_for_spotcheck(
     return out[:n]
 
 
-@st.cache_data(ttl=900)
+@cached(ttl=900)
 def load_judged_artifact(
     s3_key: str | None, *, bucket: str | None = None,
 ) -> dict | None:

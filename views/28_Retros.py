@@ -34,6 +34,7 @@ import streamlit as st
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from loaders.s3_loader import _fetch_s3_json, _research_bucket
+from loaders.cache import cached
 
 RETRO_KEY = "changelog/retro_candidates.json"
 # Mirrors the registry SLA (interval 1d + 2d grace): the feed is regenerated
@@ -49,7 +50,7 @@ _SEVERITY_BADGE = {
 }
 
 
-@st.cache_data(ttl=900)
+@cached(ttl=900)
 def _load_retro_feed() -> dict | None:
     return _fetch_s3_json(_research_bucket(), RETRO_KEY)
 

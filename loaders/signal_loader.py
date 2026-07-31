@@ -6,8 +6,8 @@ Wraps s3_loader functions to provide structured DataFrames from signals.json.
 from datetime import date
 
 import pandas as pd
-import streamlit as st
 
+from loaders.cache import cached
 from loaders.s3_loader import (
     load_config,
     list_s3_prefixes,
@@ -52,7 +52,7 @@ def _ttl(key: str) -> int:
 # ---------------------------------------------------------------------------
 
 
-@st.cache_data(ttl=900)
+@cached(ttl=900)
 def get_available_signal_dates() -> list[str]:
     """
     List s3://alpha-engine-research/signals/ and return all available date
@@ -68,7 +68,7 @@ def get_available_signal_dates() -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-@st.cache_data(ttl=900)
+@cached(ttl=900)
 def load_signals(date_str: str | None = None) -> dict | None:
     """
     Load signals.json for *date_str* (YYYY-MM-DD). Defaults to today's date.
@@ -379,7 +379,7 @@ def entrant_detail_df(
     return df
 
 
-@st.cache_data(ttl=900)
+@cached(ttl=900)
 def load_cio_decisions(date_str: str) -> dict | None:
     """Load + unwrap the CIO decision archive for *date_str*. Returns the
     output dict (ic_decisions / advanced_tickers / entry_theses) or None.

@@ -67,6 +67,7 @@ from loaders.s3_loader import (
 )
 from shared.formatters import format_dollar, regime_label
 from shared.normalizers import to_decimal_series
+from loaders.cache import cached
 
 # ---------------------------------------------------------------------------
 # Page config
@@ -191,7 +192,7 @@ def _compute_cumulative_alpha(eod_df: pd.DataFrame) -> float | None:
     return None
 
 
-@st.cache_data(ttl=900)
+@cached(ttl=900)
 def _load_latest_eod_report() -> dict | None:
     """Latest eod_report.json — the SAME headline source the Performance
     page renders (config#1989): home and Performance must never disagree on
