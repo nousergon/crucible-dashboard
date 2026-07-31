@@ -797,6 +797,38 @@ snapshot_problems() {
 # Gauges flow on every tick regardless of health outcome (see emit_metrics).
 emit_metrics
 
+# Per-unit memory headroom onto the console surface (config-I5863).
+#
+# ONCE PER RUN, HERE, AND NOT INSIDE snapshot_problems. snapshot_problems is
+# sampled up to RETRY_ATTEMPTS times for confirmation; publishing from there
+# would write the envelope four times per tick and, worse, would tie the console
+# row to the confirmation intersection — so a condition that self-heals within
+# the window would leave the console showing nothing at all, which is the state
+# the surface exists to make impossible.
+#
+# BEFORE the EXIT trap re-baselines the throttle counters, so the delta this
+# publishes is the same one classify_throttle_delta alerts on. Reversing these
+# two lines makes every published delta zero, and a zero delta is exactly what a
+# quiet box looks like.
+#
+# Unconditional on health, like emit_metrics above: a surface that publishes
+# only when something is wrong cannot be distinguished from one that has died.
+if [ -r "$BUDGET_CHECK" ]; then
+    "$VENV_PY" "$BUDGET_CHECK" --emit-check --quiet >/dev/null 2>&1
+    emit_check_rc=$?
+    # 0, 1 and 2 are budget VERDICTS. They are already reported by the
+    # --installed invocation inside snapshot_problems; treating them as failures
+    # here would print an error line on every tick the box is merely tight. Only
+    # rc=3 (the check could not run at all) is news, and only to the journal —
+    # this is a rendering path, and a rendering failure must not manufacture a
+    # box-health problem. The console shows a missing artifact as `unreadable`,
+    # never `ok`, so the gap stays visible where it belongs.
+    if [ "$emit_check_rc" -eq 3 ]; then
+        echo "box_health: headroom console publish could not run (rc=3)" >&2
+    fi
+    unset emit_check_rc
+fi
+
 # Re-baseline the throttle counters on the way out — once per RUN, after every
 # confirmation sample has read the OLD baseline. An EXIT trap rather than a
 # call at the bottom because the all-healthy path `exit 0`s early; without the
