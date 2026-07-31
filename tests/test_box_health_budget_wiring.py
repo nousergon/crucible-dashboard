@@ -124,3 +124,63 @@ def test_budget_exit_code_is_captured_not_masked():
         "command's exit status behind local's own"
     )
     assert re.search(r"budget_rc=\$\?", BOX_HEALTH)
+
+
+# ── the console rendering path (config-I5863) ─────────────────────────────
+
+def test_box_health_publishes_the_headroom_console_row():
+    """observability-policy.md §8.1: the signal §3.3 requires must be RENDERED.
+
+    Without this invocation, --emit-check is dead code and per-service headroom
+    reaches no surface at all -- which is the state that let dashboard.service
+    sit at 98.5% of its soft cap on 2026-07-31 with nothing on the console
+    saying so.
+    """
+    assert "--emit-check" in BOX_HEALTH, (
+        "box_health.sh does not invoke check_memory_budget.py --emit-check. "
+        "The console row is then never published and the check renders as "
+        "`unreadable` forever."
+    )
+
+
+def test_headroom_publish_runs_before_the_baseline_is_rewritten():
+    """LOAD-BEARING ORDERING.
+
+    throttle_baseline_write() advances the counters the delta is measured
+    against. Publishing after it would make every published delta zero, and a
+    zero delta is exactly what a quiet box looks like -- the console would
+    report "nothing throttling" on the tick that throttled 1020 times.
+    """
+    emit_at = BOX_HEALTH.index("--emit-check")
+    trap_at = BOX_HEALTH.index("trap throttle_baseline_write EXIT")
+    assert emit_at < trap_at, (
+        "the headroom publish must run before the EXIT trap that re-baselines "
+        "the throttle counters"
+    )
+
+
+def test_headroom_publish_is_outside_snapshot_problems():
+    """snapshot_problems is sampled up to RETRY_ATTEMPTS times for confirmation.
+
+    Publishing from inside it would write the envelope four times per tick AND
+    tie the console row to the confirmation intersection, so a condition that
+    self-healed within the window would leave the console showing nothing --
+    the opposite of what the surface is for.
+    """
+    body = BOX_HEALTH[BOX_HEALTH.index("snapshot_problems() {"):
+                      BOX_HEALTH.index("# Gauges flow on every tick")]
+    assert "--emit-check" not in body, (
+        "the headroom publish belongs at run scope, not inside the sampled "
+        "snapshot function"
+    )
+
+
+def test_a_budget_verdict_is_not_reported_as_a_publish_failure():
+    """--emit-check implies --installed, so it exits 1 on a breach and 2 on a
+    hygiene finding. Both are normal verdicts already reported by the snapshot
+    path; treating them as publish failures would print an error line on every
+    tick the box is merely tight. Only rc=3 -- could not run -- is news.
+    """
+    assert re.search(r'emit_check_rc" -eq 3', BOX_HEALTH), (
+        "only rc=3 (check could not run) may be reported from the publish path"
+    )
