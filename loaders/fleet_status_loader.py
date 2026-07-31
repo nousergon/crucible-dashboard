@@ -37,7 +37,6 @@ import urllib.error
 import urllib.request
 from datetime import date, datetime, time as dtime, timedelta, timezone
 
-import streamlit as st
 
 from fleet_status import (
     EXERCISE_PIPELINE_ROLES,

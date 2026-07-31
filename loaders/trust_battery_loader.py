@@ -13,7 +13,6 @@ import logging
 import urllib.error
 import urllib.request
 
-import streamlit as st
 
 from loaders.pr_merge_loader import _github_token
 from loaders.cache import cached

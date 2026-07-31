@@ -23,7 +23,6 @@ import logging
 from datetime import date, timedelta
 
 import pandas as pd
-import streamlit as st
 
 from loaders.changelog_loader import _ENTRY_PREFIX, _entry_to_row
 from loaders.s3_loader import _research_bucket, get_s3_client
