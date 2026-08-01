@@ -43,6 +43,7 @@ from loaders.s3_loader import (
     load_daily_data_health,
 )
 from loaders.utils import production_feature_set, research_feature_set
+from loaders.cache import cached
 
 
 
@@ -53,7 +54,7 @@ st.divider()
 # ---------------------------------------------------------------------------
 
 
-@st.cache_data(ttl=900)
+@cached(ttl=900)
 def _load_parquet(bucket: str, key: str) -> pd.DataFrame | None:
     raw = _s3_get_object(bucket, key)
     if raw is None:
@@ -64,7 +65,7 @@ def _load_parquet(bucket: str, key: str) -> pd.DataFrame | None:
         return None
 
 
-@st.cache_data(ttl=900)
+@cached(ttl=900)
 def _find_latest_feature_date(bucket: str, max_lookback: int = 10) -> str | None:
     for offset in range(max_lookback):
         d = (date.today() - timedelta(days=offset)).isoformat()
@@ -74,12 +75,12 @@ def _find_latest_feature_date(bucket: str, max_lookback: int = 10) -> str | None
     return None
 
 
-@st.cache_data(ttl=900)
+@cached(ttl=900)
 def _load_drift_report(bucket: str, date_str: str) -> dict | None:
     return _fetch_s3_json(bucket, f"predictor/metrics/drift_{date_str}.json")
 
 
-@st.cache_data(ttl=900)
+@cached(ttl=900)
 def _load_registry(bucket: str) -> list[dict] | None:
     data = _fetch_s3_json(bucket, "features/registry.json")
     if isinstance(data, list):
@@ -89,12 +90,12 @@ def _load_registry(bucket: str) -> list[dict] | None:
     return data
 
 
-@st.cache_data(ttl=900)
+@cached(ttl=900)
 def _load_training_feature_stats(bucket: str) -> dict | None:
     return _fetch_s3_json(bucket, "predictor/metrics/training_feature_stats.json")
 
 
-@st.cache_data(ttl=900)
+@cached(ttl=900)
 def _get_s3_last_modified(bucket: str, key: str) -> str | None:
     try:
         client = get_s3_client()
@@ -104,12 +105,12 @@ def _get_s3_last_modified(bucket: str, key: str) -> str | None:
         return None
 
 
-@st.cache_data(ttl=900)
+@cached(ttl=900)
 def _load_predictions_meta(bucket: str) -> dict | None:
     return _fetch_s3_json(bucket, "predictor/predictions/latest.json")
 
 
-@st.cache_data(ttl=900)
+@cached(ttl=900)
 def _load_feature_list_meta(bucket: str) -> dict | None:
     return _fetch_s3_json(bucket, "predictor/weights/meta/feature_list.json")
 

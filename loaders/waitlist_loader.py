@@ -35,6 +35,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 import streamlit as st
+from loaders.cache import cached
 
 logger = logging.getLogger(__name__)
 
@@ -194,7 +195,7 @@ def _fetch_probe_status() -> dict[str, Any]:
 # ── Public API (cached) ──────────────────────────────────────────────────────
 
 
-@st.cache_data(ttl=_CACHE_TTL_S, show_spinner=False)
+@cached(ttl=_CACHE_TTL_S)
 def load_waitlist_signups() -> dict[str, Any]:
     """Per-product waitlist signup counts from Cloudflare D1 (15-min cache).
 
@@ -232,7 +233,7 @@ def load_waitlist_signups() -> dict[str, Any]:
     }
 
 
-@st.cache_data(ttl=_CACHE_TTL_S, show_spinner=False)
+@cached(ttl=_CACHE_TTL_S)
 def load_waitlist_probe() -> dict[str, Any]:
     """Latest ``waitlist-probe`` workflow conclusion (15-min cache).
 

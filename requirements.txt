@@ -121,7 +121,7 @@ narwhals==2.24.0
     # via
     #   altair
     #   plotly
-nousergon-lib @ git+https://github.com/nousergon/nousergon-lib@9fbbfc5ff4716261442902e0525bfdfa637a75a0
+nousergon-lib @ git+https://github.com/nousergon/nousergon-lib@9d159992089eb47b96bacd5acece1f6ca5dc06d9
     # via -r requirements.in
 numpy==2.5.1
     # via
