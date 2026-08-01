@@ -310,8 +310,18 @@ class TestLibVersionPin:
             "nousergon_lib import alias still works via the shim)"
         )
         assert "@main" not in text, "nousergon-lib must be pinned to a tag, not @main"
-        assert "@v0.124.9" in text, (
-            "nousergon-lib should pin to v0.124.9 (config#3059, "
+        assert "@v0.124.29" in text, (
+            "nousergon-lib should pin to v0.124.29 (alpha-engine-config-I5863, "
+            "nousergon-lib#280): adds nousergon_lib.fleet_check_result, the "
+            "fleet check-result envelope, lifted out of "
+            "alpha-engine-config/scripts because this repo became its second "
+            "REPO consumer (shared-code-policy.md section 2). "
+            "infrastructure/check_memory_budget.py --emit-check imports it to "
+            "publish per-service memory headroom to the console; on an earlier "
+            "pin the import fails and box_health.sh logs 'console row NOT "
+            "published' every 10 minutes while rendering nothing, which is the "
+            "exact silent-gap failure the check exists to end. "
+            "Earlier: v0.124.9 (config#3059, "
             "nousergon-lib#226, 6th recurrence of the config#1115/#2372/"
             "#2430 pipeline-status registry drift class: registers 2 "
             "Saturday-SF states [ChallengerShadow, SignalsEnvelope] + 7 "

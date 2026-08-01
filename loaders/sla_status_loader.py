@@ -26,10 +26,10 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-import streamlit as st
 
 from loaders.s3_loader import _research_bucket, download_s3_json, download_s3_yaml
 from sla_status import SlaInputs, SlaRegistryRow
+from loaders.cache import cached
 
 _TTL_SECONDS = 25
 
@@ -43,7 +43,7 @@ _HISTORY_KEY = "_freshness_monitor/history.json"
 _KNOWN_CADENCES = {"saturday_sf", "weekday_sf", "eod_sf", "continuous"}
 
 
-@st.cache_data(ttl=_TTL_SECONDS, show_spinner=False)
+@cached(ttl=_TTL_SECONDS)
 def _load_registry_rows() -> list[dict]:
     """Parse ARTIFACT_REGISTRY.yaml into plain dicts (JSON-able for
     st.cache_data) with ``defaults`` merged in, mirroring the

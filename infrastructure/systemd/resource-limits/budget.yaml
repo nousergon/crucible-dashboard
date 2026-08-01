@@ -92,6 +92,22 @@ reserve_fraction: 0.15    # kernel + page cache headroom => ceiling 3263 MB
 # is max_steady_state_fraction below; this one only prevents the unbounded 2.4x
 # accident. If it ever blocks a MEASURED cap again, that is a signal to re-derive
 # it, not to shave the cap to fit.
+# How close to its SOFT cap a unit may sit before the console row goes
+# `attention` (alpha-engine-config-I5863). Declared here rather than derived,
+# for the same reason the timer dead-man thresholds are: acceptable tightness is
+# a decision, and deriving it from the cap would re-derive the wrong answer in
+# exactly the case where the cap is the thing that is wrong.
+#
+# 0.90 is not arbitrary. Every re-pin this box has recorded happened from inside
+# this band: dashboard.service sat at 96% of a 210M cap (I5237), metron-api at
+# 99.7% of 385M (I5216), and on 2026-07-31 dashboard.service sat at 335/340 MiB
+# -- 98.5% -- and took a 1020-event throttle burst. A threshold at the cap
+# itself only ever fires after the reclaim has already started.
+#
+# This governs the CONSOLE ROW only. It is not a breach and does not page; the
+# invariants that page are the two bounds above.
+headroom_warn_fraction: 0.90
+
 max_overcommit_ratio: 1.20      # sum(memory_max) / ceiling. Currently 1.16.
 max_steady_state_fraction: 0.60 # sum(live memory.current) / RAM. 0.37 on 2026-07-29.
 
