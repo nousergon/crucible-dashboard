@@ -464,10 +464,20 @@ snapshot_problems() {
         echo "watchdog: df probe failed (cannot verify root disk)"
     fi
 
-    # systemd services
+    # systemd services — active AND enabled checks.
+    # A running service that is not `enabled` won't survive a reboot, and
+    # nothing detects this until the box comes back without it (observed
+    # live 2026-07-27: nousergon-auth was running but `disabled`, lost on
+    # first reboot in 53 days — alpha-engine-config-I4790).
+    # Alert-only, never auto-enable — a deliberately-disabled unit (e.g.
+    # a service being decommissioned) must not be silently re-enabled.
     local s
     for s in "${SERVICES[@]}"; do
-        systemctl is-active --quiet "$s" || echo "service down: $s"
+        if systemctl is-active --quiet "$s"; then
+            systemctl is-enabled --quiet "$s" || echo "service running but NOT enabled: $s"
+        else
+            echo "service down: $s"
+        fi
     done
 
     # Unit identity resolvability.
