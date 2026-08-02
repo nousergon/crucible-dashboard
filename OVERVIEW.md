@@ -4,7 +4,7 @@
 
 ## Module purpose
 
-Read-only Streamlit monitoring — portfolio, signals, predictor, execution, eval quality. Powers public `nousergon.ai` live console (transitional — moves to `live.nousergon.ai` once the Astro marketing site lands at apex) + private `console.nousergon.ai`.
+Read-only Streamlit monitoring — portfolio, signals, predictor, execution, eval quality. Powers public `nousergon.ai` live console (transitional — moves to `live.nousergon.ai` once the Astro marketing site lands at apex) + private `dashboard.nousergon.ai` (`console.nousergon.ai` dual-run alias until v2 cutover).
 
 ## Entry points
 
@@ -69,7 +69,7 @@ Read-only Streamlit monitoring — portfolio, signals, predictor, execution, eva
 | Mode | Where | Command |
 |---|---|---|
 | Live console (nousergon.ai today, `live.nousergon.ai` post-Astro) | EC2 `ae-dashboard` (always-on, port 8502) | `nous-ergon-live.service` (systemd) runs `live/app.py` |
-| Private dashboard (`console.nousergon.ai`) | Same EC2, separate Streamlit instance (port 8501) | `dashboard.service` runs `app.py`; Cloudflare Access in front |
+| Private dashboard (`dashboard.nousergon.ai`) | Same EC2, separate Streamlit instance (port 8501) | `dashboard.service` runs `app.py`; Cloudflare Access in front |
 | Local dev | venv | `streamlit run app.py` (or `streamlit run live/app.py`) |
 | Health check | EC2 cron | `python health_checker.py` (6-hourly with SNS on stale data) |
 

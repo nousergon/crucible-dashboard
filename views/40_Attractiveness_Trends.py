@@ -11,7 +11,7 @@ produced by crucible-research (no LLM call, no cost).
 OBSERVE-MODE: this is a measured signal whose forward IC is still being tracked —
 read it as a research lens, not a trade instruction.
 
-Lives on console.nousergon.ai (Cloudflare Access-gated). Native Streamlit chrome
+Lives on dashboard.nousergon.ai (Cloudflare Access-gated). Native Streamlit chrome
 — no set_page_config (app.py's st.navigation owns it).
 """
 from __future__ import annotations

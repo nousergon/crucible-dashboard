@@ -15,7 +15,7 @@ _NAV_LINKS = [
     ("Retros", "/Retros", True),
     ("Blog", "/blog", True),
     ("GitHub", "https://github.com/nousergon/nousergon-docs", False),
-    ("Console", "https://console.nousergon.ai", False),
+    ("Dashboard", "https://dashboard.nousergon.ai", False),
 ]
 
 

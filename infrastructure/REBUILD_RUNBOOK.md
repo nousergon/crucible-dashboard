@@ -105,7 +105,7 @@ curl -s -o /dev/null -w "signal %{http_code}\n" https://signal.thecyphering.com/
 Then confirm the origin is **not** directly reachable (policy T0-2):
 ```
 curl -s -o /dev/null -w "direct-origin %{http_code}\n" \
-  --resolve console.nousergon.ai:443:<new-ip> https://console.nousergon.ai/ -k
+  --resolve dashboard.nousergon.ai:443:<new-ip> https://dashboard.nousergon.ai/ -k
 ```
 Expected: **403 or connection refused**. A 200 here means Cloudflare Access is bypassed.
 

@@ -21,7 +21,7 @@ Complements ``7_Predictor`` (live-inference health + latest promotion state, off
 the manifest) and ``35_Model_Zoo`` (weekly champion/challenger rotation). This
 page is the per-cycle base-retrain record the training email describes.
 
-Lives on console.nousergon.ai (Cloudflare Access-gated). Native Streamlit
+Lives on dashboard.nousergon.ai (Cloudflare Access-gated). Native Streamlit
 chrome — no set_page_config (the st.navigation entrypoint in app.py owns it).
 """
 from __future__ import annotations
