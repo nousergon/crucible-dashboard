@@ -219,6 +219,64 @@ jobs:
           deploy_status: ${{ job.status == 'success' && 'success' || 'failure' }}
           deploy_workflow: deploy.yml
 
+  # Streamlit content-hashed /static/* ESM (PlotlyChart.<hash>.js class,
+  # 2026-08-02): after a successful box deploy, best-effort purge the CF edge
+  # for console|dashboard|live so a sticky immutable entry cannot outlive the
+  # new nginx max-age rewrite. Uses the GHA CLOUDFLARE_API_TOKEN (Pages/Workers
+  # grant) — the box SSM token is Access-only and cannot purge (config-I6080).
+  # Failures here do NOT fail the deploy: the Worker bypass (nous-ergon-ops
+  # streamlit-static-bypass) is the durable edge path; this is the recovery
+  # that lands with the merge button alone.
+  purge-streamlit-static:
+    name: Purge Streamlit static CF cache
+    needs: [deploy]
+    if: ${{ success() && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      - name: Purge edge cache + assert Rocket Loader off
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ZONE_ID: 6d069b20bf36cfaf5b162abeaac41e38
+        run: |
+          set -euo pipefail
+          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
+            echo "::warning::CLOUDFLARE_API_TOKEN secret missing — skip purge (config-I6080)"
+            exit 0
+          fi
+          AUTH="Authorization: Bearer ${CLOUDFLARE_API_TOKEN}"
+          Z="${CF_ZONE_ID}"
+
+          # Rocket Loader rewrites scripts and breaks ESM dynamic import().
+          # Best-effort assert-off; ignore auth errors (narrow token).
+          RL=$(curl -s -H "$AUTH" "https://api.cloudflare.com/client/v4/zones/${Z}/settings/rocket_loader" \
+            | python3 -c 'import json,sys; d=json.load(sys.stdin); print((d.get("result") or {}).get("value","unknown"))' || echo unknown)
+          echo "rocket_loader=$RL"
+          if [ "$RL" = "on" ]; then
+            curl -s -X PATCH -H "$AUTH" -H "Content-Type: application/json" \
+              "https://api.cloudflare.com/client/v4/zones/${Z}/settings/rocket_loader" \
+              --data '{"value":"off"}' \
+              | python3 -c 'import json,sys; d=json.load(sys.stdin); print("rocket_loader_patch", d.get("success"), d.get("errors"))' || true
+          fi
+
+          chmod +x infrastructure/purge_streamlit_static_cache.sh
+          infrastructure/purge_streamlit_static_cache.sh || {
+            echo "::warning::purge_streamlit_static_cache.sh exited non-zero — Worker bypass still covers the class"
+            exit 0
+          }
+
+          # Explicit known-bad chunk from the 2026-08-02 incident (harmless if gone).
+          curl -s -X POST -H "$AUTH" -H "Content-Type: application/json" \
+            "https://api.cloudflare.com/client/v4/zones/${Z}/purge_cache" \
+            --data '{"files":[
+              "https://console.nousergon.ai/static/js/PlotlyChart.CylVV9WQ.js",
+              "https://dashboard.nousergon.ai/static/js/PlotlyChart.CylVV9WQ.js",
+              "https://live.nousergon.ai/static/js/PlotlyChart.CylVV9WQ.js"
+            ]}' \
+            | python3 -c 'import json,sys; d=json.load(sys.stdin); print("plotly_files_purge", d.get("success"), d.get("errors"))' || true
+
   # Alert (Telegram) on genuine post-merge failure of this workflow on the
   # default branch. Reusable workflow + transport in nousergon-lib. config#1128.
   notify-main-failure:
