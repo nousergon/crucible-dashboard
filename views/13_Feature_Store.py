@@ -14,7 +14,7 @@ alpha tuning. Production inference currently consumes a subset
 (~21 features per `meta_model.py:META_FEATURES` + each L1 GBM's
 feature list); expansion is gated on per-component IC discipline.
 
-Lives on console.nousergon.ai (Cloudflare Access-gated). Sources from
+Lives on dashboard.nousergon.ai (Cloudflare Access-gated). Sources from
 existing system outputs only (Decision 11): `features/{date}/*.parquet`,
 `features/registry.json`, `predictor/weights/meta/manifest.json`,
 `predictor/metrics/training_feature_stats.json`,

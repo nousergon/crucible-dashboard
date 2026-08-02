@@ -18,7 +18,7 @@ snapshot) — this is the archival, cross-week zoo view. Sources:
 ``predictor/model_zoo/leaderboard/{date}.json`` + the predictor_outcomes
 tables. No LLM call.
 
-Lives on console.nousergon.ai (Cloudflare Access-gated). Native Streamlit
+Lives on dashboard.nousergon.ai (Cloudflare Access-gated). Native Streamlit
 chrome — no set_page_config (the st.navigation entrypoint in app.py owns it).
 """
 from __future__ import annotations

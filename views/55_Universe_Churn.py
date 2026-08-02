@@ -17,7 +17,7 @@ Over 2026-05-29 → 2026-07-24 the attractiveness top-60 retains ~78% of its mem
 week over week while the scanner cut retains 22-47%: the ranking is stable, and
 the gate is what churns. A view that averaged them would hide exactly that.
 
-Lives on console.nousergon.ai (Cloudflare Access-gated). Native Streamlit chrome
+Lives on dashboard.nousergon.ai (Cloudflare Access-gated). Native Streamlit chrome
 — no set_page_config (app.py's st.navigation owns it).
 """
 from __future__ import annotations

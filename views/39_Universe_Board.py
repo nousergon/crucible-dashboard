@@ -13,7 +13,7 @@ just the ~60 that survived the filter. Reads the typed
 ``scanner/universe/latest.json`` artifact produced by crucible-research
 ``scoring/universe_board.py`` (no LLM call, no cost).
 
-Lives on console.nousergon.ai (Cloudflare Access-gated). Native Streamlit
+Lives on dashboard.nousergon.ai (Cloudflare Access-gated). Native Streamlit
 chrome — no set_page_config (app.py's st.navigation owns it).
 """
 from __future__ import annotations
