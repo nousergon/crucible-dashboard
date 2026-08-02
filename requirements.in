@@ -56,7 +56,7 @@ yfinance>=1.5.1
 # This only surfaced once nousergon-data#975 moved weekly dispatch onto a
 # per-execution spot box that builds this venv from scratch; the long-lived
 # dashboard box had 0.18.8 installed out-of-band, masking the stale pin.
-krepis[openai]>=0.18.8
+krepis[openai]>=0.25.3
 # nousergon-lib (renamed from alpha-engine-lib at v0.60.0) provides
 # setup_logging used by app.py + health_checker.py
 # to attach the FlowDoctorHandler when FLOW_DOCTOR_ENABLED=1, the
