@@ -6,7 +6,8 @@
 # runs low or an expected service/port is down. Quiet on success.
 #
 # Co-resident services it guards (port -> service):
-#   8501 dashboard.service        (alpha-engine console)
+#   8501 dashboard.service        (dashboard.nousergon.ai Streamlit)
+#   5180 nousergon-console.service (console.nousergon.ai v2)
 #   8502 nous-ergon-live.service  (live.nousergon.ai)
 #   8503 mnemon (bun)             (memory.nousergon.ai)
 #   8505 signal.service           (signal.thecyphering.com)
@@ -86,13 +87,13 @@ else
     # than NO monitoring — but say so loudly, because partial coverage that
     # looks total is the exact failure this replaced.
     MANIFEST_OK=0
-    SERVICES=(dashboard.service nous-ergon-live.service signal.service \
+    SERVICES=(dashboard.service nousergon-console.service nous-ergon-live.service signal.service \
               metron-api.service metron-dash-web.service crucible-dash-api.service \
               crucible-dash-web.service litellm-proxy.service llm-egress-proxy.service \
               telos-web.service vires.service mnemon.service nousergon-auth.service \
               nginx.service)
-    PORTS=(8501 8502 8503 8505 8000 3003 8506 3002 3001 8530 4100 8980 8990 443)
-    EXPECTED_SERVICE_COUNT=14
+    PORTS=(8501 5180 8502 8503 8505 8000 3003 8506 3002 3001 8530 4100 8980 8990 443)
+    EXPECTED_SERVICE_COUNT=15
 fi
 # Minimum MemoryHigh events in one 10-min tick before throttling is reported.
 #
