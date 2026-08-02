@@ -144,6 +144,18 @@ max_steady_state_fraction: 0.60 # sum(live memory.current) / RAM. 0.37 on 2026-0
 
 services:
   # ── alpha-engine ────────────────────────────────────────────────────────
+  - unit: nousergon-console.service
+    port: 5180
+    memory_high: 80M
+    memory_max: 112M
+    note: >-
+      nousergon-console v2 (I364). Read-only fleet index; binds 127.0.0.1:5180.
+      Cap sized to keep sum(MemoryMax) under ceiling×1.20 (adding 256M breached
+      1.24×). Steady-state is stdlib server + in-memory index, expected ≪80M;
+      112M is the residual headroom under the existing overcommit ratio without
+      raising it. Unit MemoryMax must match (nousergon-console infrastructure/).
+      Owning repo: nousergon/nousergon-console; this repo only watches it.
+
   - unit: dashboard.service
     port: 8501
     memory_high: 340M
