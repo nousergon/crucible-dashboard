@@ -21,7 +21,7 @@ import logging
 from typing import Any
 
 import pandas as pd
-import streamlit as st
+from loaders.cache import cached
 
 from loaders.s3_loader import (
     _research_bucket,
@@ -194,7 +194,7 @@ def summarize_cost(df: pd.DataFrame | None, capture_date: str) -> dict | None:
 # ── Cached I/O wrappers ──────────────────────────────────────────────────
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@cached(ttl=300)
 def load_pipeline_run(arn: str, role: str) -> dict | None:
     """Most recent cadence run for one Step Function, curated.
 
@@ -212,7 +212,7 @@ def load_pipeline_run(arn: str, role: str) -> dict | None:
         return None
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@cached(ttl=300)
 def load_freshness_summary() -> dict | None:
     """Artifact-freshness SLA counts from the monitor's heartbeat."""
     try:
@@ -224,7 +224,7 @@ def load_freshness_summary() -> dict | None:
         return None
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@cached(ttl=3600)
 def load_research_activity() -> dict | None:
     """Latest research-cycle activity counts from signals.json."""
     try:
@@ -236,7 +236,7 @@ def load_research_activity() -> dict | None:
         return None
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@cached(ttl=3600)
 def load_latest_cost_summary() -> dict | None:
     """Latest weekly LLM-spend total from the cost parquet."""
     try:

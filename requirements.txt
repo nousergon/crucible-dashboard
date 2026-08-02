@@ -6,7 +6,7 @@ annotated-doc==0.0.4
     # via fastapi
 annotated-types==0.8.0
     # via pydantic
-anthropic==0.120.0
+anthropic==0.119.0
     # via flow-doctor
 anyio==4.14.2
     # via
@@ -23,13 +23,13 @@ beautifulsoup4==4.15.0
     # via yfinance
 blinker==1.9.0
     # via streamlit
-boto3==1.43.56
+boto3==1.43.55
     # via
     #   -r requirements.in
     #   flow-doctor
     #   krepis
     #   nousergon-lib
-botocore==1.43.56
+botocore==1.43.55
     # via
     #   boto3
     #   s3transfer
@@ -59,15 +59,13 @@ distro==1.9.0
     #   openai
 docstring-parser==0.18.0
     # via anthropic
-fastapi==0.140.3
+fastapi==0.139.2
     # via -r requirements.in
 flow-doctor==0.8.7
-    # via
-    #   -r requirements.in
-    #   krepis
+    # via krepis
 gitdb==4.0.12
     # via gitpython
-gitpython==3.1.57
+gitpython==3.1.55
     # via streamlit
 h11==0.16.0
     # via
@@ -121,7 +119,7 @@ narwhals==2.24.0
     # via
     #   altair
     #   plotly
-nousergon-lib @ git+https://github.com/nousergon/nousergon-lib@9fbbfc5ff4716261442902e0525bfdfa637a75a0
+nousergon-lib @ git+https://github.com/nousergon/nousergon-lib@9d159992089eb47b96bacd5acece1f6ca5dc06d9
     # via -r requirements.in
 numpy==2.5.1
     # via
@@ -186,7 +184,7 @@ python-dotenv==1.2.2
     #   pydantic-settings
 python-multipart==0.0.32
     # via streamlit
-pytz==2026.3.post1
+pytz==2026.2
     # via yfinance
 pyyaml==6.0.3
     # via
@@ -238,7 +236,7 @@ tenacity==9.1.4
     # via streamlit
 toml==0.10.2
     # via streamlit
-tqdm==4.70.0
+tqdm==4.69.0
     # via openai
 typing-extensions==4.16.0
     # via
@@ -268,6 +266,8 @@ uvicorn==0.51.0
     # via
     #   -r requirements.in
     #   streamlit
+watchdog==6.0.0
+    # via streamlit
 websockets==16.1.1
     # via
     #   streamlit

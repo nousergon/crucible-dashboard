@@ -23,10 +23,10 @@ import logging
 from datetime import date, timedelta
 
 import pandas as pd
-import streamlit as st
 
 from loaders.changelog_loader import _ENTRY_PREFIX, _entry_to_row
 from loaders.s3_loader import _research_bucket, get_s3_client
+from loaders.cache import cached
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +77,7 @@ def _quarantine_to_row(entry: dict) -> dict:
     }
 
 
-@st.cache_data(ttl=900)
+@cached(ttl=900)
 def load_quarantine_entries(days: int = 30) -> pd.DataFrame:
     """Read quarantined entries from the last ``days`` days into a DataFrame.
 

@@ -69,6 +69,7 @@ severity tiering per overseer-policy.md invariant 17.
 from __future__ import annotations
 
 import argparse
+import os
 import pathlib
 import subprocess
 import sys
@@ -87,6 +88,44 @@ BUDGET = pathlib.Path(__file__).parent / "systemd" / "resource-limits" / "budget
 _CGROUP_ROOT = pathlib.Path("/sys/fs/cgroup/system.slice")
 
 _SUFFIX = {"K": 1024, "M": 1024**2, "G": 1024**3}
+
+# ── The console surface (alpha-engine-config-I5863) ────────────────────────
+#
+# observability-policy.md §3.3 requires headroom as a signal in its own right:
+# "memory and disk against their caps, and cgroup throttling where a cap exists.
+# A service pinned at 96% of its memory cap is a finding; a service using 400MB
+# is a number." §8.1 requires it RENDERED, and until this existed none of it
+# reached a console surface -- it travelled as a Telegram page and a journal
+# line, plus AlphaEngine/Box::health_problems, which is deliberately a bare
+# count and cannot name a unit.
+#
+# This does NOT re-implement any detection. Every input below is already
+# computed by this file or by box_health.sh; --emit-check renders their verdict
+# onto the console surface. observability-policy.md §8.2: "a new CONSUMER
+# renders the existing planes' verdicts; it never re-implements a fifth monitor
+# asking a question one of the four already answers."
+CHECK_ID = "box_memory_headroom"
+CHECK_LABEL = "Dashboard box memory headroom (per-service caps + throttling)"
+# box-health.timer fires every 10 minutes and this publishes once per run. The
+# console derives staleness from this, so it has to be the REAL cadence: too
+# high and a dead check reads healthy for longer than it should.
+CHECK_CADENCE_MINUTES = 10
+
+# The counters box_health.sh recorded at the END of its previous run. Reading
+# the same file rather than keeping a second one is the point -- the delta this
+# check reports and the delta box_health.sh alerts on are then the same number
+# by construction, not by two implementations agreeing.
+#
+# $STATE_DIRECTORY is exported by systemd from box-health.service's
+# StateDirectory=; the literal fallback is for running this by hand.
+_THROTTLE_STATE = pathlib.Path(
+    os.environ.get("STATE_DIRECTORY", "/var/lib/box-health")
+) / "cgroup-high-counts"
+
+# Matches box_health.sh's CGROUP_HIGH_DELTA_MIN. A handful of reclaim events
+# during a deploy restart is normal and self-corrects; the at-rest rate on this
+# box is zero, so 10 inside one tick is unambiguously a burst.
+THROTTLE_DELTA_MIN = 10
 
 
 def parse_bytes(value: str) -> int:
@@ -193,6 +232,235 @@ def steady_state_mb(units: list[str]) -> tuple[int, list[str], list[str]]:
     return total, unmeasurable, censored
 
 
+def memory_events_high(unit: str) -> int | None:
+    """The cgroup's lifetime MemoryHigh event count, or None if unreadable.
+
+    Separate from cgroup_value() because memory.events is a key/value table,
+    not a bare integer. None rather than 0 on failure: a unit whose counter
+    cannot be read has not been shown to be quiet, and rendering that as zero
+    is absence-of-signal read as health.
+    """
+    p = _CGROUP_ROOT / unit / "memory.events"
+    try:
+        raw = p.read_text()
+    except OSError:
+        return None
+    for line in raw.splitlines():
+        if line.startswith("high "):
+            try:
+                return int(line.split()[1])
+            except (IndexError, ValueError):
+                return None
+    return None
+
+
+def throttle_baseline() -> dict[str, int]:
+    """Per-unit counters as of the END of box_health.sh's previous run.
+
+    Empty is a legitimate, expected state (first run after a deploy or reboot)
+    and every caller treats it as "no comparison available" rather than as a
+    zero baseline -- a zero baseline would report the cgroup's LIFETIME total
+    as this tick's delta, which is the exact defect box_health.sh's
+    classify_throttle_delta was rewritten to remove (config-I5216).
+    """
+    try:
+        raw = _THROTTLE_STATE.read_text()
+    except OSError:
+        return {}
+    out: dict[str, int] = {}
+    for line in raw.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[1].isdigit():
+            out[parts[0]] = int(parts[1])
+    return out
+
+
+def headroom_rows(spec: dict) -> list[dict]:
+    """One row per unit in budget.yaml, for the console.
+
+    POPULATION IS budget.yaml, NEVER A LIST MAINTAINED HERE. observability-
+    policy.md §2.2: "coverage is derived from this registry and never
+    hand-listed. A hand-maintained list drifts silently -- the dashboard box's
+    watchdog had drifted to 8 of 14 services and omitted nginx, the sole
+    ingress for ten vhosts."
+
+    Every unit yields a row, including one that cannot be measured. A unit
+    dropped for being unreadable is a unit that renders as nothing, and nothing
+    renders as fine.
+    """
+    warn_fraction = float(spec.get("headroom_warn_fraction", 0.90))
+    baseline = throttle_baseline()
+    rows: list[dict] = []
+
+    for svc in spec["services"]:
+        unit = svc["unit"]
+        current = cgroup_value(unit, "memory.current")
+        high = cgroup_value(unit, "memory.high")
+        hard = cgroup_value(unit, "memory.max")
+        peak = cgroup_value(unit, "memory.peak")
+        events = memory_events_high(unit)
+        prev = baseline.get(unit)
+
+        # A counter that went BACKWARDS means the cgroup was recreated (the
+        # service restarted) between runs. Not throttling, and not an error --
+        # the next run re-baselines. Reported as unknown rather than as a
+        # negative or a zero.
+        delta: int | None = None
+        if events is not None and prev is not None and events >= prev:
+            delta = events - prev
+
+        row = {
+            "unit": unit,
+            "current_mb": None if current is None else current // 1024**2,
+            "high_mb": None if high in (None, sys.maxsize) else high // 1024**2,
+            "max_mb": None if hard in (None, sys.maxsize) else hard // 1024**2,
+            "peak_mb": None if peak in (None, sys.maxsize) else peak // 1024**2,
+            "throttle_delta": delta,
+            "censored": bool(censored_observation(unit)),
+            "state": "ok",
+        }
+
+        if current is None:
+            # Distinct from a healthy reading AND from a breach: the unit is not
+            # running, or its cgroup is gone. Which of those it is belongs to
+            # box_health.sh's service check, which owns that question -- this
+            # row says only that headroom is unmeasurable here.
+            row["state"] = "unmeasurable"
+        elif row["high_mb"] is None:
+            # No soft limit at all: no reclaim window before the hard cap. The
+            # aggregate check already treats this as a breach; the row has to
+            # agree rather than render a comfortable-looking percentage.
+            row["state"] = "no_soft_cap"
+        else:
+            used = current / high
+            row["used_fraction"] = round(used, 3)
+            if used > 1.0:
+                row["state"] = "over_soft_cap"
+            elif used >= warn_fraction:
+                row["state"] = "tight"
+            if row["censored"]:
+                # Censored outranks tight: the number the percentage is computed
+                # from is a FLOOR, so "88% of cap" is not a measurement. This box
+                # has been wrong about dashboard.service's working set twice for
+                # exactly this reason (202 MiB and 248 MiB, both floors).
+                row["state"] = "censored"
+            if delta is not None and delta >= THROTTLE_DELTA_MIN and row["state"] == "ok":
+                row["state"] = "throttling"
+
+        rows.append(row)
+
+    return rows
+
+
+def _row_detail(row: dict) -> str:
+    """The one line an operator reads on the console row."""
+    if row["state"] == "unmeasurable":
+        return "no cgroup -- not running, or the unit is gone (see the service check)"
+    parts = []
+    if row["high_mb"] is None:
+        parts.append(f"{row['current_mb']} MiB, NO soft cap (no reclaim window)")
+    else:
+        parts.append(
+            f"{row['current_mb']}/{row['high_mb']} MiB soft "
+            f"({row.get('used_fraction', 0) * 100:.0f}%)"
+        )
+    if row["max_mb"] is not None:
+        parts.append(f"max {row['max_mb']} MiB")
+    if row["peak_mb"] is not None:
+        parts.append(f"peak {row['peak_mb']} MiB")
+    if row["throttle_delta"] is None:
+        # Not "0". No baseline, or the cgroup was recreated -- neither of which
+        # is evidence that nothing throttled.
+        parts.append("throttle delta unknown (no baseline yet)")
+    else:
+        parts.append(f"+{row['throttle_delta']} throttle events this tick")
+    if row["censored"]:
+        parts.append("CENSORED: peak has reached the soft cap, so current is a FLOOR")
+    return ", ".join(parts)
+
+
+# The row states that are findings, and the envelope status each implies. The
+# console's vocabulary is ok/attention/error; this table is the only place the
+# mapping lives so a new row state cannot silently inherit "ok".
+_STATE_STATUS = {
+    "ok": "ok",
+    "throttling": "attention",
+    "tight": "attention",
+    "censored": "attention",
+    "unmeasurable": "attention",
+    "over_soft_cap": "error",
+    "no_soft_cap": "error",
+}
+
+
+def emit_headroom_check(spec: dict, breaches: list[str], hygiene: list[str],
+                        *, dry_run: bool = False) -> str | None:
+    """Publish the fleet-check envelope the console discovers by S3 prefix.
+
+    Imported lazily and never allowed to raise: --declared runs in CI, where
+    nousergon-lib is not installed, and a check must not go red because its
+    telemetry did (the emitter itself makes the same guarantee on the S3 side).
+    """
+    try:
+        from nousergon_lib import fleet_check_result as fcr
+    except ImportError:
+        print("check_memory_budget: nousergon_lib.fleet_check_result "
+              "unavailable -- console row NOT published", file=sys.stderr)
+        return None
+
+    rows = headroom_rows(spec)
+    findings = [{"key": r["unit"], "detail": _row_detail(r)} for r in rows]
+
+    # Timer jobs get rows too, declared as batch rather than silently dropped.
+    # Their cgroups exist only while running, so an absent one is expected here
+    # and must not read as a finding -- but neither may the unit vanish from the
+    # surface (observability-policy.md §8.3 forbids a component disappearing).
+    for job in spec.get("timer_jobs") or []:
+        findings.append({
+            "key": job["unit"],
+            "detail": f"batch unit, cap {job['memory_max']} -- no cgroup between "
+                      f"runs, so headroom is not evaluable at rest (by design)",
+        })
+
+    for b in breaches:
+        findings.append({"key": "BREACH", "detail": b})
+    for h in hygiene:
+        findings.append({"key": "hygiene", "detail": h})
+
+    status = fcr.STATUS_OK
+    if breaches:
+        status = fcr.STATUS_ERROR
+    for r in rows:
+        implied = _STATE_STATUS.get(r["state"], fcr.STATUS_ERROR)
+        if implied == fcr.STATUS_ERROR:
+            status = fcr.STATUS_ERROR
+        elif implied == fcr.STATUS_ATTENTION and status == fcr.STATUS_OK:
+            status = fcr.STATUS_ATTENTION
+    if hygiene and status == fcr.STATUS_OK:
+        status = fcr.STATUS_ATTENTION
+
+    # The summary names the TIGHTEST unit, because that is the one that decides
+    # whether the next cap raise is coming. A summary that reports an average
+    # would have read comfortably on 2026-07-31, when dashboard.service sat at
+    # 98.5% of its soft cap and the box had 1688 MiB free.
+    measured = [r for r in rows if r.get("used_fraction") is not None]
+    throttled = [r for r in rows if (r["throttle_delta"] or 0) >= THROTTLE_DELTA_MIN]
+    if measured:
+        worst = max(measured, key=lambda r: r["used_fraction"])
+        summary = (f"{worst['unit']} at {worst['used_fraction'] * 100:.0f}% of its "
+                   f"soft cap ({worst['current_mb']}/{worst['high_mb']} MiB); "
+                   f"{len(throttled)} unit(s) throttling this tick")
+    else:
+        summary = "no unit's memory could be measured -- headroom is unknown, not fine"
+    if breaches:
+        summary = f"{len(breaches)} budget breach(es); " + summary
+
+    return fcr.emit_result(
+        check_id=CHECK_ID, label=CHECK_LABEL, status=status, summary=summary,
+        cadence_minutes=CHECK_CADENCE_MINUTES, findings=findings, dry_run=dry_run,
+    )
+
+
 # Memory drop-ins that legitimately exist without a budget.yaml entry.
 # BY NAME WITH A REASON, for the same argument the manifest exclusions carry: a
 # bare "ignore anything unexpected" cannot say what it is ignoring.
@@ -264,8 +532,16 @@ def main() -> int:
     mode.add_argument("--installed", action="store_true",
                       help="check systemd's loaded values and assert no drift (on-box mode)")
     ap.add_argument("--quiet", action="store_true", help="only print on failure")
+    ap.add_argument("--emit-check", action="store_true",
+                    help="publish the per-unit headroom fleet-check envelope to "
+                         "the console surface (implies --installed)")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="with --emit-check, build the envelope but write nothing")
     args = ap.parse_args()
-    installed = args.installed and not args.declared
+    # --emit-check renders live cgroup facts, which exist only on the box. Off-box
+    # there is nothing to render, and publishing a declared-mode envelope would put
+    # numbers on the console that no cgroup ever produced.
+    installed = (args.installed or args.emit_check) and not args.declared
 
     spec = yaml.safe_load(BUDGET.read_text())
     reserve = float(spec["reserve_fraction"])
@@ -468,6 +744,28 @@ def main() -> int:
               f"service instead. Either lower a cap against a fresh measurement "
               f"or move the job to a spot instance or Lambda (policy section 4, "
               f"batch-job rule).", file=sys.stderr)
+
+    # Published AFTER every finding is collected and BEFORE the exit code is
+    # chosen, so the console row carries the same verdict the exit code does.
+    # Deliberately unconditional on that verdict: a check that publishes only
+    # when it has something to say is indistinguishable, from the console, from
+    # a check that has stopped running (observability-policy.md §8.3 --
+    # UNREPORTED must never collapse into HEALTHY).
+    if args.emit_check:
+        aggregate: list[str] = list(breaches)
+        if over:
+            aggregate.append(
+                f"aggregate MemoryMax {total_mb} MB is {ratio:.2f}x the "
+                f"{ceiling_mb} MB ceiling (max {max_ratio:.2f}x)")
+        if ss_over:
+            aggregate.append(
+                f"steady-state total {ss_mb} MB is {ss_mb / ram_mb:.0%} of RAM "
+                f"(limit {max_ss:.0%})")
+        if tj_over:
+            aggregate.append(
+                f"timer-job caps total {tj_mb} MB against {tj_headroom_mb} MB "
+                f"of headroom")
+        emit_headroom_check(spec, aggregate, hygiene, dry_run=args.dry_run)
 
     if over or ss_over or tj_over or breaches:
         return 1

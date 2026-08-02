@@ -22,6 +22,7 @@ import sys
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+from loaders.cache import cached
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -38,7 +39,7 @@ from loaders.s3_loader import (
 )
 
 
-@st.cache_data(ttl=900)
+@cached(ttl=900)
 def _load_manifests(bucket: str, module: str, max_days: int = 90) -> list[dict]:
     """Load recent data manifests for a module."""
     client = get_s3_client()
@@ -59,7 +60,7 @@ def _load_manifests(bucket: str, module: str, max_days: int = 90) -> list[dict]:
     return manifests
 
 
-@st.cache_data(ttl=900)
+@cached(ttl=900)
 def _count_s3_objects(bucket: str, prefix: str) -> int:
     client = get_s3_client()
     count = 0
@@ -72,7 +73,7 @@ def _count_s3_objects(bucket: str, prefix: str) -> int:
     return count
 
 
-@st.cache_data(ttl=900)
+@cached(ttl=900)
 def _table_counts() -> dict[str, int]:
     conn = load_research_db()
     if conn is None:
