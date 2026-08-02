@@ -6,7 +6,8 @@
 # runs low or an expected service/port is down. Quiet on success.
 #
 # Co-resident services it guards (port -> service):
-#   8501 dashboard.service        (alpha-engine console)
+#   8501 dashboard.service        (dashboard.nousergon.ai Streamlit)
+#   5180 nousergon-console.service (console.nousergon.ai v2)
 #   8502 nous-ergon-live.service  (live.nousergon.ai)
 #   8503 mnemon (bun)             (memory.nousergon.ai)
 #   8505 signal.service           (signal.thecyphering.com)
