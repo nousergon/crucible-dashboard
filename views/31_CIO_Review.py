@@ -13,7 +13,7 @@ understanding what's going wrong in the committee's selection. Read straight
 from ``cio_evaluations`` + ``team_candidates`` in research.db — no LLM call, no
 cost.
 
-Lives on console.nousergon.ai (Cloudflare Access-gated). Native Streamlit
+Lives on dashboard.nousergon.ai (Cloudflare Access-gated). Native Streamlit
 chrome — no set_page_config (the st.navigation entrypoint in app.py owns it).
 """
 from __future__ import annotations

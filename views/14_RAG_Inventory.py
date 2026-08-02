@@ -6,7 +6,7 @@ document counts by source type, per-ticker coverage rollup, embedding
 stats, ingestion freshness.
 
 Closes Workstream 3.5 of the presentation revamp plan. Lives on
-console.nousergon.ai (Cloudflare Access-gated). The public site
+dashboard.nousergon.ai (Cloudflare Access-gated). The public site
 intentionally describes the corpus only at high level (per
 plan §3.6); detailed inventory stays here.
 
