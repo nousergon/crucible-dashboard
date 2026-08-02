@@ -15,7 +15,7 @@ from the daily optimizer shadow log (`predictor/optimizer_shadow/{date}.json`)
   realized posture: annualized portfolio vol, active share vs SPY, one-way
   turnover, expected alpha, active-position count.
 
-Lives on console.nousergon.ai (Cloudflare Access-gated). Showing specific lever
+Lives on dashboard.nousergon.ai (Cloudflare Access-gated). Showing specific lever
 values is fine here — the disclosure boundary gates *public* surfaces.
 """
 

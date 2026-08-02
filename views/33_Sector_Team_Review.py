@@ -15,7 +15,7 @@ Decision Review pages).
 Sources: ``team_inputs`` + ``team_candidates`` in research.db, and the S3
 envelope ``archive/sector_team_runs/{date}/{team_id}.json``. No LLM call.
 
-Lives on console.nousergon.ai (Cloudflare Access-gated). Native Streamlit
+Lives on dashboard.nousergon.ai (Cloudflare Access-gated). Native Streamlit
 chrome — no set_page_config (the st.navigation entrypoint in app.py owns it).
 """
 from __future__ import annotations

@@ -8,7 +8,7 @@ investment_thesis in research.db). No LLM call — this is the artifact-first
 review surface (ROADMAP L4567 Phase 3); the CLI's free-form `ask` fallback
 (Phase 2) stays in alpha-engine-research for now.
 
-Lives on console.nousergon.ai (Cloudflare Access-gated). Native Streamlit
+Lives on dashboard.nousergon.ai (Cloudflare Access-gated). Native Streamlit
 chrome per [[reference_dashboard_chrome_dichotomy]] — no set_page_config (the
 st.navigation entrypoint in app.py owns it).
 """
