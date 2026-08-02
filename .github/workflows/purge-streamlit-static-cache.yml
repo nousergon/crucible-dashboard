@@ -1,0 +1,74 @@
+name: Purge Streamlit static CF cache
+
+# One-shot / on-demand purge of console|dashboard|live /static/* at the
+# Cloudflare edge. The PlotlyChart.<hash>.js class (2026-08-02): Streamlit
+# emits year-long immutable Cache-Control on content-hashed ESM chunks; a
+# single bad edge response is then sticky until purged.
+#
+# Uses the repo CLOUDFLARE_API_TOKEN secret (Pages:Edit grant — broader than
+# the Access-only SSM parameter on the box). Safe to re-run; no deploy side
+# effects.
+#
+# Also invoked automatically from deploy-on-merge.sh after a requirements.txt
+# install WHEN the box token can purge (today it cannot — this workflow is
+# the operator path until the box token is widened).
+
+on:
+  workflow_dispatch:
+    inputs:
+      also_disable_rocket_loader:
+        description: "If Rocket Loader is on, turn it off (breaks ESM dynamic import)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  purge:
+    name: Purge edge cache for Streamlit static
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout (for the purge script)
+        uses: actions/checkout@v4
+
+      - name: Purge + optional Rocket Loader off
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ZONE_ID: 6d069b20bf36cfaf5b162abeaac41e38
+        run: |
+          set -euo pipefail
+          AUTH="Authorization: Bearer ${CLOUDFLARE_API_TOKEN}"
+          Z="${CF_ZONE_ID}"
+
+          echo "== token verify =="
+          curl -s -H "$AUTH" https://api.cloudflare.com/client/v4/user/tokens/verify \
+            | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("success"), d; print("ok", d["result"]["status"])'
+
+          if [ "${{ inputs.also_disable_rocket_loader }}" = "true" ]; then
+            echo "== rocket_loader =="
+            RL=$(curl -s -H "$AUTH" "https://api.cloudflare.com/client/v4/zones/${Z}/settings/rocket_loader" \
+              | python3 -c 'import json,sys; d=json.load(sys.stdin); print((d.get("result") or {}).get("value","unknown"))')
+            echo "rocket_loader=$RL"
+            if [ "$RL" = "on" ]; then
+              curl -s -X PATCH -H "$AUTH" -H "Content-Type: application/json" \
+                "https://api.cloudflare.com/client/v4/zones/${Z}/settings/rocket_loader" \
+                --data '{"value":"off"}' \
+                | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("success"), d; print("disabled")'
+            fi
+          fi
+
+          echo "== purge via script =="
+          chmod +x infrastructure/purge_streamlit_static_cache.sh
+          infrastructure/purge_streamlit_static_cache.sh
+
+          echo "== also purge the known-bad Plotly chunk URL explicitly =="
+          curl -s -X POST -H "$AUTH" -H "Content-Type: application/json" \
+            "https://api.cloudflare.com/client/v4/zones/${Z}/purge_cache" \
+            --data '{"files":[
+              "https://console.nousergon.ai/static/js/PlotlyChart.CylVV9WQ.js",
+              "https://dashboard.nousergon.ai/static/js/PlotlyChart.CylVV9WQ.js",
+              "https://live.nousergon.ai/static/js/PlotlyChart.CylVV9WQ.js"
+            ]}' \
+            | python3 -c 'import json,sys; d=json.load(sys.stdin); print("files_purge", d.get("success"), d.get("errors"))'

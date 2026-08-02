@@ -409,6 +409,23 @@ if [ "${SKIP_REQUIREMENTS_INSTALL:-0}" != "1" ] && [ -x ".venv/bin/python" ] && 
         # gate (config#2338) is against reality, not a commit range.
         mkdir -p "$(dirname "$REQUIREMENTS_STAMP")" || fail "mkdir requirements stamp dir"
         cp requirements.txt "$REQUIREMENTS_STAMP" || fail "update requirements.txt stamp"
+
+        # Streamlit content-hashed static chunks (PlotlyChart.<hash>.js class,
+        # 2026-08-02): a requirements.txt change is the only signal that the
+        # on-disk /static/js/* set may have rotated. Best-effort purge the CF
+        # edge for the three Streamlit hostnames so a sticky immutable entry
+        # from the previous pin cannot outlive the install. Failures here are
+        # WARN-only — the box has no Cache-Purge token today (SSM params are
+        # Access-scoped); the durable edge path is the streamlit-static-bypass
+        # Worker (nous-ergon-ops/cloudflare/). Manual/one-shot purge:
+        # .github/workflows/purge-streamlit-static-cache.yml.
+        if [ -x "$REPO_DIR/infrastructure/purge_streamlit_static_cache.sh" ]; then
+            if bash "$REPO_DIR/infrastructure/purge_streamlit_static_cache.sh" >>"$LOG" 2>&1; then
+                log "OK   streamlit static CF cache purge (post-requirements install)"
+            else
+                log "WARN streamlit static CF cache purge failed (non-fatal; see $LOG) — Worker bypass / manual purge still covers the class"
+            fi
+        fi
     fi
     # NOTE: nousergon-lib (renamed from alpha-engine-lib at v0.60.0) is
     # TAG-pinned in requirements.txt (@vX.Y.Z), not @main, so the

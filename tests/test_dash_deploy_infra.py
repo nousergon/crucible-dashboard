@@ -306,6 +306,55 @@ class TestInfraWiring:
         )
 
 
+
+    def test_nginx_overrides_streamlit_static_immutable_cache(self):
+        """Streamlit emits year-long immutable Cache-Control on /static/js/*
+        (PlotlyChart.<hash>.js class, 2026-08-02). Origin must hide that header
+        and emit a short max-age so a bad body cannot freeze for 365d.
+        """
+        conf = (REPO_ROOT / "infrastructure" / "nginx.conf").read_text()
+        # Both Streamlit vhosts carry a dedicated /static/ location.
+        assert conf.count("location /static/") >= 2
+        assert "proxy_hide_header Cache-Control" in conf
+        assert 'add_header Cache-Control "public, max-age=300" always' in conf
+        # Console block proxies static to :8501; live block to :8502.
+        # Pull the two static blocks by splitting on the location directive.
+        parts = conf.split("location /static/")
+        assert len(parts) >= 3  # preamble + >=2 blocks
+        bodies = parts[1:]
+        ports = set()
+        for body in bodies:
+            # take until next location or closing server brace-ish; just search
+            head = body[:400]
+            if "127.0.0.1:8501" in head:
+                ports.add("8501")
+            if "127.0.0.1:8502" in head:
+                ports.add("8502")
+        assert ports == {"8501", "8502"}, ports
+
+    def test_deploy_purges_streamlit_static_after_requirements_install(self):
+        """A requirements.txt install is the only signal the on-disk hashed
+        chunk set may have rotated. deploy-on-merge must best-effort purge.
+        """
+        script = (REPO_ROOT / "infrastructure" / "deploy-on-merge.sh").read_text()
+        purge = (REPO_ROOT / "infrastructure" / "purge_streamlit_static_cache.sh")
+        assert purge.is_file(), "purge helper must exist"
+        # Hook lives inside the requirements-install success path.
+        req_block = script[script.index('REQUIREMENTS_STAMP='):script.index("# ── 1b.")]
+        assert "purge_streamlit_static_cache.sh" in req_block
+        assert "WARN streamlit static CF cache purge failed" in req_block
+        # Operator one-shot + merge-path purge (deploy.yml job) both exist so the
+        # merge button alone recovers Cost & Usage — no post-merge click.
+        wf = (REPO_ROOT / ".github" / "workflows" / "purge-streamlit-static-cache.yml")
+        assert wf.is_file()
+        body = wf.read_text()
+        assert "workflow_dispatch" in body
+        assert "purge_streamlit_static_cache.sh" in body
+        assert "PlotlyChart.CylVV9WQ.js" in body
+        deploy_wf = (REPO_ROOT / ".github" / "workflows" / "deploy.yml").read_text()
+        assert "purge-streamlit-static:" in deploy_wf
+        assert "purge_streamlit_static_cache.sh" in deploy_wf
+
 class TestInfraShellTests:
     """Run the repo's bash test scripts under pytest so CI actually executes them.
 
