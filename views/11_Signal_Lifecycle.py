@@ -10,7 +10,7 @@ one screen tells the entire system story end-to-end. Existing
 Signals & Research and Execution pages handle slices of this; this page
 is the unified narrative for one chosen ticker.
 
-Lives on console.nousergon.ai (Cloudflare Access-gated). Every datum
+Lives on dashboard.nousergon.ai (Cloudflare Access-gated). Every datum
 sources from existing system outputs (Decision 11) — research.db,
 signals.json, predictions.json, order_book summary, trades_full,
 eod_pnl, score_performance.
