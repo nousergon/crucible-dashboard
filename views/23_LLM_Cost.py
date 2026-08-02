@@ -34,6 +34,7 @@ import streamlit as st
 from krepis.usage_pacing import reset_window
 
 from shared import cache_hit_rate
+from shared.usage_source_view import daily_cost_by_source, source_breakdown
 from loaders.s3_loader import (
     cost_archive_staleness,
     load_claude_code_usage,
@@ -113,6 +114,44 @@ else:
                          labels={"cost_usd": "API cost ($)", "date": ""})
     fig_na_cost.update_layout(barmode="stack", height=280, margin=dict(t=10, b=0, l=0, r=0))
     st.plotly_chart(fig_na_cost, use_container_width=True)
+
+    # ── Per-source breakdown ───────────────────────────────────────────────
+    # The headline above aggregates across all sources, so the groom runs'
+    # cost is indistinguishable from interactive laptop use. This subsection
+    # lifts the ``source`` dimension: one row per source with cost +
+    # cache-read %, so "which source cost what, and how cache-efficient was
+    # it" is answerable here rather than only on the Backlog Groom page
+    # (whose ``groom_efficiency`` loader computes WET/cache but not cost_usd).
+    src_df = source_breakdown(df_non_anthropic)
+    if not src_df.empty:
+        st.markdown("**Cost by source** — autonomous fleet runs vs interactive use")
+        src_daily = daily_cost_by_source(df_non_anthropic)
+        if not src_daily.empty:
+            fig_src = px.bar(src_daily, x=src_daily.index, y=list(src_daily.columns),
+                             labels={"x": "", "value": "API cost ($)", "source": "Source"})
+            fig_src.update_layout(barmode="stack", height=260,
+                                  margin=dict(t=10, b=0, l=0, r=0), legend_title_text="")
+            st.plotly_chart(fig_src, use_container_width=True)
+        # Display table: human-readable cache % + cost, autonomous sources flagged.
+        disp = src_df.copy()
+        disp["cost_usd"] = disp["cost_usd"].map("${:,.2f}".format)
+        disp["cache_read_pct"] = disp["cache_read_pct"].map(
+            lambda v: f"{v:.0f}%" if v is not None and pd.notna(v) else "—")
+        disp["total_tokens"] = disp["total_tokens"].map(lambda v: f"{v/1e6:,.1f}M")
+        disp = disp.rename(columns={
+            "source": "Source", "cost_usd": "Cost", "cache_read_pct": "Cache read",
+            "total_tokens": "Tokens", "run_days": "Days", "is_autonomous": "Auto",
+        })
+        st.dataframe(
+            disp[["Source", "Cost", "Cache read", "Tokens", "Days", "Auto"]],
+            use_container_width=True, hide_index=True,
+        )
+        st.caption(
+            "**Cache read** = share of raw tokens served from cache (high = good; "
+            "the groom's 90%+ is chunked-context reuse — see PR #6075's measurement). "
+            "**Auto** marks autonomous fleet sources (groom). Per-run dollar cost "
+            "lives on the Backlog Groom page; this is the per-source rollup."
+        )
 
 st.markdown("---")
 
