@@ -12,7 +12,7 @@ LLM call, no cost. The headline number is the **kill-gate trigger**: deduped,
 single-teacher quant-calibrator pairs vs the ~1000 target. When it crosses, the
 config#1542 90-day distill-or-shelve clock starts.
 
-Lives on console.nousergon.ai (Cloudflare Access-gated). Native Streamlit chrome
+Lives on dashboard.nousergon.ai (Cloudflare Access-gated). Native Streamlit chrome
 — no set_page_config (app.py's st.navigation owns it).
 """
 from __future__ import annotations

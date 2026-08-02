@@ -14,7 +14,7 @@ Complements ``30_Optimizer_Risk`` (the time-series of levers + portfolio risk
 metrics) and ``16_Order_Book_Rationale`` (the per-ticker terminal-state chain):
 this page is the per-name sizing microscope.
 
-Lives on console.nousergon.ai (Cloudflare Access-gated). Native Streamlit
+Lives on dashboard.nousergon.ai (Cloudflare Access-gated). Native Streamlit
 chrome — no set_page_config (the st.navigation entrypoint in app.py owns it).
 """
 from __future__ import annotations
