@@ -27,7 +27,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-import streamlit as st
+from loaders.cache import cached
 
 from loaders.s3_loader import (
     list_ci_watch_dates,
@@ -359,7 +359,7 @@ def _canary_age_days(now: datetime, heartbeat: dict | None) -> float | None:
     return max(0.0, (now - when).total_seconds() / 86400)
 
 
-@st.cache_data(ttl=120)
+@cached(ttl=120)
 def load_watch_efficacy_snapshot() -> WatchEfficacySnapshot:
     """Aggregate efficacy metrics across ALL Saturday SF Watch + Fleet CI
     Watch dates (config#2389). Zero dates (no failures ever recorded, the
