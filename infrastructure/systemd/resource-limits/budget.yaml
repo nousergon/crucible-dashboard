@@ -146,16 +146,15 @@ services:
   # ── alpha-engine ────────────────────────────────────────────────────────
   - unit: nousergon-console.service
     port: 5180
-    memory_high: 192M
-    memory_max: 256M
+    memory_high: 80M
+    memory_max: 112M
     note: >-
       nousergon-console v2 (I364). Read-only fleet index; binds 127.0.0.1:5180.
-      Unit ships MemoryMax=256M in nousergon-console itself; this row is the
-      box-level registry entry so box_health and the generated manifest cover
-      it. Steady-state footprint is expected well under 100M (stdlib server +
-      in-memory index); 192/256 leaves headroom for a large adapter pass.
-      Owning repo: nousergon/nousergon-console. Unit file is installed by that
-      repo's deploy-on-merge.sh; this repo only watches it.
+      Cap sized to keep sum(MemoryMax) under ceiling×1.20 (adding 256M breached
+      1.24×). Steady-state is stdlib server + in-memory index, expected ≪80M;
+      112M is the residual headroom under the existing overcommit ratio without
+      raising it. Unit MemoryMax must match (nousergon-console infrastructure/).
+      Owning repo: nousergon/nousergon-console; this repo only watches it.
 
   - unit: dashboard.service
     port: 8501
