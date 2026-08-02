@@ -343,13 +343,17 @@ class TestInfraWiring:
         req_block = script[script.index('REQUIREMENTS_STAMP='):script.index("# ── 1b.")]
         assert "purge_streamlit_static_cache.sh" in req_block
         assert "WARN streamlit static CF cache purge failed" in req_block
-        # Workflow for operator/one-shot purge via the broader GHA token.
+        # Operator one-shot + merge-path purge (deploy.yml job) both exist so the
+        # merge button alone recovers Cost & Usage — no post-merge click.
         wf = (REPO_ROOT / ".github" / "workflows" / "purge-streamlit-static-cache.yml")
         assert wf.is_file()
         body = wf.read_text()
         assert "workflow_dispatch" in body
         assert "purge_streamlit_static_cache.sh" in body
         assert "PlotlyChart.CylVV9WQ.js" in body
+        deploy_wf = (REPO_ROOT / ".github" / "workflows" / "deploy.yml").read_text()
+        assert "purge-streamlit-static:" in deploy_wf
+        assert "purge_streamlit_static_cache.sh" in deploy_wf
 
 class TestInfraShellTests:
     """Run the repo's bash test scripts under pytest so CI actually executes them.
