@@ -37,12 +37,14 @@ class TestListGroomRunKeysSince:
         return client
 
     def test_returns_all_keys_not_capped_like_list_groom_run_keys(self):
-        # 40 keys across one date — list_groom_run_keys(limit=30) would
-        # truncate; list_groom_run_keys_since must not.
-        keys = [f"groom/2026-07-19/{i:06d}.json" for i in range(40)]
+        # 40 keys across today — list_groom_run_keys(limit=30) would
+        # truncate; list_groom_run_keys_since must not. Uses today so the
+        # test never hits the date-window boundary (the hardcoded date was
+        # exactly at days=14 on 2026-08-02 and flaked).
+        keys = [f"groom/{_dt.date.today().isoformat()}/{i:06d}.json" for i in range(40)]
         with patch.object(s3_loader, "_research_bucket", return_value="b"), \
                 patch.object(s3_loader, "get_s3_client", return_value=self._client(keys)):
-            assert len(s3_loader.list_groom_run_keys_since(days=14)) == 40
+            assert len(s3_loader.list_groom_run_keys_since(days=1)) == 40
 
     def test_filters_by_date_window(self):
         today = _dt.date.today()
