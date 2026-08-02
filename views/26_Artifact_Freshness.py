@@ -38,6 +38,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from loaders.s3_loader import _fetch_s3_json, _research_bucket
 from loaders.observation_registry_loader import load_observation_registry
+from loaders.cache import cached
 
 
 def _is_non_trading_day(date_str: str | None) -> bool:
@@ -79,17 +80,17 @@ _STATE_LABEL: dict[str, str] = {
 }
 
 
-@st.cache_data(ttl=60)
+@cached(ttl=60)
 def _load_heartbeat() -> dict | None:
     return _fetch_s3_json(_research_bucket(), HEARTBEAT_KEY)
 
 
-@st.cache_data(ttl=60)
+@cached(ttl=60)
 def _load_check_results() -> dict | None:
     return _fetch_s3_json(_research_bucket(), CHECK_RESULTS_KEY)
 
 
-@st.cache_data(ttl=300)
+@cached(ttl=300)
 def _load_history() -> dict | None:
     """Per-artifact historical-cycle probe results from the daily 04:00
     UTC historical run. Higher TTL than check_results because the
@@ -227,7 +228,7 @@ df = pd.DataFrame(rows)
 # Composes with feedback_observe_mode_unconditional_gates_govern_cutover —
 # this column makes the production/observation distinction visible on the
 # freshness surface, complementing /Active_Observations (page 27).
-@st.cache_data(ttl=60)
+@cached(ttl=60)
 def _load_active_observation_artifact_refs() -> set[str]:
     """Return the set of artifact_ids referenced by ACTIVE (state in
     {always-on, gated-on}) observation entries' composes_with. None

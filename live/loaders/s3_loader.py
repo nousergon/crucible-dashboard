@@ -12,6 +12,7 @@ import boto3
 import pandas as pd
 import streamlit as st
 import yaml
+from loaders.cache import cached
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +63,7 @@ def get_s3_client():
         return boto3.client("s3")
 
 
-@st.cache_data(ttl=_ttl("trades"))
+@cached(ttl_key="trades")
 def download_s3_csv(bucket: str, key: str) -> pd.DataFrame | None:
     try:
         client = get_s3_client()
@@ -87,7 +88,7 @@ def _research_bucket() -> str:
     return load_config()["s3"]["research_bucket"]
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def download_s3_json(bucket: str, key: str) -> dict | None:
     """Download and parse a JSON file from S3. Returns None on failure."""
     import json
@@ -129,7 +130,7 @@ def load_trades_full() -> pd.DataFrame | None:
 _INTRADAY_TTL = 60
 
 
-@st.cache_data(ttl=_INTRADAY_TTL)
+@cached(ttl=_INTRADAY_TTL)
 def _download_s3_json_live(bucket: str, key: str) -> dict | None:
     """Short-TTL JSON download for intraday artifacts. Returns None on failure.
 
@@ -184,7 +185,7 @@ def load_intraday_nav_series(trading_day: str) -> dict | None:
     )
 
 
-@st.cache_data(ttl=86400)
+@cached(ttl=86400)
 def load_company_names() -> dict[str, str]:
     """Return ``{TICKER: company_name}`` from SEC ``company_tickers.json``.
 
@@ -224,7 +225,7 @@ def load_company_names() -> dict[str, str]:
     return out
 
 
-@st.cache_data(ttl=900)
+@cached(ttl=900)
 def load_live_day_return(ticker: str) -> float | None:
     """Today's % change (in percent points) for ``ticker`` from a 15-min
     delayed yfinance quote: ``(last_price / previous_close - 1) * 100``.
@@ -256,13 +257,13 @@ def load_live_day_return(ticker: str) -> float | None:
     return None
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def load_population_json() -> dict | None:
     """Load population/latest.json from the research bucket."""
     return download_s3_json(_research_bucket(), "population/latest.json")
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def load_latest_signals() -> dict | None:
     """Return the newest `signals/{date}/signals.json` from the research bucket.
 
@@ -310,7 +311,7 @@ def load_latest_signals() -> dict | None:
     return None
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def load_thesis_summaries(n_recent: int = 5) -> dict[str, str]:
     """Return {ticker: thesis_summary} aggregated across recent signals.json.
 
@@ -366,7 +367,7 @@ def load_thesis_summaries(n_recent: int = 5) -> dict[str, str]:
     return out
 
 
-@st.cache_data(ttl=_ttl("trades"))
+@cached(ttl_key="trades")
 def load_predictions_json() -> dict | None:
     """Load predictor/predictions/latest.json. Returns dict keyed by ticker."""
     import json
@@ -380,13 +381,13 @@ def load_predictions_json() -> dict | None:
         return None
 
 
-@st.cache_data(ttl=_ttl("trades"))
+@cached(ttl_key="trades")
 def load_order_book_summary(date_str: str) -> dict | None:
     """Load order_book_summary.json for a given date."""
     return download_s3_json(_research_bucket(), f"order_books/{date_str}/summary.json")
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def load_universe_archive(ticker: str) -> dict | None:
     """Latest persisted rolling thesis for a ticker.
 
@@ -405,7 +406,7 @@ def load_universe_archive(ticker: str) -> dict | None:
     )
 
 
-@st.cache_data(ttl=_ttl("trades"))
+@cached(ttl_key="trades")
 def load_order_book_rationale() -> dict | None:
     """Load the latest Order-Book Rationale (OBR) decision-chain artifact.
 
@@ -419,13 +420,13 @@ def load_order_book_rationale() -> dict | None:
     )
 
 
-@st.cache_data(ttl=_ttl("trades"))
+@cached(ttl_key="trades")
 def load_predictor_metrics() -> dict | None:
     """Load predictor/metrics/latest.json."""
     return download_s3_json(_research_bucket(), "predictor/metrics/latest.json")
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def load_latest_grading() -> dict | None:
     """Return the newest `backtest/{date}/grading.json` from the research bucket.
 
@@ -475,7 +476,7 @@ def load_latest_grading() -> dict | None:
     return None
 
 
-@st.cache_data(ttl=_ttl("research"))
+@cached(ttl_key="research")
 def load_grade_history() -> list[dict]:
     """Return `backtest/grade_history.json` as a chronological list.
 
@@ -488,7 +489,7 @@ def load_grade_history() -> list[dict]:
     return data
 
 
-@st.cache_data(ttl=_ttl("trades"))
+@cached(ttl_key="trades")
 def load_uptime_history(max_sessions: int = 20) -> list[dict]:
     """List recent uptime/*.json files and load the most recent `max_sessions`.
 
