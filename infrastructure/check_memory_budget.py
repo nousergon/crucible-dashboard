@@ -170,7 +170,18 @@ def cgroup_value(unit: str, filename: str) -> int | None:
         return None
 
 
-def censored_observation(unit: str) -> str | None:
+def warn_fraction_of(spec: dict) -> float:
+    """budget.yaml's `headroom_warn_fraction`, read in one place.
+
+    Two call sites need it — the console rows and the censored-reading
+    qualifier — and a literal default repeated at each is the same defect this
+    file removed when it deleted `observed_mb`: a declared value copied into
+    code, free to diverge from the declaration silently.
+    """
+    return float(spec.get("headroom_warn_fraction", 0.90))
+
+
+def censored_observation(unit: str, warn_fraction: float) -> str | None:
     """Detect a live reading that is a FLOOR rather than a measurement.
 
     `memory.peak >= memory.high` means the cgroup has been held at its soft cap
@@ -191,12 +202,42 @@ def censored_observation(unit: str) -> str | None:
     as a floor rather than as a pass. That is the difference between an unproven
     invariant and a satisfied one, and this is the only thing that can tell them
     apart.
+
+    `peak >= high` IS NOT SUFFICIENT ON ITS OWN (2026-08-03). `memory.peak` is
+    a high-water mark that never decays short of a restart, so a service that
+    grazed its soft cap ONCE reads CENSORED for the rest of its uptime even if
+    it has sat comfortably below the cap ever since. Measured: metron-api.service
+    read `peak 280 == high 280` after three days up, so it was reported censored
+    on every tick -- but with its cap temporarily raised 280M -> 480M it did not
+    move at all across thirteen minutes (current flat at 214 MiB, peak flat at
+    280, zero new MemoryHigh events, `some avg10=0.00`). Its working set is
+    ~214 MiB. Nothing was suppressed; the reading was never a floor.
+
+    That false positive is not free even at hygiene severity: it names a service
+    whose only correct action is "do nothing", and its own remedy text says
+    "raise the cap" -- against a box with 1.26x of a 1.27x overcommit bound
+    already spent. A finding that recommends spending scarce headroom on a
+    non-problem is worse than silence.
+
+    So the verdict now requires the pin to be CURRENT, not merely historical:
+    the service must also be sitting at or above `headroom_warn_fraction` of its
+    soft cap right now. Checked against every real instance this check exists
+    for -- vires 115/112 (103%), dashboard 335/340 (98.5%), metron-api at the
+    time of config-I5216 384/385 (99.7%) -- all still fire. metron-api today,
+    at 214/280 (76%), does not.
     """
     peak = cgroup_value(unit, "memory.peak")
     high = cgroup_value(unit, "memory.high")
+    current = cgroup_value(unit, "memory.current")
     if peak is None or high is None or high == sys.maxsize:
         return None
     if peak < high:
+        return None
+    # Historical touch without a current pin: the high-water mark is real, the
+    # censorship is not. Silent rather than reported -- box_health.sh's throttle
+    # delta and the memory-pressure check both fire on a service that IS being
+    # held down, so this case is covered by signals that key on the present.
+    if current is not None and current < warn_fraction * high:
         return None
     return (
         f"{unit}: CENSORED reading -- memory.peak ({peak // 1024**2} MiB) has "
@@ -208,7 +249,9 @@ def censored_observation(unit: str) -> str | None:
     )
 
 
-def steady_state_mb(units: list[str]) -> tuple[int, list[str], list[str]]:
+def steady_state_mb(
+    units: list[str], warn_fraction: float
+) -> tuple[int, list[str], list[str]]:
     """Measure the steady-state total from the cgroups, with its caveats.
 
     Returns (total_mb, unmeasurable_units, censored_units).
@@ -227,7 +270,7 @@ def steady_state_mb(units: list[str]) -> tuple[int, list[str], list[str]]:
             unmeasurable.append(unit)
             continue
         total += current // 1024**2
-        if censored_observation(unit):
+        if censored_observation(unit, warn_fraction):
             censored.append(unit)
     return total, unmeasurable, censored
 
@@ -288,7 +331,7 @@ def headroom_rows(spec: dict) -> list[dict]:
     dropped for being unreadable is a unit that renders as nothing, and nothing
     renders as fine.
     """
-    warn_fraction = float(spec.get("headroom_warn_fraction", 0.90))
+    warn_fraction = warn_fraction_of(spec)
     baseline = throttle_baseline()
     rows: list[dict] = []
 
@@ -316,7 +359,7 @@ def headroom_rows(spec: dict) -> list[dict]:
             "max_mb": None if hard in (None, sys.maxsize) else hard // 1024**2,
             "peak_mb": None if peak in (None, sys.maxsize) else peak // 1024**2,
             "throttle_delta": delta,
-            "censored": bool(censored_observation(unit)),
+            "censored": bool(censored_observation(unit, warn_fraction)),
             "state": "ok",
         }
 
@@ -651,17 +694,20 @@ def main() -> int:
     # checked it and was satisfied.
     max_ss = float(spec["max_steady_state_fraction"])
     ss_allowed = int(ram_mb * max_ss)
+    warn_fraction = warn_fraction_of(spec)
     ss_over = False
     ss_mb = 0
     unmeasurable: list[str] = []
     censored: list[str] = []
     if installed:
         ss_mb, unmeasurable, censored = steady_state_mb(
-            [s["unit"] for s in spec["services"]]
+            [s["unit"] for s in spec["services"]], warn_fraction
         )
         ss_over = ss_mb > ss_allowed
         for unit in censored:
-            hygiene.append(censored_observation(unit) or f"{unit}: censored")
+            hygiene.append(
+                censored_observation(unit, warn_fraction) or f"{unit}: censored"
+            )
         if unmeasurable:
             hygiene.append(
                 "steady state measured over "
