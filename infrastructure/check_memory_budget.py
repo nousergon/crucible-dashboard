@@ -170,6 +170,17 @@ def cgroup_value(unit: str, filename: str) -> int | None:
         return None
 
 
+def warn_fraction_of(spec: dict) -> float:
+    """budget.yaml's `headroom_warn_fraction`, read in one place.
+
+    Two call sites need it — the console rows and the censored-reading
+    qualifier — and a literal default repeated at each is the same defect this
+    file removed when it deleted `observed_mb`: a declared value copied into
+    code, free to diverge from the declaration silently.
+    """
+    return float(spec.get("headroom_warn_fraction", 0.90))
+
+
 def censored_observation(unit: str, warn_fraction: float) -> str | None:
     """Detect a live reading that is a FLOOR rather than a measurement.
 
@@ -320,7 +331,7 @@ def headroom_rows(spec: dict) -> list[dict]:
     dropped for being unreadable is a unit that renders as nothing, and nothing
     renders as fine.
     """
-    warn_fraction = float(spec.get("headroom_warn_fraction", 0.90))
+    warn_fraction = warn_fraction_of(spec)
     baseline = throttle_baseline()
     rows: list[dict] = []
 
@@ -683,6 +694,7 @@ def main() -> int:
     # checked it and was satisfied.
     max_ss = float(spec["max_steady_state_fraction"])
     ss_allowed = int(ram_mb * max_ss)
+    warn_fraction = warn_fraction_of(spec)
     ss_over = False
     ss_mb = 0
     unmeasurable: list[str] = []
