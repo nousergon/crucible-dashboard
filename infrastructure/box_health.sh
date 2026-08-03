@@ -706,9 +706,36 @@ snapshot_problems() {
         # from a hyphen in the unit's own name.
         cg="/sys/fs/cgroup/system.slice/${s}/memory.pressure"
         if [ -r "$cg" ]; then
-            pressure=$(awk '/^some avg10/{val=$2+0; if(val>10) print val}' "$cg" 2>/dev/null)
+            # PSI fields are KEY=VALUE, not whitespace-separated columns:
+            #
+            #   some avg10=55.27 avg60=53.82 avg300=51.32 total=525043914
+            #
+            # so $2 is the string "avg10=55.27" and `$2+0` is 0 in awk, for
+            # every value this check exists to catch. The predicate `val>10`
+            # was therefore false unconditionally, from the day it shipped
+            # (alpha-engine-config-I4512) until 2026-08-03 — a detector whose
+            # parser made it structurally incapable of firing.
+            #
+            # Measured, not inferred: on 2026-08-03 vires.service sat at
+            # `some avg10=55.27 / full avg300=49.93` for ~18 minutes, wedged
+            # hard enough that no HTTP request completed, and this check
+            # emitted nothing across four consecutive 10-minute ticks. Proven
+            # against a real PSI fixture in
+            # tests/test_box_health_memory_pressure_check.py, which fails
+            # against the pre-fix expression.
+            pressure=$(awk '/^some /{split($2,kv,"="); v=kv[2]+0; if (v>10) printf "%.2f", v}' "$cg" 2>/dev/null)
             if [ -n "$pressure" ]; then
-                echo "memory pressure: $s (avg10 some ${pressure}%)"
+                # The live percentage goes to the JOURNAL, never into the
+                # problem line. snapshot_problems is sampled RETRY_ATTEMPTS
+                # times and confirms only lines present in EVERY sample, and
+                # a PSI average moves between samples — so embedding it made
+                # this line unable to confirm even once the predicate worked.
+                # Second independent reason the same check could never page;
+                # same class as test_box_health_budget_wiring's static-string
+                # rule, which only covered the `memory budget:` prefixes.
+                printf 'box_health: %s memory pressure detail: some avg10=%s%%\n' \
+                    "$s" "$pressure" >&2
+                echo "memory pressure: $s is stalled on reclaim against its memory cap"
             fi
         fi
         evt="/sys/fs/cgroup/system.slice/${s}/memory.events"
