@@ -77,6 +77,10 @@ DISK_CRIT_PCT=90                     # root-disk critical band (page, deduped)
 # Six of fourteen services and seven of thirteen ports were unmonitored, and
 # the gap presented as GREEN, which is worse than presenting as broken.
 MANIFEST="/etc/alpha-engine/box-services.conf"
+# Declared empty BEFORE the source so a manifest rendered by an older
+# generator degrades to "no HTTP liveness, reported" rather than aborting the
+# whole watchdog on an unset array under `set -u`.
+declare -A SERVICE_PORT=()
 if [ -r "$MANIFEST" ]; then
     # shellcheck source=/dev/null
     . "$MANIFEST"
@@ -115,6 +119,16 @@ fi
 # check above fires independently on sustained stall, so a service suffering
 # continuously is caught by either.
 CGROUP_HIGH_DELTA_MIN=10
+
+# Seconds a service gets to produce an HTTP status line before it counts as
+# not answering. Sized from measurement, not intuition: every healthy service
+# on this box answered a bare GET in 0.001-0.027s on 2026-08-03, and the
+# wedged one did not answer in 20. Three orders of magnitude separate the two
+# populations, so 3s sits nowhere near either — it is long enough that a
+# cold-start or a GC pause cannot trip it and short enough that a fully dead
+# box still finishes its confirmation sweep inside the 10-minute tick
+# (worst case 13 units x 3s x RETRY_ATTEMPTS).
+HTTP_PROBE_TIMEOUT=3
 
 # Where the previous run's throttle counters live. /var/lib, not /tmp: a
 # tmpfiles cleanup mid-window would silently re-baseline and hide throttling.
@@ -438,6 +452,81 @@ publish_verdict() {
 
 # snapshot_problems — run the full check ONCE, printing one problem per line.
 # No shared state; the caller samples it repeatedly and keeps the intersection.
+# http_liveness_problems — emit a problem line per service that is listening
+# but not answering. Its own function, not an inline block, so
+# tests/test_box_health_http_liveness.py can extract and RUN it against real
+# servers: a loop proven only by reading it is a loop nobody has run.
+http_liveness_problems() {
+    # ── HTTP liveness (alpha-engine-config-I6262) ──────────────────────────
+    #
+    # A LISTENING PORT IS NOT LIVENESS. The socket is bound by the kernel and
+    # stays bound while the server behind it answers nothing at all, so the
+    # port loop in snapshot_problems passes throughout the failure it most
+    # needs to catch.
+    #
+    # Measured, 2026-08-03: vires.service sat wedged for ~18 minutes — pinned
+    # at its cgroup MemoryHigh and stalled >50% of wall-clock on reclaim.
+    # `curl -m 20 http://127.0.0.1:8530/health` from ON THE BOX returned 000
+    # after timing out, while `systemctl is-active` said active, port 8530
+    # was listening, and four consecutive ticks of this watchdog reported no
+    # port problem. The outage was found by a human using the app.
+    #
+    # THE PREDICATE IS "DID IT ANSWER", NOT "DID IT RETURN 200". Measured on
+    # this box the same day: of the thirteen HTTP ports, seven answer 200 on a
+    # health route, five answer 404 on every candidate path (the Next.js apps
+    # and nous-ergon-live serve under base paths), and nousergon-auth answers
+    # 400 to a bare GET. All twelve are healthy. Requiring 200 would have
+    # paged on five services that were working perfectly, which is how a check
+    # gets tuned out. A wedged server is distinguishable without that: curl
+    # reports http_code 000 because no status line ever arrived.
+    #
+    # Known limit, stated rather than implied: this cannot see a server that
+    # answers a cheap route while its real work is blocked (an exhausted
+    # worker pool behind a static handler). Catching that needs a per-service
+    # deep health route, which is a bigger change than the hole it closes.
+    #
+    # Requires the manifest: the unit->port pairing lives there. The bare
+    # SERVICES/PORTS arrays are two independent lists, NOT index-aligned (the
+    # fallback block at the top of this file had signal.service sitting
+    # opposite mnemon's port for months, harmlessly, because nothing paired
+    # them). Pairing them by index here would name the wrong service in an
+    # alert, so this check runs only against the generated map. MANIFEST_OK=0
+    # is already reported loudly elsewhere.
+    if [ "${MANIFEST_OK:-0}" -eq 1 ] && [ "${#SERVICE_PORT[@]}" -eq 0 ]; then
+        # A manifest rendered by the pre-I6262 generator has no map, so this
+        # check would cover nothing while appearing to run. Absence of a
+        # signal is not health — say so instead of inheriting the silence.
+        echo "watchdog: manifest carries no SERVICE_PORT map — HTTP liveness is UNMONITORED (re-run install-box-health.sh)"
+    elif [ "${MANIFEST_OK:-0}" -eq 1 ]; then
+        local unit port code scheme insecure
+        for unit in "${!SERVICE_PORT[@]}"; do
+            port="${SERVICE_PORT[$unit]}"
+            # 443 is nginx terminating TLS with the Cloudflare origin cert,
+            # which does not validate against 127.0.0.1 — -k, because this is
+            # a liveness probe over loopback, not a certificate check.
+            scheme=http; insecure=()
+            if [ "$port" = "443" ]; then scheme=https; insecure=(-k); fi
+            # NO `|| echo 000` here: -w '%{http_code}' ALREADY prints 000 when
+            # the transfer fails, so appending a fallback yields "000000",
+            # which matches nothing and silently disarms the check. That is
+            # what the first version of this did, and it passed every fixture
+            # test of the predicate — the defect lived in the pairing between
+            # the predicate and its caller, so only running the real function
+            # exposed it (test_shipped_function_names_the_wedged_service).
+            code=$(curl -s "${insecure[@]}" -m "$HTTP_PROBE_TIMEOUT" \
+                       -o /dev/null -w '%{http_code}' \
+                       "${scheme}://127.0.0.1:${port}/" 2>/dev/null) || code=""
+            [ -n "$code" ] || code=000   # curl absent or killed outright
+            # Any status line means the server is answering. 000 means it
+            # accepted the connection (or not) and never replied inside the
+            # timeout — the wedge.
+            if [ "$code" = "000" ]; then
+                echo "service not answering HTTP within ${HTTP_PROBE_TIMEOUT}s: $unit"
+            fi
+        done
+    fi
+}
+
 snapshot_problems() {
     # memory headroom
     local mem_avail_mb
@@ -829,6 +918,8 @@ snapshot_problems() {
     for p in "${PORTS[@]}"; do
         echo "$listening" | grep -qE ":$p\b" || echo "port not listening: $p"
     done
+
+    http_liveness_problems
 }
 
 # Gauges flow on every tick regardless of health outcome (see emit_metrics).
