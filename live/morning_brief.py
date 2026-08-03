@@ -71,6 +71,13 @@ OPENROUTER_MODEL = "deepseek/deepseek-v4-flash"
 _SESSION_KEY = "morning_brief_state"        # st.session_state cache key
 _MAX_TOKENS = 900                           # brief is a few short paragraphs
 
+# Cost-attribution join key for this call site (krepis >= 0.23 requires it).
+# Every LLM call from here emits a cost row stamped with this literal; the
+# matching row in alpha-engine-config/private-docs/LLM_CALLSITE_REGISTRY.yaml
+# should carry the same value as its `id` — the two are a lockstep pair
+# (registry row pending, config#I5206 coverage is rolling out repo by repo).
+CALLSITE_ID = "dashboard-morning-brief"
+
 
 # ── Config: kill switch + cadence overrides ────────────────────────────────
 
@@ -235,7 +242,12 @@ def generate_morning_brief(
             max_tokens=_MAX_TOKENS,
             reasoning={"exclude": True},
         )
-        client = LLMClient(spec, api_key=key, client_factory=client_factory)
+        client = LLMClient(
+            spec,
+            api_key=key,
+            client_factory=client_factory,
+            callsite_id=CALLSITE_ID,
+        )
         result = client.complete(
             system=_SYSTEM_PROMPT,
             user_content=_build_prompt(snapshot, holdings_news),
