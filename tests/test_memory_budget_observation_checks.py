@@ -53,12 +53,18 @@ def cgroup_root(tmp_path, monkeypatch):
     return tmp_path
 
 
+# budget.yaml's `headroom_warn_fraction`. Passed explicitly rather than
+# defaulted in the function, so a change to the declared value cannot silently
+# diverge from what these tests assert.
+WARN = 0.90
+
+
 class TestCensoredObservation:
     def test_peak_at_high_is_reported_as_censored(self, cgroup_root):
         """The exact dashboard.service shape on 2026-07-28, pre-fix."""
         _cgroup(cgroup_root, "dashboard.service",
                 current=250 * MB, peak=260 * MB, high=260 * MB)
-        msg = cmb.censored_observation("dashboard.service")
+        msg = cmb.censored_observation("dashboard.service", WARN)
         assert msg is not None
         assert "CENSORED" in msg
         # The actionable instruction is the point of the message, not the label.
@@ -69,13 +75,13 @@ class TestCensoredObservation:
         """peak can exceed high -- high throttles, it does not hard-stop."""
         _cgroup(cgroup_root, "svc.service",
                 current=250 * MB, peak=261 * MB, high=260 * MB)
-        assert cmb.censored_observation("svc.service") is not None
+        assert cmb.censored_observation("svc.service", WARN) is not None
 
     def test_peak_clear_of_high_is_not_censored(self, cgroup_root):
         """metron-api after the single-worker cut: 203 peak against a 280 cap."""
         _cgroup(cgroup_root, "metron-api.service",
                 current=202 * MB, peak=203 * MB, high=280 * MB)
-        assert cmb.censored_observation("metron-api.service") is None
+        assert cmb.censored_observation("metron-api.service", WARN) is None
 
     def test_infinite_high_is_not_censored(self, cgroup_root):
         """No cap means the reading cannot be bounded by one.
@@ -86,16 +92,16 @@ class TestCensoredObservation:
         """
         _cgroup(cgroup_root, "svc.service",
                 current=900 * MB, peak=900 * MB, high="max")
-        assert cmb.censored_observation("svc.service") is None
+        assert cmb.censored_observation("svc.service", WARN) is None
 
     def test_missing_cgroup_returns_none_rather_than_passing(self, cgroup_root):
         """A unit that is not running has no cgroup. That is not a finding."""
-        assert cmb.censored_observation("absent.service") is None
+        assert cmb.censored_observation("absent.service", WARN) is None
 
     def test_unreadable_value_does_not_crash_the_whole_check(self, cgroup_root):
         d = _cgroup(cgroup_root, "svc.service", peak=100 * MB, high=200 * MB)
         (d / "memory.peak").write_text("garbage\n")
-        assert cmb.censored_observation("svc.service") is None
+        assert cmb.censored_observation("svc.service", WARN) is None
 
 
 class TestSteadyStateIsMeasured:
@@ -110,7 +116,7 @@ class TestSteadyStateIsMeasured:
     def test_sums_live_readings(self, cgroup_root):
         _cgroup(cgroup_root, "a.service", current=100 * MB, peak=50 * MB, high=400 * MB)
         _cgroup(cgroup_root, "b.service", current=59 * MB, peak=50 * MB, high=400 * MB)
-        total, unmeasurable, censored = cmb.steady_state_mb(["a.service", "b.service"])
+        total, unmeasurable, censored = cmb.steady_state_mb(["a.service", "b.service"], WARN)
         assert total == 159
         assert unmeasurable == [] and censored == []
 
@@ -125,13 +131,13 @@ class TestSteadyStateIsMeasured:
         """
         _cgroup(cgroup_root, "nous-ergon-live.service",
                 current=159 * MB, peak=60 * MB, high=175 * MB)
-        total, _, _ = cmb.steady_state_mb(["nous-ergon-live.service"])
+        total, _, _ = cmb.steady_state_mb(["nous-ergon-live.service"], WARN)
         assert total == 159
 
     def test_unreadable_unit_is_named_not_counted_as_zero(self, cgroup_root):
         """Counting a missing unit as 0 makes the bound read safer than it is."""
         _cgroup(cgroup_root, "a.service", current=100 * MB, peak=10 * MB, high=400 * MB)
-        total, unmeasurable, _ = cmb.steady_state_mb(["a.service", "gone.service"])
+        total, unmeasurable, _ = cmb.steady_state_mb(["a.service", "gone.service"], WARN)
         assert total == 100
         assert unmeasurable == ["gone.service"]
 
@@ -139,7 +145,7 @@ class TestSteadyStateIsMeasured:
         """Its reading is a floor: usable as a lower bound, not as proof."""
         _cgroup(cgroup_root, "pinned.service",
                 current=340 * MB, peak=340 * MB, high=340 * MB)
-        total, unmeasurable, censored = cmb.steady_state_mb(["pinned.service"])
+        total, unmeasurable, censored = cmb.steady_state_mb(["pinned.service"], WARN)
         assert total == 340
         assert unmeasurable == []
         assert censored == ["pinned.service"]
@@ -326,3 +332,52 @@ class TestBudgetFileIsInternallyConsistent:
              / "budget.yaml").read_text()
         )
         assert 0 < float(spec["max_steady_state_fraction"]) <= 1
+
+
+class TestCensoredRequiresACurrentPin:
+    """The 2026-08-03 correction, held as its own class so the boundary is
+    explicit rather than implied by two fixtures that happen to differ."""
+
+    def test_historical_touch_alone_is_not_censored(self, cgroup_root):
+        """metron-api.service as measured live on 2026-08-03: peak 280 == high
+        280 after three days up, but current 214 (76%) and provably flat --
+        thirteen minutes at a 480M ceiling moved neither current nor peak, with
+        zero new MemoryHigh events. Nothing was suppressed, so nothing is a
+        floor."""
+        _cgroup(cgroup_root, "metron-api.service",
+                current=214 * MB, peak=280 * MB, high=280 * MB)
+        assert cmb.censored_observation("metron-api.service", WARN) is None
+
+    def test_still_fires_on_every_real_instance_this_check_exists_for(
+        self, cgroup_root
+    ):
+        """The three historical pins, at their measured numbers. A narrowing
+        that silences these would be a regression, not a fix."""
+        for unit, current, peak, high in [
+            ("vires.service", 115, 115, 112),        # 2026-08-03, 103%
+            ("dashboard.service", 335, 340, 340),    # 2026-07-31, 98.5%
+            ("metron-api.service", 384, 385, 385),   # config-I5216, 99.7%
+        ]:
+            _cgroup(cgroup_root, unit,
+                    current=current * MB, peak=peak * MB, high=high * MB)
+            assert cmb.censored_observation(unit, WARN) is not None, unit
+
+    def test_the_boundary_is_the_declared_warn_fraction(self, cgroup_root):
+        """Not a second hardcoded threshold: it reuses budget.yaml's
+        `headroom_warn_fraction`, the same number that turns a console row
+        `attention`."""
+        _cgroup(cgroup_root, "just-under.service",
+                current=int(0.89 * 280) * MB, peak=280 * MB, high=280 * MB)
+        assert cmb.censored_observation("just-under.service", WARN) is None
+        _cgroup(cgroup_root, "just-over.service",
+                current=int(0.91 * 280) * MB, peak=280 * MB, high=280 * MB)
+        assert cmb.censored_observation("just-over.service", WARN) is not None
+
+    def test_an_unreadable_current_still_reports_censored(self, cgroup_root):
+        """Fail toward the finding: if the qualifier cannot be evaluated, the
+        weaker `peak >= high` tell stands. A narrowing must never turn a
+        missing reading into silence."""
+        d = _cgroup(cgroup_root, "svc.service",
+                    current=200 * MB, peak=280 * MB, high=280 * MB)
+        (d / "memory.current").write_text("garbage\n")
+        assert cmb.censored_observation("svc.service", WARN) is not None

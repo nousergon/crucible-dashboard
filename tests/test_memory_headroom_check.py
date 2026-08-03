@@ -74,18 +74,56 @@ def _spec(*units, **top):
 
 # --- 1. a censored reading is never rendered as a comfortable percentage ----
 
-def test_a_censored_unit_is_flagged_even_when_it_looks_roomy(cgroups, baseline_file):
-    """peak >= high means memory.current is a FLOOR: the cap bounded it. The
-    percentage computed from it is not a measurement, and this box has been
-    wrong about dashboard.service's working set twice on exactly this tell
-    (202 MiB and 248 MiB, both floors)."""
-    _cgroup(cgroups, "a.service", current=100 * MB, high=340 * MB,
+def test_a_unit_pinned_at_its_cap_is_flagged_however_the_number_reads(
+    cgroups, baseline_file
+):
+    """peak >= high AND still up against it: memory.current is a FLOOR, the cap
+    bounded it, and the percentage computed from it is not a measurement. This
+    box has been wrong about dashboard.service's working set twice on exactly
+    this tell (202 MiB and 248 MiB, both floors)."""
+    _cgroup(cgroups, "a.service", current=330 * MB, high=340 * MB,
             hard=450 * MB, peak=340 * MB, events=0)
     row = cmb.headroom_rows(_spec("a.service"))[0]
     assert row["censored"] is True
-    # 100/340 is 29% -- roomy by every number on the row, and still a finding.
     assert row["state"] == "censored"
     assert cmb._STATE_STATUS[row["state"]] == "attention"
+
+
+def test_a_historical_touch_without_a_current_pin_is_not_censored(
+    cgroups, baseline_file
+):
+    """CHANGED 2026-08-03, on measurement rather than on taste.
+
+    This case previously asserted `censored is True` on the reasoning that
+    `peak >= high` alone proves the reading is a floor. It does not, because
+    `memory.peak` is a high-water mark that never decays short of a restart: a
+    service that grazed its soft cap once reads censored for the rest of its
+    uptime.
+
+    metron-api.service was the live counter-example. It read `peak 280 ==
+    high 280` after three days up and was reported censored on every tick. With
+    its cap temporarily raised 280M -> 480M it did not move across thirteen
+    minutes -- current flat at 214 MiB, peak flat at 280, zero new MemoryHigh
+    events, `some avg10=0.00`. Its working set is ~214 MiB. Nothing had been
+    suppressed.
+
+    The finding was not free at hygiene severity either: it names a service
+    whose only correct action is "do nothing", while its own remedy text says
+    "raise the cap" -- against a box already at 1.26x of a 1.27x overcommit
+    bound.
+
+    The high-water mark is not discarded, it is rendered: `peak_mb` is a field
+    on this same row. What changed is that `censored` now means what its
+    message claims -- the CURRENT reading is a floor -- rather than "demand
+    touched the cap at some point".
+    """
+    _cgroup(cgroups, "a.service", current=214 * MB, high=280 * MB,
+            hard=350 * MB, peak=280 * MB, events=0)
+    row = cmb.headroom_rows(_spec("a.service"))[0]
+    assert row["censored"] is False
+    assert row["state"] == "ok"
+    # The evidence is still on the row for anyone who wants it.
+    assert row["peak_mb"] == 280
 
 
 def test_censored_outranks_tight(cgroups, baseline_file):
