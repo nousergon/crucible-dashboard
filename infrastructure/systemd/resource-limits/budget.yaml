@@ -108,7 +108,13 @@ reserve_fraction: 0.15    # kernel + page cache headroom => ceiling 3263 MB
 # invariants that page are the two bounds above.
 headroom_warn_fraction: 0.90
 
-max_overcommit_ratio: 1.20      # sum(memory_max) / ceiling. Currently 1.16.
+# Raised 1.20 -> 1.27 on 2026-08-03, under the paragraph directly above: a
+# MEASURED cap (vires.service, see its note below) needed 460M and 1.20 left
+# 115 MB of room against a 300 MB shortfall. Re-derived rather than shaved.
+# The bound that governs real operation is max_steady_state_fraction, and
+# un-pinning vires moves the live sum from 1516 MB to ~1730 MB — 45% of RAM
+# against a 60% limit, so the safety bound is not the binding one here.
+max_overcommit_ratio: 1.27      # sum(memory_max) / ceiling. Currently 1.26.
 max_steady_state_fraction: 0.60 # sum(live memory.current) / RAM. 0.37 on 2026-07-29.
 
 # memory_high is the SOFT limit: the kernel throttles and reclaims against the
@@ -254,8 +260,57 @@ services:
 
   - unit: vires.service
     port: 8530
-    memory_high: 112M
-    memory_max: 160M
+    memory_high: 380M
+    memory_max: 460M
+    note: >-
+      Caps raised 112M/160M -> 380M/460M on 2026-08-03, after the service
+      wedged in normal use. DO NOT LOWER: 112M was roughly a THIRD of this
+      service's real working set, and every reading taken under it was a floor.
+
+      Root cause, measured on the box rather than inferred. vires does hybrid
+      exercise search: SQLite FTS5 plus a vector leg, and the vector leg embeds
+      the QUERY at request time with FastEmbed / bge-small-en-v1.5 (ONNX). The
+      model is lazy-loaded on the first search, so the service starts at ~103
+      MiB — comfortably inside 112M — and stays there until someone types in
+      the exercise search box or opens the in-workout "replace" sheet. Then:
+
+        bare interpreter                     8 MiB
+        after `import api.services.embedder` 44 MiB
+        after the FIRST embed_query()       257 MiB   (VmRSS, not a peak:
+        after 20 more embeds                257 MiB    unchanged after gc)
+
+      +213 MiB marginal, against a soft cap that left 9. Full-service working
+      set with the model resident is therefore ~316 MiB. `threads=1` was
+      measured too and returns only 18 MiB, so this is ONNX Runtime's resident
+      model, not thread arenas — it cannot be tuned away, only budgeted for or
+      moved out of process.
+
+      What that did, 2026-08-03 15:17-15:36 UTC: opening the replace sheet
+      loaded the model, the cgroup pinned at MemoryHigh and went to
+      `some avg10=55.27 / full avg300=49.93` — stalled on reclaim more than
+      half of all wall-clock — and stayed there. 350,458 MemoryHigh events,
+      zero OOM kills. That distinction is the whole failure mode: the process
+      never died, so `Restart=always` never fired, the port stayed bound, and
+      the box reported healthy while no HTTP request completed for ~18 minutes.
+      The user found it by using the app.
+
+      460M is 1.46x the measured 316 MiB, 380M soft leaves the service ~64 MiB
+      clear of its working set. Sized like metron-api's (1.4x/1.7x), not fitted
+      to the pinned reading — per the standing note above, re-cap clear of the
+      service, never just above where it was pinned.
+
+      Paid for by re-deriving max_overcommit_ratio (1.20 -> 1.27), which the
+      ratio's own note directs when a measured cap collides with it. The
+      steady-state bound, the one that governs real safety, moves 39% -> ~45%
+      of RAM against its 60% limit.
+
+      STILL OUTSTANDING and not fixed by this cap: a 213 MiB ONNX model held
+      resident in the request path of a single-user app is the largest fixed
+      cost on this box per unit of work delivered, and the box now has two
+      other services (dashboard, metron-api) reading CENSORED — pinned at
+      their own soft caps, working sets unknown. Whether this box is resized or
+      the embedding capability moves behind the model router is a spend
+      decision on the Decision Queue, not something a cap settles.
 
   - unit: signal.service
     port: 8505
