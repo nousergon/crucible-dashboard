@@ -179,13 +179,28 @@ services:
       not by loosening max_overcommit_ratio and not by resizing the instance —
       policy E3 does not fire (MemAvailable was 1396 MiB, trigger is 250 MiB).
 
-      STILL OUTSTANDING, and not fixed by this cap: the console has 181
-      `@st.cache_data` decorators and NOT ONE sets `max_entries`. Streamlit's
-      default is unbounded — only TTL evicts — so the footprint is a function of
-      distinct queries per TTL window rather than a bounded working set. That
-      violates policy section 4.3 ("bounded, declared resource footprint").
-      Raising a cap against an unbounded quantity is what I5237 did; this cap is
-      sized to the measured plateau, but the plateau itself is not guaranteed.
+      RESOLVED 2026-08-03 — this note previously read "STILL OUTSTANDING: the
+      console has 181 `@st.cache_data` decorators and NOT ONE sets
+      `max_entries` ... the plateau itself is not guaranteed". That has been
+      false since alpha-engine-config#5270 landed: every cached loader now goes
+      through `loaders/cache.py::cached`, which injects
+      `max_entries=DEFAULT_MAX_ENTRIES` (64, sized 2026-07-31 against a
+      measured thrash floor of ~30 and a measured byte ceiling). Verified
+      2026-08-03: 173 `@cached` call sites, and every remaining literal
+      `@st.cache_data` in the tree is inside a comment, a docstring, or a test
+      double — zero live bare decorators. The plateau IS bounded now.
+
+      Left uncorrected the note would keep arguing against a cap raise this
+      service may legitimately need, on a premise that is no longer true.
+
+      What IS still open for this service is growth over uptime, which is a
+      different claim and is measured rather than asserted: on 2026-08-03 its
+      `memory.peak` had reached 340 MiB = `memory.high` (a censored reading)
+      after several days up, then read 180 current / 217 peak twenty minutes
+      after a restart. So it climbs with uptime, not within a page render.
+      Re-measure after a multi-day soak before concluding whether 340 is the
+      right soft cap; do NOT re-cap off a fresh-restart reading, which is the
+      opposite error to capping off a pinned one.
 
   - unit: nous-ergon-live.service
     port: 8502
@@ -247,6 +262,26 @@ services:
       of 349 was never a working set — only the largest value the ceiling
       permitted.
 
+      RE-MEASURED 2026-08-03, and the cap is CORRECT AS IT STANDS — do not
+      raise it off the CENSORED finding this service used to produce. It read
+      `peak 280 == high 280` after three days up, which the censored-reading
+      check treated as "pinned, current is a floor". It was not. With the cap
+      temporarily raised 280M -> 480M for thirteen minutes it did not move:
+
+        current  214 MiB, flat at every one-minute sample
+        peak     280 MiB, unchanged
+        events   15 total across three days of uptime, zero new
+        pressure some avg10=0.00 throughout
+
+      Working set is ~214 MiB against a 280M soft cap (76%) — comfortable, and
+      the 280 peak is a historical high-water mark, not suppressed demand.
+      `memory.peak` never decays short of a restart, so a single graze of the
+      soft cap made this service read censored on every tick for three days.
+      The check was narrowed to require a CURRENT pin (see
+      check_memory_budget.py::censored_observation); the cap was left alone.
+      Raising it would have spent ~50 MiB of overcommit headroom the box does
+      not have, on a reporting artifact.
+
   - unit: metron-dash-web.service
     port: 3003
     memory_high: 154M
@@ -304,13 +339,32 @@ services:
       steady-state bound, the one that governs real safety, moves 39% -> ~45%
       of RAM against its 60% limit.
 
-      STILL OUTSTANDING and not fixed by this cap: a 213 MiB ONNX model held
-      resident in the request path of a single-user app is the largest fixed
-      cost on this box per unit of work delivered, and the box now has two
-      other services (dashboard, metron-api) reading CENSORED — pinned at
-      their own soft caps, working sets unknown. Whether this box is resized or
-      the embedding capability moves behind the model router is a spend
-      decision on the Decision Queue, not something a cap settles.
+      RULED 2026-08-03 (Brian), superseding this note's original close: the
+      213 MiB ONNX model STAYS in vires' request path and this cap is the whole
+      fix. Vires is a personal product with monetization deprioritized —
+      "runnable" is the requirement, not "cheap to run" — so no further infra
+      investment is warranted on it. The three destinations were priced and
+      all lose: litellm-proxy on this box relocates the 213 MiB into another
+      cgroup on the same 3839 MB (a shuffle, not a move); a hosted embeddings
+      API frees it but buys a network hop in the search debounce, a DLP egress
+      path, an external dependency and a degradation ladder; deleting the
+      query-time vector leg frees it but is a product decision about search
+      quality, not an infra one.
+
+      Load-bearing for the next person: the 213 MiB is a FIXED cost, not a
+      growing one — one model, loaded once, measured flat across 20 embeds and
+      a gc. There is no trajectory here that forces action later.
+
+      Named fallback, if and only if this box later needs the RAM: delete the
+      query-time vector leg (`vires/api/services/search.py`, the `embed_query`
+      call in the RRF fusion) and let FTS5/BM25 carry search. A deletion, not
+      a build — which is why it is the lever to reach for rather than a
+      migration.
+
+      What this cap DID consume is the overcommit headroom: the sum sits at
+      1.26x against a 1.27x bound. The next service needing a measured cap
+      raise collides immediately, and THAT collision — not vires — is what a
+      resize decision gets made against (alpha-engine-config-I6263).
 
   - unit: signal.service
     port: 8505
