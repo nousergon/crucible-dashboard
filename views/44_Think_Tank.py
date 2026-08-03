@@ -15,7 +15,7 @@ narrative per name + version history) / Themes (macro + sector working
 views) / Runs & Costs (daily manifests + month spend vs the SSM cap).
 
 Reads only recorded ``thinktank/`` S3 artifacts — no LLM call, no cost.
-Lives on console.nousergon.ai (Cloudflare Access-gated). Native Streamlit
+Lives on dashboard.nousergon.ai (Cloudflare Access-gated). Native Streamlit
 chrome — no set_page_config (app.py's st.navigation owns it).
 """
 from __future__ import annotations

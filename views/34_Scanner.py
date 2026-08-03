@@ -15,7 +15,7 @@ The gates (recorded per ticker as pass/fail flags):
 (Threshold values live in the scanner config; this page shows the recorded
 outcomes, not the thresholds.)
 
-Lives on console.nousergon.ai (Cloudflare Access-gated). Native Streamlit
+Lives on dashboard.nousergon.ai (Cloudflare Access-gated). Native Streamlit
 chrome — no set_page_config (the st.navigation entrypoint in app.py owns it).
 """
 from __future__ import annotations

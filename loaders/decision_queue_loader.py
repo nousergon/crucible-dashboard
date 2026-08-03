@@ -76,6 +76,7 @@ from datetime import date, datetime, timezone
 from typing import Any
 
 import streamlit as st
+from loaders.cache import cached
 
 logger = logging.getLogger(__name__)
 
@@ -481,7 +482,7 @@ def _list_org_repos(token: str) -> list[str]:
     return repos
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@cached(ttl=3600)
 def _code_repos() -> list[str]:
     """PR-scanning repo list: live org enumeration, falling back to the
     hardcoded list on ANY failure (auth, network, API error). Cached for 1 hr
@@ -568,7 +569,7 @@ def _load_gate_pool(labels: tuple[str, ...]) -> dict:
     return {"items": [i.__dict__ | {"key": i.key} for i in items], "snoozed": snoozed}
 
 
-@st.cache_data(ttl=_CACHE_TTL_S, show_spinner="Loading decision queue…")
+@cached(ttl=_CACHE_TTL_S, show_spinner="Loading decision queue…")
 def load_decision_queue() -> dict:
     """All human-only gates (``gate:decision``/``gate:operator``/
     ``gate:device``) — see module docstring."""

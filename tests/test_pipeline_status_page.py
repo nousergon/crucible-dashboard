@@ -5,7 +5,7 @@ Two contracts guarded here:
 
 1. **Slug contract.** The Step Function failure/complete notifications
    (nousergon-data) deep-link to
-   ``https://console.nousergon.ai/pipeline-status?run=<execution-name>``
+   ``https://dashboard.nousergon.ai/pipeline-status?run=<execution-name>``
    via ``krepis.console.console_url``. So ``app.py`` MUST register
    ``views/25_Pipeline_Status.py`` as a standalone ``st.Page`` with
    ``url_path="pipeline-status"`` — a drift here silently breaks every
@@ -36,7 +36,7 @@ REPO_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 # Pinned slug — MUST equal the slug the SF notifications deep-link to
-# (nousergon-data: console.nousergon.ai/pipeline-status?run=<execution-name>).
+# (nousergon-data: dashboard.nousergon.ai/pipeline-status?run=<execution-name>).
 EXPECTED_SLUG = "pipeline-status"
 PAGE = REPO_ROOT / "views" / "25_Pipeline_Status.py"
 

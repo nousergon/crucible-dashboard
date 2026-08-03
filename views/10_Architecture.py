@@ -7,7 +7,7 @@ Bird's-eye walk through the system: the three orchestrated pipelines
 OVERVIEW.md / nousergon-docs so it doesn't drift out of sync with this
 page — see the pointer at the bottom.
 
-Lives on console.nousergon.ai (Cloudflare Access-gated). Selected
+Lives on dashboard.nousergon.ai (Cloudflare Access-gated). Selected
 sections may promote to the public site after screenshare validation;
 for now it stays private so it can speak in module-specific detail
 without disclosure-boundary concerns.

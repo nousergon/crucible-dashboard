@@ -140,7 +140,14 @@ krepis[openai]>=0.24.0
 # HealReplayDispatchFailed, ProbeEODReconcilePrecondition) -- keeps
 # tests/test_pipeline_status_registry_drift.py::test_every_substantive_state_has_registry_entry
 # green against the current SF JSONs.
-nousergon-lib[flow-doctor,github_app] @ git+https://github.com/nousergon/nousergon-lib@v0.124.9
+# v0.124.29 (config-I5863, nousergon-lib#280): adds
+# nousergon_lib.fleet_check_result -- the fleet check-result envelope, lifted
+# out of alpha-engine-config/scripts because this repo became its second REPO
+# consumer (shared-code-policy.md section 2). box_health.sh imports it to
+# publish per-service memory headroom to the console; without this bump the
+# import fails and the check logs "console row NOT published" every 10 minutes
+# while rendering nothing.
+nousergon-lib[flow-doctor,github_app] @ git+https://github.com/nousergon/nousergon-lib@v0.124.29
 
 # crucible-dash-api (config#1973 phase 9-B): read-only FastAPI over the
 # results view-model, consumed same-box by the /dash Next.js frontend.
