@@ -17,10 +17,8 @@ it in CI is not meaningful; what these pin is the CONTRACT.
 """
 
 import re
-from pathlib import Path
 
-REPO_ROOT = Path(__file__).parent.parent
-BOX_HEALTH = (REPO_ROOT / "infrastructure" / "box_health.sh").read_text()
+from tests.box_health_helpers import BOX_HEALTH, classify
 
 
 def test_box_health_invokes_the_installed_budget_check():
@@ -75,23 +73,25 @@ def test_budget_exit_codes_are_tiered_by_severity():
     assert "memory budget check failed to run" in BOX_HEALTH
 
 
-def test_notice_lines_do_not_page_and_alerts_do():
-    """The severity split itself.
+def test_budget_breach_is_delegated_not_paged():
+    """A budget breach must NOT push, and must still be published.
 
-    krepis.alerts pushes a phone notification for error/critical only; warning
-    and info are silent in-channel. Before 2026-07-29 every box-health problem
-    published at `warning`, so a service being DOWN pushed exactly as loudly as
-    a missing budget row: not at all. Both halves are asserted because getting
-    one right and the other wrong is the likely regression.
+    The bound that governs real safety is steady state, not the sum of the caps.
+    A cap-sum breach while the box sits at 39% of RAM is a statement about a
+    declared number, and paging it is how the channel gets tuned out -- which is
+    what happened: box-health was ~70% of all fleet alert publishes over
+    2026-07-27..08-03.
+
+    Both halves are asserted. Silencing it without keeping the publish would be
+    the 2026-07-29 defect in reverse: a real finding reaching nobody.
     """
-    assert re.search(r"publish_problems error\s+\d+", BOX_HEALTH), (
-        "alert-class problems must publish at `error` so they actually push"
+    assert classify("memory budget: BREACH (detail in journal)") == "warning", (
+        "a budget breach must be delegated to the Overseer, not pushed"
     )
-    assert re.search(r"publish_problems info\s+\d+", BOX_HEALTH), (
-        "notice-class problems must publish at `info` (silent in-channel)"
-    )
-    assert "grep -v '^notice: '" in BOX_HEALTH and "grep '^notice: '" in BOX_HEALTH, (
-        "the two tiers must be partitioned by the `notice: ` prefix"
+    assert re.search(r"publish_problems warning\s+\d+", BOX_HEALTH), (
+        "the warning tier must still be PUBLISHED -- silent in-channel is not "
+        "the same as unrecorded, and it is the bus emission that makes the "
+        "silence legitimate (alert class box-health, intake: bus)"
     )
 
 
