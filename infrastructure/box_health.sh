@@ -991,35 +991,111 @@ fi
 # (no S3 dedup-marker archaeology needed).
 printf 'box_health: confirmed problems after %d samples:\n%s\n' "$attempt" "$confirmed" >&2
 
-# ── Severity split ──────────────────────────────────────────────────────
-#
-# Every confirmed problem used to publish at `--severity warning`, which has two
-# consequences that pull in opposite directions and were both wrong:
-#
-#   1. krepis.alerts pushes a phone notification for `error`/`critical` ONLY —
-#      `warning` is silent in-channel. So a service being DOWN, or MemAvailable
-#      under 150 MB, never pushed. The loudest condition on this box was
-#      delivered as quietly as the quietest.
-#   2. Bookkeeping findings — a censored reading, a timer missing its declared
-#      staleness budget — arrived at the same severity and the same 60-minute
-#      cadence as a real outage. That is how a channel gets tuned out, and it is
-#      what prompted this change (2026-07-29).
-#
-# So: lines a check marked `notice: ` are hygiene about the MONITORING, and the
-# substantive check they sit beside still runs (see classify_timer_staleness and
-# the budget-check exit codes). They go out at `info`, once a day. Everything
-# else is a statement about the BOX and pushes.
+# ── Severity split — THREE tiers ────────────────────────────────────────
 #
 # Severity is a property of the invariant breached, not of the check that
 # emitted it — overseer-policy.md invariant 17.
-alerts=$(printf '%s\n' "$confirmed" | grep -v '^notice: ' || true)
-notices=$(printf '%s\n' "$confirmed" | grep '^notice: ' || true)
+#
+# HISTORY, because both previous shapes were wrong in opposite directions.
+# Before 2026-07-29 every problem published at `warning`, which krepis.alerts
+# delivers silently: a service being DOWN was as quiet as a censored memory
+# reading. That was fixed by splitting off `notice: ` lines at `info` and
+# publishing EVERYTHING ELSE at `error`, which pushes. That fixed direction one
+# and re-broke direction two — the box now pages for conditions where nothing is
+# degraded. Measured over 2026-07-27..08-03: box-health accounted for 96 of ~138
+# fleet alert publishes, ~70%, essentially all of it pushing, and the largest
+# single contributor was `memory budget: BREACH` firing while the box sat at 39%
+# of RAM against a 60% limit with 2.3 GB free.
+#
+# Two tiers cannot express that, because "the box is unhealthy" and "a declared
+# invariant about the box has drifted" are different invariants:
+#
+#   critical  A product or the box is degraded RIGHT NOW, or a service cannot
+#             come back if it restarts. PUSHES a phone notification.
+#   warning   A declared invariant is breached, or our ability to observe one is
+#             impaired, while nothing is currently degraded. Silent in-channel;
+#             still published to SNS and still emitted onto the Overseer intake
+#             bus, where box-health is a declared alert class with
+#             `intake: bus` / `response: drain-queue`. This tier is DELEGATED,
+#             not discarded.
+#   info      Hygiene about the monitoring itself. Silent, once a day.
+#
+# WHY THE DEFAULT IS `critical` AND NOT `warning`. classify_problem_severity
+# below is an allow-list of things permitted to be quiet. A problem line that
+# matches nothing falls through to critical and pages. That direction is
+# deliberate: a new check added without a tiering decision must fail loud, never
+# inherit silence. test_box_health_severity_tiers.py asserts the classification
+# is TOTAL over every problem string this file emits, so the fall-through is a
+# backstop against a check added in a hurry, not the normal path.
+#
+# WHAT THIS DEPENDS ON, stated because it is the risk the change creates: the
+# `warning` tier reaches Brian only through email and reaches the plane only
+# through the drain. A drain outage therefore converts this tier from "delegated"
+# to "unattended". That coupling is real and is why box-health's own
+# `watchdog:` coverage lines stay in this tier rather than dropping to info.
+classify_problem_severity() {
+    case "$1" in
+        # ── info: hygiene about the MONITORING, substantive check still runs ──
+        "notice: "*) echo info ;;
 
-# The verdict metric counts ALERT-class problems only. It answers "is the box
-# unhealthy", and a notice by definition is not evidence that it is. Notices are
-# not dropped from view — they have their own delivery below; this is a
-# deliberate scoping of one signal, not a silent one.
-publish_verdict "$(printf '%s\n' "$alerts" | grep -c .)"
+        # ── warning: a declared invariant drifted; nothing is degraded now ────
+        "memory budget: BREACH"*) echo warning ;;
+        "cgroup throttle: "*) echo warning ;;
+        "disk high: "*) echo warning ;;
+        "timer has not run in "*) echo warning ;;
+        "timer enabled but not active"*) echo warning ;;
+        "timer will never fire again: "*) echo warning ;;
+        "service running but NOT enabled: "*) echo warning ;;
+        # Coverage blindness. Serious — detection blindness outranks the defects
+        # it hides — but it is a statement about the WATCHDOG, and
+        # overseer-policy.md section 3 is explicit that the watchdog's findings
+        # about its own coverage are "recorded and swept, never paged".
+        "watchdog: "*) echo warning ;;
+
+        # ── critical: degraded now, or cannot recover ─────────────────────────
+        # Everything below is listed rather than left to the default so the
+        # intent is on the record and the totality test can see it.
+        "service down: "*) echo critical ;;
+        "service not answering HTTP"*) echo critical ;;
+        "port not listening: "*) echo critical ;;
+        "low memory: "*) echo critical ;;
+        "disk critical: "*) echo critical ;;
+        "memory pressure: "*) echo critical ;;
+        "timer job failing: "*) echo critical ;;
+        # Latent, not current — but the unit cannot start again, and
+        # reboot-if-needed.timer makes that an unattended, all-at-once event.
+        "unit cannot restart: "*) echo critical ;;
+
+        *) echo critical ;;
+    esac
+}
+
+criticals=""; warnings=""; notices=""
+while IFS= read -r _line; do
+    [ -z "$_line" ] && continue
+    case "$(classify_problem_severity "$_line")" in
+        info)     notices="${notices}${_line}"$'\n' ;;
+        warning)  warnings="${warnings}${_line}"$'\n' ;;
+        *)        criticals="${criticals}${_line}"$'\n' ;;
+    esac
+done <<< "$confirmed"
+
+# Strip the trailing newline each accumulator carries. NOT cosmetic: publish_problems
+# does `mapfile -t _problems <<< "$lines"`, and `<<<` appends its own newline, so a
+# value ending in "\n" yields a final EMPTY element — which renders as a bare " - "
+# bullet in the message and, worse, lands in the dedup key. The previous shape got
+# this for free because `$( ... )` strips trailing newlines; building the strings in
+# the shell does not, and the difference is invisible until an alert fires.
+criticals="${criticals%$'\n'}"
+warnings="${warnings%$'\n'}"
+notices="${notices%$'\n'}"
+
+# The verdict metric counts problems that mean the BOX IS UNHEALTHY — the
+# critical tier only. A warning is a statement about a declared bound, not
+# evidence the box is degraded, and folding it in here is what made the gauge
+# track bookkeeping. Neither lower tier is dropped from view: each has its own
+# delivery below, and every tier reaches the Overseer bus via krepis.alerts.
+publish_verdict "$(printf '%s' "$criticals" | grep -c . || true)"
 
 # publish_problems SEVERITY DEDUP_MIN PREFIX LINES
 # One path for both tiers so they cannot drift apart in formatting, dedup
@@ -1047,5 +1123,16 @@ publish_problems() {
         || echo "box_health: $severity publish failed" >&2
 }
 
-publish_problems error 60   "health alert" "$alerts"
-publish_problems info  1440 "monitoring hygiene (no action urgent)" "$notices"
+# `critical`, not `error`. Both push identically today (krepis.alerts'
+# SEVERITY_PUSH is {error, critical}), so this is not what makes the tier loud —
+# the tier is loud because it is the only one left in that set. It is spelled
+# `critical` so the rendered `[CRITICAL]` tag matches what the tier now means,
+# and so a future narrowing of SEVERITY_PUSH to `critical` alone does not
+# silently disarm this line.
+publish_problems critical 60   "health alert" "$criticals"
+# Silent in-channel, and deliberately so. Still SNS, still on the Overseer intake
+# bus as alert class `box-health` (intake: bus, response: drain-queue). Same
+# 60-minute dedup as critical: the tier changes who is woken, never how often the
+# finding is recorded.
+publish_problems warning  60   "budget/coverage finding (no action urgent)" "$warnings"
+publish_problems info     1440 "monitoring hygiene (no action urgent)" "$notices"
