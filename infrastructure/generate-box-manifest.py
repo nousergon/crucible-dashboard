@@ -70,6 +70,12 @@ def main() -> int:
 
     spec = yaml.safe_load(BUDGET.read_text())
     services, ports = [], []
+    # unit -> port, for the HTTP liveness probe (alpha-engine-config-I6262).
+    # SERVICES and PORTS are two independent lists: `ports` skips `port: none`
+    # entries, so index i of one does not necessarily describe the same
+    # service as index i of the other. An alert that names a service has to
+    # come from an explicit pairing, not from an assumed alignment.
+    service_port: list[tuple[str, str]] = []
     for svc in spec["services"]:
         services.append(svc["unit"])
         port = svc.get("port")
@@ -81,6 +87,7 @@ def main() -> int:
             return 1
         if str(port) != "none":
             ports.append(str(port))
+            service_port.append((svc["unit"], str(port)))
 
     excluded = [e["unit"] for e in spec.get("manifest_exclude", [])]
     timers = [(t["unit"], parse_duration(t["unit"], t["max_staleness"]))
@@ -96,6 +103,19 @@ def main() -> int:
         "",
         f"SERVICES=({' '.join(services)})",
         f"PORTS=({' '.join(ports)})",
+        "",
+        "# unit -> port, for the HTTP liveness probe (alpha-engine-config-I6262).",
+        "# A listening socket is not liveness: the kernel keeps it bound while the",
+        "# server behind it answers nothing, which is how vires.service stayed",
+        "# 'healthy' through an 18-minute outage on 2026-08-03. box_health.sh curls",
+        "# each port and treats 'no status line inside the timeout' as an outage.",
+        "#",
+        "# An explicit pairing, NOT SERVICES[i]/PORTS[i]: `ports` above skips",
+        "# `port: none` entries, so the two lists are not index-aligned and an",
+        "# alert built on that assumption would name the wrong service.",
+        "declare -A SERVICE_PORT=(",
+        *[f'    ["{unit}"]={port}' for unit, port in service_port],
+        ")",
         "",
         "# Units deliberately outside coverage (OS plumbing, templates). box_health.sh",
         "# reports any enabled non-oneshot unit that is in neither list — so a new app",
