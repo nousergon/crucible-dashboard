@@ -171,6 +171,13 @@ jobs:
       - name: Checkout
         if: matrix.changed == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          # marketing-apex's build:blog step runs Hugo against blog/themes/PaperMod,
+          # a git submodule. Without this, checkout leaves it an empty directory,
+          # Hugo builds with no layouts (WARN-only, not a build failure) and ships
+          # a contentless dist/blog/ — the exact cause of the nousergon.ai/blog
+          # outage diagnosed 2026-08-04 (alpha-engine-config-I6463).
+          submodules: recursive
 
       - name: Setup Node
         if: matrix.changed == 'true'
