@@ -7,6 +7,8 @@ Streamlit calls need a live runtime) — page wiring is asserted against
 source text instead.
 """
 
+import ast
+import re
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -21,6 +23,31 @@ sys.modules["streamlit"] = mock_st
 from loaders import s3_loader  # noqa: E402
 
 REPO_ROOT = Path(__file__).parent.parent
+
+
+def _extract_literal(src: str, name: str):
+    """Pull a module-level ``name = <literal>`` assignment out of source text
+    and ``ast.literal_eval`` it, without importing the module (its
+    module-level Streamlit calls — ``st.tabs()`` unpacked into 3 names, etc.
+    — need a live runtime; see the module docstring above)."""
+    match = re.search(rf"^{re.escape(name)} = ", src, re.MULTILINE)
+    assert match, f"{name} not found as a module-level assignment"
+    start = match.end()
+    opens, closes = "([{", ")]}"
+    pair = dict(zip(closes, opens))
+    stack: list[str] = []
+    end = None
+    for i, ch in enumerate(src[start:], start=start):
+        if ch in opens:
+            stack.append(ch)
+        elif ch in closes:
+            assert stack and stack[-1] == pair[ch], f"unbalanced brackets parsing {name}"
+            stack.pop()
+            if not stack:
+                end = i + 1
+                break
+    assert end is not None, f"could not find closing bracket for {name}"
+    return ast.literal_eval(src[start:end])
 
 
 class TestLeaderboardLoaders:
@@ -148,3 +175,87 @@ class TestPageWiring:
             "app.py st.navigation must register views/46_Experiments.py — "
             "an unregistered view is unreachable on the console (config#1685)"
         )
+
+
+class TestChampionVocabularyParity:
+    """Guards ``views/46_Experiments.py``'s champion-arm and blocked-by
+    vocabulary against drift from the live promotion engine
+    (alpha-engine-config-I6431).
+
+    LIMITATION: alpha-engine-backtester (which owns
+    ``optimizer/champion_promotion.py::VALID_CHAMPIONS`` /
+    ``_BLOCKED_BY_SLUGS``) is a SEPARATE repo and not a runtime or test
+    dependency of crucible-dashboard, so a live cross-repo import is not
+    feasible in this repo's CI environment. The sets below are a hardcoded
+    snapshot of that module's ground truth as verified 2026-08-04
+    (``VALID_CHAMPIONS`` L233, ``_BLOCKED_BY_SLUGS`` L250-276 as of that
+    read). This test catches the DASHBOARD's constants drifting from this
+    recorded snapshot; it does NOT automatically detect the backtester's
+    vocabulary changing again — re-verify and update this snapshot whenever
+    champion_promotion.py's VALID_CHAMPIONS or _BLOCKED_BY_SLUGS changes.
+    """
+
+    # optimizer/champion_promotion.py::VALID_CHAMPIONS
+    _BACKTESTER_VALID_CHAMPIONS = {"scanner_predictor_direct", "thinktank_coverage"}
+
+    # optimizer/champion_promotion.py::_BLOCKED_BY_SLUGS — current
+    # winner-take-all vocabulary (I2518/I2544/I2998).
+    _BACKTESTER_CURRENT_BLOCKED_BY_SLUGS = {
+        "no_valid_scanner_predictor_direct_selections",
+        "no_valid_thinktank_coverage_selections",
+        "scanner_predictor_direct_counterfactual_unavailable",
+        "thinktank_coverage_not_in_leaderboard",
+        "thinktank_coverage_no_resolved_outcomes",
+        "leaderboard_unavailable",
+        "leaderboard_stale_gt_8d",
+        "arm_score_unavailable",
+        "feed_producer_dead",
+        "frozen",
+        "unclassified_error",
+    }
+
+    # Retired vocabularies _BLOCKED_BY_SLUGS keeps read-tolerated for
+    # historical audit records (pre-I2518 HAC/hysteresis/cooldown engine, and
+    # the same-day-superseded pre-I2544 exact-date leaderboard read).
+    _BACKTESTER_RETIRED_BLOCKED_BY_SLUGS = {
+        "insufficient_matured_cohorts",
+        "cooldown_active",
+        "not_significant_hac_adjusted",
+        "hysteresis_not_satisfied",
+        "leaderboard_stale",
+    }
+
+    def test_champion_arms_match_backtester_valid_champions(self):
+        src = (REPO_ROOT / "views" / "46_Experiments.py").read_text()
+        champion_arms = set(_extract_literal(src, "_CHAMPION_ARMS"))
+        assert champion_arms == self._BACKTESTER_VALID_CHAMPIONS, (
+            "_CHAMPION_ARMS has drifted from champion_promotion.py's "
+            "VALID_CHAMPIONS — update both the dashboard constant and this "
+            "test's snapshot"
+        )
+
+    def test_champion_arm_labels_cover_every_champion_arm(self):
+        src = (REPO_ROOT / "views" / "46_Experiments.py").read_text()
+        champion_arms = set(_extract_literal(src, "_CHAMPION_ARMS"))
+        labels = _extract_literal(src, "_CHAMPION_ARM_LABELS")
+        missing = champion_arms - set(labels)
+        assert not missing, f"_CHAMPION_ARM_LABELS missing labels for: {sorted(missing)}"
+
+    def test_blocked_by_labels_cover_every_current_and_retired_slug(self):
+        src = (REPO_ROOT / "views" / "46_Experiments.py").read_text()
+        labels = set(_extract_literal(src, "_BLOCKED_BY_LABELS"))
+        all_slugs = (
+            self._BACKTESTER_CURRENT_BLOCKED_BY_SLUGS
+            | self._BACKTESTER_RETIRED_BLOCKED_BY_SLUGS
+        )
+        missing = all_slugs - labels
+        assert not missing, f"_BLOCKED_BY_LABELS missing labels for: {sorted(missing)}"
+
+    def test_producer_cohort_prefixes_include_thinktank_coverage(self):
+        """registry.py registers thinktank_coverage as a scored challenger
+        arm (config-I4983); its shadow cohort prefix must be tracked here
+        for maturity accounting even though build=None means the weekly
+        producer run never builds it."""
+        src = (REPO_ROOT / "views" / "46_Experiments.py").read_text()
+        prefixes = _extract_literal(src, "_PRODUCER_COHORT_PREFIXES")
+        assert prefixes.get("thinktank_coverage") == "signals_shadow/thinktank_coverage/"
