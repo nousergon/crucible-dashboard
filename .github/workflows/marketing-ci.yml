@@ -52,6 +52,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          # marketing-apex's build:blog step runs Hugo against blog/themes/PaperMod,
+          # a git submodule — without this it's an empty dir at build time (see the
+          # matching comment in deploy-marketing.yml for the outage this caused).
+          submodules: recursive
 
       - name: Setup Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7
@@ -78,6 +83,19 @@ jobs:
             || (echo 'sitemap-index.xml not emitted — @astrojs/sitemap regressed' && exit 1)
           test -f dist/robots.txt \
             || (echo 'robots.txt missing from build output' && exit 1)
+
+      # Hugo warns (doesn't fail) when the PaperMod submodule is missing/empty,
+      # so astro build succeeds either way — this is the loud check that catches
+      # a contentless blog before merge instead of after deploy.
+      - name: Verify blog build populated (marketing-apex only)
+        if: matrix.site == 'marketing-apex'
+        run: |
+          test -s dist/blog/index.html \
+            || (echo 'dist/blog/index.html missing/empty — Hugo build produced no content (check blog/themes/PaperMod submodule)' && exit 1)
+          grep -q 'Nous Ergon' dist/blog/index.html \
+            || (echo 'dist/blog/index.html has no theme-rendered content — Hugo likely built with no layouts (empty submodule)' && exit 1)
+          test -d dist/blog/posts/introducing-nous-ergon \
+            || (echo 'expected blog post directory missing from build output' && exit 1)
 
   notify-main-failure:
     needs: [build]
