@@ -2,11 +2,11 @@
 #    uv pip compile requirements.in --output-file /tmp/dashboard-compiled.txt --python 3.12
 altair==6.2.2
     # via streamlit
-annotated-doc==0.0.4
+annotated-doc==0.0.5
     # via fastapi
 annotated-types==0.8.0
     # via pydantic
-anthropic==0.119.0
+anthropic==0.120.2
     # via flow-doctor
 anyio==4.14.2
     # via
@@ -23,13 +23,13 @@ beautifulsoup4==4.15.0
     # via yfinance
 blinker==1.9.0
     # via streamlit
-boto3==1.43.59
+boto3==1.43.63
     # via
     #   -r requirements.in
     #   flow-doctor
     #   krepis
     #   nousergon-lib
-botocore==1.43.59
+botocore==1.43.63
     # via
     #   boto3
     #   s3transfer
@@ -39,7 +39,7 @@ certifi==2026.7.22
     #   httpcore
     #   httpx
     #   requests
-cffi==2.1.0
+cffi==2.1.1
     # via
     #   cryptography
     #   curl-cffi
@@ -49,9 +49,9 @@ click==8.4.2
     # via
     #   streamlit
     #   uvicorn
-cryptography==49.0.0
+cryptography==50.0.0
     # via pyjwt
-curl-cffi==0.15.0
+curl-cffi==0.16.0
     # via yfinance
 distro==1.9.0
     # via
@@ -61,13 +61,13 @@ docstring-parser==0.18.0
     # via anthropic
 fastapi==0.141.1
     # via -r requirements.in
-flow-doctor==0.8.8
+flow-doctor==0.8.9
     # via
     #   -r requirements.in
     #   krepis
 gitdb==4.0.12
     # via gitpython
-gitpython==3.1.55
+gitpython==3.1.57
     # via streamlit
 h11==0.16.0
     # via
@@ -105,16 +105,12 @@ jsonschema==4.26.0
     # via altair
 jsonschema-specifications==2025.9.1
     # via jsonschema
-krepis==0.24.0
+krepis==0.32.0
     # via
     #   -r requirements.in
     #   nousergon-lib
-markdown-it-py==4.2.0
-    # via rich
 markupsafe==3.0.3
     # via jinja2
-mdurl==0.1.2
-    # via markdown-it-py
 multitasking==0.0.13
     # via yfinance
 narwhals==2.24.0
@@ -129,7 +125,7 @@ numpy==2.5.1
     #   pydeck
     #   streamlit
     #   yfinance
-openai==2.48.0
+openai==2.53.0
     # via krepis
 packaging==26.2
     # via
@@ -141,7 +137,7 @@ pandas==3.0.5
     #   -r requirements.in
     #   streamlit
     #   yfinance
-peewee==4.2.6
+peewee==4.3.0
     # via yfinance
 pillow==12.3.0
     # via streamlit
@@ -172,8 +168,6 @@ pydantic-settings==2.14.2
     # via flow-doctor
 pydeck==0.9.3
     # via streamlit
-pygments==2.20.0
-    # via rich
 pyjwt==2.13.0
     # via nousergon-lib
 python-dateutil==2.9.0.post0
@@ -186,7 +180,7 @@ python-dotenv==1.2.2
     #   pydantic-settings
 python-multipart==0.0.32
     # via streamlit
-pytz==2026.2
+pytz==2026.3.post1
     # via yfinance
 pyyaml==6.0.3
     # via
@@ -204,8 +198,6 @@ requests==2.34.2
     #   nousergon-lib
     #   streamlit
     #   yfinance
-rich==15.0.0
-    # via curl-cffi
 rpds-py==2026.6.3
     # via
     #   jsonschema
@@ -238,7 +230,7 @@ tenacity==9.1.4
     # via streamlit
 toml==0.10.2
     # via streamlit
-tqdm==4.69.0
+tqdm==4.70.0
     # via openai
 typing-extensions==4.16.0
     # via
@@ -264,7 +256,7 @@ urllib3==2.7.0
     # via
     #   botocore
     #   requests
-uvicorn==0.52.0
+uvicorn==0.52.1
     # via
     #   -r requirements.in
     #   streamlit
