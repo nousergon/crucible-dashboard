@@ -17,11 +17,15 @@ Experiments rendered (one tab each; more join as substrates ship):
   challenger. Cohorts: ``candidates_shadow/{spec}/``; leaderboard:
   ``scanner/leaderboard/``.
 - Champion loop (config#2364/#2367/#2369): NOT observe-only like the two
-  tabs above — this is the GATED executor selection-path switch (agentic vs
-  scanner_predictor_direct). Shows the live pointer, weekly promotion/
-  demotion audit history, per-arm gate state (eligible / hysteresis /
-  cooldown / insufficient-data), and the challenger's weekly sector-neutral
-  lift series. Read-only console surface; the pointer itself is written by
+  tabs above — this is the GATED executor selection-path switch
+  (``scanner_predictor_direct`` vs ``thinktank_coverage`` — the retired
+  ``agentic`` seat left this rotation at the config-I2518 seat swap,
+  2026-07-14). Shows the live pointer, weekly promotion/demotion audit
+  history, per-arm gate state (the winner-take-all validity guards —
+  feed-dead / leaderboard-stale / no-valid-selections / frozen — plus the
+  retired HAC/hysteresis/cooldown vocabulary read-tolerated for pre-I2518
+  audit history), and the challenger's weekly sector-neutral lift series.
+  Read-only console surface; the pointer itself is written by
   crucible-backtester's weekly gate engine or a one-shot operator bootstrap.
 
 Honest empty state: a cohort scores only after its 21-trading-day horizon
@@ -59,6 +63,12 @@ _SCANNER_LB_PREFIX = "scanner/leaderboard/"
 _PRODUCER_COHORT_PREFIXES = {
     "no_agent_quant": "signals_shadow/no_agent_quant/",
     "single_agent_quant": "signals_shadow/single_agent_quant/",
+    # Arm 3 of 3 in the count-matched predictor universe (config-I4983) — its
+    # shadow is written by the Think Tank's own daily run, not synthesised
+    # during the weekly producer pass (registry.py build=None), but it is
+    # scored by the leaderboard exactly like the other two challengers, so
+    # it belongs in the same cohort/maturity accounting.
+    "thinktank_coverage": "signals_shadow/thinktank_coverage/",
 }
 _SCANNER_COHORT_PREFIXES = {
     "momentum_sleeve": "candidates_shadow/momentum_sleeve/",
@@ -72,19 +82,44 @@ _METRIC_COLUMNS = {
     "n_dates_scored": "Cohorts scored",
 }
 
-_CHAMPION_ARMS = ("agentic", "scanner_predictor_direct")
+# Live champion/challenger rotation — MUST mirror alpha-engine-backtester's
+# optimizer/champion_promotion.py::VALID_CHAMPIONS (config-I2518 seat swap,
+# 2026-07-14: the "agentic" seat retired, "thinktank_coverage" joined).
+# alpha-engine-config-I6431. Kept in sync by
+# tests/test_experiments_page.py::TestChampionVocabularyParity.
+_CHAMPION_ARMS = ("scanner_predictor_direct", "thinktank_coverage")
 _CHAMPION_ARM_LABELS = {
-    "agentic": "Agentic (full research pipeline)",
     "scanner_predictor_direct": "Scanner → predictor (no agent)",
+    "thinktank_coverage": "Think Tank coverage (per-ticker theses)",
+    # RETIRED seat (config-I2518, 2026-07-14) — never a value in
+    # _CHAMPION_ARMS above; kept only so a historical pointer/audit record
+    # naming it (champion_promotion.py's _LEGACY_CHAMPIONS, read-tolerated)
+    # renders a label instead of the raw slug.
+    "agentic": "Agentic (RETIRED 2026-07-14)",
 }
 _BLOCKED_BY_LABELS = {
-    "insufficient_matured_cohorts": "insufficient data",
-    "cooldown_active": "cooldown",
-    "not_significant_hac_adjusted": "not significant (HAC-adjusted)",
-    "hysteresis_not_satisfied": "hysteresis pending",
-    "frozen": "frozen (--freeze)",
+    # Current winner-take-all vocabulary (champion_promotion.py
+    # _BLOCKED_BY_SLUGS, config-I2518/I2544/I2998).
+    "no_valid_scanner_predictor_direct_selections": "no valid scanner→predictor selections",
+    "no_valid_thinktank_coverage_selections": "no valid Think Tank coverage selections",
+    "scanner_predictor_direct_counterfactual_unavailable": "scanner→predictor counterfactual unavailable",
+    "thinktank_coverage_not_in_leaderboard": "Think Tank coverage not in leaderboard",
+    "thinktank_coverage_no_resolved_outcomes": "Think Tank coverage has no resolved outcomes",
     "leaderboard_unavailable": "leaderboard unavailable",
+    "leaderboard_stale_gt_8d": "leaderboard stale (>8d)",
+    "arm_score_unavailable": "arm score unavailable",
+    "feed_producer_dead": "feed producer dead (config-I3165)",
+    "frozen": "frozen (--freeze)",
     "unclassified_error": "error",
+    # RETIRED pre-I2518 HAC/hysteresis/cooldown engine — read-tolerated for
+    # historical audit records only; no live code path emits these anymore.
+    "insufficient_matured_cohorts": "insufficient data (retired engine)",
+    "cooldown_active": "cooldown (retired engine)",
+    "not_significant_hac_adjusted": "not significant HAC-adjusted (retired engine)",
+    "hysteresis_not_satisfied": "hysteresis pending (retired engine)",
+    # RETIRED pre-I2544 exact-date-only leaderboard read — read-tolerated for
+    # historical audit records only; superseded by leaderboard_stale_gt_8d.
+    "leaderboard_stale": "leaderboard stale (retired engine)",
 }
 
 
@@ -201,18 +236,23 @@ def _render_champion_loop() -> None:
     st.subheader("Champion/challenger promotion loop")
     st.caption(
         "config#2364 / #2367 — NOT observe-only like the ablation tabs above: "
-        "this is the GATED executor selection-path switch (agentic vs "
-        "scanner_predictor_direct). A pointer move here changes what the "
-        "live executor trades starting the next daily preopen run."
+        "this is the GATED executor selection-path switch "
+        "(scanner_predictor_direct vs thinktank_coverage). A pointer move "
+        "here changes what the live executor trades starting the next daily "
+        "preopen run."
     )
 
     pointer = load_champion_pointer()
-    current_champion = (pointer or {}).get("champion", "agentic")
+    # Base-case default mirrors champion_promotion.py's own
+    # _normalize_champion_before: an absent/unrecognized pointer value
+    # normalizes to VALID_CHAMPIONS[0] == "scanner_predictor_direct", not
+    # the retired "agentic" seat.
+    current_champion = (pointer or {}).get("champion", _CHAMPION_ARMS[0])
 
     if pointer is None:
         st.info(
             "No champion pointer written yet — the executor defaults to "
-            "'agentic' (pre-bootstrap)."
+            f"'{_CHAMPION_ARM_LABELS[_CHAMPION_ARMS[0]]}' (pre-bootstrap)."
         )
     else:
         c1, c2, c3 = st.columns(3)
