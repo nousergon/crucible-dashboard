@@ -3,7 +3,9 @@ locale: en-us
 title: "Nous Ergon"
 theme: PaperMod
 
-# Build output goes to blog/public/ — deployed to /var/www/blog/ on EC2
+# Build output goes to blog/public/, then marketing-apex's build:blog script
+# copies it into marketing-apex/public/blog/ so Astro ships it as part of the
+# nousergon.ai Cloudflare Pages deploy (see deploy-marketing.yml).
 publishDir: public
 
 paginate: 10
@@ -22,7 +24,10 @@ params:
   ShowReadingTime: true
   ShowBreadCrumbs: true
   ShowPostNavLinks: true
-  ShowShareButtons: true
+  # PaperMod's default share row is generic share-intent links (Twitter,
+  # Facebook, Reddit, Telegram, WhatsApp) rather than Brian's own profiles —
+  # off by request.
+  ShowShareButtons: false
   ShowCodeCopyButtons: true
   ShowToc: true
   TocOpen: false
