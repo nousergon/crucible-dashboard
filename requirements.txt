@@ -49,7 +49,7 @@ click==8.4.2
     # via
     #   streamlit
     #   uvicorn
-cryptography==49.0.0
+cryptography==50.0.0
     # via pyjwt
 curl-cffi==0.15.0
     # via yfinance
@@ -61,7 +61,7 @@ docstring-parser==0.18.0
     # via anthropic
 fastapi==0.141.1
     # via -r requirements.in
-flow-doctor==0.8.8
+flow-doctor[diagnosis,s3]==0.8.8
     # via
     #   -r requirements.in
     #   krepis
@@ -105,7 +105,7 @@ jsonschema==4.26.0
     # via altair
 jsonschema-specifications==2025.9.1
     # via jsonschema
-krepis==0.24.0
+krepis[flow-doctor,openai]==0.24.0
     # via
     #   -r requirements.in
     #   nousergon-lib
@@ -121,7 +121,7 @@ narwhals==2.24.0
     # via
     #   altair
     #   plotly
-nousergon-lib @ git+https://github.com/nousergon/nousergon-lib@9d159992089eb47b96bacd5acece1f6ca5dc06d9
+nousergon-lib[flow-doctor,github-app] @ git+https://github.com/nousergon/nousergon-lib@v0.124.29
     # via -r requirements.in
 numpy==2.5.1
     # via
@@ -174,8 +174,10 @@ pydeck==0.9.3
     # via streamlit
 pygments==2.20.0
     # via rich
-pyjwt==2.13.0
-    # via nousergon-lib
+pyjwt[crypto]==2.13.0
+    # via
+    #   nousergon-lib
+    #   pyjwt
 python-dateutil==2.9.0.post0
     # via
     #   botocore
@@ -212,8 +214,6 @@ rpds-py==2026.6.3
     #   referencing
 s3transfer==0.19.2
     # via boto3
-setuptools==83.0.0
-    # via -r requirements.in
 six==1.17.0
     # via python-dateutil
 smmap==5.0.3
