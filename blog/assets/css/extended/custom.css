@@ -1,5 +1,6 @@
-/* Nous Ergon Blog — matches nousergon.ai Streamlit site styling
-   Pure black background, blue (#1a73e8) accents, system sans-serif */
+/* Nous Ergon Blog — matches nousergon.ai (Astro/Tailwind), see marketing-apex/
+   src/layouts/Base.astro for the source of truth this mirrors.
+   Pure black background, sky accent, system sans-serif */
 
 /* === Color overrides for PaperMod dark theme === */
 :root {
@@ -13,8 +14,14 @@
   --ne-text-subtle: #999;
   --ne-text-light: #aaa;
   --ne-text-lighter: #ccc;
-  --ne-blue: #1a73e8;
-  --ne-blue-hover: #4a9af5;
+  /* Tailwind sky-400 / sky-300 — matches Base.astro's text-sky-400 accent */
+  --ne-blue: #38bdf8;
+  --ne-blue-hover: #7dd3fc;
+  /* Tailwind zinc-400 / zinc-100 / zinc-500 / zinc-600 — matches Base.astro's nav/footer */
+  --ne-zinc-400: #a1a1aa;
+  --ne-zinc-100: #f4f4f5;
+  --ne-zinc-500: #71717a;
+  --ne-zinc-600: #52525b;
 }
 
 .dark {
@@ -36,60 +43,93 @@ body {
   display: none !important;
 }
 
-/* === Nous Ergon Header (matches Streamlit site) === */
+/* === Nous Ergon Header (mirrors Base.astro's <header>) === */
 .ne-header {
-  text-align: center;
-  padding: 60px 20px 0 20px;
+  padding-top: 2rem;
+  padding-bottom: 1.5rem;
 }
 
-.ne-logo {
-  text-align: center;
+.ne-header-inner {
+  max-width: 64rem;
+  margin: 0 auto;
+  padding: 0 1.5rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.ne-logo-link {
+  display: block;
 }
 
 .ne-logo-img {
-  max-width: 600px;
-  width: 90%;
-  margin-bottom: 8px;
-  display: inline-block;
+  width: 100%;
+  max-width: 345px;
+  height: auto;
+  display: block;
 }
 
 .ne-nav {
-  margin-top: 14px;
+  margin-top: 1.5rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  column-gap: 1.75rem;
+  row-gap: 0.5rem;
   font-size: 13px;
-  letter-spacing: 1px;
-  padding-bottom: 30px;
-  border-bottom: 1px solid var(--ne-border-strong);
-  max-width: 800px;
-  margin-left: auto;
-  margin-right: auto;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 .ne-nav-link {
-  color: var(--ne-text-lighter);
+  color: var(--ne-zinc-400);
   text-decoration: none;
-  margin: 0 16px;
   transition: color 0.2s ease;
 }
 
 .ne-nav-link:hover {
-  color: var(--ne-blue);
+  color: var(--ne-zinc-100);
 }
 
-.ne-nav-active {
-  color: var(--ne-blue) !important;
-  font-weight: 600;
-}
-
-/* === Footer (matches Streamlit site) === */
+/* === Footer (mirrors Base.astro's <footer>) === */
 .ne-footer {
-  text-align: center;
-  padding: 8px 0 20px 0;
+  border-top: 1px solid var(--ne-border-strong);
+  margin-top: 6rem;
+  background: var(--ne-bg);
 }
 
-.ne-footer p {
-  color: var(--ne-text-dim);
+.ne-footer-inner {
+  max-width: 64rem;
+  margin: 0 auto;
+  padding: 2rem 1.5rem;
   font-size: 12px;
-  margin: 0;
+  color: var(--ne-zinc-500);
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+@media (min-width: 768px) {
+  .ne-footer-inner {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+  }
+}
+
+.ne-footer-link {
+  color: var(--ne-text-lighter);
+  text-decoration: none;
+  transition: color 0.2s ease;
+}
+
+.ne-footer-link:hover {
+  color: var(--ne-zinc-100);
+}
+
+.ne-footer-wordmark {
+  color: var(--ne-zinc-600);
 }
 
 .footer {
@@ -329,7 +369,6 @@ body {
 
 /* === Responsive === */
 @media (max-width: 768px) {
-  .ne-logo-img { max-width: 90%; }
-  .ne-nav-link { margin: 0 8px; font-size: 12px; }
+  .ne-nav { font-size: 12px; }
   .post-content { font-size: 1rem; }
 }
