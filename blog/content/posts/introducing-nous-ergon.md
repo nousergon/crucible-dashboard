@@ -8,7 +8,7 @@ ShowToc: false
 TocOpen: false
 ---
 
-*Originally posted on LinkedIn on July 22, 2026.*
+*Originally posted on [LinkedIn](https://www.linkedin.com/posts/brian-c-mcmahon_in-february-block-generously-freed-up-100-share-7484334444108218368-Wob4/) on July 22, 2026.*
 
 In February, Block generously freed up 100% of my time. Since then, I've spent almost every waking hour building **Nous Ergon**, an applied AI lab.
 
