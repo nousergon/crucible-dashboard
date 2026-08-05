@@ -987,3 +987,13 @@ class TestDurableStateRegistry:
         assert "box-state-backup.service" in inst and "box-state-backup.timer" in inst
         dep = (REPO_ROOT / "infrastructure" / "deploy-on-merge.sh").read_text()
         assert "box-state-backup.timer:/etc/systemd/system/box-state-backup.timer" in dep
+
+    def test_backup_catchup_gates_on_budget_reinstall_not_only_result(self):
+        # PR626 deploy: install-box-health/daemon-reload cleared Result=exit-code
+        # to success before the catch-up ran, so a Result-only gate skipped it
+        # while the registry fix was the whole point of the deploy.
+        dep = (REPO_ROOT / "infrastructure" / "deploy-on-merge.sh").read_text()
+        assert "_budget_reinstalled=1" in dep
+        assert 'install-resource-limits.sh" ] && _budget_reinstalled=1' in dep
+        assert "systemctl start box-state-backup.service" in dep
+        assert "_budget_reinstalled" in dep and '!= "success"' in dep
