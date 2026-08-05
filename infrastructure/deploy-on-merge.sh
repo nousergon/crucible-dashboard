@@ -778,6 +778,22 @@ for _row in "${ROUTED_INSTALLERS[@]}"; do
     fi
 done
 
+# ── 2g. Catch up a failing box-state-backup after a registry fix ─────────────
+# The timer fires at 03:40 UTC. A budget.yaml disposition repair that lands
+# mid-day (e.g. metron personal.sqlite replicate→external after the Neon
+# cutover) would otherwise leave box-health paging CRITICAL until the next
+# calendar fire — merge alone must clear it. Non-fatal: a catch-up failure
+# leaves the timer to retry; it must not fail the deploy.
+_backup_result=$(systemctl show -p Result --value box-state-backup.service 2>/dev/null || true)
+if [ -n "$_backup_result" ] && [ "$_backup_result" != "success" ]; then
+    log "box-state-backup last Result=$_backup_result — starting catch-up run"
+    if systemctl start box-state-backup.service >>"$LOG" 2>&1; then
+        log "box-state-backup catch-up OK (Result=$(systemctl show -p Result --value box-state-backup.service 2>/dev/null))"
+    else
+        log "box-state-backup catch-up FAILED (non-fatal; timer retries at next OnCalendar)"
+    fi
+fi
+
 # ── 3. Self-provision dashboard and nous-ergon-live unit files ──────────────
 # Both services ship in the repo; install/refresh them on unit-file diff
 # (or first deploy) so they can never drift from the repo copy — same
