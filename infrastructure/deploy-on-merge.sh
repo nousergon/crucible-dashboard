@@ -742,6 +742,7 @@ installer_stamp_write() {     # NAME INPUT [INPUT...]
     printf '%s\n' "$digest" > "$STAMP_DIR/$name"
 }
 
+_budget_reinstalled=0
 for _row in "${ROUTED_INSTALLERS[@]}"; do
     _name="${_row%%|*}"
     _rest="${_row#*|}"
@@ -775,8 +776,32 @@ for _row in "${ROUTED_INSTALLERS[@]}"; do
         # deploy instead of being recorded as done.
         [ "$_mode" = "stamp" ] && installer_stamp_write "$_name" "${_inputs[@]}"
         log "re-installed $_name"
+        # budget.yaml is the T1-4 registry; a re-render means dispositions may
+        # have changed and the nightly backup must catch up THIS deploy.
+        [ "$_name" = "install-resource-limits.sh" ] && _budget_reinstalled=1
     fi
 done
+
+# ── 2g. Catch up box-state-backup after a registry fix ───────────────────────
+# The timer fires at 03:40 UTC. A budget.yaml disposition repair that lands
+# mid-day (e.g. metron personal.sqlite replicate→external after the Neon
+# cutover) would otherwise leave box-health paging CRITICAL until the next
+# calendar fire — merge alone must clear it.
+#
+# Gate on budget reinstall, NOT on systemd Result. Verified 2026-08-05 on
+# PR626 deploy: install-box-health.sh / daemon-reload cleared Result=exit-code
+# to success BEFORE this block ran, so a Result!=success gate skipped the
+# catch-up while the registry fix was the whole point of the deploy.
+# Non-fatal: a catch-up failure leaves the timer to retry.
+_backup_result=$(systemctl show -p Result --value box-state-backup.service 2>/dev/null || true)
+if [ "$_budget_reinstalled" -eq 1 ] || { [ -n "$_backup_result" ] && [ "$_backup_result" != "success" ]; }; then
+    log "box-state-backup catch-up (budget_reinstalled=$_budget_reinstalled Result=${_backup_result:-empty})"
+    if systemctl start box-state-backup.service >>"$LOG" 2>&1; then
+        log "box-state-backup catch-up OK (Result=$(systemctl show -p Result --value box-state-backup.service 2>/dev/null))"
+    else
+        log "box-state-backup catch-up FAILED (non-fatal; timer retries at next OnCalendar)"
+    fi
+fi
 
 # ── 3. Self-provision dashboard and nous-ergon-live unit files ──────────────
 # Both services ship in the repo; install/refresh them on unit-file diff

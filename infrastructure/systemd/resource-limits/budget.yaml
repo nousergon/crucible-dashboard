@@ -1,4 +1,6 @@
 # Dashboard box — box-level memory budget and restart semantics.
+# (stamp bump 2026-08-05: force install-resource-limits re-run so the
+#  box-state-backup catch-up after PR626's missed Result gate actually fires)
 #
 # WHY THIS FILE EXISTS, AND WHY IT LIVES IN THIS REPO
 # ---------------------------------------------------
@@ -111,10 +113,14 @@ headroom_warn_fraction: 0.90
 # Raised 1.20 -> 1.27 on 2026-08-03, under the paragraph directly above: a
 # MEASURED cap (vires.service, see its note below) needed 460M and 1.20 left
 # 115 MB of room against a 300 MB shortfall. Re-derived rather than shaved.
+# Raised again 1.27 -> 1.30 on 2026-08-04 to enroll nousergon-console.service
+# (112M unit MemoryMax; stdlib Python index on :5180). Same rule: re-derive
+# when a measured/declared cap collides, don't shave the service. Steady-state
+# bound remains the safety one — console's working set is small.
 # The bound that governs real operation is max_steady_state_fraction, and
 # un-pinning vires moves the live sum from 1516 MB to ~1730 MB — 45% of RAM
 # against a 60% limit, so the safety bound is not the binding one here.
-max_overcommit_ratio: 1.27      # sum(memory_max) / ceiling. Currently 1.26.
+max_overcommit_ratio: 1.30      # sum(memory_max) / ceiling. Currently 1.29 with console.
 max_steady_state_fraction: 0.60 # sum(live memory.current) / RAM. 0.37 on 2026-07-29.
 
 # memory_high is the SOFT limit: the kernel throttles and reclaims against the
@@ -389,6 +395,20 @@ services:
       2026-07-27 — it was running only because someone had started it by hand,
       and it did not survive the first reboot. Enabled since.
 
+  - unit: nousergon-console.service
+    port: 5180
+    memory_high: 80M
+    memory_max: 112M
+    note: >-
+      Fleet monitoring console (nousergon/nousergon-console). Stdlib Python
+      server on loopback :5180; nginx is the sole ingress. Caps match the unit
+      file's MemoryMax=112M (infrastructure/nousergon-console.service); soft
+      cap ~70% leaves a reclaim window. Enabled on the box without a budget
+      row → box_health named it unmonitored (2026-08-04). Enrolling here also
+      regenerates the watchdog manifest port list and applies the uniform
+      Restart=/OOMPolicy=stop drop-in (the unit file still carries the invalid
+      OOMPolicy=restart literal — drop-in wins alphabetically as 99-).
+
   # ── dev infrastructure ──────────────────────────────────────────────────
   - unit: litellm-proxy.service
     port: 8980
@@ -513,11 +533,17 @@ state:
       rather than accepted-loss, despite being small.
   - path: /home/ec2-user/metron/personal.sqlite
     owner: metron-api.service
-    disposition: replicate
+    disposition: external
+    source: neon:soft-scene-07961098 (SSM /metron/database_url)
     note: >-
-      45 MB and the LIVE backend — metron/.env resolves to sqlite:////home/ec...,
-      so the Neon cutover (metron-ops-I237) has not happened. Holds broker
-      history and NAV snapshots that cannot be reconstructed from any upstream.
+      SQLite→Neon data migration completed 2026-07-31 (system_state/dashboard.md);
+      metron-api / metron-dash-web / metron-refresh* read Neon via session
+      drop-ins. Local personal.sqlite is vestigial if present — Neon is
+      authoritative. Was disposition:replicate until cutover; leaving it
+      replicate made box-state-backup.service exit non-zero every night
+      ("declared replicate but does not exist"), which is the 2026-08-04
+      CRITICAL box-health page. metron-ops-I237 stays open only for durable
+      deploy hydration (metron-ops-I261), not for the data path.
   - path: /home/ec2-user/vires/vires.db
     owner: vires.service
     disposition: replicate
