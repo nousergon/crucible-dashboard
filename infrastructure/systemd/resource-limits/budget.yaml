@@ -1,4 +1,6 @@
 # Dashboard box — box-level memory budget and restart semantics.
+# (stamp bump 2026-08-05: force install-resource-limits re-run so the
+#  box-state-backup catch-up after PR626's missed Result gate actually fires)
 #
 # WHY THIS FILE EXISTS, AND WHY IT LIVES IN THIS REPO
 # ---------------------------------------------------
