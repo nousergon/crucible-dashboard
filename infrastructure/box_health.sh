@@ -77,6 +77,10 @@ DISK_CRIT_PCT=90                     # root-disk critical band (page, deduped)
 # Six of fourteen services and seven of thirteen ports were unmonitored, and
 # the gap presented as GREEN, which is worse than presenting as broken.
 MANIFEST="/etc/alpha-engine/box-services.conf"
+# Declared empty BEFORE the source so a manifest rendered by an older
+# generator degrades to "no HTTP liveness, reported" rather than aborting the
+# whole watchdog on an unset array under `set -u`.
+declare -A SERVICE_PORT=()
 if [ -r "$MANIFEST" ]; then
     # shellcheck source=/dev/null
     . "$MANIFEST"
@@ -90,9 +94,9 @@ else
               metron-api.service metron-dash-web.service crucible-dash-api.service \
               crucible-dash-web.service litellm-proxy.service llm-egress-proxy.service \
               telos-web.service vires.service mnemon.service nousergon-auth.service \
-              nginx.service)
-    PORTS=(8501 8502 8503 8505 8000 3003 8506 3002 3001 8530 4100 8980 8990 443)
-    EXPECTED_SERVICE_COUNT=14
+              nousergon-console.service nginx.service)
+    PORTS=(8501 8502 8503 8505 8000 3003 8506 3002 3001 8530 4100 5180 8980 8990 443)
+    EXPECTED_SERVICE_COUNT=15
 fi
 # Minimum MemoryHigh events in one 10-min tick before throttling is reported.
 #
@@ -115,6 +119,16 @@ fi
 # check above fires independently on sustained stall, so a service suffering
 # continuously is caught by either.
 CGROUP_HIGH_DELTA_MIN=10
+
+# Seconds a service gets to produce an HTTP status line before it counts as
+# not answering. Sized from measurement, not intuition: every healthy service
+# on this box answered a bare GET in 0.001-0.027s on 2026-08-03, and the
+# wedged one did not answer in 20. Three orders of magnitude separate the two
+# populations, so 3s sits nowhere near either — it is long enough that a
+# cold-start or a GC pause cannot trip it and short enough that a fully dead
+# box still finishes its confirmation sweep inside the 10-minute tick
+# (worst case 13 units x 3s x RETRY_ATTEMPTS).
+HTTP_PROBE_TIMEOUT=3
 
 # Where the previous run's throttle counters live. /var/lib, not /tmp: a
 # tmpfiles cleanup mid-window would silently re-baseline and hide throttling.
@@ -438,6 +452,81 @@ publish_verdict() {
 
 # snapshot_problems — run the full check ONCE, printing one problem per line.
 # No shared state; the caller samples it repeatedly and keeps the intersection.
+# http_liveness_problems — emit a problem line per service that is listening
+# but not answering. Its own function, not an inline block, so
+# tests/test_box_health_http_liveness.py can extract and RUN it against real
+# servers: a loop proven only by reading it is a loop nobody has run.
+http_liveness_problems() {
+    # ── HTTP liveness (alpha-engine-config-I6262) ──────────────────────────
+    #
+    # A LISTENING PORT IS NOT LIVENESS. The socket is bound by the kernel and
+    # stays bound while the server behind it answers nothing at all, so the
+    # port loop in snapshot_problems passes throughout the failure it most
+    # needs to catch.
+    #
+    # Measured, 2026-08-03: vires.service sat wedged for ~18 minutes — pinned
+    # at its cgroup MemoryHigh and stalled >50% of wall-clock on reclaim.
+    # `curl -m 20 http://127.0.0.1:8530/health` from ON THE BOX returned 000
+    # after timing out, while `systemctl is-active` said active, port 8530
+    # was listening, and four consecutive ticks of this watchdog reported no
+    # port problem. The outage was found by a human using the app.
+    #
+    # THE PREDICATE IS "DID IT ANSWER", NOT "DID IT RETURN 200". Measured on
+    # this box the same day: of the thirteen HTTP ports, seven answer 200 on a
+    # health route, five answer 404 on every candidate path (the Next.js apps
+    # and nous-ergon-live serve under base paths), and nousergon-auth answers
+    # 400 to a bare GET. All twelve are healthy. Requiring 200 would have
+    # paged on five services that were working perfectly, which is how a check
+    # gets tuned out. A wedged server is distinguishable without that: curl
+    # reports http_code 000 because no status line ever arrived.
+    #
+    # Known limit, stated rather than implied: this cannot see a server that
+    # answers a cheap route while its real work is blocked (an exhausted
+    # worker pool behind a static handler). Catching that needs a per-service
+    # deep health route, which is a bigger change than the hole it closes.
+    #
+    # Requires the manifest: the unit->port pairing lives there. The bare
+    # SERVICES/PORTS arrays are two independent lists, NOT index-aligned (the
+    # fallback block at the top of this file had signal.service sitting
+    # opposite mnemon's port for months, harmlessly, because nothing paired
+    # them). Pairing them by index here would name the wrong service in an
+    # alert, so this check runs only against the generated map. MANIFEST_OK=0
+    # is already reported loudly elsewhere.
+    if [ "${MANIFEST_OK:-0}" -eq 1 ] && [ "${#SERVICE_PORT[@]}" -eq 0 ]; then
+        # A manifest rendered by the pre-I6262 generator has no map, so this
+        # check would cover nothing while appearing to run. Absence of a
+        # signal is not health — say so instead of inheriting the silence.
+        echo "watchdog: manifest carries no SERVICE_PORT map — HTTP liveness is UNMONITORED (re-run install-box-health.sh)"
+    elif [ "${MANIFEST_OK:-0}" -eq 1 ]; then
+        local unit port code scheme insecure
+        for unit in "${!SERVICE_PORT[@]}"; do
+            port="${SERVICE_PORT[$unit]}"
+            # 443 is nginx terminating TLS with the Cloudflare origin cert,
+            # which does not validate against 127.0.0.1 — -k, because this is
+            # a liveness probe over loopback, not a certificate check.
+            scheme=http; insecure=()
+            if [ "$port" = "443" ]; then scheme=https; insecure=(-k); fi
+            # NO `|| echo 000` here: -w '%{http_code}' ALREADY prints 000 when
+            # the transfer fails, so appending a fallback yields "000000",
+            # which matches nothing and silently disarms the check. That is
+            # what the first version of this did, and it passed every fixture
+            # test of the predicate — the defect lived in the pairing between
+            # the predicate and its caller, so only running the real function
+            # exposed it (test_shipped_function_names_the_wedged_service).
+            code=$(curl -s "${insecure[@]}" -m "$HTTP_PROBE_TIMEOUT" \
+                       -o /dev/null -w '%{http_code}' \
+                       "${scheme}://127.0.0.1:${port}/" 2>/dev/null) || code=""
+            [ -n "$code" ] || code=000   # curl absent or killed outright
+            # Any status line means the server is answering. 000 means it
+            # accepted the connection (or not) and never replied inside the
+            # timeout — the wedge.
+            if [ "$code" = "000" ]; then
+                echo "service not answering HTTP within ${HTTP_PROBE_TIMEOUT}s: $unit"
+            fi
+        done
+    fi
+}
+
 snapshot_problems() {
     # memory headroom
     local mem_avail_mb
@@ -706,9 +795,36 @@ snapshot_problems() {
         # from a hyphen in the unit's own name.
         cg="/sys/fs/cgroup/system.slice/${s}/memory.pressure"
         if [ -r "$cg" ]; then
-            pressure=$(awk '/^some avg10/{val=$2+0; if(val>10) print val}' "$cg" 2>/dev/null)
+            # PSI fields are KEY=VALUE, not whitespace-separated columns:
+            #
+            #   some avg10=55.27 avg60=53.82 avg300=51.32 total=525043914
+            #
+            # so $2 is the string "avg10=55.27" and `$2+0` is 0 in awk, for
+            # every value this check exists to catch. The predicate `val>10`
+            # was therefore false unconditionally, from the day it shipped
+            # (alpha-engine-config-I4512) until 2026-08-03 — a detector whose
+            # parser made it structurally incapable of firing.
+            #
+            # Measured, not inferred: on 2026-08-03 vires.service sat at
+            # `some avg10=55.27 / full avg300=49.93` for ~18 minutes, wedged
+            # hard enough that no HTTP request completed, and this check
+            # emitted nothing across four consecutive 10-minute ticks. Proven
+            # against a real PSI fixture in
+            # tests/test_box_health_memory_pressure_check.py, which fails
+            # against the pre-fix expression.
+            pressure=$(awk '/^some /{split($2,kv,"="); v=kv[2]+0; if (v>10) printf "%.2f", v}' "$cg" 2>/dev/null)
             if [ -n "$pressure" ]; then
-                echo "memory pressure: $s (avg10 some ${pressure}%)"
+                # The live percentage goes to the JOURNAL, never into the
+                # problem line. snapshot_problems is sampled RETRY_ATTEMPTS
+                # times and confirms only lines present in EVERY sample, and
+                # a PSI average moves between samples — so embedding it made
+                # this line unable to confirm even once the predicate worked.
+                # Second independent reason the same check could never page;
+                # same class as test_box_health_budget_wiring's static-string
+                # rule, which only covered the `memory budget:` prefixes.
+                printf 'box_health: %s memory pressure detail: some avg10=%s%%\n' \
+                    "$s" "$pressure" >&2
+                echo "memory pressure: $s is stalled on reclaim against its memory cap"
             fi
         fi
         evt="/sys/fs/cgroup/system.slice/${s}/memory.events"
@@ -802,6 +918,8 @@ snapshot_problems() {
     for p in "${PORTS[@]}"; do
         echo "$listening" | grep -qE ":$p\b" || echo "port not listening: $p"
     done
+
+    http_liveness_problems
 }
 
 # Gauges flow on every tick regardless of health outcome (see emit_metrics).
@@ -873,35 +991,111 @@ fi
 # (no S3 dedup-marker archaeology needed).
 printf 'box_health: confirmed problems after %d samples:\n%s\n' "$attempt" "$confirmed" >&2
 
-# ── Severity split ──────────────────────────────────────────────────────
-#
-# Every confirmed problem used to publish at `--severity warning`, which has two
-# consequences that pull in opposite directions and were both wrong:
-#
-#   1. krepis.alerts pushes a phone notification for `error`/`critical` ONLY —
-#      `warning` is silent in-channel. So a service being DOWN, or MemAvailable
-#      under 150 MB, never pushed. The loudest condition on this box was
-#      delivered as quietly as the quietest.
-#   2. Bookkeeping findings — a censored reading, a timer missing its declared
-#      staleness budget — arrived at the same severity and the same 60-minute
-#      cadence as a real outage. That is how a channel gets tuned out, and it is
-#      what prompted this change (2026-07-29).
-#
-# So: lines a check marked `notice: ` are hygiene about the MONITORING, and the
-# substantive check they sit beside still runs (see classify_timer_staleness and
-# the budget-check exit codes). They go out at `info`, once a day. Everything
-# else is a statement about the BOX and pushes.
+# ── Severity split — THREE tiers ────────────────────────────────────────
 #
 # Severity is a property of the invariant breached, not of the check that
 # emitted it — overseer-policy.md invariant 17.
-alerts=$(printf '%s\n' "$confirmed" | grep -v '^notice: ' || true)
-notices=$(printf '%s\n' "$confirmed" | grep '^notice: ' || true)
+#
+# HISTORY, because both previous shapes were wrong in opposite directions.
+# Before 2026-07-29 every problem published at `warning`, which krepis.alerts
+# delivers silently: a service being DOWN was as quiet as a censored memory
+# reading. That was fixed by splitting off `notice: ` lines at `info` and
+# publishing EVERYTHING ELSE at `error`, which pushes. That fixed direction one
+# and re-broke direction two — the box now pages for conditions where nothing is
+# degraded. Measured over 2026-07-27..08-03: box-health accounted for 96 of ~138
+# fleet alert publishes, ~70%, essentially all of it pushing, and the largest
+# single contributor was `memory budget: BREACH` firing while the box sat at 39%
+# of RAM against a 60% limit with 2.3 GB free.
+#
+# Two tiers cannot express that, because "the box is unhealthy" and "a declared
+# invariant about the box has drifted" are different invariants:
+#
+#   critical  A product or the box is degraded RIGHT NOW, or a service cannot
+#             come back if it restarts. PUSHES a phone notification.
+#   warning   A declared invariant is breached, or our ability to observe one is
+#             impaired, while nothing is currently degraded. Silent in-channel;
+#             still published to SNS and still emitted onto the Overseer intake
+#             bus, where box-health is a declared alert class with
+#             `intake: bus` / `response: drain-queue`. This tier is DELEGATED,
+#             not discarded.
+#   info      Hygiene about the monitoring itself. Silent, once a day.
+#
+# WHY THE DEFAULT IS `critical` AND NOT `warning`. classify_problem_severity
+# below is an allow-list of things permitted to be quiet. A problem line that
+# matches nothing falls through to critical and pages. That direction is
+# deliberate: a new check added without a tiering decision must fail loud, never
+# inherit silence. test_box_health_severity_tiers.py asserts the classification
+# is TOTAL over every problem string this file emits, so the fall-through is a
+# backstop against a check added in a hurry, not the normal path.
+#
+# WHAT THIS DEPENDS ON, stated because it is the risk the change creates: the
+# `warning` tier reaches Brian only through email and reaches the plane only
+# through the drain. A drain outage therefore converts this tier from "delegated"
+# to "unattended". That coupling is real and is why box-health's own
+# `watchdog:` coverage lines stay in this tier rather than dropping to info.
+classify_problem_severity() {
+    case "$1" in
+        # ── info: hygiene about the MONITORING, substantive check still runs ──
+        "notice: "*) echo info ;;
 
-# The verdict metric counts ALERT-class problems only. It answers "is the box
-# unhealthy", and a notice by definition is not evidence that it is. Notices are
-# not dropped from view — they have their own delivery below; this is a
-# deliberate scoping of one signal, not a silent one.
-publish_verdict "$(printf '%s\n' "$alerts" | grep -c .)"
+        # ── warning: a declared invariant drifted; nothing is degraded now ────
+        "memory budget: BREACH"*) echo warning ;;
+        "cgroup throttle: "*) echo warning ;;
+        "disk high: "*) echo warning ;;
+        "timer has not run in "*) echo warning ;;
+        "timer enabled but not active"*) echo warning ;;
+        "timer will never fire again: "*) echo warning ;;
+        "service running but NOT enabled: "*) echo warning ;;
+        # Coverage blindness. Serious — detection blindness outranks the defects
+        # it hides — but it is a statement about the WATCHDOG, and
+        # overseer-policy.md section 3 is explicit that the watchdog's findings
+        # about its own coverage are "recorded and swept, never paged".
+        "watchdog: "*) echo warning ;;
+
+        # ── critical: degraded now, or cannot recover ─────────────────────────
+        # Everything below is listed rather than left to the default so the
+        # intent is on the record and the totality test can see it.
+        "service down: "*) echo critical ;;
+        "service not answering HTTP"*) echo critical ;;
+        "port not listening: "*) echo critical ;;
+        "low memory: "*) echo critical ;;
+        "disk critical: "*) echo critical ;;
+        "memory pressure: "*) echo critical ;;
+        "timer job failing: "*) echo critical ;;
+        # Latent, not current — but the unit cannot start again, and
+        # reboot-if-needed.timer makes that an unattended, all-at-once event.
+        "unit cannot restart: "*) echo critical ;;
+
+        *) echo critical ;;
+    esac
+}
+
+criticals=""; warnings=""; notices=""
+while IFS= read -r _line; do
+    [ -z "$_line" ] && continue
+    case "$(classify_problem_severity "$_line")" in
+        info)     notices="${notices}${_line}"$'\n' ;;
+        warning)  warnings="${warnings}${_line}"$'\n' ;;
+        *)        criticals="${criticals}${_line}"$'\n' ;;
+    esac
+done <<< "$confirmed"
+
+# Strip the trailing newline each accumulator carries. NOT cosmetic: publish_problems
+# does `mapfile -t _problems <<< "$lines"`, and `<<<` appends its own newline, so a
+# value ending in "\n" yields a final EMPTY element — which renders as a bare " - "
+# bullet in the message and, worse, lands in the dedup key. The previous shape got
+# this for free because `$( ... )` strips trailing newlines; building the strings in
+# the shell does not, and the difference is invisible until an alert fires.
+criticals="${criticals%$'\n'}"
+warnings="${warnings%$'\n'}"
+notices="${notices%$'\n'}"
+
+# The verdict metric counts problems that mean the BOX IS UNHEALTHY — the
+# critical tier only. A warning is a statement about a declared bound, not
+# evidence the box is degraded, and folding it in here is what made the gauge
+# track bookkeeping. Neither lower tier is dropped from view: each has its own
+# delivery below, and every tier reaches the Overseer bus via krepis.alerts.
+publish_verdict "$(printf '%s' "$criticals" | grep -c . || true)"
 
 # publish_problems SEVERITY DEDUP_MIN PREFIX LINES
 # One path for both tiers so they cannot drift apart in formatting, dedup
@@ -929,5 +1123,16 @@ publish_problems() {
         || echo "box_health: $severity publish failed" >&2
 }
 
-publish_problems error 60   "health alert" "$alerts"
-publish_problems info  1440 "monitoring hygiene (no action urgent)" "$notices"
+# `critical`, not `error`. Both push identically today (krepis.alerts'
+# SEVERITY_PUSH is {error, critical}), so this is not what makes the tier loud —
+# the tier is loud because it is the only one left in that set. It is spelled
+# `critical` so the rendered `[CRITICAL]` tag matches what the tier now means,
+# and so a future narrowing of SEVERITY_PUSH to `critical` alone does not
+# silently disarm this line.
+publish_problems critical 60   "health alert" "$criticals"
+# Silent in-channel, and deliberately so. Still SNS, still on the Overseer intake
+# bus as alert class `box-health` (intake: bus, response: drain-queue). Same
+# 60-minute dedup as critical: the tier changes who is woken, never how often the
+# finding is recorded.
+publish_problems warning  60   "budget/coverage finding (no action urgent)" "$warnings"
+publish_problems info     1440 "monitoring hygiene (no action urgent)" "$notices"

@@ -903,12 +903,37 @@ class TestDurableStateRegistry:
         entry = next(e for e in self._state() if "nousergon-auth" in e["path"])
         assert entry["disposition"] == "replicate"
 
+    def test_metron_personal_sqlite_is_external_after_neon_cutover(self):
+        # 2026-08-04: left as replicate after the 7/31 Neon cutover →
+        # box-state-backup exited non-zero every night ("declared replicate
+        # but does not exist") and box-health paged CRITICAL. Neon is SoT.
+        entry = next(e for e in self._state() if e["path"].endswith("/personal.sqlite"))
+        assert entry["disposition"] == "external", (
+            "metron personal.sqlite must not be disposition:replicate after "
+            "the Neon cutover — that makes the nightly backup fail loud"
+        )
+        assert "neon" in entry.get("source", "").lower()
+
     def test_private_keys_are_not_replicated(self):
         # Copying private keys into an object store to survive a box loss
         # trades a bounded availability problem for an unbounded
         # confidentiality one. This must stay a deliberate no.
         entry = next(e for e in self._state() if e["path"].endswith("/.ssh/"))
         assert entry["disposition"] != "replicate"
+
+    def test_nousergon_console_is_in_the_service_registry(self):
+        # Enabled on the box 2026-08-04 without a budget.yaml row → watchdog
+        # named it unmonitored. budget.yaml is the only enrollment path.
+        import yaml
+
+        spec = yaml.safe_load(
+            (REPO_ROOT / "infrastructure" / "systemd" / "resource-limits"
+             / "budget.yaml").read_text()
+        )
+        units = {s["unit"] for s in spec["services"]}
+        assert "nousergon-console.service" in units
+        console = next(s for s in spec["services"] if s["unit"] == "nousergon-console.service")
+        assert console.get("port") == 5180
 
     def test_manifest_exports_declared_paths_for_the_coverage_check(self):
         import subprocess
@@ -962,3 +987,13 @@ class TestDurableStateRegistry:
         assert "box-state-backup.service" in inst and "box-state-backup.timer" in inst
         dep = (REPO_ROOT / "infrastructure" / "deploy-on-merge.sh").read_text()
         assert "box-state-backup.timer:/etc/systemd/system/box-state-backup.timer" in dep
+
+    def test_backup_catchup_gates_on_budget_reinstall_not_only_result(self):
+        # PR626 deploy: install-box-health/daemon-reload cleared Result=exit-code
+        # to success before the catch-up ran, so a Result-only gate skipped it
+        # while the registry fix was the whole point of the deploy.
+        dep = (REPO_ROOT / "infrastructure" / "deploy-on-merge.sh").read_text()
+        assert "_budget_reinstalled=1" in dep
+        assert 'install-resource-limits.sh" ] && _budget_reinstalled=1' in dep
+        assert "systemctl start box-state-backup.service" in dep
+        assert "_budget_reinstalled" in dep and '!= "success"' in dep
