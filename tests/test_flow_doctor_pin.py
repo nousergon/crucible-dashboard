@@ -40,8 +40,10 @@ def _get_locked_flow_doctor_version() -> str:
     text = (REPO_ROOT / "requirements.txt").read_text()
     for line in text.splitlines():
         stripped = line.strip()
-        # Match: flow-doctor==X.Y.Z  (the package line, not a "# via" comment)
-        match = re.match(r"^flow-doctor==(\d+\.\d+\.\d+)$", stripped)
+        # Match: flow-doctor==X.Y.Z  (the package line, not a "# via" comment).
+        # The lock may emit extras on the line (flow-doctor[diagnosis,s3]==...),
+        # so strip them and match the bare name + pinned version.
+        match = re.match(r"^flow-doctor(?:\[[^\]]*\])?==(\d+\.\d+\.\d+)$", stripped)
         if match:
             return match.group(1)
     raise AssertionError(

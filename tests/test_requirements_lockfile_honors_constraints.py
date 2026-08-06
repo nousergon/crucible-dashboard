@@ -62,7 +62,12 @@ _TXT = _REPO_ROOT / "requirements.txt"
 _CONSTRAINT = re.compile(
     r"^(?P<name>[A-Za-z0-9._-]+)\s*(?:\[[^\]]*\])?\s*(?P<spec>[<>=!~].*)$"
 )
-_PIN = re.compile(r"^(?P<name>[A-Za-z0-9._-]+)==(?P<version>[^\s;]+)")
+# `name[extra1,extra2]==1.2.3` — capture name and the pinned version. uv may
+# emit extras on a direct-dep lock line (e.g. `krepis[openai]==0.35.0`), so
+# strip them the same way _CONSTRAINT does for the `.in` side.
+_PIN = re.compile(
+    r"^(?P<name>[A-Za-z0-9._-]+)(?:\[[^\]]*\])?==(?P<version>[^\s;]+)"
+)
 
 
 def _norm(name: str) -> str:
