@@ -78,6 +78,16 @@ REPOS=(
     /home/ec2-user/alpha-engine-research
     /home/ec2-user/alpha-engine-dashboard
     /home/ec2-user/flow-doctor
+    # nous-ergon-ops carries the codified copies of this box's morning-signal
+    # units + operator script (alpha-engine-config-I6656). It is a SPARSE
+    # checkout limited to morning-signal/ — the full tree is 76M of history
+    # plus the whole policy library, and this box has 1GB of RAM and no use
+    # for any of it. The clone command is in the header of the sync block
+    # below.
+    #
+    # A repo not cloned here is SKIPped by the loop, so this line is inert
+    # until the checkout exists.
+    /home/ec2-user/nous-ergon-ops
 )
 
 PULL_FAILURES=0
@@ -326,6 +336,109 @@ if [ -d "$METRON_INTRADAY_SRC" ]; then
             log "OK   systemd: enable reconciled metron-intraday.timer"
         else
             log "WARN systemd: enable reconcile failed: metron-intraday.timer"
+        fi
+    fi
+fi
+
+# ── Sync morning-signal units + drop-ins + operator script (I6656) ─────────
+# Until 2026-08-08 these eleven files existed on this box and in NO
+# repository: morning-signal.{service,timer}, -bakeoff.{service,timer},
+# -watchdog.{service,timer}, four morning-signal.service.d/*.conf drop-ins,
+# and /usr/local/bin/morning-signal-recover.sh. Two of the drop-ins were
+# hand-applied that day (a TimeoutStartSec raise, after the 600s budget
+# killed an episode 23s into TTS, and the router-edge env vars) onto a box
+# where nothing would have noticed them being reverted.
+#
+# Source of truth is nous-ergon-ops (infrastructure-ownership-policy: units
+# belong to the operated-system assembly). NOT the public morning-signal
+# repo — its infrastructure/morning-signal-watchdog.{service,timer} are OSS
+# EXAMPLES (User=podcast, "adjust to match your install"), and syncing from
+# those would install a unit for a user that does not exist on this box.
+#
+# The checkout is sparse, created once with:
+#   git clone --filter=blob:none --sparse \
+#     https://github.com/nousergon/nous-ergon-ops.git /home/ec2-user/nous-ergon-ops
+#   git -C /home/ec2-user/nous-ergon-ops sparse-checkout set morning-signal
+# Credentials come from the same helper the REPOS loop above already uses.
+#
+# Scoped to exact basenames, like the metron-intraday block above and for the
+# same reason: the source directory must never be able to grow a new unit
+# onto this box just because someone added a file to it.
+MORNING_SIGNAL_SRC="/home/ec2-user/nous-ergon-ops/morning-signal/infrastructure"
+if [ -d "$MORNING_SIGNAL_SRC/systemd" ]; then
+    MS_CHANGED=false
+    for unit in morning-signal.service morning-signal.timer \
+                morning-signal-bakeoff.service morning-signal-bakeoff.timer \
+                morning-signal-watchdog.service morning-signal-watchdog.timer; do
+        src="$MORNING_SIGNAL_SRC/systemd/$unit"
+        [ -f "$src" ] || continue
+        target="/etc/systemd/system/$unit"
+        if [ ! -f "$target" ] || ! diff -q "$src" "$target" >/dev/null 2>&1; then
+            sudo cp "$src" "$target"
+            log "SYNC $unit (src=nous-ergon-ops)"
+            MS_CHANGED=true
+        fi
+    done
+
+    # Drop-ins. Neither sync block above handles a .d/ directory, and these
+    # four are load-bearing: ordering against daily-news, the memory cap, the
+    # TimeoutStartSec raise, and the router-edge env. A unit synced without
+    # its drop-ins is a DIFFERENT unit, so this is not optional.
+    DROPIN_SRC="$MORNING_SIGNAL_SRC/systemd/morning-signal.service.d"
+    DROPIN_DST="/etc/systemd/system/morning-signal.service.d"
+    if [ -d "$DROPIN_SRC" ]; then
+        sudo mkdir -p "$DROPIN_DST"
+        for conf in "$DROPIN_SRC"/*.conf; do
+            [ -f "$conf" ] || continue
+            name=$(basename "$conf")
+            if [ ! -f "$DROPIN_DST/$name" ] || ! diff -q "$conf" "$DROPIN_DST/$name" >/dev/null 2>&1; then
+                sudo cp "$conf" "$DROPIN_DST/$name"
+                log "SYNC morning-signal.service.d/$name (src=nous-ergon-ops)"
+                MS_CHANGED=true
+            fi
+        done
+        # A drop-in DELETED from the repo must disappear from the box too.
+        # Copy-only convergence cannot remove, so a retired drop-in would go
+        # on applying forever with nothing pointing at it.
+        for installed in "$DROPIN_DST"/*.conf; do
+            [ -f "$installed" ] || continue
+            name=$(basename "$installed")
+            if [ ! -f "$DROPIN_SRC/$name" ]; then
+                sudo rm -f "$installed"
+                log "SYNC morning-signal.service.d/$name (REMOVED — gone from repo)"
+                MS_CHANGED=true
+            fi
+        done
+    fi
+
+    if $MS_CHANGED; then
+        sudo systemctl daemon-reload
+        log "systemctl daemon-reload (morning-signal)"
+    fi
+
+    # Enable-reconcile every boot, mirroring the metron-intraday block: a
+    # manual `systemctl disable` or a lost timers.target.wants/ symlink
+    # otherwise never self-heals, and the failure mode here is a podcast that
+    # silently stops airing.
+    for timer in morning-signal.timer morning-signal-bakeoff.timer morning-signal-watchdog.timer; do
+        [ -f "$MORNING_SIGNAL_SRC/systemd/$timer" ] || continue
+        if sudo systemctl enable "$timer" >> "$LOG" 2>&1; then
+            log "OK   systemd: enable reconciled $timer"
+        else
+            log "WARN systemd: enable reconcile failed: $timer"
+        fi
+    done
+
+    # The operator script travels WITH the unit. It exists to re-run what
+    # morning-signal.service runs, and on 2026-08-08 the unit gained three
+    # router env vars via a drop-in while this script did not — so the
+    # recovery run resolved against a different execution context than the
+    # run it was recovering.
+    MS_RECOVER_SRC="$MORNING_SIGNAL_SRC/bin/morning-signal-recover.sh"
+    if [ -f "$MS_RECOVER_SRC" ]; then
+        if ! diff -q "$MS_RECOVER_SRC" /usr/local/bin/morning-signal-recover.sh >/dev/null 2>&1; then
+            sudo install -m 0755 "$MS_RECOVER_SRC" /usr/local/bin/morning-signal-recover.sh
+            log "SYNC morning-signal-recover.sh (src=nous-ergon-ops)"
         fi
     fi
 fi
