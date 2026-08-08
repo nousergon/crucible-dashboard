@@ -31,7 +31,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Checkout (for the purge script)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Purge + optional Rocket Loader off
         env:
