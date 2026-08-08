@@ -37,7 +37,12 @@ for unit in morning-signal.service morning-signal.timer; do
 done
 
 install -d -m 0755 "$DROPIN_DST"
-for conf in 10-after-news.conf 10-memory.conf; do
+# 10-timeout.conf and 20-router.conf were applied by hand to the live box
+# on 2026-08-08 and existed in no repo until now — exactly the state this
+# installer's own header says these units used to be in. A drop-in absent
+# from this list is NOT installed on a rebuilt box, and the unit that
+# comes up is a different unit.
+for conf in 10-after-news.conf 10-memory.conf 10-timeout.conf 20-router.conf; do
     cp "$SYSTEMD_SRC/morning-signal.service.d/$conf" "$DROPIN_DST/$conf"
     echo "Installed $DROPIN_DST/$conf"
 done
