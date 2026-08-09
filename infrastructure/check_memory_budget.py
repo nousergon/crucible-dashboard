@@ -69,6 +69,7 @@ severity tiering per overseer-policy.md invariant 17.
 from __future__ import annotations
 
 import argparse
+import datetime as _dt
 import os
 import pathlib
 import subprocess
@@ -519,6 +520,83 @@ DROPIN_ALLOW: set[str] = set()
 
 _DROPIN_ROOT = pathlib.Path("/etc/systemd/system")
 
+# `systemctl set-property --runtime <unit> MemoryMax=...` writes here, e.g.
+# /run/systemd/system.control/metron-api.service.d/50-MemoryMax.conf. systemd
+# merges drop-ins from BOTH /etc/systemd/system and /run/systemd/system.control
+# (plus /usr/lib), and /run wins ties by mount precedence regardless of
+# filename -- so a --runtime override outranks the generated
+# /etc/.../99-resource-limits.conf no matter what it is named.
+#
+# Root-owned and cleared on reboot: its absence is the normal case, not a
+# finding, and a test must not assume it persists. Module constant, same
+# pattern as _DROPIN_ROOT and _CGROUP_ROOT, so it is testable off-box.
+#
+# alpha-engine-config-I6277: measured live on i-09b539c844515d549,
+# 2026-08-03 17:11-17:40 UTC -- metron-api.service ran with an EFFECTIVE
+# MemoryHigh/MemoryMax of 480M/560M while budget.yaml declared 280M/350M and
+# the /etc drop-in agreed with budget.yaml. `daemon-reload` does not touch
+# /run, so re-running install-resource-limits.sh after such a drift silently
+# changes nothing on the running unit.
+_RUNTIME_DROPIN_ROOT = pathlib.Path("/run/systemd/system.control")
+
+
+def runtime_dropin_overrides(unit: str) -> list[str]:
+    """Memory-setting drop-ins for `unit` under systemd's --runtime tier.
+
+    Returns the conf file paths (as strings) so the caller can name them
+    verbatim in a finding. Empty list is the normal case -- most units have no
+    live override -- and is returned rather than raised for a missing
+    _RUNTIME_DROPIN_ROOT/<unit>.d directory, which is expected whenever no
+    --runtime property has ever been set or the box has rebooted since.
+    """
+    unit_dir = _RUNTIME_DROPIN_ROOT / f"{unit}.d"
+    found: list[str] = []
+    if not unit_dir.is_dir():
+        return found
+    for conf in sorted(unit_dir.glob("*.conf")):
+        try:
+            body = conf.read_text()
+        except OSError:
+            continue
+        if "MemoryMax=" in body or "MemoryHigh=" in body:
+            found.append(str(conf))
+    return found
+
+
+def uncensor_deadline(svc: dict) -> "_dt.datetime | None":
+    """Parse a service's optional `uncensor_until: <ISO8601>` key.
+
+    A malformed value is treated as ABSENT, not raised: a typo in a
+    measurement-window field must fail toward the loud outcome (an ordinary
+    breach) rather than crash the whole check.
+    """
+    raw = svc.get("uncensor_until")
+    if not raw:
+        return None
+    try:
+        deadline = _dt.datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if deadline.tzinfo is None:
+        deadline = deadline.replace(tzinfo=_dt.timezone.utc)
+    return deadline
+
+
+def uncensor_active(svc: dict, now: "_dt.datetime | None" = None) -> bool:
+    """True while `svc` declares an uncensor_until that has not yet passed.
+
+    This is the measurement window alpha-engine-config-I6263's
+    `systemctl set-property --runtime` procedure needs: the live cap
+    genuinely must exceed the declared one for a while to un-censor a
+    reading. Absence of the key, or a deadline already in the past, is NOT
+    active -- an abandoned measurement gets LOUDER (a breach), never quieter.
+    """
+    deadline = uncensor_deadline(svc)
+    if deadline is None:
+        return False
+    now = now or _dt.datetime.now(_dt.timezone.utc)
+    return now < deadline
+
 
 def orphan_dropins(budget_units: set[str]) -> list[str]:
     """Find installed memory drop-ins that no budget entry owns.
@@ -611,6 +689,15 @@ def main() -> int:
     ceiling_mb = int(ram_mb * (1 - reserve))
 
     total_bytes = 0
+    # Credited sum: identical to total_bytes except a service currently inside
+    # its declared uncensor_until window has its contribution capped at its
+    # DECLARED memory_max rather than its inflated live one. This is what lets
+    # a deliberate, time-boxed `set-property --runtime` measurement avoid also
+    # tripping the aggregate overcommit bound (Bound 1 below) for its
+    # duration, without silently excluding the unit from the sum forever --
+    # once the window passes the two sums converge again and any real breach
+    # reappears automatically.
+    total_bytes_credited = 0
     rows = []
 
     for svc in spec["services"]:
@@ -625,11 +712,45 @@ def main() -> int:
                 breaches.append(f"{unit}: {e}")
                 continue
             if have != want:
-                breaches.append(
+                drift_msg = (
                     f"{unit}: MemoryMax drift -- budget declares "
                     f"{svc['memory_max']} but systemd has "
                     f"{'infinity' if have == sys.maxsize else str(have // 1024**2) + 'M'}"
                 )
+                # alpha-engine-config-I6277: name the mechanism, not just the
+                # effect. Attached to this same drift line rather than emitted
+                # separately, per the issue's deliverable -- a reader must not
+                # have to correlate two unrelated-looking findings by hand.
+                overrides = runtime_dropin_overrides(unit)
+                if overrides:
+                    drift_msg += (
+                        f". LIVE OVERRIDE at {', '.join(overrides)} from "
+                        f"`systemctl set-property --runtime` -- this "
+                        f"OUTRANKS the generated /etc drop-in. "
+                        f"`daemon-reload` does NOT clear "
+                        f"/run/systemd/system.control, so re-running "
+                        f"install-resource-limits.sh will NOT fix this. "
+                        f"Revert with: systemctl revert {unit}"
+                    )
+                deadline = uncensor_deadline(svc)
+                if deadline is not None and uncensor_active(svc):
+                    hygiene.append(
+                        drift_msg + f". Inside its declared uncensor_until "
+                        f"window (deadline {deadline.isoformat()}) -- "
+                        f"reported as hygiene, not a page, until then. "
+                        f"Resolve (revert or extend) before the deadline: an "
+                        f"abandoned measurement pages again automatically "
+                        f"once it passes."
+                    )
+                elif deadline is not None:
+                    breaches.append(
+                        drift_msg + f". uncensor_until "
+                        f"({deadline.isoformat()}) has PASSED -- this "
+                        f"measurement window is abandoned and pages like any "
+                        f"other drift."
+                    )
+                else:
+                    breaches.append(drift_msg)
             if have_high == sys.maxsize:
                 breaches.append(
                     f"{unit}: MemoryHigh is unset/infinity -- no reclaim window "
@@ -640,6 +761,9 @@ def main() -> int:
             effective = want
 
         total_bytes += effective
+        total_bytes_credited += (
+            min(effective, want) if installed and uncensor_active(svc) else effective
+        )
         rows.append((unit, effective))
 
     timer_jobs = spec.get("timer_jobs") or []
@@ -673,6 +797,9 @@ def main() -> int:
                 )
 
     total_mb = total_bytes // 1024**2 if total_bytes < sys.maxsize else -1
+    total_mb_credited = (
+        total_bytes_credited // 1024**2 if total_bytes_credited < sys.maxsize else -1
+    )
 
     # Bound 1: bounded overcommit. Caps are sized for STARTUP PEAKS, which do
     # not coincide across services, so the sum is allowed to exceed the ceiling
@@ -681,7 +808,22 @@ def main() -> int:
     max_ratio = float(spec["max_overcommit_ratio"])
     allowed_mb = int(ceiling_mb * max_ratio)
     ratio = (total_mb / ceiling_mb) if ceiling_mb and total_mb > 0 else float("inf")
-    over = total_mb > allowed_mb or total_mb < 0
+    # `over` is evaluated against the CREDITED sum (alpha-engine-config-I6277):
+    # a service's excess above its declared cap does not count against this
+    # bound while its uncensor_until window is active. total_mb itself (the
+    # real, uncredited sum) is still what gets printed and published -- only
+    # the breach/hygiene DECISION is affected.
+    over = total_mb_credited > allowed_mb or total_mb_credited < 0
+    if not over and (total_mb > allowed_mb or total_mb < 0):
+        hygiene.append(
+            f"aggregate MemoryMax {total_mb} MB is {ratio:.2f}x the "
+            f"{ceiling_mb} MB ceiling (max {max_ratio:.2f}x) -- OVER ONLY "
+            f"because of unit(s) inside an active uncensor_until measurement "
+            f"window; credited back to their declared caps it is "
+            f"{total_mb_credited} MB, within bound. Becomes a hard breach "
+            f"automatically once any of those windows pass without being "
+            f"resolved."
+        )
 
     # Bound 2: steady-state safety. This is the one that governs normal
     # operation -- what the services ACTUALLY use must leave real headroom,

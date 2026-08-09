@@ -414,6 +414,14 @@ class TestInfraShellTests:
         # Pre-existing script (config#2242), previously unwired from CI.
         self._run("test_deploy_on_merge_paths_changed.sh")
 
+    def test_installer_runtime_override_guard(self):
+        # alpha-engine-config-I6277: a `systemctl set-property --runtime`
+        # cap outranks the generated /etc drop-in and install-resource-
+        # limits.sh used to write a losing file with no effect on the
+        # running unit. Must be shown to FAIL against an unfixed fixture,
+        # not merely pass against a clean one.
+        self._run("test_installer_runtime_override_guard.sh")
+
 
 class TestTimerDeadManRegistry:
     """budget.yaml's `timers:` block is the dead-man's threshold registry.
