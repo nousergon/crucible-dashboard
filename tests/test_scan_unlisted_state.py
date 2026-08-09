@@ -385,6 +385,26 @@ def test_os_trust_store_paths_are_excluded_by_default():
     assert "/etc/trusted-key.key" in sus.EXCLUDE_PATH_SUBSTRINGS
 
 
+def test_file_level_exclusion_substring_actually_excludes(tmp_path):
+    """The constant being present is not the mechanism working: the first
+    precision pass listed two single-FILE exclusions that only ever pruned
+    directories, and both paged again on the next live sweep (2026-08-09).
+    This plants a state-shaped file whose full path matches an exclusion
+    substring and asserts the walk drops it — while a sibling survives."""
+    vendor = tmp_path / "etc" / "ssl" / "cert.pem"
+    vendor.parent.mkdir(parents=True)
+    vendor.write_text("x")
+    real = tmp_path / "etc" / "ssl" / "private" / "origin.key"
+    real.parent.mkdir(parents=True)
+    real.write_text("x")
+
+    found = sus.find_state_shaped_files(
+        [tmp_path], exclude_path_substrings=(f"{tmp_path}/etc/ssl/cert.pem",)
+    )
+    assert real in found
+    assert vendor not in found
+
+
 def test_allowlist_glob_reaches_into_private_tmp_namespace():
     assert sus.matches_any(
         "/tmp/systemd-private-f55a980f-metron-api.service-83hU0S/tmp/flow_doctor.db",
