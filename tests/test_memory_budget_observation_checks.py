@@ -18,6 +18,7 @@ now feeds the bound directly -- which is why steady_state_mb returns its
 caveats rather than a bare number.
 """
 
+import datetime as _dt
 import importlib.util
 import pathlib
 
@@ -381,3 +382,312 @@ class TestCensoredRequiresACurrentPin:
                     current=200 * MB, peak=280 * MB, high=280 * MB)
         (d / "memory.current").write_text("garbage\n")
         assert cmb.censored_observation("svc.service", WARN) is not None
+
+
+# ── alpha-engine-config-I6277: a --runtime override outranks the /etc drop-in ─
+#
+# WHY THESE EXIST
+# ----------------
+# `systemctl set-property --runtime <unit> MemoryMax=...` writes
+# /run/systemd/system.control/<unit>.d/50-Memory{High,Max}.conf, which
+# OUTRANKS /etc/systemd/system/<unit>.d/99-resource-limits.conf. Before this,
+# orphan_dropins() only ever globbed _DROPIN_ROOT (/etc), so this whole
+# mechanism was invisible to the check, and `daemon-reload` -- the only
+# remedy install-resource-limits.sh knows -- does not touch /run at all.
+# Measured live on metron-api.service, 2026-08-03 17:11-17:40 UTC: effective
+# MemoryHigh/MemoryMax 480M/560M against a declared 280M/350M, still live and
+# paging 30 minutes after the installer had supposedly fixed it.
+
+class TestRuntimeDropinOverride:
+    @pytest.fixture
+    def runtime_root(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cmb, "_RUNTIME_DROPIN_ROOT", tmp_path)
+        return tmp_path
+
+    def _write(self, root, unit, name, body):
+        d = root / f"{unit}.d"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / name).write_text(body)
+
+    def test_absent_directory_is_normal_not_a_finding(self, runtime_root):
+        """Root-owned and cleared on reboot -- most units, most of the time,
+        have no live override. Absence must not raise or report anything."""
+        assert cmb.runtime_dropin_overrides("metron-api.service") == []
+
+    def test_a_live_memory_max_override_is_named(self, runtime_root):
+        self._write(runtime_root, "metron-api.service", "50-MemoryMax.conf",
+                     "[Service]\nMemoryMax=560M\n")
+        found = cmb.runtime_dropin_overrides("metron-api.service")
+        assert len(found) == 1
+        assert found[0].endswith("50-MemoryMax.conf")
+
+    def test_a_live_memory_high_override_is_also_named(self, runtime_root):
+        self._write(runtime_root, "metron-api.service", "50-MemoryHigh.conf",
+                     "[Service]\nMemoryHigh=480M\n")
+        assert cmb.runtime_dropin_overrides("metron-api.service") != []
+
+    def test_a_dropin_without_memory_settings_is_ignored(self, runtime_root):
+        """This mechanism owns memory overrides only, not every --runtime
+        property ever set on the unit."""
+        self._write(runtime_root, "metron-api.service", "50-Other.conf",
+                     "[Service]\nEnvironment=FOO=bar\n")
+        assert cmb.runtime_dropin_overrides("metron-api.service") == []
+
+    def test_a_different_units_override_is_not_attributed_here(self, runtime_root):
+        self._write(runtime_root, "vires.service", "50-MemoryMax.conf",
+                     "[Service]\nMemoryMax=460M\n")
+        assert cmb.runtime_dropin_overrides("metron-api.service") == []
+
+
+class TestRuntimeOverrideAttachesToMainsDriftBreach:
+    """The end-to-end contract: --installed must NAME the mechanism, the
+    path, and the exact revert command, on the SAME line as the existing
+    MemoryMax drift breach -- not as a second, uncorrelated finding."""
+
+    def _fixture_budget(self, tmp_path, *, extra_service_yaml: str = ""):
+        budget = tmp_path / "budget.yaml"
+        budget.write_text(
+            "ram_mb: 2000\n"
+            "reserve_fraction: 0.15\n"
+            "max_overcommit_ratio: 2.0\n"
+            "max_steady_state_fraction: 0.60\n"
+            "services:\n"
+            "  - unit: metron-api.service\n"
+            "    memory_high: 280M\n"
+            "    memory_max: 350M\n"
+            f"{extra_service_yaml}"
+        )
+        return budget
+
+    def _run_installed(self, tmp_path, monkeypatch, budget,
+                        have_max="560M", have_high="480M"):
+        import sys
+
+        monkeypatch.setattr(cmb, "BUDGET", budget)
+        monkeypatch.setattr(
+            cmb, "systemd_show",
+            lambda unit, prop: {"MemoryMax": have_max,
+                                 "MemoryHigh": have_high}[prop],
+        )
+        monkeypatch.setattr(cmb, "ram_mb_from_proc", lambda: 2000)
+        monkeypatch.setattr(cmb, "_CGROUP_ROOT", tmp_path / "cgroup")
+        monkeypatch.setattr(cmb, "_DROPIN_ROOT", tmp_path / "etc")
+        monkeypatch.setattr(cmb, "_THROTTLE_STATE", tmp_path / "throttle-state")
+        argv = sys.argv
+        sys.argv = ["check_memory_budget.py", "--installed"]
+        try:
+            return cmb.main()
+        finally:
+            sys.argv = argv
+
+    def test_override_is_named_on_the_drift_breach_and_still_pages(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        budget = self._fixture_budget(tmp_path)
+        runtime_root = tmp_path / "runtime"
+        (runtime_root / "metron-api.service.d").mkdir(parents=True)
+        (runtime_root / "metron-api.service.d" / "50-MemoryMax.conf").write_text(
+            "[Service]\nMemoryMax=560M\n"
+        )
+        monkeypatch.setattr(cmb, "_RUNTIME_DROPIN_ROOT", runtime_root)
+
+        rc = self._run_installed(tmp_path, monkeypatch, budget)
+        err = capsys.readouterr().err
+
+        # No uncensor_until declared -- an undeclared override still pages.
+        assert rc == 1
+        assert "metron-api.service: MemoryMax drift" in err
+        assert "LIVE OVERRIDE" in err
+        assert "systemctl set-property --runtime" in err
+        assert str(runtime_root / "metron-api.service.d" / "50-MemoryMax.conf") in err
+        assert "systemctl revert metron-api.service" in err
+        assert "install-resource-limits.sh will NOT fix this" in err
+        # Attached to the SAME line as the drift finding, not a second one.
+        assert err.count("MemoryMax drift") == 1
+
+    def test_no_override_present_omits_the_mechanism_text(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """The drift breach must still fire on an ordinary hand-edited /etc
+        drop-in that carries no /run override at all -- this file must not
+        start requiring the mechanism to be present to report drift."""
+        budget = self._fixture_budget(tmp_path)
+        monkeypatch.setattr(cmb, "_RUNTIME_DROPIN_ROOT", tmp_path / "runtime-empty")
+
+        rc = self._run_installed(tmp_path, monkeypatch, budget)
+        err = capsys.readouterr().err
+
+        assert rc == 1
+        assert "metron-api.service: MemoryMax drift" in err
+        assert "LIVE OVERRIDE" not in err
+
+
+class TestUncensorMeasurementWindow:
+    """alpha-engine-config-I6277 deliverable 3: an optional, declared,
+    time-boxed exemption for the documented un-censoring procedure
+    (config-I6263) -- so it stops paging every 10 minutes for the duration of
+    a deliberate measurement, without becoming a way to silence a real drift
+    permanently. Absence of the key, or a deadline already passed, is not a
+    window: an abandoned measurement gets LOUDER, never quieter."""
+
+    def test_no_key_is_not_active(self):
+        assert cmb.uncensor_deadline({}) is None
+        assert cmb.uncensor_active({}) is False
+
+    def test_a_future_deadline_is_active(self):
+        future = (_dt.datetime.now(_dt.timezone.utc)
+                  + _dt.timedelta(days=1)).isoformat()
+        svc = {"uncensor_until": future}
+        assert cmb.uncensor_deadline(svc) is not None
+        assert cmb.uncensor_active(svc) is True
+
+    def test_a_past_deadline_is_not_active(self):
+        past = (_dt.datetime.now(_dt.timezone.utc)
+                - _dt.timedelta(days=1)).isoformat()
+        svc = {"uncensor_until": past}
+        assert cmb.uncensor_active(svc) is False
+
+    def test_a_malformed_deadline_fails_toward_the_loud_outcome(self):
+        """A typo must not silently disable the window (that would be
+        indistinguishable from an active one at the wrong severity); it must
+        also not crash the check. It reads as absent -- ordinary breach."""
+        assert cmb.uncensor_deadline({"uncensor_until": "not-a-date"}) is None
+        assert cmb.uncensor_active({"uncensor_until": "not-a-date"}) is False
+
+    def _budget_with_window(self, tmp_path, uncensor_until=None):
+        extra = f"    uncensor_until: '{uncensor_until}'\n" if uncensor_until else ""
+        budget = tmp_path / "budget.yaml"
+        budget.write_text(
+            "ram_mb: 2000\n"
+            "reserve_fraction: 0.15\n"
+            "max_overcommit_ratio: 2.0\n"
+            "max_steady_state_fraction: 0.60\n"
+            "services:\n"
+            "  - unit: metron-api.service\n"
+            "    memory_high: 280M\n"
+            "    memory_max: 350M\n"
+            f"{extra}"
+        )
+        return budget
+
+    def _run_installed(self, tmp_path, monkeypatch, budget):
+        import sys
+
+        monkeypatch.setattr(cmb, "BUDGET", budget)
+        monkeypatch.setattr(
+            cmb, "systemd_show",
+            lambda unit, prop: {"MemoryMax": "560M", "MemoryHigh": "480M"}[prop],
+        )
+        monkeypatch.setattr(cmb, "ram_mb_from_proc", lambda: 2000)
+        monkeypatch.setattr(cmb, "_CGROUP_ROOT", tmp_path / "cgroup")
+        monkeypatch.setattr(cmb, "_DROPIN_ROOT", tmp_path / "etc")
+        monkeypatch.setattr(cmb, "_RUNTIME_DROPIN_ROOT", tmp_path / "runtime-empty")
+        monkeypatch.setattr(cmb, "_THROTTLE_STATE", tmp_path / "throttle-state")
+        argv = sys.argv
+        sys.argv = ["check_memory_budget.py", "--installed"]
+        try:
+            return cmb.main()
+        finally:
+            sys.argv = argv
+
+    def test_same_input_is_hygiene_inside_the_window_and_breach_after(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """closes-when: identical live and declared values -- only the
+        deadline differs -- must yield rc=2 while the window is open and
+        rc=1 once it passes."""
+        future = (_dt.datetime.now(_dt.timezone.utc)
+                  + _dt.timedelta(days=1)).isoformat()
+        rc_inside = self._run_installed(
+            tmp_path, monkeypatch, self._budget_with_window(tmp_path, future)
+        )
+        err_inside = capsys.readouterr().err
+        assert rc_inside == 2
+        assert "metron-api.service: MemoryMax drift" in err_inside
+        assert "HYGIENE:" in err_inside
+        assert "BREACH:" not in err_inside
+        assert "uncensor_until window" in err_inside
+        assert future.split(".")[0] in err_inside or future in err_inside
+
+        past = (_dt.datetime.now(_dt.timezone.utc)
+                - _dt.timedelta(days=1)).isoformat()
+        rc_after = self._run_installed(
+            tmp_path, monkeypatch, self._budget_with_window(tmp_path, past)
+        )
+        err_after = capsys.readouterr().err
+        assert rc_after == 1
+        assert "metron-api.service: MemoryMax drift" in err_after
+        assert "BREACH:" in err_after
+        assert "has PASSED" in err_after
+
+    def test_no_window_declared_is_an_ordinary_breach(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        rc = self._run_installed(
+            tmp_path, monkeypatch, self._budget_with_window(tmp_path, None)
+        )
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "BREACH:" in err
+        assert "uncensor_until" not in err
+
+    def test_aggregate_ratio_contribution_is_credited_back_inside_the_window(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Deliverable 3's second half: the unit's contribution to the
+        AGGREGATE overcommit bound is also credited back to its declared cap
+        while the window is open, so a deliberate measurement on one service
+        cannot also trip the box-wide ratio bound as a page.
+
+        Two services, ratio chosen so the RAW live sum (560 + 300 = 860 MB)
+        exceeds a 700 MB allowed sum but the CREDITED sum (metron-api capped
+        at its declared 350M while its window is open: 350 + 300 = 650 MB)
+        does not -- the aggregate bound must follow the credited sum, not
+        the raw one, and say so rather than silently pass.
+        """
+        budget = tmp_path / "budget.yaml"
+        future = (_dt.datetime.now(_dt.timezone.utc)
+                  + _dt.timedelta(days=1)).isoformat()
+        budget.write_text(
+            "ram_mb: 700\n"
+            "reserve_fraction: 0.0\n"
+            "max_overcommit_ratio: 1.0\n"
+            "max_steady_state_fraction: 0.90\n"
+            "services:\n"
+            "  - unit: metron-api.service\n"
+            "    memory_high: 280M\n"
+            "    memory_max: 350M\n"
+            f"    uncensor_until: '{future}'\n"
+            "  - unit: other-svc.service\n"
+            "    memory_high: 250M\n"
+            "    memory_max: 300M\n"
+        )
+        live = {
+            "metron-api.service": {"MemoryMax": "560M", "MemoryHigh": "480M"},
+            "other-svc.service": {"MemoryMax": "300M", "MemoryHigh": "250M"},
+        }
+        monkeypatch.setattr(cmb, "BUDGET", budget)
+        monkeypatch.setattr(cmb, "systemd_show",
+                             lambda unit, prop: live[unit][prop])
+        monkeypatch.setattr(cmb, "ram_mb_from_proc", lambda: 700)
+        monkeypatch.setattr(cmb, "_CGROUP_ROOT", tmp_path / "cgroup")
+        monkeypatch.setattr(cmb, "_DROPIN_ROOT", tmp_path / "etc")
+        monkeypatch.setattr(cmb, "_RUNTIME_DROPIN_ROOT", tmp_path / "runtime-empty")
+        monkeypatch.setattr(cmb, "_THROTTLE_STATE", tmp_path / "throttle-state")
+        import sys
+        argv = sys.argv
+        sys.argv = ["check_memory_budget.py", "--installed"]
+        try:
+            rc = cmb.main()
+        finally:
+            sys.argv = argv
+        err = capsys.readouterr().err
+
+        # Neither unit's declared/live pair alone breaches the aggregate
+        # bound (other-svc has no drift at all); only the RAW sum does.
+        assert rc == 2, err
+        assert "BREACH:" not in err
+        assert "OVER ONLY because" in err
+        assert "credited back" in err
+        assert "650 MB" in err  # the credited sum
+        assert "860 MB" in err  # the raw sum, still shown
