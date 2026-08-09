@@ -27,7 +27,14 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BUDGET="$HERE/systemd/resource-limits/budget.yaml"
+BUDGET="${BUDGET:-$HERE/systemd/resource-limits/budget.yaml}"
+
+# Where `systemctl set-property --runtime <unit> ...` writes overrides.
+# Outranks the drop-in this script generates (see the block below) and is
+# root-owned, cleared on reboot. Overridable via env var for the same reason
+# BUDGET now is: it is the only way to exercise the guard below off-box, in
+# CI, without a real systemd (alpha-engine-config-I6277).
+RUNTIME_DROPIN_ROOT="${RUNTIME_DROPIN_ROOT:-/run/systemd/system.control}"
 
 # 99- so this drop-in sorts LAST and therefore wins. systemd merges drop-ins in
 # alphabetical order with later files overriding earlier ones, and the legacy
@@ -107,6 +114,53 @@ if [[ -n "${absent// /}" ]]; then
     for u in $absent; do echo "    $u" >&2; done
     echo "Nothing was written. Create the accounts first (infrastructure/create-service-users.sh)," >&2
     echo "or remove the 'user:' field from those services in budget.yaml." >&2
+    exit 1
+fi
+
+# ── Refuse to write a drop-in that a live --runtime override outranks ───────
+#
+# alpha-engine-config-I6277: `systemctl set-property --runtime <unit>
+# MemoryMax=...` writes /run/systemd/system.control/<unit>.d/50-Memory*.conf,
+# which OUTRANKS the /etc drop-in this script generates. `daemon-reload` does
+# not touch /run, so writing the /etc file anyway produces config that has NO
+# effect on the running unit: the operator's obvious next action after a
+# MemoryMax drift breach silently does nothing, and the breach re-pages on
+# the next tick. Measured live on metron-api.service, 2026-08-03 17:11-17:40
+# UTC -- the override was still live and paging 30 minutes after this script
+# ran.
+#
+# Checked as a PREFLIGHT over every declared unit, before ANY drop-in is
+# written -- same shape as the missing-user check above, for the same
+# reason: refusing partway through the loop would leave the box
+# half-migrated (some units re-rendered, others not).
+#
+# Never auto-`systemctl revert` here. That would silently destroy an
+# in-flight measurement -- config-I6263's un-censoring procedure is this
+# exact mechanism used deliberately and temporarily.
+runtime_override_hit=0
+while IFS= read -r ro_unit; do
+    [[ -z "$ro_unit" ]] && continue
+    ro_dir="${RUNTIME_DROPIN_ROOT}/${ro_unit}.d"
+    [[ -d "$ro_dir" ]] || continue
+    for ro_conf in "$ro_dir"/*.conf; do
+        [[ -f "$ro_conf" ]] || continue
+        grep -qE '^(MemoryMax|MemoryHigh)=' "$ro_conf" || continue
+        echo "REFUSING to write a drop-in for ${ro_unit}: a LIVE 'systemctl set-property --runtime' override is active at ${ro_conf}." >&2
+        echo "  This outranks the /etc drop-in this script generates -- daemon-reload does NOT clear /run/systemd/system.control," >&2
+        echo "  so writing anyway would produce a file with no effect on the running unit, and the drift breach re-pages next tick." >&2
+        echo "  Revert the live override first:  systemctl revert ${ro_unit}" >&2
+        echo "  Then re-run this installer." >&2
+        runtime_override_hit=1
+    done
+done < <("$PY" - "$BUDGET" <<'PYEOF'
+import sys, yaml
+spec = yaml.safe_load(open(sys.argv[1]))
+for s in spec["services"]:
+    print(s["unit"])
+PYEOF
+)
+if [[ $runtime_override_hit -eq 1 ]]; then
+    echo "Nothing was written." >&2
     exit 1
 fi
 
