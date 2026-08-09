@@ -42,7 +42,7 @@ install -d -m 0755 "$DROPIN_DST"
 # installer's own header says these units used to be in. A drop-in absent
 # from this list is NOT installed on a rebuilt box, and the unit that
 # comes up is a different unit.
-for conf in 10-after-news.conf 10-memory.conf 10-timeout.conf 20-router.conf; do
+for conf in 10-after-news.conf 10-memory.conf 10-timeout.conf 20-router.conf 30-record-peak.conf; do
     cp "$SYSTEMD_SRC/morning-signal.service.d/$conf" "$DROPIN_DST/$conf"
     echo "Installed $DROPIN_DST/$conf"
 done

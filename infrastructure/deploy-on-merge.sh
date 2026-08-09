@@ -548,6 +548,7 @@ if any_file_state_stale \
     "$MS_INFRA/systemd/morning-signal.service.d/10-memory.conf:/etc/systemd/system/morning-signal.service.d/10-memory.conf" \
     "$MS_INFRA/systemd/morning-signal.service.d/10-timeout.conf:/etc/systemd/system/morning-signal.service.d/10-timeout.conf" \
     "$MS_INFRA/systemd/morning-signal.service.d/20-router.conf:/etc/systemd/system/morning-signal.service.d/20-router.conf" \
+    "$MS_INFRA/systemd/morning-signal.service.d/30-record-peak.conf:/etc/systemd/system/morning-signal.service.d/30-record-peak.conf" \
     "$MS_INFRA/morning-signal-recover.sh:/usr/local/bin/morning-signal-recover.sh"; then
     log "morning-signal core units/recovery wrapper differ from installed copies — re-installing"
     bash "$REPO_DIR/infrastructure/install-morning-signal.sh" >>"$LOG" 2>&1 \
