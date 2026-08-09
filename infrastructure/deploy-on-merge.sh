@@ -675,6 +675,7 @@ STAMP_DIR="/etc/alpha-engine/installer-stamps"
 
 ROUTED_INSTALLERS=(
   "install-boot-pull.sh|files|systemd/boot-pull.service:/etc/systemd/system/boot-pull.service,systemd/boot-pull.timer:/etc/systemd/system/boot-pull.timer"
+  "install-scan-unlisted-state.sh|files|systemd/scan-unlisted-state.service:/etc/systemd/system/scan-unlisted-state.service,systemd/scan-unlisted-state.timer:/etc/systemd/system/scan-unlisted-state.timer"
   "install-substrate-health-daily.sh|files|systemd/substrate-health-daily.service:/etc/systemd/system/substrate-health-daily.service,systemd/substrate-health-daily.timer:/etc/systemd/system/substrate-health-daily.timer,systemd/alert-on-failure@.service:/etc/systemd/system/alert-on-failure@.service"
   # STAMP, not files, and the reason is not obvious: the installer writes its
   # config to CFG_DST and then calls `amazon-cloudwatch-agent-ctl -a
