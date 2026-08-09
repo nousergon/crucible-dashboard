@@ -1097,6 +1097,18 @@ notices="${notices%$'\n'}"
 # delivery below, and every tier reaches the Overseer bus via krepis.alerts.
 publish_verdict "$(printf '%s' "$criticals" | grep -c . || true)"
 
+# Coverage as a NUMBER, not N lines of prose (config#6657 deliverable 3): how
+# many installed timers currently lack a `timers:` dead-man row. The per-timer
+# `notice:` lines still name each one; this makes the gap a plottable series
+# whose zero is emitted too — a timer added to the box without a row moves a
+# graph instead of only appending prose nobody reads. Swallowed failure mode:
+# same as the other metric publishes — journal line plus the alarm's
+# missing-data breach if it persists.
+aws cloudwatch put-metric-data --namespace "AlphaEngine/Box" \
+    --metric-data \
+    "MetricName=timers_without_deadman,Dimensions=[{Name=InstanceId,Value=${INSTANCE_ID}}],Value=$(printf '%s' "$notices" | grep -c 'timer has no dead-man threshold' || true),Unit=Count" \
+    2>&1 | head -1 | sed 's/^/box_health: timer-coverage publish failed: /' >&2 || true
+
 # publish_problems SEVERITY DEDUP_MIN PREFIX LINES
 # One path for both tiers so they cannot drift apart in formatting, dedup
 # behaviour, or failure reporting.
