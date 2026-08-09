@@ -258,8 +258,17 @@ def find_state_shaped_files(
                 dirnames[:] = []
                 continue
             for fname in filenames:
-                if is_state_shaped(fname):
-                    found.append(pathlib.Path(dirpath) / fname)
+                if not is_state_shaped(fname):
+                    continue
+                # Substrings must match FILE paths too, not only directories:
+                # an exclusion naming a single vendor file (/etc/ssl/cert.pem,
+                # the DNSSEC anchor) never pruned anything at the walk level,
+                # and both survived the first precision pass to page again
+                # (measured 2026-08-09, second sweep: 166 -> 2 -> 0).
+                full = dirpath + "/" + fname
+                if any(sub in full for sub in exclude_path_substrings):
+                    continue
+                found.append(pathlib.Path(full))
     return found
 
 

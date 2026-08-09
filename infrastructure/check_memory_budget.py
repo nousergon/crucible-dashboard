@@ -730,7 +730,11 @@ def main() -> int:
                         f"`daemon-reload` does NOT clear "
                         f"/run/systemd/system.control, so re-running "
                         f"install-resource-limits.sh will NOT fix this. "
-                        f"Revert with: systemctl revert {unit}"
+                        f"Revert with: systemctl revert {unit} -- then "
+                        f"IMMEDIATELY re-run install-resource-limits.sh: "
+                        f"revert deletes the persistent /etc drop-in too, "
+                        f"leaving the unit UNCAPPED until the installer "
+                        f"rewrites it (measured on nginx, 2026-08-09)"
                     )
                 deadline = uncensor_deadline(svc)
                 if deadline is not None and uncensor_active(svc):
