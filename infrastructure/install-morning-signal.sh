@@ -31,7 +31,7 @@ if [ ! -f "$SYSTEMD_SRC/morning-signal.service" ]; then
     exit 1
 fi
 
-for unit in morning-signal.service morning-signal.timer; do
+for unit in morning-signal.service morning-signal.timer morning-signal-pull.service morning-signal-pull.timer; do
     cp "$SYSTEMD_SRC/$unit" "/etc/systemd/system/$unit"
     echo "Installed /etc/systemd/system/$unit"
 done
@@ -52,8 +52,9 @@ echo "Installed $RECOVER_DST"
 
 systemctl daemon-reload
 systemctl enable --now morning-signal.timer
+systemctl enable --now morning-signal-pull.timer
 
 echo ""
 echo "morning-signal core units installed; timer enabled (04:00 PT daily)."
-echo "  Verify:    systemctl list-timers morning-signal.timer"
+echo "  Verify:    systemctl list-timers morning-signal.timer morning-signal-pull.timer"
 echo "  Recover:   sudo -u ec2-user bash $RECOVER_DST   # generate-only, skips daily-news"

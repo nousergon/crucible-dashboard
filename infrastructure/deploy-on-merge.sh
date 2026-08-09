@@ -542,6 +542,8 @@ MS_INFRA="$REPO_DIR/infrastructure"
 if any_file_state_stale \
     "$MS_INFRA/systemd/morning-signal.service:/etc/systemd/system/morning-signal.service" \
     "$MS_INFRA/systemd/morning-signal.timer:/etc/systemd/system/morning-signal.timer" \
+    "$MS_INFRA/systemd/morning-signal-pull.service:/etc/systemd/system/morning-signal-pull.service" \
+    "$MS_INFRA/systemd/morning-signal-pull.timer:/etc/systemd/system/morning-signal-pull.timer" \
     "$MS_INFRA/systemd/morning-signal.service.d/10-after-news.conf:/etc/systemd/system/morning-signal.service.d/10-after-news.conf" \
     "$MS_INFRA/systemd/morning-signal.service.d/10-memory.conf:/etc/systemd/system/morning-signal.service.d/10-memory.conf" \
     "$MS_INFRA/systemd/morning-signal.service.d/10-timeout.conf:/etc/systemd/system/morning-signal.service.d/10-timeout.conf" \
