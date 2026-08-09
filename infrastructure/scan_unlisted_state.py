@@ -103,6 +103,14 @@ EXCLUDE_PATH_SUBSTRINGS: tuple[str, ...] = (
     "/opt/aws/",
     "/opt/amazon-cloudwatch-agent/",
     "/opt/amazon/",
+    # OS-owned trust material, present on every AL2023 image and reinstalled by
+    # the package manager — not box state in any sense T1-4 cares about. The
+    # first live sweep (2026-08-09) reported 151 of its 166 findings from these
+    # three: the extracted CA store (145 .pem files), the ca-bundle symlink,
+    # and the DNSSEC root anchor.
+    "/etc/pki/",
+    "/etc/ssl/cert.pem",
+    "/etc/trusted-key.key",
 )
 
 NAMESPACE = "AlphaEngine/Box"
