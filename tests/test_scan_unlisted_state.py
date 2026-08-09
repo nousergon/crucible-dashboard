@@ -369,3 +369,30 @@ def test_main_exits_two_on_malformed_registry(tmp_path, capsys):
     ])
     assert rc == 2
     assert "could not read registry" in capsys.readouterr().err
+
+
+# ── first-sweep precision fixes (2026-08-09) ────────────────────────────────
+# The first live run reported 166 findings, 151 of them OS vendor trust
+# material. These pin the two mechanisms that dispositioned it: the vendor
+# exclusions ship in EXCLUDE_PATH_SUBSTRINGS themselves (not just as a
+# test-local argument), and the allowlist's fnmatch glob reaches a file inside
+# a systemd PrivateTmp namespace, whose middle path segment is unpredictable.
+
+
+def test_os_trust_store_paths_are_excluded_by_default():
+    assert "/etc/pki/" in sus.EXCLUDE_PATH_SUBSTRINGS
+    assert "/etc/ssl/cert.pem" in sus.EXCLUDE_PATH_SUBSTRINGS
+    assert "/etc/trusted-key.key" in sus.EXCLUDE_PATH_SUBSTRINGS
+
+
+def test_allowlist_glob_reaches_into_private_tmp_namespace():
+    assert sus.matches_any(
+        "/tmp/systemd-private-f55a980f-metron-api.service-83hU0S/tmp/flow_doctor.db",
+        ["/tmp/systemd-private-*-metron-api.service-*/tmp/flow_doctor.db"],
+    )
+    # A different service's namespace stays unmatched — the allowlist entry is
+    # scoped to metron-api, not to PrivateTmp in general.
+    assert not sus.matches_any(
+        "/tmp/systemd-private-f55a980f-vires.service-x1/tmp/flow_doctor.db",
+        ["/tmp/systemd-private-*-metron-api.service-*/tmp/flow_doctor.db"],
+    )
