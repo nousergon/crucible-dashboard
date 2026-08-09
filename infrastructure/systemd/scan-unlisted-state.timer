@@ -1,0 +1,16 @@
+[Unit]
+Description=Run the unlisted-state scan daily (T1-4, alpha-engine-config-I6719)
+Requires=scan-unlisted-state.service
+
+[Timer]
+# 04:20 UTC — after box-state-backup (03:40 UTC) so a file the nightly backup
+# just started replicating is already reflected on disk, and clear of the
+# 04:00 America/Los_Angeles morning-signal/daily-news burst (a different
+# timezone, so no real overlap regardless).
+OnCalendar=*-*-* 04:20:00
+Persistent=true
+RandomizedDelaySec=300
+Unit=scan-unlisted-state.service
+
+[Install]
+WantedBy=timers.target

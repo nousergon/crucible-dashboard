@@ -1,0 +1,40 @@
+# unlisted_state_allowlist.yaml — accepted-loss allowlist for
+# infrastructure/scan_unlisted_state.py (T1-4, alpha-engine-config-I6719).
+#
+# WHY THIS IS A SEPARATE FILE FROM budget.yaml::state[]
+# -------------------------------------------------------
+# budget.yaml::state[] is the backup registry: it drives backup_box_state.py
+# (what gets replicated to S3) and box_health.sh's own narrower T1-4 check
+# (undeclared state under /home/ec2-user). scan_unlisted_state.py covers the
+# WHOLE box — /etc, /opt, /home/ec2-user, /tmp — which is a broader question
+# than "what does the nightly backup job know about". A file this scan finds
+# may legitimately have nothing to do with the backup registry at all (OS
+# config under /etc, a vendor cert under /opt) while still needing a stated
+# disposition under T1-4. Keeping the two registries separate means adding an
+# entry here never touches budget.yaml — which also matters operationally
+# right now: budget.yaml is being edited by a parallel change to the memory
+# budget, and this scan must not collide with that.
+#
+# THE PROVISO, RESTATED
+# ----------------------
+# Policy §7 permits accepted-loss for personal tools "PROVIDED IT IS STATED".
+# That proviso is the whole point: accepted-loss and never-considered look
+# IDENTICAL on disk. An entry here is a DECISION on the record, not a way to
+# make the scan quiet. Every entry needs all three fields:
+#
+#   path        an absolute path or glob (matched the same way box_health.sh
+#               matches budget.yaml::state[] — an entry naming a directory
+#               covers everything under it, no trailing "/*" needed)
+#   rpo         the worst-case loss if this file vanished today: a duration
+#               ("24h", "7d") or the literal "total" / "none"
+#   rationale   why that loss is acceptable — one line is enough, but a bare
+#               path with no reason is what this file exists to prevent
+#
+# A malformed entry (missing any of the three) makes scan_unlisted_state.py
+# refuse to run rather than silently treating it as "allowed with no stated
+# reason" — see load_allowlist()'s docstring.
+#
+# Starts empty. The first on-box scan's findings are dispositioned here (or
+# in budget.yaml::state[], or removed) as a deploy-time follow-up — see the
+# PR body for alpha-engine-config-I6719 for the exact command.
+entries: []
