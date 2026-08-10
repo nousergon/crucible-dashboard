@@ -1,11 +1,11 @@
 # Dashboard Box — Rebuild Runbook
 
-**Instance:** `i-09b539c844515d549` · t3.small · us-east-1f · AL2023
+**Instance:** `i-09b539c844515d549` · t3.medium · us-east-1f · AL2023
 **Root volume:** `vol-0b11efe28ad2f2073` (32 GB gp3, `DeleteOnTermination=false`)
 **Governing policy:** [`nous-ergon-ops/policies/shared-application-host-policy.md`](https://github.com/nousergon/nous-ergon-ops/blob/main/policies/shared-application-host-policy.md) — **T0-1 (recoverability)**
 **RTO target:** 4 hours · **RPO:** 24 hours (nightly snapshot)
 
-**Last executed:** *never — see "Rehearsal" below. Until this runbook has been run end-to-end, its RTO is an estimate, not a measurement.*
+**Last executed:** 2026-08-10 (Path B rehearsal against a throwaway instance — see the Rehearsal table).
 
 ---
 
@@ -15,7 +15,7 @@
 |---|---|---|
 | Whole-box | DLM policy `policy-0047cfbfb7070a3b7`, nightly 08:00 UTC, targets tag `Backup=daily` on the **instance** (multi-volume snapshot set) | 14 days |
 | Accidental terminate | `DeleteOnTermination=false` on the root volume — the volume survives instance termination | — |
-| Code | 17 git checkouts under `/home/ec2-user/`, all pushed to GitHub | authoritative upstream |
+| Code | 18 git checkouts under `/home/ec2-user/` (measured 2026-08-10), all pushed to GitHub | authoritative upstream |
 | Secrets | SSM SecureString under `/alpha-engine/`, `/symposion/`, `/metron/`, etc. | authoritative upstream |
 | Data artifacts | S3 (`alpha-engine-research`), Neon (Metron), Mnemon vault sync | authoritative upstream |
 
@@ -27,7 +27,7 @@
 
 Because `DeleteOnTermination=false`, a terminated instance leaves `vol-0b11efe28ad2f2073` intact and `available`.
 
-1. Launch a new t3.small in **us-east-1f**, AL2023, **no** additional root volume beyond the default.
+1. Launch a new t3.medium in **us-east-1f**, AL2023, **no** additional root volume beyond the default.
 2. Stop the new instance. Detach and delete its fresh root volume.
 3. Attach `vol-0b11efe28ad2f2073` as `/dev/xvda`. Start the instance.
 4. Jump to **Common post-restore steps**.
@@ -50,7 +50,7 @@ Because `DeleteOnTermination=false`, a terminated instance leaves `vol-0b11efe28
      --volume-type gp3 --tag-specifications \
      'ResourceType=volume,Tags=[{Key=Name,Value=alpha-engine-dashboard-root},{Key=Backup,Value=daily}]'
    ```
-3. Launch a new t3.small in us-east-1f, stop it, detach+delete its root volume, attach the restored volume as `/dev/xvda`, start.
+3. Launch a new t3.medium in us-east-1f, stop it, detach+delete its root volume, attach the restored volume as `/dev/xvda`, start.
 4. Jump to **Common post-restore steps**.
 
 **Data loss window:** everything written since the last nightly snapshot (up to 24h). For this box that is: `flow_doctor.db` rows, uncommitted local edits, and any log history. No product data — every product's authoritative store is off-box.
@@ -124,11 +124,11 @@ Confirms installed units still match the repo.
 
 ## Rehearsal
 
-**This runbook is a hypothesis until it has been executed.** Rehearse Path B against a throwaway instance — restore the latest snapshot to a second t3.small in us-east-1f, work through the post-restore steps, measure the wall-clock, then terminate it and delete the volume. Record the result here:
+Rehearse Path B against a throwaway instance — restore the latest snapshot to a second t3.medium in us-east-1f, work through the post-restore steps, measure the wall-clock, then terminate it and delete the volume. Record the result here:
 
 | Date rehearsed | Path | Measured RTO | Notes |
 |---|---|---|---|
-| *(not yet)* | | | |
+| 2026-08-10 | B (throwaway t3.medium, snapshot `snap-031e42f696eb4bb10` of 2026-08-09 08:37 UTC) | **7m 13s** (01:03:52→01:11:05 UTC) hands-on-keyboard; volume pre-restored from the snapshot in an earlier session (create-volume is an API-seconds step, but see lazy-hydration note) | All 14 app services + nginx active on first boot, `systemctl --failed` empty, `box_health.sh` rc=0, GitHub PAT valid (step 7), direct-origin probe from outside Cloudflare timed out as required (step 6). Deliberate deviations: step 4 (EIP) skipped — reassociating would have taken prod down; all 24 fleet timers disabled offline on the volume pre-boot so duplicate scheduled jobs could not fire (list preserved at `/root/disabled-timers-for-rehearsal.txt` on the since-deleted volume); `Backup=daily` tag withheld to keep the throwaway out of the DLM lineage. Caveats for a real recovery: add snapshot→volume create time (~1 min API; EBS lazy hydration can slow first reads — services still started clean here), EIP reassociation, and human reaction time — the 4h header target remains comfortably safe. RPO observed concretely: the restored box was 2026-08-09 08:37's box — the same-evening deploy wave (updated drift-checker unit, etc.) was absent until post-restore step 7's `git fetch`/pull reconciles, exactly the ≤24h window the header states. |
 
 Re-rehearse whenever the box's service set changes materially, or annually — whichever comes first.
 
@@ -137,4 +137,4 @@ Re-rehearse whenever the box's service set changes materially, or annually — w
 ## Known gaps in this runbook
 
 - **No infrastructure-as-code for the instance itself.** Launch parameters, SG rules, and IAM associations are documented here in prose rather than declared. Acceptable at current scale (policy §3 — "what genuinely does not matter at our scale"), but it is the reason the RTO is 4 hours rather than minutes.
-- **The 4-hour RTO is unmeasured.** It is an estimate built from the step list, not a stopwatch reading. The rehearsal above is what converts it into a number worth relying on.
+- **The measured RTO excludes the EIP step and human reaction time.** The 2026-08-10 rehearsal measured 7m13s hands-on-keyboard with the volume pre-restored; a real recovery adds volume creation, EIP reassociation (step 4, deliberately skipped in rehearsal), and however long it takes a human or the Overseer to notice and start. The 4h header target is the budget for all of that, not the mechanical floor.
