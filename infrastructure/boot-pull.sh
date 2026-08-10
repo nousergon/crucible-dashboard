@@ -23,6 +23,20 @@ log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$LOG"; }
 
 log "=== boot-pull started ==="
 
+# ── T1-3 deploy accounting (shared-application-host-policy §5 T1-3, config-I6742) ──
+# boot-pull mutates code on a live host, so it is held to the same floor as
+# deploy-on-merge.sh: the SHA each repo moved to is RECORDED to a state file,
+# every service this run restarts is HEALTH-CHECKED afterward, and a failed
+# gate REVERTS this run's pulls to their previous SHAs. Unlike deploy-on-merge
+# (which needs a last-good stamp file because its failing HEAD is the new
+# merge), boot-pull captures PREV_SHA before each pull — the tree the box was
+# demonstrably running on until this run — so the revert target is exact.
+LAST_PULL_SHAS="/var/lib/boot-pull/last-pull-shas"
+PULLED_REPOS=()
+PULLED_PREV=()
+PULLED_NEW=()
+RESTARTED_SERVICES=()
+
 # ── Refresh the GitHub PAT in ~/.netrc from SSM ────────────────────────────
 # alpha-engine-config is the only PRIVATE repo pulled below; git authenticates
 # to it over HTTPS via the fine-grained PAT in ~/.netrc (libcurl reads ~/.netrc
@@ -95,6 +109,13 @@ for repo in "${REPOS[@]}"; do
     if git fetch origin >> "$LOG" 2>&1 && git reset --hard origin/main >> "$LOG" 2>&1; then
         NEW_SHA=$(git rev-parse HEAD 2>/dev/null || echo "none")
         log "OK   $repo — $(git log --oneline -1)"
+        if [ "$PREV_SHA" != "$NEW_SHA" ]; then
+            # This run moved the tree — remember where from, for the T1-3
+            # health-gate revert below.
+            PULLED_REPOS+=("$repo")
+            PULLED_PREV+=("$PREV_SHA")
+            PULLED_NEW+=("$NEW_SHA")
+        fi
 
         # Only run full pip install if requirements.txt actually changed — pip
         # is slow on a 1GB instance and runs every day even when no deps moved.
@@ -259,6 +280,9 @@ if [ -d "$SYSTEMD_SRC" ]; then
             if [[ "$unit" == *.service ]] && [ "$unit" != "boot-pull.service" ]; then
                 sudo systemctl restart "$unit" 2>> "$LOG" || log "WARN restart $unit failed"
                 log "RESTART $unit"
+                # Gate it either way: a restart that errored is exactly the
+                # case the T1-3 health gate below must fail loud on, not skip.
+                RESTARTED_SERVICES+=("$unit")
             fi
         done
     fi
@@ -341,6 +365,135 @@ if [ "$CONFIGS_CHANGED" -eq 1 ]; then
     sleep 2
     sudo systemctl restart nous-ergon-live 2>> "$LOG" || log "WARN restart nous-ergon-live failed"
     log "RESTART dashboard + nous-ergon-live (config-driven)"
+    RESTARTED_SERVICES+=("dashboard.service" "nous-ergon-live.service")
+fi
+
+# ── T1-3 post-restart health gate + auto-revert (config-I6742) ──────────────
+# Every long-running service this run restarted must come back active.
+# Previously a unit-sync restart could leave a service dead and boot-pull
+# still exited 0 — the "user-facing service stays dead" outcome policy
+# T1-2/T1-3 exists to prevent, invisible until the next box-health tick.
+# Type=oneshot units are excluded: restarting one RUNS it, and is-active is
+# not a health signal for a job.
+
+is_gate_unit() {
+    local unit_type
+    unit_type=$(systemctl show -p Type --value "$1" 2>/dev/null)
+    [ -n "$unit_type" ] && [ "$unit_type" != "oneshot" ]
+}
+
+wait_active() {
+    local unit="$1" n=0
+    while [ $n -lt 30 ]; do
+        if systemctl is-active --quiet "$unit"; then
+            return 0
+        fi
+        sleep 1
+        n=$((n + 1))
+    done
+    return 1
+}
+
+FAILED_UNITS=""
+if [ ${#RESTARTED_SERVICES[@]} -gt 0 ]; then
+    for unit in $(printf '%s\n' "${RESTARTED_SERVICES[@]}" | sort -u); do
+        is_gate_unit "$unit" || continue
+        if wait_active "$unit"; then
+            log "OK   health gate — $unit active"
+        else
+            log "FAIL health gate — $unit not active 30s after restart"
+            FAILED_UNITS="$FAILED_UNITS $unit"
+        fi
+    done
+fi
+
+if [ -n "$FAILED_UNITS" ]; then
+    log "REVERT health gate failed (${FAILED_UNITS# }) — rolling back this run's pulls"
+    for i in "${!PULLED_REPOS[@]}"; do
+        _repo="${PULLED_REPOS[$i]}"
+        _prev="${PULLED_PREV[$i]}"
+        case "$_prev" in
+            ''|none|*[!0-9a-f]*)
+                # Reverting to a guess is worse than not reverting (same rule
+                # as deploy-on-merge.sh revert_to_last_good).
+                log "WARN cannot revert $_repo — no usable previous sha ('$_prev')"
+                continue ;;
+        esac
+        if git -C "$_repo" reset --hard "$_prev" >> "$LOG" 2>&1; then
+            log "REVERT $_repo -> $_prev"
+        else
+            log "REVERT FAILED $_repo — git reset to $_prev did not apply"
+        fi
+    done
+
+    # Re-sync unit files from the reverted trees. A revert that leaves
+    # new-sha units over old-sha code is a state neither sha was tested in —
+    # the 2026-07-28 run-30404044358 failure mode deploy-on-merge.sh's
+    # revert_to_last_good documents.
+    for unit in "$SYSTEMD_SRC"/*.service "$SYSTEMD_SRC"/*.timer; do
+        [ -f "$unit" ] || continue
+        name=$(basename "$unit")
+        if [ -f "/etc/systemd/system/$name" ] && ! diff -q "$unit" "/etc/systemd/system/$name" >/dev/null 2>&1; then
+            sudo cp "$unit" "/etc/systemd/system/$name"
+            log "REVERT-SYNC $name"
+        fi
+    done
+    for unit in metron-intraday.service metron-intraday.timer; do
+        _src="$METRON_INTRADAY_SRC/$unit"
+        [ -f "$_src" ] || continue
+        if [ -f "/etc/systemd/system/$unit" ] && ! diff -q "$_src" "/etc/systemd/system/$unit" >/dev/null 2>&1; then
+            sudo cp "$_src" "/etc/systemd/system/$unit"
+            log "REVERT-SYNC $unit"
+        fi
+    done
+    sudo systemctl daemon-reload
+
+    STILL_FAILED=""
+    for unit in $FAILED_UNITS; do
+        sudo systemctl restart "$unit" 2>> "$LOG" || log "WARN post-revert restart $unit failed"
+        if wait_active "$unit"; then
+            log "OK   post-revert — $unit active"
+        else
+            STILL_FAILED="$STILL_FAILED $unit"
+        fi
+    done
+
+    if [ -z "$STILL_FAILED" ]; then
+        _gate_msg="auto-reverted to the previous SHAs and healthy again; the pulled commits are NOT live — investigate before they land via the next boot-pull"
+    else
+        _gate_msg="REVERT INCOMPLETE — still not active:${STILL_FAILED}. Manual intervention needed NOW"
+    fi
+    ALERT_PY="/home/ec2-user/alpha-engine-dashboard/.venv/bin/python"
+    if [ -x "$ALERT_PY" ]; then
+        "$ALERT_PY" -m krepis.alerts publish \
+            --message "boot-pull health gate FAILED on $(hostname):${FAILED_UNITS} not active after restart — ${_gate_msg}. See /var/log/boot-pull.log." \
+            --severity critical \
+            --source boot-pull \
+            --dedup-key "boot-pull-healthgate" \
+            --dedup-window-min 1440 \
+            || log "ALERT PUBLISH FAILED — boot-pull health-gate failure is UNREPORTED"
+    else
+        log "ALERT PUBLISH SKIPPED — $ALERT_PY missing; boot-pull health-gate failure is UNREPORTED"
+    fi
+fi
+
+# Record where every repo now stands (post-pull, or post-revert). This is the
+# T1-3 "sha recorded to a state file" half; the log has the narrative, this
+# file has the machine-readable current set.
+if mkdir -p "$(dirname "$LAST_PULL_SHAS")" 2>> "$LOG"; then
+    for repo in "${REPOS[@]}"; do
+        [ -d "$repo/.git" ] || continue
+        printf '%s %s\n' "$repo" "$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo unknown)"
+    done > "${LAST_PULL_SHAS}.tmp" && mv "${LAST_PULL_SHAS}.tmp" "$LAST_PULL_SHAS"
+else
+    log "WARN could not create $(dirname "$LAST_PULL_SHAS") — sha state file not written"
+fi
+
+if [ -n "$FAILED_UNITS" ]; then
+    # systemd must see the gate failure regardless of whether the revert or
+    # the alert worked — same contract as the PULL_FAILURES branch below.
+    log "=== boot-pull FAILED health gate:${FAILED_UNITS} ==="
+    exit 1
 fi
 
 # ── Report failures if any occurred ─────────────────────────────────────────
