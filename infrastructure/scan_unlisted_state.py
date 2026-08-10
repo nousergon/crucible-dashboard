@@ -37,10 +37,16 @@ THREE WAYS A FOUND FILE IS "LISTED"
    repo's tracked tree is source, not box state, and flagging it would drown
    every real finding under noise from every checkout on the box.
 
-Anything left over is unlisted, which T1-4 calls a defect: the scan exits
-non-zero and pages through krepis.alerts — the same channel box_health.sh
-uses — so a planted undeclared file goes critical on the next run, not on the
-next person who happens to `find` it by hand.
+Anything left over is unlisted, which T1-4 calls a defect — backlog work,
+not an outage. Findings are TRACKED-ONLY (observability-policy.md §7.2,
+routing epic alpha-engine-config-I6751): every run emits the
+UnlistedStateFiles metric, and findings publish through krepis.alerts with
+``--severity warning --no-sns`` — a silent Telegram note plus a structured
+event on the Overseer intake bus, where the alert-drain dispositions them
+into a tracked issue. Nothing pages and nothing emails: a hygiene finding
+never requires action-now. The scanner itself BREAKING is a different
+condition — main() exits 2 and the unit's OnFailure= handler pages — so a
+dead scanner is loud while a working scanner with findings is quiet.
 
 Usage:  scan_unlisted_state.py [--dry-run] [--budget PATH] [--allowlist PATH] [--root PATH ...]
 Policy: nous-ergon-ops/policies/shared-application-host-policy.md T1-4
@@ -339,15 +345,16 @@ def emit_metric(count: int) -> None:
 
 
 def publish_alert(findings: list[pathlib.Path]) -> None:
-    """Page red through krepis.alerts — the SAME channel box_health.sh uses.
+    """Publish TRACKED-ONLY through krepis.alerts: silent Telegram + bus event.
 
-    Deliberately not routed through box_health.sh's own snapshot/confirm loop
-    (this script is timer-driven, not polled) — it publishes its own critical
-    finding directly, the same way box-state-backup's non-zero exit is picked
-    up by the systemd Result box_health.sh's timer dead-man reads. This call
-    is the immediate half; a `timers:` row for scan-unlisted-state.timer in
-    budget.yaml (deferred — see the PR body) is the staleness half, so a
-    stopped timer pages too, not only a failing one.
+    ``--severity warning`` keeps Telegram silent (only error/critical buzz)
+    and ``--no-sns`` skips the severity-blind email leg entirely. The publish
+    still lands a structured event on the Overseer intake bus unconditionally
+    (fleet_events.emit_alert_event inside krepis.alerts), which is the leg
+    that matters: the alert-drain dispositions it into a tracked issue —
+    suppression here is a delivery decision, never a recording one
+    (observability-policy.md §7.2a; routing epic alpha-engine-config-I6751,
+    registry row `scan_unlisted_state` in playbooks.yaml::alert_classes).
     """
     names = ", ".join(str(p) for p in findings[:10])
     if len(findings) > 10:
@@ -361,7 +368,7 @@ def publish_alert(findings: list[pathlib.Path]) -> None:
     shell_cmd = (
         f'if [ -f "{ENV_FILE}" ]; then set -a; . "{ENV_FILE}"; set +a; fi; '
         f'exec "{VENV_PY}" -m krepis.alerts publish '
-        f"--message {shlex.quote(message)} --severity critical "
+        f"--message {shlex.quote(message)} --severity warning --no-sns "
         f"--source scan-unlisted-state --dedup-key {shlex.quote(dedup_key)} "
         "--dedup-window-min 1440"
     )
@@ -398,7 +405,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if unlisted:
         for path in unlisted:
-            print(f"scan_unlisted_state: FAILED unlisted state: {path}", file=sys.stderr)
+            print(f"scan_unlisted_state: unlisted state: {path}", file=sys.stderr)
         print(
             f"scan_unlisted_state: {len(unlisted)} unlisted state-shaped file(s) — "
             "declare in budget.yaml::state[] or add to unlisted_state_allowlist.yaml "
@@ -407,7 +414,12 @@ def main(argv: list[str] | None = None) -> int:
         )
         if not args.dry_run:
             publish_alert(unlisted)
-        return 1
+        # Findings exit 0: they are backlog work already recorded via the
+        # metric and the bus event above, not a failed run. A non-zero exit
+        # here would mark the oneshot unit failed and fire its OnFailure=
+        # page — the exact hygiene-finding-as-page this script no longer
+        # does. Exit 2 (broken scanner) is the only paging condition.
+        return 0
 
     print("scan_unlisted_state: 0 unlisted state-shaped files")
     return 0
