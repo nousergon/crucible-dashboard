@@ -3,6 +3,10 @@ Description=Scan the dashboard EC2 for state-shaped files outside the backup reg
 Documentation=https://github.com/nousergon/nous-ergon-ops/blob/main/policies/shared-application-host-policy.md
 After=network-online.target
 Wants=network-online.target
+# Pages only when the SCANNER breaks (exit 2: unreadable registry/allowlist).
+# Findings exit 0 and route tracked-only through the Overseer bus — see
+# scan_unlisted_state.py's module docstring (alpha-engine-config-I6752).
+OnFailure=alert-on-failure@%n.service
 
 [Service]
 Type=oneshot

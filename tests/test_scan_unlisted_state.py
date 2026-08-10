@@ -312,7 +312,15 @@ def test_main_exits_zero_when_clean(tmp_path, monkeypatch, capsys):
     assert "0 unlisted" in capsys.readouterr().out
 
 
-def test_main_exits_one_and_alerts_on_findings(tmp_path, monkeypatch, capsys):
+def test_main_exits_zero_and_alerts_on_findings(tmp_path, monkeypatch, capsys):
+    """Findings are tracked-only backlog work, never a failed run.
+
+    Exit 0 with findings is deliberate (alpha-engine-config-I6752): a
+    non-zero exit would mark the oneshot unit failed and fire its
+    OnFailure= page, re-creating the hygiene-finding-as-page this scan
+    was re-routed away from. The findings still travel: metric + alert
+    publish (silent Telegram + Overseer bus event) both fire.
+    """
     scan_root = tmp_path / "scanroot"
     scan_root.mkdir()
     (scan_root / "rogue.sqlite").write_text("x")
@@ -329,10 +337,10 @@ def test_main_exits_one_and_alerts_on_findings(tmp_path, monkeypatch, capsys):
         "--budget", str(budget), "--allowlist", str(allowlist),
         "--root", str(scan_root),
     ])
-    assert rc == 1
+    assert rc == 0
     assert metric_calls == [1]
     assert len(alert_calls) == 1
-    assert "FAILED unlisted state" in capsys.readouterr().err
+    assert "unlisted state" in capsys.readouterr().err
 
 
 def test_main_dry_run_never_emits_metric_or_alert(tmp_path, monkeypatch):
@@ -352,7 +360,29 @@ def test_main_dry_run_never_emits_metric_or_alert(tmp_path, monkeypatch):
         "--budget", str(budget), "--allowlist", str(allowlist),
         "--root", str(scan_root), "--dry-run",
     ])
-    assert rc == 1  # findings still fail the run even in dry-run
+    assert rc == 0  # findings never fail the run (tracked-only, I6752)
+
+
+def test_publish_alert_is_tracked_only_delivery(monkeypatch):
+    """Pin the delivery tier: silent Telegram + bus, no email, no buzz.
+
+    `--severity warning` (silent on Telegram — only error/critical buzz) and
+    `--no-sns` (skip the severity-blind email leg) together are what makes
+    this emitter tracked-only. A regression to `critical` or a dropped
+    `--no-sns` re-creates the page alpha-engine-config-I6752 removed.
+    """
+    captured = []
+    monkeypatch.setattr(sus.subprocess, "run",
+                        lambda cmd, **kw: captured.append(cmd) or
+                        subprocess.CompletedProcess(cmd, 0))
+    sus.publish_alert([Path("/tmp/rogue.sqlite")])
+    assert len(captured) == 1
+    shell_cmd = captured[0][2]
+    assert "--severity warning" in shell_cmd
+    assert "--no-sns" in shell_cmd
+    assert "--severity critical" not in shell_cmd
+    assert "--source scan-unlisted-state" in shell_cmd
+    assert "--dedup-key" in shell_cmd
 
 
 def test_main_exits_two_on_malformed_registry(tmp_path, capsys):
