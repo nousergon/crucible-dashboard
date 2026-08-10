@@ -1980,11 +1980,10 @@ def load_model_zoo_history(limit: int = 26) -> list[dict]:
 def load_hold_book_flag() -> dict:
     """Load the executor hold-book flag (`executor/hold_book_flags/latest.json`).
 
-    Written by the morning planner when the predictor output_distribution_gate
-    flagged the batch "strongly biased" and the optimizer rebalance was
-    suppressed (current book held). Returns {} when absent — the safeguard has
-    not fired (the common case). The reader compares ``run_date`` /
-    ``predictions_date`` to decide whether the flag is for the current cycle.
+    Written by the morning planner every run (``held`` True or False) — the
+    payload's ``held`` field reflects THIS cycle's safeguard verdict, not the
+    last time it ever fired. Returns {} only if the executor has never run
+    since this artifact was introduced.
     """
     data = _fetch_s3_json(_research_bucket(), "executor/hold_book_flags/latest.json")
     return data if isinstance(data, dict) else {}
