@@ -31,13 +31,18 @@ if [ ! -f "$SYSTEMD_SRC/morning-signal.service" ]; then
     exit 1
 fi
 
-for unit in morning-signal.service morning-signal.timer; do
+for unit in morning-signal.service morning-signal.timer morning-signal-pull.service morning-signal-pull.timer; do
     cp "$SYSTEMD_SRC/$unit" "/etc/systemd/system/$unit"
     echo "Installed /etc/systemd/system/$unit"
 done
 
 install -d -m 0755 "$DROPIN_DST"
-for conf in 10-after-news.conf 10-memory.conf; do
+# 10-timeout.conf and 20-router.conf were applied by hand to the live box
+# on 2026-08-08 and existed in no repo until now — exactly the state this
+# installer's own header says these units used to be in. A drop-in absent
+# from this list is NOT installed on a rebuilt box, and the unit that
+# comes up is a different unit.
+for conf in 10-after-news.conf 10-memory.conf 10-timeout.conf 20-router.conf 30-record-peak.conf; do
     cp "$SYSTEMD_SRC/morning-signal.service.d/$conf" "$DROPIN_DST/$conf"
     echo "Installed $DROPIN_DST/$conf"
 done
@@ -47,8 +52,9 @@ echo "Installed $RECOVER_DST"
 
 systemctl daemon-reload
 systemctl enable --now morning-signal.timer
+systemctl enable --now morning-signal-pull.timer
 
 echo ""
 echo "morning-signal core units installed; timer enabled (04:00 PT daily)."
-echo "  Verify:    systemctl list-timers morning-signal.timer"
+echo "  Verify:    systemctl list-timers morning-signal.timer morning-signal-pull.timer"
 echo "  Recover:   sudo -u ec2-user bash $RECOVER_DST   # generate-only, skips daily-news"

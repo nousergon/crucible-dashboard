@@ -1,0 +1,16 @@
+[Unit]
+Description=Pull latest morning-signal main + refresh editable install
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ec2-user
+Group=ec2-user
+WorkingDirectory=/home/ec2-user/morning-signal
+ExecStart=/usr/bin/git fetch origin
+ExecStart=/usr/bin/git reset --hard origin/main
+ExecStart=/home/ec2-user/morning-signal/.venv/bin/pip install -e . --quiet
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=120

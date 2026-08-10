@@ -1,0 +1,51 @@
+[Unit]
+Description=Scan the dashboard EC2 for state-shaped files outside the backup registry (T1-4, alpha-engine-config-I6719)
+Documentation=https://github.com/nousergon/nous-ergon-ops/blob/main/policies/shared-application-host-policy.md
+After=network-online.target
+Wants=network-online.target
+# Pages only when the SCANNER breaks (exit 2: unreadable registry/allowlist).
+# Findings exit 0 and route tracked-only through the Overseer bus — see
+# scan_unlisted_state.py's module docstring (alpha-engine-config-I6752).
+OnFailure=alert-on-failure@%n.service
+
+[Service]
+Type=oneshot
+User=root
+# Root: the scan reads across /etc, /opt and every product checkout under
+# /home/ec2-user, some of which is not world-readable to ec2-user. A scan
+# that can only see what ec2-user can read is a scan of ec2-user's own
+# footprint, not of the box — the exact gap T1-4 exists to close.
+#
+# The script runs from the REPO path (like box-state-backup.service), not a
+# /usr/local/bin copy: it reads budget.yaml and unlisted_state_allowlist.yaml
+# relative to itself, and a copy would need a second copy of both registries.
+ExecStart=/home/ec2-user/alpha-engine-dashboard/.venv/bin/python \
+    /home/ec2-user/alpha-engine-dashboard/infrastructure/scan_unlisted_state.py
+Environment=AWS_REGION=us-east-1
+
+# Sandboxing (alpha-engine-config-I4490 shape, applied by hand here — this
+# unit is not in budget.yaml::services[]/timer_jobs[], so it does not go
+# through install-resource-limits.sh's renderer). None of these restrict
+# READ access, which is all this scan needs.
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+# PrivateTmp is DELIBERATELY OMITTED (default: no). The whole reason /tmp is
+# in this scan's scope is alpha-engine-config-I6379, a credential renderer
+# that existed only in /tmp — PrivateTmp=yes would give this unit its own
+# private /tmp namespace and it would scan an empty decoy, missing the exact
+# class of finding this exists to catch. Do not add it.
+#
+# ProtectHome is DELIBERATELY UNSET, matching every other service on this box
+# (see budget.yaml's sandboxing note) — this unit reads /home/ec2-user itself.
+
+# The walk touches a lot of small files across four trees; generous but
+# bounded, same order as box-state-backup's TimeoutStartSec.
+TimeoutStartSec=300
+RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target

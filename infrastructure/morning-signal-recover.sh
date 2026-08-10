@@ -20,6 +20,16 @@ set -uo pipefail
 export MORNING_SIGNAL_RUNNER_ROLE_ARN="arn:aws:iam::711398986525:role/morning-signal-runner-role"
 export MORNING_SIGNAL_USE_SSM=1
 export MORNING_SIGNAL_SSM_REGION=us-east-1
+
+# Mirror systemd/morning-signal.service.d/20-router.conf. Without these
+# the recovery path declares a DIFFERENT execution context than the
+# scheduled path (measured 2026-08-08: exec_context=laptop while running
+# on EC2), and exec_context decides which registry entries may serve the
+# caller — model-router-policy R29. A recovery run that resolves
+# differently from the run it is recovering is not a recovery.
+export KREPIS_EXEC_CONTEXT=ec2
+export LLM_MODEL_REGISTRY_PATH=/home/ec2-user/alpha-engine-config/private-docs/LLM_MODEL_REGISTRY.yaml
+export KREPIS_ROUTER_CREDENTIAL_SECRET=ROUTER_CONSUMER_MORNINGSIGNAL
 export PATH="/home/ec2-user/morning-signal/.venv/bin:/usr/local/bin:/usr/bin:/bin"
 
 cd /home/ec2-user/morning-signal || { echo "ERROR: morning-signal checkout missing" >&2; exit 1; }

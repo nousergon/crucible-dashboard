@@ -1,0 +1,12 @@
+[Unit]
+Description=Morning Signal — daily auto-pull at 04:55 PT (DST-aware), 5 min before AM edition
+Requires=morning-signal-pull.service
+
+[Timer]
+Unit=morning-signal-pull.service
+OnCalendar=*-*-* 04:55:00 America/Los_Angeles
+Persistent=true
+RandomizedDelaySec=0
+
+[Install]
+WantedBy=timers.target

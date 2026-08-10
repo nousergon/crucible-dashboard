@@ -542,8 +542,13 @@ MS_INFRA="$REPO_DIR/infrastructure"
 if any_file_state_stale \
     "$MS_INFRA/systemd/morning-signal.service:/etc/systemd/system/morning-signal.service" \
     "$MS_INFRA/systemd/morning-signal.timer:/etc/systemd/system/morning-signal.timer" \
+    "$MS_INFRA/systemd/morning-signal-pull.service:/etc/systemd/system/morning-signal-pull.service" \
+    "$MS_INFRA/systemd/morning-signal-pull.timer:/etc/systemd/system/morning-signal-pull.timer" \
     "$MS_INFRA/systemd/morning-signal.service.d/10-after-news.conf:/etc/systemd/system/morning-signal.service.d/10-after-news.conf" \
     "$MS_INFRA/systemd/morning-signal.service.d/10-memory.conf:/etc/systemd/system/morning-signal.service.d/10-memory.conf" \
+    "$MS_INFRA/systemd/morning-signal.service.d/10-timeout.conf:/etc/systemd/system/morning-signal.service.d/10-timeout.conf" \
+    "$MS_INFRA/systemd/morning-signal.service.d/20-router.conf:/etc/systemd/system/morning-signal.service.d/20-router.conf" \
+    "$MS_INFRA/systemd/morning-signal.service.d/30-record-peak.conf:/etc/systemd/system/morning-signal.service.d/30-record-peak.conf" \
     "$MS_INFRA/morning-signal-recover.sh:/usr/local/bin/morning-signal-recover.sh"; then
     log "morning-signal core units/recovery wrapper differ from installed copies — re-installing"
     bash "$REPO_DIR/infrastructure/install-morning-signal.sh" >>"$LOG" 2>&1 \
@@ -671,6 +676,7 @@ STAMP_DIR="/etc/alpha-engine/installer-stamps"
 
 ROUTED_INSTALLERS=(
   "install-boot-pull.sh|files|systemd/boot-pull.service:/etc/systemd/system/boot-pull.service,systemd/boot-pull.timer:/etc/systemd/system/boot-pull.timer"
+  "install-scan-unlisted-state.sh|files|systemd/scan-unlisted-state.service:/etc/systemd/system/scan-unlisted-state.service,systemd/scan-unlisted-state.timer:/etc/systemd/system/scan-unlisted-state.timer"
   "install-substrate-health-daily.sh|files|systemd/substrate-health-daily.service:/etc/systemd/system/substrate-health-daily.service,systemd/substrate-health-daily.timer:/etc/systemd/system/substrate-health-daily.timer,systemd/alert-on-failure@.service:/etc/systemd/system/alert-on-failure@.service"
   # STAMP, not files, and the reason is not obvious: the installer writes its
   # config to CFG_DST and then calls `amazon-cloudwatch-agent-ctl -a
