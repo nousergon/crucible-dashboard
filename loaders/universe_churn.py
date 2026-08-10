@@ -32,7 +32,18 @@ import pandas as pd
 
 # Cut name → display label. Keys are the artifact's own cut names (the producer
 # owns this vocabulary); an unknown cut still renders, under its raw name.
+#
+# ORDER IS LOAD-BEARING: `cut_names` returns known cuts in this order, and the
+# view defaults its comparison to the first three and its detail cut to the
+# first. The champion therefore has to be first. It was not, until
+# alpha-engine-config-I6786 — `attractiveness_top_20` had no entry at all, so it
+# sorted into the unknown-cut tail and the page opened comparing three cuts,
+# none of which was the one the predictor actually resolves its daily universe
+# from. A churn page whose default view omits the traded cut answers a question
+# nobody asked.
 CUT_LABELS = {
+    "attractiveness_top_20": "Attractiveness top 20 (CHAMPION — predictor cut)",
+    "scanner_top_20": "Scanner top 20 (incumbent challenger)",
     "scanner_candidates": "Scanner cut (gate)",
     "attractiveness_top_25": "Attractiveness top 25",
     "attractiveness_top_60": "Attractiveness top 60",

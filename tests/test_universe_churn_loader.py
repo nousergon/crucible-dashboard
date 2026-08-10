@@ -85,6 +85,22 @@ def test_cut_names_are_discovered_from_the_artifacts():
     assert names == ["scanner_candidates", "attractiveness_top_25"]
 
 
+def test_the_champion_cut_is_first_and_labelled_as_such():
+    """alpha-engine-config-I6786. The view defaults its comparison to the first
+    three names and its detail cut to the first, so ordering here decides what
+    the page opens on. `attractiveness_top_20` is what the predictor resolves
+    its daily universe from (`membership.json::predictor_universe_cut`); it had
+    no CUT_LABELS entry, so it sorted into the unknown-cut tail and the page
+    opened on three cuts, none of them the traded one."""
+    history = [
+        _m("2026-07-10", ["A"], cut="attractiveness_top_60"),
+        _m("2026-07-10", ["B"], cut="attractiveness_top_20"),
+    ]
+    assert cut_names(history)[0] == "attractiveness_top_20"
+    assert "CHAMPION" in cut_label("attractiveness_top_20")
+    assert "challenger" in cut_label("scanner_top_20")
+
+
 def test_unknown_cut_still_renders_under_its_raw_name():
     assert cut_label("a_new_cut_the_producer_added") == "a_new_cut_the_producer_added"
 
