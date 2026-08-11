@@ -65,9 +65,11 @@ from nousergon_lib.pipeline_status.registry import ArchivePageRef, ArtifactReaso
 from loaders.pipeline_status_loader import (
     LoadOutcome,
     LoadResult,
+    ReliabilityResult,
     derive_cycle_verdict,
     list_recent_pipeline_runs_for_arn,
     read_pipeline_state_with_fallback,
+    read_reliability_with_fallback,
     refresh_and_write_cache,
 )
 
@@ -460,6 +462,151 @@ def _render_section(arn: str, run_param: Optional[str] = None) -> None:
         _render_task_table(result.run, arn)
 
     _render_recent_executions_disclosure(arn, canonical_role)
+    _render_reliability(arn)
+
+
+# ── Cycle reliability (alpha-engine-config-I6919) ─────────────────────────
+#
+# The question: "we have spent so many tokens on fixing the weekly sf and
+# its unclear whether we are actually making progress. how can I tell?"
+# (Brian, 2026-08-11). Answering it took a session of hand-reading
+# list-executions over 26 days, and the answer was legible once assembled:
+# 16 attempts on 07-26 falling to first-attempt success on four consecutive
+# cycles, then a regression on 08-10. Nothing rendered any of it, because
+# every cycle appeared as a red alert of equal weight.
+#
+# Three columns carry what red/green cannot: attempts-to-success, how deep
+# the cycle got, and whether its failure causes were NEW or repeats.
+
+
+def _verdict_line(rel: ReliabilityResult) -> tuple[str, str]:
+    """(emoji + headline, caption) for the reliability banner.
+
+    Three states, not two. `looping is None` means no cycle has settled, and
+    rendering that as "not looping" would assert a verdict the data does not
+    support — the same error as rendering absence as green.
+    """
+    streak = rel.clean_streak
+    if rel.looping is None:
+        return (
+            "⏳ No settled cycle yet",
+            "Nothing has finished, so there is no progress verdict to give.",
+        )
+    if rel.looping:
+        return (
+            "🔁 Looping — the last settled cycle repeated an earlier cause",
+            "A cause from a previous cycle came back: a regression, or a fix "
+            "that did not hold. This is the state to escalate.",
+        )
+    if streak > 0:
+        return (
+            f"✅ {streak} clean cycle{'s' if streak != 1 else ''} in a row",
+            "First-attempt success, no operator reruns.",
+        )
+    return (
+        "🧅 Progressing — every failure so far is a NEW cause",
+        "Red, but not looping: each cycle is failing on something not seen "
+        "before, which is the onion being peeled rather than a treadmill.",
+    )
+
+
+def _render_reliability(arn: str) -> None:
+    sm_name = arn.rsplit(":", 1)[-1]
+    with st.expander("📈 Cycle reliability — are we making progress?", expanded=False):
+        st.caption(
+            "A *cycle* is a scheduled run plus every operator rerun chasing "
+            "the same run date. Reliability is O(N) SF API calls, so it is "
+            "cached for 15 minutes."
+        )
+        rel = read_reliability_with_fallback(arn)
+
+        if rel.error:
+            # No stale fallback by design: a cached reliability window would
+            # answer "are we making progress" with yesterday's verdict and
+            # give the reader no way to tell.
+            st.error(f"Reliability unavailable — {rel.error}")
+            return
+        if not rel.cycles:
+            st.info("No cycles found for this Step Function.")
+            return
+
+        headline, caption = _verdict_line(rel)
+        st.markdown(f"### {headline}")
+        st.caption(caption)
+
+        if rel.unresolved_attempts:
+            st.warning(
+                f"{rel.unresolved_attempts} failed attempt(s) in this window "
+                "had no identifiable failing state, so they are excluded from "
+                "the new-vs-repeat verdict. A high count here weakens it."
+            )
+
+        rows = []
+        for row in rel.cycles:
+            if not row["settled"]:
+                first = "running"
+            elif row["first_attempt_succeeded"]:
+                first = "✅"
+            else:
+                first = "❌"
+            if row["attempts_to_success"] == 1:
+                outcome = "clean"
+            elif row["attempts_to_success"]:
+                outcome = f"recovered on #{row['attempts_to_success']}"
+            elif row["settled"]:
+                outcome = "never succeeded"
+            else:
+                outcome = "in flight"
+            rows.append(
+                {
+                    "Cycle": row["cycle_key"],
+                    "Attempts": row["attempts"],
+                    "First": first,
+                    "Outcome": outcome,
+                    "Reached": row["depth_stage"] or "—",
+                    "New causes": len(row["new_causes"]),
+                    "Repeats": len(row["repeat_causes"]),
+                    "Compute": _format_duration_sec(row["wall_clock_sec"]),
+                }
+            )
+        # Newest first for reading; the underlying window is chronological
+        # because "seen in an EARLIER cycle" needs a stable order.
+        st.dataframe(pd.DataFrame(rows[::-1]), width="stretch", hide_index=True)
+
+        depth = [
+            (r["cycle_key"], r["depth_index"])
+            for r in rel.cycles
+            if r["depth_index"] is not None
+        ]
+        if len(depth) > 1:
+            st.caption(
+                "**Stage depth** — how far each cycle got before failing. "
+                "Rising is progress even while every cycle is red: each fix "
+                "reveals the next defect."
+            )
+            st.line_chart(
+                pd.DataFrame(
+                    {"deepest stage reached": [d for _, d in depth]},
+                    index=[k for k, _ in depth],
+                ),
+                height=160,
+            )
+
+        repeats = [r for r in rel.cycles if r["repeat_causes"]]
+        if repeats:
+            st.caption("**Repeated causes** — these came back after an earlier cycle.")
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {"Cycle": r["cycle_key"], "Cause": cause}
+                        for r in repeats
+                        for cause in r["repeat_causes"]
+                    ]
+                ),
+                width="stretch",
+                hide_index=True,
+            )
+        st.caption(f"`{sm_name}` · trailing {len(rel.cycles)} cycles")
 
 
 # ── Page ──────────────────────────────────────────────────────────────────
