@@ -310,8 +310,13 @@ class TestLibVersionPin:
             "nousergon_lib import alias still works via the shim)"
         )
         assert "@main" not in text, "nousergon-lib must be pinned to a tag, not @main"
-        assert "@v0.124.29" in text, (
-            "nousergon-lib should pin to v0.124.29 (alpha-engine-config-I5863, "
+        assert "@v0.124.45" in text, (
+            "nousergon-lib should pin to v0.124.45 (alpha-engine-config-I6919, "
+            "nousergon-lib#301): adds nousergon_lib.pipeline_status.cycles, the "
+            "cycle-level reliability projection behind the page-25 progress "
+            "strip; loaders/pipeline_status_loader.py imports "
+            "read_reliability_window and page 25 raises ImportError without it. "
+            "Earlier: v0.124.29 (alpha-engine-config-I5863, "
             "nousergon-lib#280): adds nousergon_lib.fleet_check_result, the "
             "fleet check-result envelope, lifted out of "
             "alpha-engine-config/scripts because this repo became its second "

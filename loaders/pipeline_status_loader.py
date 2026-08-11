@@ -33,6 +33,7 @@ from typing import Optional
 from loaders.cache import cached
 
 from nousergon_lib.pipeline_status import (
+    read_reliability_window,
     PipelineExecutionSummary,
     PipelineRun,
     RunStatus,
@@ -421,3 +422,146 @@ def refresh_and_write_cache(
             continue
     if good:
         _write_last_good_cache(good)
+
+
+# ── Cycle-level reliability (alpha-engine-config-I6919) ───────────────────
+
+# Declared stage spine per SF, used to rank how DEEP a cycle got before it
+# failed. Order matters and membership matters: only substantive stages
+# appear, so a poll or gate state entering is not mistaken for the run
+# getting further. Names verified against the live definitions 2026-08-11.
+RELIABILITY_STAGE_ORDER: dict[str, tuple[str, ...]] = {
+    "ne-weekly-freshness-pipeline": (
+        "MorningEnrich",
+        "DataPhase1",
+        "RAGIngestion",
+        "Scanner",
+        "SignalsEnvelope",
+        "PredictorTraining",
+        "DataPhase2",
+        "Backtester",
+        "ParityParallel",
+        "PitParityCompare",
+        "ModelZooSelect",
+        "ModelZooTrainMap",
+        "Evaluator",
+        "ReportCard",
+        "Director",
+    ),
+    "ne-preopen-trading-pipeline": (
+        "StartExecutorEC2",
+        "CodeFreshnessGate",
+        "LaunchMorningEnrichSpot",
+        "LaunchMorningArcticAppendSpot",
+        "Scanner",
+        "PredictorInference",
+        "CheckPredictorCoverage",
+        "RunMorningPlanner",
+        "RunDaemon",
+    ),
+    "ne-postclose-trading-pipeline": (
+        "LaunchPostMarketDataSpot",
+        "LaunchPostMarketArcticAppendSpot",
+        "CaptureSnapshot",
+        "EODReconcile",
+        "StopTradingInstance",
+    ),
+}
+
+# Reliability is O(scan_limit) SF API calls — one DescribeExecution and one
+# GetExecutionHistory per execution scanned. A 60s TTL like the rest of this
+# loader would put ~240 calls/minute on the page. 15 minutes is well inside
+# the cadence it describes (a cycle is a day at fastest) while keeping a
+# refresh cheap enough to be worth pressing.
+_RELIABILITY_TTL_SECONDS = 900
+
+
+@cached(ttl=_RELIABILITY_TTL_SECONDS)
+def _cached_reliability(arn: str, max_cycles: int, scan_limit: int) -> list[dict]:
+    """Streamlit-cached reliability read, flattened to primitives.
+
+    Returns one dict per cycle rather than the ``ReliabilityWindow`` object:
+    ``st.cache_data`` hashes and pickles its return value, and the dataclass
+    graph round-trips badly. The page re-derives its aggregates from these
+    rows, so nothing is lost and the cache stays inspectable.
+    """
+    window = read_reliability_window(
+        arn,
+        stage_order=RELIABILITY_STAGE_ORDER.get(arn.rsplit(":", 1)[-1], ()),
+        max_cycles=max_cycles,
+        scan_limit=scan_limit,
+    )
+    return [
+        {
+            "cycle_key": c.cycle_key,
+            "attempts": c.attempt_count,
+            "first_attempt_succeeded": c.first_attempt_succeeded,
+            "attempts_to_success": c.attempts_to_success,
+            "settled": c.settled,
+            "recovered": c.recovered,
+            "depth_index": c.depth_index,
+            "depth_stage": c.depth_stage,
+            "wall_clock_sec": c.wall_clock_sec,
+            "new_causes": list(c.new_causes),
+            "repeat_causes": list(c.repeat_causes),
+            "unresolved_attempts": c.unresolved_attempts,
+        }
+        for c in window.cycles
+    ]
+
+
+@dataclass(frozen=True)
+class ReliabilityResult:
+    """Cycle rows plus the error, if any. Never both empty and silent."""
+
+    cycles: list[dict]
+    error: Optional[str] = None
+
+    @property
+    def clean_streak(self) -> int:
+        streak = 0
+        for row in reversed(self.cycles):
+            if not row["settled"]:
+                continue
+            if row["first_attempt_succeeded"]:
+                streak += 1
+            else:
+                break
+        return streak
+
+    @property
+    def looping(self) -> Optional[bool]:
+        """The most-recent settled cycle repeated an earlier cause.
+
+        None when no cycle has settled — NOT False. The page renders the
+        three states distinctly; collapsing "unknown" into "not looping" is
+        the same error as rendering absence as green.
+        """
+        for row in reversed(self.cycles):
+            if row["settled"] and row["attempts"]:
+                return bool(row["repeat_causes"])
+        return None
+
+    @property
+    def unresolved_attempts(self) -> int:
+        return sum(r["unresolved_attempts"] for r in self.cycles)
+
+
+def read_reliability_with_fallback(
+    arn: str, *, max_cycles: int = 20, scan_limit: int = 120
+) -> ReliabilityResult:
+    """Public loader for the page-25 reliability strip.
+
+    No S3 last-good fallback, deliberately unlike ``read_pipeline_state_
+    with_fallback``: a stale reliability window would answer "are we making
+    progress" with yesterday's verdict and no way for the reader to tell.
+    An error returns empty rows AND the message, and the page says so.
+    """
+    try:
+        return ReliabilityResult(cycles=_cached_reliability(arn, max_cycles, scan_limit))
+    except PipelineStatusError as exc:
+        logger.warning("reliability read failed for %s: %s", arn, exc)
+        return ReliabilityResult(cycles=[], error=str(exc))
+    except Exception as exc:  # noqa: BLE001 — surface, never swallow
+        logger.warning("reliability read failed for %s: %s", arn, exc)
+        return ReliabilityResult(cycles=[], error=f"{type(exc).__name__}: {exc}")
