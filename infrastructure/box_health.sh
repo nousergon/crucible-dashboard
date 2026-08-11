@@ -121,6 +121,43 @@ fi
 # continuously is caught by either.
 CGROUP_HIGH_DELTA_MIN=10
 
+# Minimum reclaim stall (memory.pressure `some avg60`, percent) that must
+# accompany a throttle burst before it reaches the notification path.
+#
+# WHY A SECOND CONDITION EXISTS AT ALL. A MemoryHigh event is not damage. It is
+# the kernel doing exactly what the soft cap asks: reclaim this cgroup's pages
+# rather than let it grow. A service that touches its soft cap, gives pages
+# back, and never stalls is operating AS DESIGNED — the cap is a throttle point,
+# not a failure point. Measured on 2026-08-11: nousergon-console sat at
+# memory.events `high 693` and climbing, with `full avg300=0.05` and 1535 MB
+# free on the box. Nothing was degraded; the counter moved every tick; the
+# finding published every tick.
+#
+# Sized from measurement, not intuition, and deliberately placed BETWEEN the
+# two populations this box has actually produced:
+#
+#   0.00-0.05  background reclaim against a tight-but-working cap
+#              (metron-api 2026-07-28, nousergon-console 2026-08-11)
+#   49-55      a service wedged hard enough that no HTTP request completed
+#              (vires 2026-08-03)
+#
+# 1.0 is 20x the observed no-harm background and 50x below the observed harm,
+# so neither population lands near it. The separate `memory pressure:` check
+# above still fires at `some avg10 > 10` and still pages at critical — this
+# threshold only decides whether a THROTTLE BURST is worth reporting, and it
+# cannot make that check quieter.
+#
+# WHAT THIS DOES NOT SUPPRESS, stated because a gate that hides a real finding
+# is worse than the noise it removes: a cap pinned below its service's working
+# set is still detected, by check_memory_budget.py's CENSORED reading, which
+# renders the unit on the console headroom surface as state `censored` →
+# envelope status `attention` on EVERY tick. That is the correct home for "this
+# declared cap is wrong": a standing property of the budget, rendered on a
+# surface, not an event re-published every ten minutes. This gate removes the
+# duplicate on the notification path, not the detection. (config-I6859 was
+# found and fixed from exactly that console state.)
+CGROUP_STALL_MIN=1.0
+
 # Seconds a service gets to produce an HTTP status line before it counts as
 # not answering. Sized from measurement, not intuition: every healthy service
 # on this box answered a bare GET in 0.001-0.027s on 2026-08-03, and the
@@ -374,6 +411,7 @@ classify_timer_staleness() {
 #
 #   $1 unit name  $2 current counter  $3 baseline counter (EMPTY on first run)
 #   $4 minimum delta to report
+#   $5 reclaim stall — memory.pressure `some avg60` percent, EMPTY if unreadable
 # throttle_baseline UNIT — the counter recorded at the end of the previous RUN,
 # or empty if there is none. Empty is a valid, expected state (first run after
 # a deploy or reboot) and classify_throttle_delta treats it as "no comparison".
@@ -404,7 +442,7 @@ throttle_baseline_write() {
 }
 
 classify_throttle_delta() {
-    local name="$1" current="$2" baseline="$3" floor="$4" delta
+    local name="$1" current="$2" baseline="$3" floor="$4" stall="${5-}" delta
 
     case "$current" in ''|*[!0-9]*)
         echo "watchdog: cannot read cgroup throttle counter for $name"
@@ -423,8 +461,43 @@ classify_throttle_delta() {
     # sample re-baselines.
     [ "$delta" -lt 0 ] && return
 
-    if [ "$delta" -ge "$floor" ]; then
-        echo "cgroup throttle: $name hit MemoryHigh ${delta}x since the last check"
+    [ "$delta" -ge "$floor" ] || return
+
+    # ── the harm gate (CGROUP_STALL_MIN) ─────────────────────────────────────
+    # An unreadable stall reading REPORTS. Absence of evidence is not evidence
+    # of absence, and this whole file's recurring defect has been a check whose
+    # silent path was also its broken path (I4512's unparseable PSI predicate,
+    # the unwritable state dir, the User=ec2-user mkdir). A gate that fails
+    # closed would join that list.
+    if [ -n "$stall" ] && awk -v v="$stall" -v m="$CGROUP_STALL_MIN" \
+            'BEGIN{exit !(v+0 < m+0)}' 2>/dev/null; then
+        # Reclaim with no measurable cost. The journal keeps the numbers so the
+        # gate's own decision is reconstructible from the box alone; the console
+        # headroom row keeps the standing budget finding.
+        printf 'box_health: %s throttle detail: %sx MemoryHigh since last check, some avg60=%s%% — below CGROUP_STALL_MIN=%s, not reported\n' \
+            "$name" "$delta" "$stall" "$CGROUP_STALL_MIN" >&2
+        return
+    fi
+
+    # STATIC problem text. The delta is deliberately NOT in this line: the alert
+    # dedup key is derived from the problem SET (publish_problems --dedup-key),
+    # so a count that changes every tick produces a new key every tick and the
+    # 60-minute dedup window never suppresses anything. One standing condition
+    # re-published as a new alert on every sample is what "33x", "51x", "56x"
+    # were — three notifications about one undersized cap. Same rule, same
+    # reason, as the `memory pressure:` line above, which moves its live
+    # percentage to the journal for the sibling reason (confirmation
+    # intersection). The numbers live in the journal line below.
+    printf 'box_health: %s throttle detail: %sx MemoryHigh since last check, some avg60=%s%%\n' \
+        "$name" "$delta" "${stall:-unreadable}" >&2
+    if [ -z "$stall" ]; then
+        # Distinct text, because the two states are distinct findings and a
+        # single string would make the journal the only place to tell them
+        # apart. This one is a watchdog-coverage statement: the gate could not
+        # be evaluated, so the burst is reported unjudged.
+        echo "cgroup throttle: $name is throttling against its MemoryHigh cap; stall reading unavailable"
+    else
+        echo "cgroup throttle: $name is throttling against its MemoryHigh cap with measurable reclaim stall"
     fi
 }
 
@@ -787,8 +860,9 @@ snapshot_problems() {
     # service is spending >10% of time stalled on reclaim — a sustained
     # throttle. memory.events high > 0 means the cgroup has hit its soft
     # limit since boot.
-    local cg evt pressure high_count throttle_state_seen=0
+    local cg evt pressure stall high_count throttle_state_seen=0
     for s in "${SERVICES[@]}"; do
+        stall=""
         # cgroup v2 uses literal unit names under system.slice/ — hyphens and
         # dots are NOT hex-escaped for service units (confirmed on the actual
         # box 2026-07-28).  Hex escaping (e.g. \x2d) is only for slice unit
@@ -814,6 +888,13 @@ snapshot_problems() {
             # tests/test_box_health_memory_pressure_check.py, which fails
             # against the pre-fix expression.
             pressure=$(awk '/^some /{split($2,kv,"="); v=kv[2]+0; if (v>10) printf "%.2f", v}' "$cg" 2>/dev/null)
+            # avg60, not the avg10 the critical check uses. The throttle gate
+            # asks a different question — "did this burst cost the service
+            # anything?" — over the window the burst was counted in (a 10-min
+            # tick), so the shorter average would let a burst that has already
+            # subsided read as harmless. Field 3, since PSI orders
+            # `some avg10= avg60= avg300= total=`.
+            stall=$(awk '/^some /{split($3,kv,"="); printf "%.2f", kv[2]+0}' "$cg" 2>/dev/null)
             if [ -n "$pressure" ]; then
                 # The live percentage goes to the JOURNAL, never into the
                 # problem line. snapshot_problems is sampled RETRY_ATTEMPTS
@@ -839,7 +920,7 @@ snapshot_problems() {
             # the line, and real throttling would be silently filtered out by
             # the very mechanism meant to suppress false positives.
             classify_throttle_delta "$s" "$high_count" \
-                "$(throttle_baseline "$s")" "$CGROUP_HIGH_DELTA_MIN"
+                "$(throttle_baseline "$s")" "$CGROUP_HIGH_DELTA_MIN" "$stall"
             throttle_state_seen=1
         fi
     done
@@ -857,7 +938,7 @@ snapshot_problems() {
             echo "watchdog: throttle state dir not writable ($THROTTLE_STATE_DIR) — cgroup throttling is UNMONITORED"
         fi
     fi
-    unset cg evt pressure high_count throttle_state_seen
+    unset cg evt pressure stall high_count throttle_state_seen
 
     # Durable-state coverage (T1-4, config-I5250). Any on-disk database that
     # budget.yaml::state[] does not declare is NAMED here.

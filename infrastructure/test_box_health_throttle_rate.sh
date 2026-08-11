@@ -29,17 +29,27 @@ declare -F classify_throttle_delta >/dev/null || {
     echo "FAIL - classify_throttle_delta() not found in box_health.sh"; exit 1; }
 
 FLOOR=10   # must mirror CGROUP_HIGH_DELTA_MIN; asserted against the source below
+# The harm gate's threshold. The function reads it from the environment as a
+# global, exactly as it does inside box_health.sh; asserted against the source
+# at the bottom of this file so the two cannot drift.
+CGROUP_STALL_MIN=1.0
+STALLED=25.00     # a service genuinely stalled on reclaim (vires read 55 live)
+QUIET=0.05        # background reclaim, no measurable cost (console read 0.05)
 FAILURES=0
 
+# Every assertion passes a stall reading. The 5th argument defaults to empty
+# inside the function, and empty means "unreadable" — which REPORTS — so a test
+# that omitted it would silently exercise the fail-open path instead of the one
+# it names. stderr is dropped: the function journals the numbers there.
 assert_silent() {
     local desc="$1"; shift
-    local out; out=$(classify_throttle_delta "svc.service" "$@")
+    local out; out=$(classify_throttle_delta "svc.service" "$@" 2>/dev/null)
     if [ -z "$out" ]; then echo "ok   - $desc"
     else echo "FAIL - $desc (expected silence, got: $out)"; FAILURES=$((FAILURES+1)); fi
 }
 assert_reports() {
     local desc="$1" want="$2"; shift 2
-    local out; out=$(classify_throttle_delta "svc.service" "$@")
+    local out; out=$(classify_throttle_delta "svc.service" "$@" 2>/dev/null)
     if [ -z "$out" ]; then
         echo "FAIL - $desc (expected a report, got none)"; FAILURES=$((FAILURES+1))
     elif [[ "$out" != *"$want"* ]]; then
@@ -50,34 +60,133 @@ assert_reports() {
 echo "== THE REGRESSION: a large lifetime total with no recent movement =="
 # metron-api's real numbers. Under the old `> 0` rule this paged forever; it
 # must now be silent, because nothing has throttled since the last check.
-assert_silent "7347 lifetime events but zero delta -> silent" 7347 7347 "$FLOOR"
-assert_silent "huge total, tiny delta below the floor -> silent" 7350 7347 "$FLOOR"
+assert_silent "7347 lifetime events but zero delta -> silent" 7347 7347 "$FLOOR" "$STALLED"
+assert_silent "huge total, tiny delta below the floor -> silent" 7350 7347 "$FLOOR" "$STALLED"
 
-echo "== active throttling must still report =="
-assert_reports "delta at the floor -> reports" "hit MemoryHigh 10x" 7357 7347 "$FLOOR"
+echo "== active throttling WITH stall must still report =="
+assert_reports "delta at the floor -> reports" "measurable reclaim stall" 7357 7347 "$FLOOR" "$STALLED"
 # A startup burst: the whole 7347 arriving inside one tick is what an
 # undersized cap looks like, and must report.
 assert_reports "startup burst well above the floor" \
-    "hit MemoryHigh 7347x" 7347 0 "$FLOOR"
-assert_reports "moderate burst from a settled baseline" "hit MemoryHigh 500x" 7847 7347 "$FLOOR"
+    "measurable reclaim stall" 7347 0 "$FLOOR" "$STALLED"
+assert_reports "moderate burst from a settled baseline" \
+    "measurable reclaim stall" 7847 7347 "$FLOOR" "$STALLED"
+
+echo "== THE HARM GATE: a burst with no measurable stall is not a finding =="
+# nousergon-console's real numbers, 2026-08-11: the counter moved every tick
+# (693 and climbing) while `full avg300=0.05` and the box had 1535 MB free.
+# The kernel reclaiming pages against a soft cap is the cap working, not the
+# service suffering. The undersized cap itself remains detected — as a
+# CENSORED reading on the console headroom surface, every tick.
+assert_silent "burst with background-level stall -> silent" 693 660 "$FLOOR" "$QUIET"
+assert_silent "large burst, zero stall -> silent" 7347 0 "$FLOOR" "0.00"
+
+echo "== the gate must not swallow the boundary =="
+# At the threshold it reports: the gate suppresses BELOW CGROUP_STALL_MIN only.
+assert_reports "stall exactly at the threshold -> reports" \
+    "measurable reclaim stall" 700 660 "$FLOOR" "$CGROUP_STALL_MIN"
+assert_silent "stall a hair under the threshold -> silent" 700 660 "$FLOOR" "0.99"
+
+echo "== the gate FAILS OPEN: an unreadable stall reports, unjudged =="
+# Absence of evidence is not evidence of absence. Every previous defect in this
+# check had a silent path that was also its broken path (I4512's unparseable
+# PSI predicate; the unwritable state dir; the ec2-user mkdir). A gate that
+# went quiet when it could not evaluate itself would join that list.
+assert_reports "empty stall reading -> reports, distinctly" \
+    "stall reading unavailable" 7347 0 "$FLOOR" ""
+assert_reports "omitted stall argument -> reports, distinctly" \
+    "stall reading unavailable" 7347 0 "$FLOOR"
+
+echo "== the problem line carries NO varying number =="
+# The dedup key is derived from the problem SET, so a count inside the text
+# mints a new key every tick and the 60-minute window suppresses nothing. One
+# undersized cap published as "33x", then "51x", then "56x" is three alerts
+# about one condition. The numbers belong in the journal (stderr).
+_line=$(classify_throttle_delta "svc.service" 7347 0 "$FLOOR" "$STALLED" 2>/dev/null)
+_line2=$(classify_throttle_delta "svc.service" 9000 0 "$FLOOR" "$STALLED" 2>/dev/null)
+if [ "$_line" = "$_line2" ] && [ -n "$_line" ]; then
+    echo "ok   - problem text is identical across different deltas (dedup-stable)"
+else
+    echo "FAIL - problem text varies with the delta; the dedup key will change"
+    echo "       every tick and one standing condition re-alerts forever"
+    echo "       ('$_line' vs '$_line2')"
+    FAILURES=$((FAILURES+1))
+fi
+if [[ "$_line" =~ [0-9] ]]; then
+    echo "FAIL - problem text still contains a digit: '$_line'"
+    FAILURES=$((FAILURES+1))
+else
+    echo "ok   - problem text contains no digits at all"
+fi
+# ...and the numbers must not be LOST. They go to the journal on stderr.
+_journal=$(classify_throttle_delta "svc.service" 7347 0 "$FLOOR" "$STALLED" 2>&1 >/dev/null)
+if [[ "$_journal" == *"7347x"* && "$_journal" == *"$STALLED"* ]]; then
+    echo "ok   - delta and stall reading are journalled"
+else
+    echo "FAIL - delta/stall missing from the journal line: '$_journal'"
+    FAILURES=$((FAILURES+1))
+fi
+# The suppressed case must journal too, or the gate's own decision is
+# unreconstructible from the box — the transparency test.
+_journal=$(classify_throttle_delta "svc.service" 693 0 "$FLOOR" "$QUIET" 2>&1 >/dev/null)
+if [[ "$_journal" == *"not reported"* && "$_journal" == *"693x"* ]]; then
+    echo "ok   - a SUPPRESSED burst is journalled with its numbers and the reason"
+else
+    echo "FAIL - suppression is invisible; the gate's decision cannot be audited"
+    echo "       from the box alone: '$_journal'"
+    FAILURES=$((FAILURES+1))
+fi
 
 echo "== the fix must be able to CLEAR the alert =="
 # The whole point: after raising the cap and restarting, the counter resets to
 # a small number and stops moving. That must read as healthy.
-assert_silent "post-remedy: counter reset and steady -> silent" 3 3 "$FLOOR"
+assert_silent "post-remedy: counter reset and steady -> silent" 3 3 "$FLOOR" "$STALLED"
 
 echo "== first run has no baseline =="
 # Reporting the lifetime total here would reintroduce the original defect.
-assert_silent "no baseline yet -> silent, not the lifetime total" 7347 "" "$FLOOR"
-assert_silent "garbage baseline -> silent" 7347 "n/a" "$FLOOR"
+assert_silent "no baseline yet -> silent, not the lifetime total" 7347 "" "$FLOOR" "$STALLED"
+assert_silent "garbage baseline -> silent" 7347 "n/a" "$FLOOR" "$STALLED"
 
 echo "== a service restart resets the cgroup counter =="
 # Counter going backwards is a recreated cgroup, not negative throttling.
-assert_silent "counter went backwards (service restarted) -> silent" 5 7347 "$FLOOR"
+assert_silent "counter went backwards (service restarted) -> silent" 5 7347 "$FLOOR" "$STALLED"
 
 echo "== an unreadable counter is a watchdog malfunction, not silence =="
-assert_reports "empty current counter is reported" "cannot read cgroup throttle counter" "" 100 "$FLOOR"
-assert_reports "non-numeric current counter is reported" "cannot read cgroup throttle counter" "abc" 100 "$FLOOR"
+assert_reports "empty current counter is reported" "cannot read cgroup throttle counter" "" 100 "$FLOOR" "$STALLED"
+assert_reports "non-numeric current counter is reported" "cannot read cgroup throttle counter" "abc" 100 "$FLOOR" "$STALLED"
+
+echo "== the stall threshold in this test matches the script =="
+_src_stall=$(grep -E '^CGROUP_STALL_MIN=' "$TARGET_SCRIPT" | cut -d= -f2)
+if [ "$_src_stall" = "$CGROUP_STALL_MIN" ]; then
+    echo "ok   - CGROUP_STALL_MIN=$CGROUP_STALL_MIN matches box_health.sh"
+else
+    echo "FAIL - test threshold $CGROUP_STALL_MIN != box_health.sh CGROUP_STALL_MIN=$_src_stall"
+    FAILURES=$((FAILURES+1))
+fi
+
+echo "== the call site must pass a stall reading =="
+# The argument defaults to empty, and empty FAILS OPEN — so a call site that
+# forgot it would not break loudly, it would quietly restore the old noisy
+# behaviour and every assertion above would still pass.
+# The call is line-continued, so the argument list is matched on its own line
+# rather than on the same line as the function name.
+if awk '/^snapshot_problems\(\) \{/,/^\}/' "$TARGET_SCRIPT" \
+     | grep -q '"\$CGROUP_HIGH_DELTA_MIN" "\$stall"'; then
+    echo "ok   - call site passes \$stall as the 5th argument"
+else
+    echo "FAIL - the call site must pass \$stall; without it the gate fails open"
+    echo "       on every unit and the pre-gate noise returns silently"
+    FAILURES=$((FAILURES+1))
+fi
+# ...and $stall must come from avg60 (field 3), not the avg10 the critical
+# pressure check uses.
+if awk '/^snapshot_problems\(\) \{/,/^\}/' "$TARGET_SCRIPT" \
+     | grep -q 'stall=\$(awk .*split(\$3,kv'; then
+    echo "ok   - \$stall is parsed from PSI some avg60 (field 3)"
+else
+    echo "FAIL - \$stall must be parsed from field 3 (avg60) of the PSI 'some' line"
+    FAILURES=$((FAILURES+1))
+fi
 
 echo "== the floor in this test matches the script =="
 _src_floor=$(grep -E '^CGROUP_HIGH_DELTA_MIN=' "$TARGET_SCRIPT" | cut -d= -f2)
