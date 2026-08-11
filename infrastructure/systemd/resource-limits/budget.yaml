@@ -120,7 +120,13 @@ headroom_warn_fraction: 0.90
 # The bound that governs real operation is max_steady_state_fraction, and
 # un-pinning vires moves the live sum from 1516 MB to ~1730 MB — 45% of RAM
 # against a 60% limit, so the safety bound is not the binding one here.
-max_overcommit_ratio: 1.30      # sum(memory_max) / ceiling. Currently 1.29 with console.
+# Raised again 1.30 -> 1.34 on 2026-08-11, third application of the same rule:
+# nousergon-console needed a MEASURED cap (112M -> 224M, see its note) and 1.30
+# left 29 MB against a 112 MB shortfall. The ratio was fitted to its own value
+# again — 1.29 of a 1.30 bound — which is precisely the condition the paragraph
+# above says to re-derive from, not shave the service to fit. Steady-state
+# remains the safety bound: the box measured 1601 MB available at the time.
+max_overcommit_ratio: 1.34      # sum(memory_max) / ceiling. 1.33 with console at 224M.
 max_steady_state_fraction: 0.60 # sum(live memory.current) / RAM. 0.37 on 2026-07-29.
 
 # memory_high is the SOFT limit: the kernel throttles and reclaims against the
@@ -397,17 +403,43 @@ services:
 
   - unit: nousergon-console.service
     port: 5180
-    memory_high: 80M
-    memory_max: 112M
+    memory_high: 160M
+    memory_max: 224M
     note: >-
       Fleet monitoring console (nousergon/nousergon-console). Stdlib Python
-      server on loopback :5180; nginx is the sole ingress. Caps match the unit
-      file's MemoryMax=112M (infrastructure/nousergon-console.service); soft
-      cap ~70% leaves a reclaim window. Enabled on the box without a budget
-      row → box_health named it unmonitored (2026-08-04). Enrolling here also
-      regenerates the watchdog manifest port list and applies the uniform
-      Restart=/OOMPolicy=stop drop-in (the unit file still carries the invalid
-      OOMPolicy=restart literal — drop-in wins alphabetically as 99-).
+      server on loopback :5180; nginx is the sole ingress. Enabled on the box
+      without a budget row → box_health named it unmonitored (2026-08-04).
+      Enrolling here also regenerates the watchdog manifest port list and
+      applies the uniform Restart=/OOMPolicy=stop drop-in (the unit file still
+      carries the invalid OOMPolicy=restart literal — drop-in wins
+      alphabetically as 99-).
+
+      Raised 80M/112M -> 160M/224M on 2026-08-11 (alpha-engine-config-I6853),
+      after box_health reported 51 MemoryHigh events in one tick. MEASURED on
+      the box the same day, ~7h after a restart:
+        memory.current  82.4 MB      anon        78.3 MB
+        memory.peak     84.1 MB      throttled   562x, oom_kill 0
+        pressure        some avg300=0.05 (negligible stall)
+      The working set sits ABOVE its own 80 MiB soft cap and the box had
+      1601 MB available, so nothing about this was a resource shortage.
+
+      WHY THE OLD NUMBER WAS NEVER RIGHT: it was not measured. The note this
+      replaces said so out loud — "Caps match the unit file's MemoryMax=112M"
+      — and that 112M was itself an unmeasured literal written into the app's
+      own unit file before the console indexed anything. A cap derived from a
+      cap is not a budget. The denominator work of 2026-08-10/11 (population
+      166/166) grew the index this process holds, and a limit that was never
+      sized for a working set could not follow it.
+
+      WHY 160/224 AND NOT A TIGHTER FIT: 84.1 MB is a CENSORED reading —
+      memory.peak cannot exceed memory.high, so it reports the cap, not the
+      demand. Re-capping off it repeats I5237 exactly, where dashboard.service
+      was raised 210M -> 260M off a floor-read 202 and re-pinned within a day.
+      160M is ~2x the censored floor: enough that the NEXT reading is
+      uncensored and the real plateau becomes visible for the first time.
+      224M keeps soft at ~70% of hard, the box convention. Re-derive both from
+      an uncensored multi-day soak — see alpha-engine-config-I6853, which
+      closes on that measurement, not on this raise.
 
   # ── dev infrastructure ──────────────────────────────────────────────────
   - unit: litellm-proxy.service
