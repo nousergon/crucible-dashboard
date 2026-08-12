@@ -60,6 +60,72 @@ def cgroup_root(tmp_path, monkeypatch):
 WARN = 0.90
 
 
+class TestOverProvisioned:
+    """The direction no check on this box has ever reported.
+
+    Twenty-two commits have touched budget.yaml and every one that changed a
+    number raised it, so sum(memory_max) reached 4324 MB against a 4373 MB
+    bound while the sum of real peaks was 2254 MB — 69% of the ceiling. The
+    budget read full; the box was not.
+    """
+
+    def _c(self, root, unit, *, peak, mx):
+        d = root / unit
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "memory.peak").write_text(f"{peak}\n")
+        (d / "memory.max").write_text(f"{mx}\n")
+        return d
+
+    def test_a_long_observed_cap_far_above_its_peak_is_reported(self, cgroup_root):
+        """llm-egress-proxy's live shape: 127 MiB peak, 400 MiB cap, 16 days."""
+        self._c(cgroup_root, "llm-egress-proxy.service", peak=127 * MB, mx=400 * MB)
+        msg = cmb.over_provisioned("llm-egress-proxy.service", 16.0)
+        assert msg is not None
+        assert "OVER-PROVISIONED" in msg
+        assert "READ THIS UNIT'S budget.yaml NOTE FIRST" in msg
+
+    def test_a_short_uptime_is_never_reported(self, cgroup_root):
+        """THE safety property. vires: 87 MiB peak against 460 MiB looks like
+        373 MB of slack, and is not — its ONNX vector leg lazy-loads to ~316
+        MiB on the first exercise search, which had not run since the restart.
+        Trimming on that reading reproduces the 2026-08-03 wedge."""
+        self._c(cgroup_root, "vires.service", peak=87 * MB, mx=460 * MB)
+        assert cmb.over_provisioned("vires.service", 1.2) is None
+
+    def test_uptime_exactly_at_the_floor_is_reported(self, cgroup_root):
+        self._c(cgroup_root, "svc.service", peak=40 * MB, mx=250 * MB)
+        assert cmb.over_provisioned("svc.service", 7.0) is not None
+
+    def test_unknown_uptime_is_never_reported(self, cgroup_root):
+        """No window means no argument for a lower cap. Fails toward silence,
+        which is the safe direction for a check that proposes taking memory
+        away."""
+        self._c(cgroup_root, "svc.service", peak=40 * MB, mx=250 * MB)
+        assert cmb.over_provisioned("svc.service", None) is None
+
+    def test_a_well_sized_cap_is_silent(self, cgroup_root):
+        """litellm-proxy: 296 MiB peak, 500 MiB cap = 1.7x. Under the 2.5x
+        ratio, because memory_max is a spike ceiling and these units burst."""
+        self._c(cgroup_root, "litellm-proxy.service", peak=296 * MB, mx=500 * MB)
+        assert cmb.over_provisioned("litellm-proxy.service", 30.0) is None
+
+    def test_an_uncapped_unit_is_silent(self, cgroup_root):
+        d = cgroup_root / "svc.service"
+        d.mkdir(parents=True)
+        (d / "memory.peak").write_text(f"{40 * MB}\n")
+        (d / "memory.max").write_text("max\n")
+        assert cmb.over_provisioned("svc.service", 30.0) is None
+
+    def test_a_zero_peak_is_silent(self, cgroup_root):
+        """Guards the ratio against division by zero, and a unit that has
+        allocated nothing has not been observed."""
+        self._c(cgroup_root, "svc.service", peak=0, mx=250 * MB)
+        assert cmb.over_provisioned("svc.service", 30.0) is None
+
+    def test_absent_cgroup_is_silent(self, cgroup_root):
+        assert cmb.over_provisioned("absent.service", 30.0) is None
+
+
 class TestApproachingTheCap:
     """The window in which raising a soft cap is still free.
 
@@ -516,7 +582,8 @@ class TestRuntimeOverrideAttachesToMainsDriftBreach:
         monkeypatch.setattr(
             cmb, "systemd_show",
             lambda unit, prop: {"MemoryMax": have_max,
-                                 "MemoryHigh": have_high}[prop],
+                                 "MemoryHigh": have_high,
+                                 "ActiveEnterTimestampMonotonic": "0"}[prop],
         )
         monkeypatch.setattr(cmb, "ram_mb_from_proc", lambda: 2000)
         monkeypatch.setattr(cmb, "_CGROUP_ROOT", tmp_path / "cgroup")
@@ -625,7 +692,8 @@ class TestUncensorMeasurementWindow:
         monkeypatch.setattr(cmb, "BUDGET", budget)
         monkeypatch.setattr(
             cmb, "systemd_show",
-            lambda unit, prop: {"MemoryMax": "560M", "MemoryHigh": "480M"}[prop],
+            lambda unit, prop: {"MemoryMax": "560M", "MemoryHigh": "480M",
+                                "ActiveEnterTimestampMonotonic": "0"}[prop],
         )
         monkeypatch.setattr(cmb, "ram_mb_from_proc", lambda: 2000)
         monkeypatch.setattr(cmb, "_CGROUP_ROOT", tmp_path / "cgroup")
@@ -712,8 +780,10 @@ class TestUncensorMeasurementWindow:
             "    memory_max: 300M\n"
         )
         live = {
-            "metron-api.service": {"MemoryMax": "560M", "MemoryHigh": "480M"},
-            "other-svc.service": {"MemoryMax": "300M", "MemoryHigh": "250M"},
+            "metron-api.service": {"MemoryMax": "560M", "MemoryHigh": "480M",
+                                   "ActiveEnterTimestampMonotonic": "0"},
+            "other-svc.service": {"MemoryMax": "300M", "MemoryHigh": "250M",
+                                  "ActiveEnterTimestampMonotonic": "0"},
         }
         monkeypatch.setattr(cmb, "BUDGET", budget)
         monkeypatch.setattr(cmb, "systemd_show",
