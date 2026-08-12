@@ -306,6 +306,97 @@ def approaching_the_cap(unit: str, warn_fraction: float) -> str | None:
     )
 
 
+#: A cap this many times its own observed peak is reported as over-provisioned.
+#: 2.5x, not something tighter: `memory_max` is a spike ceiling, not a fit, and
+#: the units here legitimately burst (AWS CLI subprocesses, ONNX model loads,
+#: large dataframe renders). The point is to catch a cap that is 4-6x its
+#: demand, not to shave a well-sized one.
+OVER_PROVISION_RATIO = 2.5
+
+#: A unit must have been up this long before its peak is allowed to argue for
+#: a LOWER cap. This is the whole safety of the check — see the docstring.
+OVER_PROVISION_MIN_UPTIME_DAYS = 7
+
+
+def over_provisioned(unit: str, uptime_days: float | None) -> str | None:
+    """A cap far above its own long-observed peak, reported so it can be given back.
+
+    THE ASYMMETRY THIS FIXES. Every other memory check on this box reports
+    PRESSURE: throttling, censored readings, a peak approaching its cap. None
+    of them has ever reported SLACK, so caps here have only ever moved in one
+    direction. Twenty-two commits have touched budget.yaml and every single one
+    that changed a number RAISED it — 80->160, 112->160->380, 210->260->340->420,
+    245->300. Nothing has ever given memory back, not because nothing could,
+    but because nothing ever said so.
+
+    What that produced, measured 2026-08-12: `sum(memory_max)` = 4324 MB against
+    a 4373 MB bound, so the budget reads FULL — while the sum of every unit's
+    real observed peak is 2254 MB, **69% of the 3263 MB ceiling**. The caps are
+    1.92x the demand. The box was one raise away from being resized to buy
+    headroom it already had.
+
+    WHY THE MINIMUM UPTIME IS THE ENTIRE SAFETY OF THIS CHECK. A low peak does
+    not mean a small working set — it can mean the expensive path has not run
+    yet. `vires.service` is the standing proof: peak 87 MiB against a 460 MiB
+    cap, which reads as 373 MB of free slack, and is not. Its vector leg
+    lazy-loads FastEmbed / bge-small-en-v1.5 on the FIRST exercise search,
+    +213 MiB marginal, ~316 MiB resident. Nobody had searched since its restart.
+    Trimming on that reading reproduces the 2026-08-03 wedge exactly.
+
+    Seven days is long enough that a daily or weekly path has run at least once.
+    It is NOT long enough to prove a monthly one has, which is why this reports
+    and never applies: the output is a proposal for a human or a PR to weigh
+    against the unit's own budget.yaml note, where the un-exercised paths are
+    documented. `llm-egress-proxy` is the case in point — 127 MiB peak over 16
+    days against a 400 MiB cap, and its note says DO NOT LOWER because startup
+    shells out to the AWS CLI five times. The 16-day peak INCLUDES that startup,
+    so the note is arguably contradicted by measurement — and that argument
+    belongs in a PR with a human reading it, not in an automatic trim of the
+    DLP egress path.
+    """
+    peak = cgroup_value(unit, "memory.peak")
+    hard = cgroup_value(unit, "memory.max")
+    if peak is None or hard is None or hard == sys.maxsize or peak == 0:
+        return None
+    if uptime_days is None or uptime_days < OVER_PROVISION_MIN_UPTIME_DAYS:
+        return None
+    if hard < OVER_PROVISION_RATIO * peak:
+        return None
+    suggested = max(64, int((2 * peak) / 1024**2))
+    return (
+        f"{unit}: OVER-PROVISIONED -- memory.max ({hard // 1024**2} MiB) is "
+        f"{hard / peak:.1f}x its peak ({peak // 1024**2} MiB) over "
+        f"{uptime_days:.0f} days up. Roughly {(hard - peak) // 1024**2} MiB is "
+        f"reserved against a spike that has not happened. sum(memory_max) is "
+        f"what the overcommit bound limits, so this is headroom the box cannot "
+        f"spend on a unit that needs it. Consider memory_max ~{suggested}M "
+        f"(2x peak) -- but READ THIS UNIT'S budget.yaml NOTE FIRST: a low peak "
+        f"can mean an expensive path has not run, not that it is cheap."
+    )
+
+
+def unit_uptime_days(unit: str) -> float | None:
+    """Days since the unit last entered active, or None if unavailable.
+
+    Uptime is per-UNIT rather than per-box on purpose. `memory.peak` resets on
+    restart, so the observation window backing a peak is the unit's own uptime,
+    and a box up 16 days tells you nothing about a service restarted an hour
+    ago by a deploy.
+    """
+    try:
+        raw = systemd_show(unit, "ActiveEnterTimestampMonotonic")
+    except (RuntimeError, OSError):
+        return None
+    if not raw or not raw.isdigit() or raw == "0":
+        return None
+    try:
+        with open("/proc/uptime", encoding="utf-8") as fh:
+            now_s = float(fh.read().split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+    return max(0.0, (now_s - int(raw) / 1_000_000) / 86400)
+
+
 def steady_state_mb(
     units: list[str], warn_fraction: float
 ) -> tuple[int, list[str], list[str]]:
@@ -917,6 +1008,14 @@ def main() -> int:
             approaching = approaching_the_cap(svc["unit"], warn_fraction)
             if approaching:
                 hygiene.append(approaching)
+        # The other direction. Reported at hygiene severity like the rest of
+        # the observation checks — a cap that is too LARGE breaks nothing today,
+        # it only makes the box read as full while it is not.
+        for svc in spec["services"]:
+            unit = svc["unit"]
+            slack = over_provisioned(unit, unit_uptime_days(unit))
+            if slack:
+                hygiene.append(slack)
         if unmeasurable:
             hygiene.append(
                 "steady state measured over "
