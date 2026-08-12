@@ -24,9 +24,54 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TARGET_SCRIPT="$SCRIPT_DIR/box_health.sh"
 
-eval "$(awk '/^classify_throttle_delta\(\) \{/,/^\}/' "$TARGET_SCRIPT")"
+# ── extracting a function body out of box_health.sh ─────────────────────────
+#
+# `awk '/^name\(\) \{/,/^\}/'` is the obvious form and is NOT portable: `\(` and
+# `\{` are UNDEFINED escapes in POSIX ERE. gawk and BSD awk accept them as
+# literals; mawk — the default `awk` on GitHub's Ubuntu runners — is entitled to
+# do something else with `\{`, which begins an interval expression.
+#
+# This bit on 2026-08-12 (alpha-engine-config-I6972): the `call site must pass a
+# stall reading` assertion failed on 2 of 4 CI runs of an unrelated PR while
+# passing deterministically on macOS, on a check that reads a fixed file and can
+# only be deterministic.
+#
+# `extract_fn` uses index/substr string comparison and no regex at all, so every
+# awk implementation agrees. Callers MUST route an empty result to
+# `harness_fault`, because the two conditions are opposite and the old code
+# reported them identically: an extraction that yields nothing makes every
+# `grep` inside it fail, so a broken harness announced itself as the very defect
+# the assertion exists to catch — cry-wolf in the fail-closed-looking direction,
+# which is how an assertion stops being read.
+extract_fn() {
+    local name="$1"
+    awk -v open="${name}() {" '
+        index($0, open) == 1 { inside = 1 }
+        inside               { print }
+        inside && $0 == "}"  { exit }
+    ' "$TARGET_SCRIPT"
+}
+
+HARNESS_FAULTS=0
+harness_fault() {
+    echo "HARNESS - $*" >&2
+    HARNESS_FAULTS=$((HARNESS_FAULTS+1))
+}
+
+_CLASSIFY_BODY="$(extract_fn classify_throttle_delta)"
+[ -n "$_CLASSIFY_BODY" ] || {
+    echo "HARNESS - could not extract classify_throttle_delta() from $TARGET_SCRIPT" >&2
+    exit 2; }
+eval "$_CLASSIFY_BODY"
 declare -F classify_throttle_delta >/dev/null || {
     echo "FAIL - classify_throttle_delta() not found in box_health.sh"; exit 1; }
+
+# Extracted ONCE, up front, so every assertion below shares one reading and a
+# failure to extract is reported once as a harness fault rather than N times as
+# N findings.
+SNAPSHOT_BODY="$(extract_fn snapshot_problems)"
+[ -n "$SNAPSHOT_BODY" ] || harness_fault \
+    "could not extract snapshot_problems() from $TARGET_SCRIPT — the assertions about its call site cannot be evaluated"
 
 FLOOR=10   # must mirror CGROUP_HIGH_DELTA_MIN; asserted against the source below
 # The harm gate's threshold. The function reads it from the environment as a
@@ -170,8 +215,9 @@ echo "== the call site must pass a stall reading =="
 # behaviour and every assertion above would still pass.
 # The call is line-continued, so the argument list is matched on its own line
 # rather than on the same line as the function name.
-if awk '/^snapshot_problems\(\) \{/,/^\}/' "$TARGET_SCRIPT" \
-     | grep -q '"\$CGROUP_HIGH_DELTA_MIN" "\$stall"'; then
+if [ -z "$SNAPSHOT_BODY" ]; then
+    echo "skip - call-site assertions: snapshot_problems() could not be extracted"
+elif printf '%s\n' "$SNAPSHOT_BODY" | grep -q '"\$CGROUP_HIGH_DELTA_MIN" "\$stall"'; then
     echo "ok   - call site passes \$stall as the 5th argument"
 else
     echo "FAIL - the call site must pass \$stall; without it the gate fails open"
@@ -180,8 +226,9 @@ else
 fi
 # ...and $stall must come from avg60 (field 3), not the avg10 the critical
 # pressure check uses.
-if awk '/^snapshot_problems\(\) \{/,/^\}/' "$TARGET_SCRIPT" \
-     | grep -q 'stall=\$(awk .*split(\$3,kv'; then
+if [ -z "$SNAPSHOT_BODY" ]; then
+    echo "skip - avg60 assertion: snapshot_problems() could not be extracted"
+elif printf '%s\n' "$SNAPSHOT_BODY" | grep -q 'stall=\$(awk .*split(\$3,kv'; then
     echo "ok   - \$stall is parsed from PSI some avg60 (field 3)"
 else
     echo "FAIL - \$stall must be parsed from field 3 (avg60) of the PSI 'some' line"
@@ -238,5 +285,15 @@ else
 fi
 
 echo
+# A harness fault is NOT a finding, and must not share an exit code with one —
+# the distinction `check-router-provenance.sh` already draws, and the one whose
+# absence made `lib-lockstep-drift-sweep.yml` file 10 records for a drift it
+# never measured (alpha-engine-config-I5977). Reported before FAILURES because a
+# run that could not measure has nothing to say about the assertions it skipped.
+if [ "$HARNESS_FAULTS" -ne 0 ]; then
+    echo "HARNESS FAULT - $HARNESS_FAULTS extraction(s) failed; $FAILURES assertion(s) also failed"
+    echo "  This is not a box_health.sh finding. The test could not read what it asserts on."
+    exit 2
+fi
 if [ "$FAILURES" -eq 0 ]; then echo "PASS - all classify_throttle_delta assertions"; exit 0; fi
 echo "FAILED - $FAILURES assertion(s)"; exit 1
