@@ -250,6 +250,62 @@ def censored_observation(unit: str, warn_fraction: float) -> str | None:
     )
 
 
+#: How close to `memory.high` a peak may come before `approaching_the_cap`
+#: reports it. Below the pin, deliberately: the whole point is to fire while
+#: the reading is still uncensored.
+APPROACHING_FRACTION = 0.90
+
+
+def approaching_the_cap(unit: str, warn_fraction: float) -> str | None:
+    """A unit about to censor itself, reported while the fix is still free.
+
+    `censored_observation` above fires once `peak >= high`, which is one MiB
+    too late to be cheap. After a unit pins, its `memory.current` is a floor
+    and its true demand is unknown, so the raise that buys the reading back has
+    to be sized at some multiple of a number nobody trusts — and that multiple
+    is guesswork, which is how `nousergon-console` was raised 80M -> 160M at
+    "~2x the censored floor" and re-pinned inside a day.
+
+    Before it pins, none of that applies. The reading is real, the raise can be
+    sized to it, and it costs NOTHING against the box's overcommit bound
+    because only `memory_high` has to move — `memory_max`, which is what
+    `sum(memory_max) <= ceiling * overcommit` actually bounds, stays put. The
+    same fix goes from free to expensive at the moment this check would have
+    fired.
+
+    Measured 2026-08-12: `crucible-dash-api.service` at peak 244 MiB against a
+    245M soft cap — 99.6%, and nothing reported it. Both of the box's censored
+    units that day (`nousergon-console`, `dashboard.service`) had crossed this
+    line on the way in, twice each, unobserved.
+
+    Carries the SAME current-pin requirement as `censored_observation`, for the
+    same reason: `memory.peak` is a high-water mark that never decays short of
+    a restart, so a service that grazed 90% once would otherwise report for the
+    rest of its uptime. `metron-api` at 214/280 (76% current) is the standing
+    counter-example and stays silent here too.
+    """
+    peak = cgroup_value(unit, "memory.peak")
+    high = cgroup_value(unit, "memory.high")
+    current = cgroup_value(unit, "memory.current")
+    if peak is None or high is None or high == sys.maxsize:
+        return None
+    # At or past the cap is `censored_observation`'s finding, not this one —
+    # one condition, one voice.
+    if peak >= high or peak < APPROACHING_FRACTION * high:
+        return None
+    if current is not None and current < warn_fraction * high:
+        return None
+    return (
+        f"{unit}: APPROACHING its soft cap -- memory.peak ({peak // 1024**2} "
+        f"MiB) is at {100 * peak / high:.0f}% of memory.high "
+        f"({high // 1024**2} MiB) and the service is sitting there now. Raise "
+        f"memory_high in budget.yaml WHILE THE READING IS STILL UNCENSORED: "
+        f"memory_max does not need to move, so it costs nothing against the "
+        f"overcommit bound, and the new cap can be sized to a real working set "
+        f"instead of to a floor. After it pins, neither is true."
+    )
+
+
 def steady_state_mb(
     units: list[str], warn_fraction: float
 ) -> tuple[int, list[str], list[str]]:
@@ -854,6 +910,13 @@ def main() -> int:
             hygiene.append(
                 censored_observation(unit, warn_fraction) or f"{unit}: censored"
             )
+        # Reported after the censored units and never for the same unit — the
+        # two conditions are mutually exclusive by construction (`peak >= high`
+        # versus `peak < high`), so a unit appears in at most one list.
+        for svc in spec["services"]:
+            approaching = approaching_the_cap(svc["unit"], warn_fraction)
+            if approaching:
+                hygiene.append(approaching)
         if unmeasurable:
             hygiene.append(
                 "steady state measured over "

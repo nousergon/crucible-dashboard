@@ -60,6 +60,55 @@ def cgroup_root(tmp_path, monkeypatch):
 WARN = 0.90
 
 
+class TestApproachingTheCap:
+    """The window in which raising a soft cap is still free.
+
+    Once a unit pins, memory.current is a floor and the raise has to be sized
+    to a number nobody trusts — that guess is how nousergon-console was raised
+    to "~2x the censored floor" on 2026-08-11 and re-pinned inside a day. Before
+    it pins, the reading is real and only memory_high has to move, so it costs
+    nothing against sum(memory_max).
+    """
+
+    def test_the_crucible_dash_api_shape_is_reported(self, cgroup_root):
+        """The exact live reading on 2026-08-12, which nothing reported."""
+        _cgroup(cgroup_root, "crucible-dash-api.service",
+                current=244 * MB, peak=244 * MB, high=245 * MB)
+        msg = cmb.approaching_the_cap("crucible-dash-api.service", WARN)
+        assert msg is not None
+        assert "APPROACHING" in msg
+        assert "memory_max does not need to move" in msg
+
+    def test_a_unit_already_pinned_is_left_to_the_censored_check(self, cgroup_root):
+        """One condition, one voice — the two must never both fire."""
+        _cgroup(cgroup_root, "nousergon-console.service",
+                current=160 * MB, peak=160 * MB, high=160 * MB)
+        assert cmb.approaching_the_cap("nousergon-console.service", WARN) is None
+        assert cmb.censored_observation("nousergon-console.service", WARN) is not None
+
+    def test_comfortably_below_the_band_is_silent(self, cgroup_root):
+        _cgroup(cgroup_root, "vires.service",
+                current=87 * MB, peak=87 * MB, high=380 * MB)
+        assert cmb.approaching_the_cap("vires.service", WARN) is None
+
+    def test_a_historical_graze_without_a_current_pin_is_silent(self, cgroup_root):
+        """memory.peak never decays short of a restart, so without the
+        current-pin requirement a single graze would report forever. This is
+        the metron-api false positive that shaped the censored check, one band
+        lower."""
+        _cgroup(cgroup_root, "metron-api.service",
+                current=150 * MB, peak=265 * MB, high=280 * MB)
+        assert cmb.approaching_the_cap("metron-api.service", WARN) is None
+
+    def test_infinite_high_is_silent(self, cgroup_root):
+        _cgroup(cgroup_root, "svc.service",
+                current=100 * MB, peak=100 * MB, high="max")
+        assert cmb.approaching_the_cap("svc.service", WARN) is None
+
+    def test_absent_cgroup_is_silent(self, cgroup_root):
+        assert cmb.approaching_the_cap("absent.service", WARN) is None
+
+
 class TestCensoredObservation:
     def test_peak_at_high_is_reported_as_censored(self, cgroup_root):
         """The exact dashboard.service shape on 2026-07-28, pre-fix."""
