@@ -444,7 +444,13 @@ RELIABILITY_STAGE_ORDER: dict[str, tuple[str, ...]] = {
         "PitParityCompare",
         "ModelZooSelect",
         "ModelZooTrainMap",
-        "Evaluator",
+        # Split from a single `Evaluator` stage by alpha-engine-config-I3112 on
+        # 2026-08-11. The old name survived here and ranked nothing, which is
+        # the I6857 defect this module's test guards — a rename blinds every
+        # reader matching on the old name, and the blindness reports as the
+        # benign "that stage did not run".
+        "EvaluatorDiagnostics",
+        "EvaluatorOptimize",
         "ReportCard",
         "Director",
     ),
