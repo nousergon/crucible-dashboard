@@ -64,7 +64,7 @@ _NO_RELAUNCH_EXIT_CODE = 75
 
 def _function_text(source: str, name: str) -> str:
     """Return a shell function's full text, brace-matched."""
-    marker = "\n%s() {" % name
+    marker = "\n" + name + "() {"
     assert marker in source, f"{name}() not found in {_SCRIPT.name}"
     start = source.index(marker) + 1
     depth = 0
