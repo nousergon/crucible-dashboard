@@ -30,6 +30,12 @@ export MORNING_SIGNAL_SSM_REGION=us-east-1
 export KREPIS_EXEC_CONTEXT=ec2
 export LLM_MODEL_REGISTRY_PATH=/home/ec2-user/alpha-engine-config/private-docs/LLM_MODEL_REGISTRY.yaml
 export KREPIS_ROUTER_CREDENTIAL_SECRET=ROUTER_CONSUMER_MORNINGSIGNAL
+# The AUTHENTICATED edge, not krepis's default http://127.0.0.1:8980 — the
+# consumer credential above is translated into the router's own key at the
+# edge, and the router process behind it has no database to look a virtual key
+# up in, so the default URL and this credential cannot authenticate together.
+# See 20-router.conf for the measured failure this prevents.
+export KREPIS_LITELLM_PROXY_URL=https://router.nousergon.ai:8443
 export PATH="/home/ec2-user/morning-signal/.venv/bin:/usr/local/bin:/usr/bin:/bin"
 
 cd /home/ec2-user/morning-signal || { echo "ERROR: morning-signal checkout missing" >&2; exit 1; }

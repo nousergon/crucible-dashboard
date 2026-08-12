@@ -34,6 +34,35 @@ def _dropins() -> list[str]:
     return sorted(p.name for p in _DROPIN_DIR.glob("*.conf"))
 
 
+#: The one endpoint every router consumer addresses, whatever host it runs on
+#: (model-router-policy R27a). Same value the Think Tank spot dispatcher pins.
+_ROUTER_EDGE_URL = "https://router.nousergon.ai:8443"
+
+
+def _declared_value(path: Path, key: str = "KREPIS_LITELLM_PROXY_URL") -> str | None:
+    """The value *key* is assigned in *path*, in either the systemd
+    `Environment="K=V"` form or the shell `export K=V` form. `None` when the
+    file does not assign it at all."""
+    import re
+
+    m = re.search(
+        rf'^(?:Environment="{key}=([^"]*)"|export\s+{key}=(\S+))\s*$',
+        path.read_text(),
+        re.M,
+    )
+    if m is None:
+        return None
+    return (m.group(1) if m.group(1) is not None else m.group(2)).strip("'\"")
+
+
+def _router_dropin_keys() -> list[str]:
+    """Environment variable names declared by `20-router.conf`."""
+    import re
+
+    text = (_DROPIN_DIR / "20-router.conf").read_text()
+    return sorted(set(re.findall(r'^Environment="([A-Za-z_][A-Za-z0-9_]*)=', text, re.M)))
+
+
 def test_there_are_dropins_to_assert_over():
     """A coverage test whose input set is empty passes by covering nothing."""
     assert _dropins(), f"no drop-ins found under {_DROPIN_DIR}"
@@ -64,17 +93,57 @@ def test_the_recovery_wrapper_mirrors_the_router_dropin():
     `exec_context=laptop` while executing on EC2 — a different set of registry
     entries than the run it was recovering."""
     wrapper = (_REPO / "infrastructure" / "morning-signal-recover.sh").read_text()
-    dropin = (_DROPIN_DIR / "20-router.conf").read_text()
 
-    for key in (
-        "KREPIS_EXEC_CONTEXT",
-        "LLM_MODEL_REGISTRY_PATH",
-        "KREPIS_ROUTER_CREDENTIAL_SECRET",
-    ):
-        assert key in dropin, f"{key} missing from 20-router.conf"
+    # DERIVED from the drop-in, never enumerated here. A hardcoded key list
+    # asserts only over the variables somebody remembered to add to it, so it
+    # is blind in exactly the direction that matters: the NEXT variable the
+    # drop-in gains and the wrapper does not.
+    keys = _router_dropin_keys()
+    assert keys, "20-router.conf declares no Environment= keys to mirror"
+    for key in keys:
         assert f"export {key}=" in wrapper, (
             f"{key} is declared by the unit's drop-in but not exported by "
             f"morning-signal-recover.sh"
+        )
+
+
+def test_the_router_url_is_the_authenticated_edge_not_the_loopback_process():
+    """krepis defaults `litellm_proxy` to `http://127.0.0.1:8980` — the router
+    PROCESS. The per-consumer credential this unit declares is translated into
+    the router's own key by the nginx edge at :8443; the process behind it
+    holds only the master key and has no database to resolve a virtual key
+    against (`/health/readiness`: `db: Not connected`). Pairing the default URL
+    with a consumer credential therefore cannot authenticate, and the router
+    answers `400 no_db_connection`.
+
+    Measured on the dashboard box: every scheduled run from 2026-08-09 through
+    2026-08-12 aborted its configured primary on that 400 and aired from a
+    fallback. Same assertion the Think Tank spot dispatcher already makes about
+    its own prelude.
+    """
+    for label, declared in (
+        ("20-router.conf", _declared_value(_DROPIN_DIR / "20-router.conf")),
+        (
+            "morning-signal-recover.sh",
+            _declared_value(_REPO / "infrastructure" / "morning-signal-recover.sh"),
+        ),
+    ):
+        assert declared is not None, (
+            f"{label} does not set KREPIS_LITELLM_PROXY_URL, so krepis falls "
+            f"back to the loopback router process, which cannot authenticate "
+            f"this consumer's credential"
+        )
+        # EQUALITY, not `in`. A substring test on a URL passes for any string
+        # that merely CONTAINS the edge — including one where it sits after a
+        # different host — which is the whole of CodeQL's
+        # `py/incomplete-url-substring-sanitization`. Comparing the parsed
+        # value is both stricter and free of that shape.
+        assert declared == _ROUTER_EDGE_URL, (
+            f"{label} sets KREPIS_LITELLM_PROXY_URL={declared!r}; it must be "
+            f"exactly {_ROUTER_EDGE_URL!r}. Addressing the router process "
+            f"directly bypasses the edge that authenticates and rate-limits "
+            f"it (model-router-policy R27c), and the loopback process cannot "
+            f"validate this consumer's credential at all."
         )
 
 
