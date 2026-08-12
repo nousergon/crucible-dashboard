@@ -2,12 +2,6 @@ name: Gitleaks scan
 
 # Thin caller — all scan behavior lives in the reusable workflow. Edit it
 # there, not here: nousergon/nousergon-lib/.github/workflows/gitleaks-scan.yml
-#
-# GATED on nousergon-lib PR#228 merging first (config-I3005) — until then,
-# `uses:` below resolves against nousergon-lib@main which doesn't have the
-# file yet, so this check will fail/error. That is EXPECTED and BY DESIGN
-# (gate:dependency). Once PR#228 merges, re-run this workflow (Actions tab
-# -> re-run failed jobs, or push a new commit) to pick it up and go green.
 
 on:
   push:
@@ -25,5 +19,5 @@ permissions:
 
 jobs:
   gitleaks:
-    uses: nousergon/nousergon-lib/.github/workflows/gitleaks-scan.yml@839e54dff5626041366dd71e2d3372670db2683b
+    uses: nousergon/nousergon-lib/.github/workflows/gitleaks-scan.yml@1481fa80f146f70dc3088ea8dee38cbb4f73f3b4  # main — retry the gitleaks download (alpha-engine-config-I7083/I7069)
     secrets: inherit
