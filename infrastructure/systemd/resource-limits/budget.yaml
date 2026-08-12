@@ -237,9 +237,18 @@ services:
 
   - unit: crucible-dash-api.service
     port: 8506
-    memory_high: 245M
+    memory_high: 300M
     memory_max: 350M
     note: >-
+      2026-08-12: memory_high 245M -> 300M, memory_max UNCHANGED. Peak had
+      reached 244 MiB against the 245M soft cap — one MiB from pinning, which
+      would have made every subsequent reading a floor and put this unit on the
+      same path nousergon-console and dashboard.service each took twice. Raised
+      BEFORE it censored rather than after, which is the only time the fix is
+      cheap: it costs nothing against the box's overcommit bound because
+      memory_max does not move, and it preserves an uncensored reading instead
+      of having to buy one back.
+
       Measured live 2026-07-28 at 185 MiB (peak 186 against a 245M cap, so
       uncensored) against a then-recorded 107. Surfaced by the FIRST run of
       --installed against the live box: the declared number understated this
