@@ -1,0 +1,39 @@
+{
+  "_comment": "Consumer-side fixture for the crucible-evaluator -> crucible-dashboard contract on report_card['attestation'] (config-I6974). Shape mirrors crucible-evaluator grading/attestation.py::build_run_attestation exactly: schema/run_date/verdict/evaluator/backtester/reason, with each half carrying its own status/verdict/checks/n_checks/n_failed/n_errored/engine. Per-check bodies are truncated to one record per half - the renderer reads counts and reasons, never individual checks, and pinning all six would make the fixture drift on every battery edit without testing anything more.",
+  "schema": "report_card_attestation-1.0.0",
+  "run_date": "2026-08-12",
+  "verdict": "PASS",
+  "evaluator": {
+    "status": "ok",
+    "verdict": "PASS",
+    "checks": [
+      {
+        "name": "sharpe_annualization",
+        "description": "sample-sd (ddof=1) Sharpe on the frozen series, x sqrt(252)",
+        "expected": 1.4980265101338746,
+        "observed": 1.4980265101338746,
+        "abs_error": 0.0,
+        "rtol": 1e-12,
+        "atol": 1e-15,
+        "passed": true
+      }
+    ],
+    "n_checks": 6,
+    "n_failed": 0,
+    "n_errored": 0,
+    "engine": {"python": "3.12.7", "nousergon_lib": "0.108.0", "numpy": "2.5.1"},
+    "wall_clock_seconds": 0.0041
+  },
+  "backtester": {
+    "source_path": "s3://alpha-engine-research/backtest/2026-08-12/attestation.json",
+    "run_date": "2026-08-12",
+    "verdict": "PASS",
+    "schema": "backtest_attestation-1.0.0",
+    "n_checks": 5,
+    "n_failed": 0,
+    "n_errored": 0,
+    "engine": {"python": "3.12.7", "vectorbt": "0.28.5", "numpy": "2.5.1", "pandas": "3.0.1", "numba": "0.62.0"},
+    "reason": "backtester attestation PASS (5 known-answer checks)."
+  },
+  "reason": "Both halves attested - the deployed quant primitives and the backtest engine each agreed with their hand-derived known answers."
+}
