@@ -164,9 +164,25 @@ services:
   # ── alpha-engine ────────────────────────────────────────────────────────
   - unit: dashboard.service
     port: 8501
-    memory_high: 340M
+    memory_high: 420M
     memory_max: 450M
     note: >-
+      2026-08-12: memory_high 340M -> 420M, memory_max UNCHANGED. memory.peak
+      reached 341 MiB against a 340 MiB soft cap, so the service has been pinned
+      since it last started and memory.current is a floor rather than a working
+      set — the third time this unit has censored its own reading (I5237
+      210->260, then 260->340, now this). The block below is what an uncensored
+      measurement looked like the one time we had one.
+      This raise is deliberately NOT derived from the pinned number, which is the
+      move that produced the previous two re-pins: 420M clears the observed floor
+      by ~79 MiB so the service runs un-pinned and I6287's 72h soak can measure
+      what it actually needs. memory_max stays 450M, so the box's overcommit
+      invariant is untouched (sum(memory_max) is unchanged at 4324 MB against a
+      4373 MB bound — there were only 49 MB of headroom to spend, and this
+      spends none of it) and the hard cap remains a real backstop. If the soak
+      shows the working set above ~420 MiB, the answer is a right-sizing
+      decision, not a fourth raise.
+
       Streamlit private console. Caps raised 260M/300M -> 340M/450M on the
       first UNCENSORED measurement of this service (2026-07-28: 248 MiB in use,
       against a then-recorded 202). I5237 raised memory_high 210M -> 260M and
@@ -703,6 +719,18 @@ timers:
     note: daily 06:48 UTC; pulls the box's sparse nous-ergon-ops checkout and
           runs check-box-config-drift.sh — a dead timer here means codified
           config silently stops reaching the box
+  - unit: router-degraded-mode-drill.timer
+    max_staleness: 8d
+    note: >-
+      Weekly Tue 10:30 UTC. Persistent=false and RandomizedDelaySec=0, so a box
+      down at 10:30 skips the week outright rather than making the run up — 8d
+      is one full missed week plus 24h, the same shape as reboot-if-needed.
+      This dead-man is not redundant with the drill's own
+      router-degraded-mode-drill-stale alarm: that one watches the S3
+      completion pointer and answers "did a drill COMPLETE", while this one
+      answers "is the timer still firing at all", and the 2026-08-12 install
+      produced exactly the state where those two differ — a timer that fired
+      and a drill that deliberately did not run.
 
   # ── metron ──────────────────────────────────────────────────────────────
   - unit: metron-refresh.timer
