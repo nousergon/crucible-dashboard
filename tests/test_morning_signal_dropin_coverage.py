@@ -34,6 +34,27 @@ def _dropins() -> list[str]:
     return sorted(p.name for p in _DROPIN_DIR.glob("*.conf"))
 
 
+#: The one endpoint every router consumer addresses, whatever host it runs on
+#: (model-router-policy R27a). Same value the Think Tank spot dispatcher pins.
+_ROUTER_EDGE_URL = "https://router.nousergon.ai:8443"
+
+
+def _declared_value(path: Path, key: str = "KREPIS_LITELLM_PROXY_URL") -> str | None:
+    """The value *key* is assigned in *path*, in either the systemd
+    `Environment="K=V"` form or the shell `export K=V` form. `None` when the
+    file does not assign it at all."""
+    import re
+
+    m = re.search(
+        rf'^(?:Environment="{key}=([^"]*)"|export\s+{key}=(\S+))\s*$',
+        path.read_text(),
+        re.M,
+    )
+    if m is None:
+        return None
+    return (m.group(1) if m.group(1) is not None else m.group(2)).strip("'\"")
+
+
 def _router_dropin_keys() -> list[str]:
     """Environment variable names declared by `20-router.conf`."""
     import re
@@ -100,25 +121,29 @@ def test_the_router_url_is_the_authenticated_edge_not_the_loopback_process():
     fallback. Same assertion the Think Tank spot dispatcher already makes about
     its own prelude.
     """
-    for label, text in (
-        ("20-router.conf", (_DROPIN_DIR / "20-router.conf").read_text()),
+    for label, declared in (
+        ("20-router.conf", _declared_value(_DROPIN_DIR / "20-router.conf")),
         (
             "morning-signal-recover.sh",
-            (_REPO / "infrastructure" / "morning-signal-recover.sh").read_text(),
+            _declared_value(_REPO / "infrastructure" / "morning-signal-recover.sh"),
         ),
     ):
-        assert "KREPIS_LITELLM_PROXY_URL" in text, (
+        assert declared is not None, (
             f"{label} does not set KREPIS_LITELLM_PROXY_URL, so krepis falls "
             f"back to the loopback router process, which cannot authenticate "
             f"this consumer's credential"
         )
-        assert "https://router.nousergon.ai:8443" in text, (
-            f"{label} must address the authenticated edge"
-        )
-        assert "KREPIS_LITELLM_PROXY_URL=http://127.0.0.1" not in text, (
-            f"{label} addresses the router process directly, bypassing the "
-            f"edge that authenticates and rate-limits it (model-router-policy "
-            f"R27c)"
+        # EQUALITY, not `in`. A substring test on a URL passes for any string
+        # that merely CONTAINS the edge — including one where it sits after a
+        # different host — which is the whole of CodeQL's
+        # `py/incomplete-url-substring-sanitization`. Comparing the parsed
+        # value is both stricter and free of that shape.
+        assert declared == _ROUTER_EDGE_URL, (
+            f"{label} sets KREPIS_LITELLM_PROXY_URL={declared!r}; it must be "
+            f"exactly {_ROUTER_EDGE_URL!r}. Addressing the router process "
+            f"directly bypasses the edge that authenticates and rate-limits "
+            f"it (model-router-policy R27c), and the loopback process cannot "
+            f"validate this consumer's credential at all."
         )
 
 
