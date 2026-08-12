@@ -55,12 +55,49 @@ def _declared_value(path: Path, key: str = "KREPIS_LITELLM_PROXY_URL") -> str | 
     return (m.group(1) if m.group(1) is not None else m.group(2)).strip("'\"")
 
 
-def _router_dropin_keys() -> list[str]:
-    """Environment variable names declared by `20-router.conf`."""
+#: Where the shared router contract is installed, and the string every reader
+#: must name. One file, three readers — see its own header for why.
+_ROUTER_ENV_SRC = _REPO / "infrastructure" / "systemd" / "morning-signal-router-env.conf"
+_ROUTER_ENV_DST = "/etc/morning-signal/router-env.conf"
+_SYSTEMD_DIR = _REPO / "infrastructure" / "systemd"
+_RECOVER = _REPO / "infrastructure" / "morning-signal-recover.sh"
+
+
+def _router_env_keys() -> dict[str, str]:
+    """The KEY=value pairs the shared router contract declares."""
     import re
 
-    text = (_DROPIN_DIR / "20-router.conf").read_text()
-    return sorted(set(re.findall(r'^Environment="([A-Za-z_][A-Za-z0-9_]*)=', text, re.M)))
+    out: dict[str, str] = {}
+    for line in _ROUTER_ENV_SRC.read_text().splitlines():
+        m = re.match(r"^([A-Z_][A-Z0-9_]*)=(.*)$", line)
+        if m:
+            out[m.group(1)] = m.group(2).strip()
+    return out
+
+
+def _units_running_morning_signal_python() -> list[Path]:
+    """Units whose ExecStart runs a python entrypoint out of the morning-signal
+    venv — i.e. every unit that can construct an ``LLMClient``.
+
+    DERIVED from the units on disk, never enumerated. An enumerated list is
+    blind in the one direction that matters: the next unit added. That is not
+    hypothetical — `morning-signal-bakeoff.service` was missing the router
+    contract entirely on 2026-08-12 while the drop-in and the recovery wrapper
+    both carried it, and no test could see the gap because none of them looked
+    at that unit.
+    """
+    import re
+
+    hits = []
+    for unit in sorted(_SYSTEMD_DIR.glob("morning-signal*.service")):
+        for line in unit.read_text().splitlines():
+            # ExecStart only (not ExecStartPre, which runs git/pip), and only a
+            # python entrypoint (pip install is not a call site).
+            m = re.match(r"^ExecStart=(\S*/morning-signal/\.venv/bin/python)\s+(\S+)", line)
+            if m and not m.group(2).startswith("-m pip"):
+                hits.append(unit)
+                break
+    return hits
 
 
 def test_there_are_dropins_to_assert_over():
@@ -86,31 +123,71 @@ def test_deploy_on_merge_state_compares_every_dropin(conf: str):
     )
 
 
-def test_the_recovery_wrapper_mirrors_the_router_dropin():
-    """`morning-signal-recover.sh` re-runs what `morning-signal.service` runs.
-    On 2026-08-08 the unit gained three router env vars via `20-router.conf`
-    and the wrapper did not, so the recovery run resolved against
-    `exec_context=laptop` while executing on EC2 — a different set of registry
-    entries than the run it was recovering."""
-    wrapper = (_REPO / "infrastructure" / "morning-signal-recover.sh").read_text()
+def test_every_llm_calling_unit_reads_the_shared_router_contract():
+    """DERIVED from the units on disk — see `_units_running_morning_signal_python`.
 
-    # DERIVED from the drop-in, never enumerated here. A hardcoded key list
-    # asserts only over the variables somebody remembered to add to it, so it
-    # is blind in exactly the direction that matters: the NEXT variable the
-    # drop-in gains and the wrapper does not.
-    keys = _router_dropin_keys()
-    assert keys, "20-router.conf declares no Environment= keys to mirror"
-    for key in keys:
-        assert f"export {key}=" in wrapper, (
-            f"{key} is declared by the unit's drop-in but not exported by "
-            f"morning-signal-recover.sh"
+    On 2026-08-12 `morning-signal.service` (via its drop-in) and
+    `morning-signal-recover.sh` both carried the router contract and
+    `morning-signal-bakeoff.service` carried none of it, so the bakeoff resolved
+    against a default execution context with no consumer credential while
+    production resolved against `ec2` with one. A bakeoff whose prod side
+    reaches a different router than production is not a comparison.
+    """
+    units = _units_running_morning_signal_python()
+    assert units, "no morning-signal unit runs a venv python entrypoint — the derivation is broken"
+
+    dropin_text = "\n".join(p.read_text() for p in _DROPIN_DIR.glob("*.conf"))
+    for unit in units:
+        text = unit.read_text()
+        # The drop-in directory only extends morning-signal.service, so a unit
+        # may satisfy this either directly or through its own drop-ins.
+        satisfied = _ROUTER_ENV_DST in text or (
+            unit.name == "morning-signal.service" and _ROUTER_ENV_DST in dropin_text
         )
+        assert satisfied, (
+            f"{unit.name} runs a morning-signal python entrypoint but never names "
+            f"EnvironmentFile={_ROUTER_ENV_DST}. It will resolve the router group "
+            f"against a default execution context with no consumer credential."
+        )
+
+
+def test_the_recovery_wrapper_sources_the_shared_contract_rather_than_copying_it():
+    """`morning-signal-recover.sh` re-runs what `morning-signal.service` runs, so
+    it must resolve the same router. It SOURCES the shared file; re-exporting the
+    keys inline would recreate the fork this change removed."""
+    wrapper = _RECOVER.read_text()
+    assert _ROUTER_ENV_DST in wrapper, (
+        f"morning-signal-recover.sh does not read {_ROUTER_ENV_DST} — a recovery "
+        f"run that resolves a different router than the run it is recovering is "
+        f"not a recovery"
+    )
+    for key in _router_env_keys():
+        assert f"export {key}=" not in wrapper, (
+            f"{key} is exported inline by morning-signal-recover.sh AND declared "
+            f"in the shared contract. Two copies is what produced the 2026-08-12 "
+            f"split; the wrapper must source the file, not mirror it."
+        )
+
+
+def test_no_unit_redeclares_a_router_key_inline():
+    """The fork guard. A unit that sets one of these itself silently overrides
+    the shared contract for that process only, which is indistinguishable from
+    the shared contract being wrong."""
+    keys = _router_env_keys()
+    assert keys, "the shared router contract declares no keys"
+    for unit in sorted(_SYSTEMD_DIR.glob("morning-signal*")):
+        text = unit.read_text() if unit.is_file() else ""
+        for key in keys:
+            assert f'Environment="{key}=' not in text, (
+                f"{unit.name} redeclares {key} inline, overriding "
+                f"{_ROUTER_ENV_DST} for that unit only"
+            )
 
 
 def test_the_router_url_is_the_authenticated_edge_not_the_loopback_process():
     """krepis defaults `litellm_proxy` to `http://127.0.0.1:8980` — the router
-    PROCESS. The per-consumer credential this unit declares is translated into
-    the router's own key by the nginx edge at :8443; the process behind it
+    PROCESS. The per-consumer credential this contract declares is translated
+    into the router's own key by the nginx edge at :8443; the process behind it
     holds only the master key and has no database to resolve a virtual key
     against (`/health/readiness`: `db: Not connected`). Pairing the default URL
     with a consumer credential therefore cannot authenticate, and the router
@@ -118,33 +195,41 @@ def test_the_router_url_is_the_authenticated_edge_not_the_loopback_process():
 
     Measured on the dashboard box: every scheduled run from 2026-08-09 through
     2026-08-12 aborted its configured primary on that 400 and aired from a
-    fallback. Same assertion the Think Tank spot dispatcher already makes about
-    its own prelude.
+    fallback. Same assertion the Think Tank spot dispatcher makes about its own
+    prelude.
     """
-    for label, declared in (
-        ("20-router.conf", _declared_value(_DROPIN_DIR / "20-router.conf")),
-        (
-            "morning-signal-recover.sh",
-            _declared_value(_REPO / "infrastructure" / "morning-signal-recover.sh"),
-        ),
-    ):
-        assert declared is not None, (
-            f"{label} does not set KREPIS_LITELLM_PROXY_URL, so krepis falls "
-            f"back to the loopback router process, which cannot authenticate "
-            f"this consumer's credential"
-        )
-        # EQUALITY, not `in`. A substring test on a URL passes for any string
-        # that merely CONTAINS the edge — including one where it sits after a
-        # different host — which is the whole of CodeQL's
-        # `py/incomplete-url-substring-sanitization`. Comparing the parsed
-        # value is both stricter and free of that shape.
-        assert declared == _ROUTER_EDGE_URL, (
-            f"{label} sets KREPIS_LITELLM_PROXY_URL={declared!r}; it must be "
-            f"exactly {_ROUTER_EDGE_URL!r}. Addressing the router process "
-            f"directly bypasses the edge that authenticates and rate-limits "
-            f"it (model-router-policy R27c), and the loopback process cannot "
-            f"validate this consumer's credential at all."
-        )
+    declared = _router_env_keys().get("KREPIS_LITELLM_PROXY_URL")
+    assert declared is not None, (
+        "the shared router contract does not set KREPIS_LITELLM_PROXY_URL, so "
+        "krepis falls back to the loopback router process, which cannot "
+        "authenticate this consumer's credential"
+    )
+    # EQUALITY, not `in`. A substring test on a URL passes for any string that
+    # merely CONTAINS the edge — including one where it sits after a different
+    # host — which is the whole of CodeQL's
+    # `py/incomplete-url-substring-sanitization`.
+    assert declared == _ROUTER_EDGE_URL, (
+        f"the shared router contract sets KREPIS_LITELLM_PROXY_URL={declared!r}; "
+        f"it must be exactly {_ROUTER_EDGE_URL!r}. Addressing the router process "
+        f"directly bypasses the edge that authenticates and rate-limits it "
+        f"(model-router-policy R27c), and the loopback process cannot validate "
+        f"this consumer's credential at all."
+    )
+
+
+def test_the_shared_contract_is_installed_and_state_compared():
+    """A file every unit names as a mandatory EnvironmentFile must reach the box,
+    and must re-reach it when it changes. systemd treats a missing
+    EnvironmentFile as fatal to the unit start, so an uninstalled copy is not a
+    degraded run — it is no run at all."""
+    assert _ROUTER_ENV_SRC.name in _INSTALLER.read_text(), (
+        f"{_ROUTER_ENV_SRC.name} is not installed by install-morning-signal.sh — "
+        f"a rebuilt box would have units that cannot start"
+    )
+    assert _ROUTER_ENV_DST in _DEPLOY.read_text(), (
+        f"{_ROUTER_ENV_DST} is not in deploy-on-merge.sh's state-compare pairs — "
+        f"a change to the router contract would merge without reaching the box"
+    )
 
 
 def test_only_one_delivery_path_for_these_units():
