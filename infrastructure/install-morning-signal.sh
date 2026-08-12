@@ -31,6 +31,22 @@ if [ ! -f "$SYSTEMD_SRC/morning-signal.service" ]; then
     exit 1
 fi
 
+# The shared router contract, BEFORE the units that name it as an
+# EnvironmentFile. systemd treats a missing EnvironmentFile as fatal to the
+# unit start (no leading '-'), which is the correct posture — a run without the
+# router contract resolves a different router — but it means ordering here is
+# not cosmetic.
+install -d -m 0755 /etc/morning-signal
+install -m 0644 "$SYSTEMD_SRC/morning-signal-router-env.conf" \
+    /etc/morning-signal/router-env.conf
+echo "Installed /etc/morning-signal/router-env.conf"
+
+# The bakeoff units are deliberately NOT here — `install-morning-signal-bakeoff.sh`
+# owns them, and two installers writing one artifact is the divergence
+# `test_only_one_delivery_path_for_these_units` exists to prevent. This
+# installer owns the SHARED router file above, which the bakeoff unit only
+# reads; deploy-on-merge runs this block before the bakeoff block, so the file
+# is present before the unit that names it.
 for unit in morning-signal.service morning-signal.timer morning-signal-pull.service morning-signal-pull.timer; do
     cp "$SYSTEMD_SRC/$unit" "/etc/systemd/system/$unit"
     echo "Installed /etc/systemd/system/$unit"

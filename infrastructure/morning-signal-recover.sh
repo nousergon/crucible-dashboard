@@ -21,21 +21,31 @@ export MORNING_SIGNAL_RUNNER_ROLE_ARN="arn:aws:iam::711398986525:role/morning-si
 export MORNING_SIGNAL_USE_SSM=1
 export MORNING_SIGNAL_SSM_REGION=us-east-1
 
-# Mirror systemd/morning-signal.service.d/20-router.conf. Without these
-# the recovery path declares a DIFFERENT execution context than the
-# scheduled path (measured 2026-08-08: exec_context=laptop while running
-# on EC2), and exec_context decides which registry entries may serve the
-# caller — model-router-policy R29. A recovery run that resolves
-# differently from the run it is recovering is not a recovery.
-export KREPIS_EXEC_CONTEXT=ec2
-export LLM_MODEL_REGISTRY_PATH=/home/ec2-user/alpha-engine-config/private-docs/LLM_MODEL_REGISTRY.yaml
-export KREPIS_ROUTER_CREDENTIAL_SECRET=ROUTER_CONSUMER_MORNINGSIGNAL
-# The AUTHENTICATED edge, not krepis's default http://127.0.0.1:8980 — the
-# consumer credential above is translated into the router's own key at the
-# edge, and the router process behind it has no database to look a virtual key
-# up in, so the default URL and this credential cannot authenticate together.
-# See 20-router.conf for the measured failure this prevents.
-export KREPIS_LITELLM_PROXY_URL=https://router.nousergon.ai:8443
+# SOURCE the same file the units read, rather than mirroring it. Without the
+# router contract the recovery path declares a DIFFERENT execution context than
+# the scheduled path (measured 2026-08-08: exec_context=laptop while running on
+# EC2), and exec_context decides which registry entries may serve the caller —
+# model-router-policy R29. A recovery run that resolves differently from the
+# run it is recovering is not a recovery.
+#
+# Mirroring is what produced the 2026-08-12 state: this file and the drop-in
+# agreed, and `morning-signal-bakeoff.service` — the third reader — had none of
+# it. One file cannot be two-thirds applied.
+#
+# FATAL if absent, not best-effort. Continuing without it would resolve against
+# a default context with no credential and quietly produce exactly the split
+# this change removes.
+ROUTER_ENV=/etc/morning-signal/router-env.conf
+if [ ! -r "$ROUTER_ENV" ]; then
+    echo "ERROR: $ROUTER_ENV missing or unreadable — run install-morning-signal.sh." >&2
+    echo "       Refusing to run: without it this recovery resolves a different" >&2
+    echo "       router than the run it is recovering." >&2
+    exit 1
+fi
+set -a
+# shellcheck source=/dev/null
+. "$ROUTER_ENV"
+set +a
 export PATH="/home/ec2-user/morning-signal/.venv/bin:/usr/local/bin:/usr/bin:/bin"
 
 cd /home/ec2-user/morning-signal || { echo "ERROR: morning-signal checkout missing" >&2; exit 1; }

@@ -13,6 +13,14 @@ Environment="MORNING_SIGNAL_USE_SSM=1"
 Environment="MORNING_SIGNAL_SSM_REGION=us-east-1"
 Environment="MORNING_SIGNAL_BAKEOFF_LOG_DIR=/home/ec2-user/morning-signal/bakeoff_logs"
 Environment="PATH=/home/ec2-user/morning-signal/.venv/bin:/usr/local/bin:/usr/bin:/bin"
+# The same router contract morning-signal.service reads. Absent here until
+# 2026-08-12, so this unit resolved the router group against a default
+# execution context with no consumer credential while production resolved
+# against `ec2` with one — and a bakeoff whose prod side reaches a different
+# router than production is not a comparison. It is also the only
+# morning-signal caller with NO fallback chain, so it is the one whose failure
+# is visible: it exited 1 every Wednesday while production degraded silently.
+EnvironmentFile=/etc/morning-signal/router-env.conf
 # Refresh the codebase before every run (coupled to the run, not a clock) so
 # any merged PR to oss_bakeoff.py/claude.py is live on the next comparison.
 # Best-effort (leading '-'): a transient git/pip blip must never SKIP a
