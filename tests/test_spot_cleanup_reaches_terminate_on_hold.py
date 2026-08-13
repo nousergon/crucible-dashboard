@@ -1,49 +1,48 @@
-"""The EXIT trap must reach ``terminate-instances`` on a NON-reclaim failure.
+"""The EXIT trap must reach ``terminate-instances`` under the ``--json`` contract.
 
-THE DEFECT
+THE DEFECT THIS GUARDS AGAINST (alpha-engine-config-I7009)
 
 ``cleanup()`` in ``infrastructure/spot_train.sh`` asks
 ``krepis.ec2_spot relaunch-decision`` whether the spot was reclaimed by AWS.
-That CLI answers by EXIT CODE — ``0`` = relaunch, ``NO_RELAUNCH_EXIT_CODE``
-(75) = hold. Hold is the designed answer for every failure that is *not* a
-reclaim, which is nearly all of them: a crash, an OOM, a workload timeout, a
-bad config.
+Before krepis-PR133 (released 0.51.0) the CLI answered by EXIT CODE alone —
+``0`` = relaunch, ``NO_RELAUNCH_EXIT_CODE`` (75) = hold — and a non-zero exit
+was indistinguishable from "the CLI itself could not answer" (a crashed
+subprocess, a missing dependency, an AWS API error). ``--json`` splits these:
+the verdict is now a JSON field (``relaunch``) on stdout, and the CLI exits 0
+for EVERY reached decision, hold included. A non-zero exit now means only
+"the CLI could not answer" — never a verdict — and must be treated as an
+explicit hold, not parsed for a verdict that isn't there.
 
-The launcher runs under ``set -e``, and the call was written::
+This repo's launcher migrated to ``--json`` in this change. The guard below
+replaces the old exit-code assertion (which asserted survival of a
+``NO_RELAUNCH_EXIT_CODE`` "hold" answer) with two assertions against the new
+contract:
 
-    _decide_out="$(... relaunch-decision ... )"
-    _decide_rc=$?
+  (a) the CLI answers with a well-formed ``--json`` verdict (``relaunch``:
+      false) and exits 0 — cleanup must still reach ``terminate-instances``
+      and must NOT record a spot-interruption-retry metric (no relaunch was
+      granted).
+  (b) the CLI fails outright (non-zero exit, no usable verdict) — cleanup
+      must treat this as a hold (never a relaunch) and must still reach
+      ``terminate-instances``, re-raising the workload's real exit status
+      rather than the decision CLI's.
 
-An assignment whose value comes from a command substitution is a simple command
-whose exit status IS the substitution's. So on the ordinary hold answer, errexit
-fired and destroyed the shell *inside the EXIT trap*: ``_decide_rc=$?`` was
-unreachable, and so were ``terminate-instances``, the S3 staging teardown, and
-the closing ``exit "$exit_code"`` that re-raises the workload's real status.
-Because ``set -e`` does not re-enter a trap it is already running, the abort
-emitted nothing whatsoever — the log simply stops mid-cleanup.
-
-MEASURED CONSEQUENCE
-
-Confirmed in the sibling repo ``crucible-predictor`` on
-``ne-weekly-freshness-pipeline`` execution ``watch-rerun-2026-08-10-9``
-(2026-08-11): cleanup's stdout ends after its own diagnostic,
-``==> Terminating spot instance ...`` never appears, and CloudTrail records NO
-``TerminateInstances`` call for ``i-092854cbb6e62b753`` in the window while
-three unrelated instances were terminated normally. The instance ran on until
-its own systemd watchdog stopped it, and the launcher exited 75 instead of the
-workload's status.
-
-This repo carries an independent copy of the same block, and had the same
-defect. Sibling fixes: ``crucible-predictor-PR467`` and the same change in
-``crucible-backtester``.
+Both assertions fail against the pre-migration ``spot_train.sh`` (verified by
+running this file against the parent commit of this PR via ``git stash``):
+the old code has no ``--json`` flag and no CLI-failure branch, so a stub CLI
+that exits non-zero without a ``NO_RELAUNCH_EXIT_CODE``-shaped answer is
+mishandled the same way any non-zero, non-75 exit always was under the old
+contract.
 
 METHOD
 
 The real ``cleanup`` is lifted out of the real script (brace-matched, so the
 text executed is the text in the repository), installed as the EXIT trap, and
-the harness then fails the way a failed SSM step does. ``aws`` and the lib CLI
-are stubbed; the stub CLI prints the CLI's real TAB-separated line and exits 75.
-Reverting the guard fails this test.
+the harness then fails the way a failed SSM step does. ``aws`` is stubbed to
+record every invocation. ``LIB_PYTHON`` is stubbed to answer the
+``-m krepis.ec2_spot relaunch-decision ... --json`` call per-scenario, and to
+delegate any ``-c ...`` invocation (the launcher's own JSON-verdict parse) to
+the real ``python3`` on PATH, since that parse must run for real.
 """
 
 from __future__ import annotations
@@ -58,8 +57,9 @@ _SCRIPT = (
     Path(__file__).resolve().parent.parent / "infrastructure" / "spot_train.sh"
 )
 
-#: The CLI's documented "do not relaunch" status.
-_NO_RELAUNCH_EXIT_CODE = 75
+#: A CLI-internal-failure exit code — anything non-zero; --json makes 0 the
+#: only "reached a verdict" status, so which non-zero value is irrelevant.
+_CLI_FAILURE_EXIT_CODE = 2
 
 
 def _function_text(source: str, name: str) -> str:
@@ -83,15 +83,31 @@ def _write_stub(path: Path, body: str) -> None:
     path.chmod(0o755)
 
 
+def _write_lib_python_stub(path: Path, decision_body: str) -> None:
+    """A LIB_PYTHON stub that answers ``-m ... relaunch-decision`` per
+    ``decision_body`` and delegates any ``-c`` invocation to real python3 —
+    the launcher's own JSON-verdict parse must actually run.
+    """
+    _write_stub(
+        path,
+        "#!/usr/bin/env bash\n"
+        'if [ "$1" = "-c" ]; then\n'
+        "  shift\n"
+        '  exec python3 -c "$@"\n'
+        "fi\n"
+        f"{decision_body}\n",
+    )
+
+
 @pytest.fixture(autouse=True)
-def _requires_bash():
+def _requires_bash_and_python():
     if shutil.which("bash") is None:  # pragma: no cover - bash is a hard dep
         pytest.skip("bash unavailable")
+    if shutil.which("python3") is None:  # pragma: no cover - python3 is a hard dep
+        pytest.skip("python3 unavailable")
 
 
-def test_cleanup_terminates_the_instance_when_the_decision_is_hold(
-    tmp_path: Path,
-) -> None:
+def _run_cleanup(tmp_path: Path, lib_python_body: str) -> tuple[str, int]:
     source = _SCRIPT.read_text()
 
     bin_dir = tmp_path / "bin"
@@ -103,13 +119,8 @@ def test_cleanup_terminates_the_instance_when_the_decision_is_hold(
         bin_dir / "aws",
         "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> " + str(calls) + "\nexit 0\n",
     )
-    hold_python = tmp_path / "hold-python"
-    _write_stub(
-        hold_python,
-        "#!/usr/bin/env bash\n"
-        "printf 'hold\\tnot-reclaim:other\\tother\\t1\\n'\n"
-        f"exit {_NO_RELAUNCH_EXIT_CODE}\n",
-    )
+    lib_python = tmp_path / "lib-python"
+    _write_lib_python_stub(lib_python, lib_python_body)
 
     harness = tmp_path / "harness.sh"
     harness.write_text(
@@ -127,7 +138,7 @@ def test_cleanup_terminates_the_instance_when_the_decision_is_hold(
         "SF_EXECUTION_TIMEOUT=''\n"
         "SPOT_ATTEMPT=1\n"
         "MAX_SPOT_ATTEMPTS=2\n"
-        f"LIB_PYTHON={hold_python}\n"
+        f"LIB_PYTHON={lib_python}\n"
         "ORIG_ARGS=()\n"
         "_ORIG_ARGS=()\n"
         "trap cleanup EXIT\n"
@@ -144,17 +155,54 @@ def test_cleanup_terminates_the_instance_when_the_decision_is_hold(
         timeout=60,
     )
     aws_calls = calls.read_text() if calls.exists() else ""
+    return aws_calls, proc.returncode, proc.stdout, proc.stderr
 
-    assert "terminate-instances" in aws_calls, (
-        "cleanup never reached terminate-instances on a HELD relaunch decision "
-        "— the spot instance is leaked and runs until its own watchdog stops "
-        "it.\n"
-        f"aws calls seen:\n{aws_calls or '  (none)'}\n"
-        f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+
+def test_cleanup_terminates_on_a_well_formed_json_hold(tmp_path: Path) -> None:
+    """(a) --json verdict, relaunch: false, CLI exits 0."""
+    aws_calls, returncode, stdout, stderr = _run_cleanup(
+        tmp_path,
+        "printf '{\"relaunch\": false, \"reason\": \"other\"}'\nexit 0\n",
     )
 
-    assert proc.returncode == 3, (
-        f"the launcher exited {proc.returncode}, not the workload's status 3. "
-        "Exiting with the decision CLI's 75 misreports a training failure as a "
-        "spot-relaunch verdict to the orchestration wrapper."
+    assert "terminate-instances" in aws_calls, (
+        "cleanup never reached terminate-instances on a well-formed JSON hold "
+        "verdict — the spot instance is leaked.\n"
+        f"aws calls seen:\n{aws_calls or '  (none)'}\n"
+        f"stdout:\n{stdout}\nstderr:\n{stderr}"
+    )
+    assert "SpotInterruptionRetry" not in aws_calls, (
+        "a relaunch=false verdict must not record a spot-interruption-retry "
+        f"metric.\naws calls seen:\n{aws_calls or '  (none)'}"
+    )
+    assert returncode == 3, (
+        f"the launcher exited {returncode}, not the workload's status 3."
+    )
+
+
+def test_cleanup_terminates_when_the_decision_cli_fails_outright(
+    tmp_path: Path,
+) -> None:
+    """(b) CLI failure (non-zero exit, no verdict) must be treated as a hold,
+    not parsed for a verdict — and must still reach terminate-instances."""
+    aws_calls, returncode, stdout, stderr = _run_cleanup(
+        tmp_path,
+        "printf 'boom: could not describe instance\\n' >&2\n"
+        f"exit {_CLI_FAILURE_EXIT_CODE}\n",
+    )
+
+    assert "terminate-instances" in aws_calls, (
+        "cleanup never reached terminate-instances when the decision CLI "
+        "failed outright — a non-zero --json exit means 'could not answer', "
+        "not a verdict, and must still be held explicitly.\n"
+        f"aws calls seen:\n{aws_calls or '  (none)'}\n"
+        f"stdout:\n{stdout}\nstderr:\n{stderr}"
+    )
+    assert "SpotInterruptionRetry" not in aws_calls, (
+        "a CLI failure must never be treated as a relaunch verdict.\n"
+        f"aws calls seen:\n{aws_calls or '  (none)'}"
+    )
+    assert returncode == 3, (
+        f"the launcher exited {returncode}, not the workload's status 3. "
+        "A CLI failure must never override the real workload exit status."
     )
