@@ -11,7 +11,7 @@ setuptools>=83.0.0
 # (put_object IfMatch / IfNoneMatch) for lost-update protection; the loader
 # also carries a compare-then-put fallback if the installed botocore
 # predates them, but the pinned floor makes the conditional path the norm.
-boto3>=1.43.65
+boto3>=1.43.70
 pyyaml>=6.0
 # streamlit-calendar: FullCalendar component backing the Morning Signal
 # Content Schedule page (views/45_Morning_Signal_Schedule.py) — month
@@ -56,7 +56,7 @@ yfinance>=1.5.1
 # This only surfaced once nousergon-data#975 moved weekly dispatch onto a
 # per-execution spot box that builds this venv from scratch; the long-lived
 # dashboard box had 0.18.8 installed out-of-band, masking the stale pin.
-krepis[openai]>=0.35.0
+krepis[openai]>=0.54.0
 # nousergon-lib (renamed from alpha-engine-lib at v0.60.0) provides
 # setup_logging used by app.py + health_checker.py
 # to attach the FlowDoctorHandler when FLOW_DOCTOR_ENABLED=1, the
