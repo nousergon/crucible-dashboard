@@ -31,6 +31,24 @@ echo "Installed $SCRIPT_DST"
 install -m 0755 "$REPO_INFRA/box_hygiene.sh" /usr/local/bin/box_hygiene.sh
 echo "Installed /usr/local/bin/box_hygiene.sh"
 
+# The ALERT_PY helper travels WITH the publisher (alpha-engine-config-I7168).
+#
+# box_health.sh sources `$(dirname "$BASH_SOURCE")/alert_py.sh` first and a
+# hardcoded checkout path second. Without this line the sibling never exists,
+# so every installed publisher on this box depends on the literal
+# `/home/ec2-user/alpha-engine-dashboard/infrastructure/alert_py.sh` — a
+# LEGACY directory name (this repo is crucible-dashboard now) that nothing
+# tests, nothing owns, and one `mv` would take out from under all six
+# publishers at once.
+#
+# It is also what made 2026-08-13 a CRITICAL: box_health.sh was installed
+# carrying `. /usr/local/bin/alert_py.sh` before any fallback existed, the file
+# was not there, and the box's primary watchdog exited 1 on
+# `ALERT_PY: unbound variable`. The fallback added afterwards keeps that from
+# being fatal; installing the helper is what stops it being load-bearing.
+install -m 0755 "$REPO_INFRA/alert_py.sh" /usr/local/bin/alert_py.sh
+echo "Installed /usr/local/bin/alert_py.sh"
+
 # box-state-backup runs the script from the REPO path (like substrate-health
 # and daily-news) rather than a /usr/local/bin copy: it reads budget.yaml from
 # a path relative to itself, so splitting the two would need a second copy of

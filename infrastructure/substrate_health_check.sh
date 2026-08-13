@@ -26,10 +26,22 @@
 set -eo pipefail
 
 RUN_DATE=""
+EXECUTION_ARN=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --run-date)
       RUN_DATE="$2"
+      shift 2
+      ;;
+    --execution-arn)
+      # alpha-engine-config-I7167. OPTIONAL by design: this script is deployed
+      # to the box by `git pull` and the SF state that passes this flag lands
+      # in a separate repo (nousergon-data). Between the two merges the box
+      # runs a script that accepts the flag from an SF that does not yet send
+      # it — so it must degrade, not abort. Without it the stage-output sweep
+      # cannot read the execution window or the entered-stage set and reports
+      # `unmeasured` rather than inventing either.
+      EXECUTION_ARN="$2"
       shift 2
       ;;
     *)
@@ -61,3 +73,44 @@ cd /home/ec2-user/alpha-engine-data
 echo "--- phase marker sweep ---"
 export RUN_DATE
 "$PYTHON_BIN" -m validators.phase_marker_sweep --run-date "$RUN_DATE" --alert
+
+# ── stage-output assertion (alpha-engine-config-I7167) ──────────────────────
+#
+# Asserts that every stage which ENTERED this execution wrote the S3 artifact
+# it declares in ARTIFACT_REGISTRY.yaml's `produced_by:`. The 2026-08-08
+# scheduled run terminated SUCCEEDED with five stages having produced nothing,
+# and no surface reported it: a stage that runs, exits 0 and writes nothing was
+# indistinguishable from one that did its job.
+#
+# Runs in OBSERVE mode — it alerts and writes its verdict to
+# `_stage_outputs/{pipeline}/{run_date}.json`, and exits 0 regardless of what
+# it finds. That is deliberate and load-bearing:
+#
+#   * this script runs under `set -eo pipefail` inside WeeklySubstrateHealthCheck,
+#     whose States.ALL Catch sets $.degraded_summary;
+#   * since alpha-engine-config-I6891 a degraded summary routes the run through
+#     CheckDegradedOutcome -> WriteCompletionMarkerDegraded -> DegradedRun, a
+#     **Fail** state;
+#   * so any non-zero exit here terminates the whole ~4h weekly run as FAILED.
+#
+# Three of I7167's five instances are still open, so an enforcing default would
+# hard-fail the next scheduled run for defects that predate the detector —
+# `ruling_detect_before_enforcing_when_the_floor_is_unmeasured` (Brian,
+# 2026-08-11). The first observe run publishes the real finding count; `--enforce`
+# is the one-word flip once that floor is known and the residue triaged.
+#
+# `|| true` is NOT a silent swallow: the sweep already exits 0 for findings, so
+# this only absorbs an unhandled crash of the sweep itself. Its recording
+# surfaces are (a) this ERROR line, and (b) the registry row on the verdict key,
+# which goes stale and pages when the sweep stops writing. Without it, a bug in
+# a brand-new observability check could fail a four-hour production run — the
+# reporter destroying the thing it reports.
+echo "--- stage output sweep (observe) ---"
+cd /home/ec2-user/alpha-engine-data
+if ! "$PYTHON_BIN" -m validators.stage_output_sweep \
+    --run-date "$RUN_DATE" \
+    ${EXECUTION_ARN:+--execution-arn "$EXECUTION_ARN"}; then
+  echo "substrate_health_check.sh: stage_output_sweep CRASHED (not a finding — the" \
+       "sweep exits 0 for findings by design). The weekly run is NOT failed for" \
+       "this; investigate via _stage_outputs/ and alpha-engine-config-I7167." >&2
+fi

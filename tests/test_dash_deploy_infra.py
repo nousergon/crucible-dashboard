@@ -1011,3 +1011,114 @@ class TestDurableStateRegistry:
         assert 'install-resource-limits.sh" ] && _budget_reinstalled=1' in dep
         assert "systemctl start box-state-backup.service" in dep
         assert "_budget_reinstalled" in dep and '!= "success"' in dep
+
+
+class TestDeployGateSeesEveryOutOfTreeCopy:
+    """A file an installer copies out of the tree needs a deploy-gate pair, or
+    merging the change deploys nothing (alpha-engine-config-I7211).
+
+    Measured 2026-08-13. `crucible-dashboard-PR676` taught three installers to
+    place `alert_py.sh` into /usr/local/bin, merged green, and changed nothing
+    on the box: the §2e gate compares a FIXED list of `src:dst` pairs, every
+    pair in it was already byte-identical, and `install-box-health.sh` itself is
+    not a pair. The gate read "not stale", the installer never ran, and
+    `/usr/local/bin/alert_py.sh` still did not exist an hour after the merge.
+
+    A PR that is correct and deploys nothing has the same effect as one that
+    never merged — and it is worse, because the tracker says it shipped. The
+    §2f routing table already guarantees every installer is INVOKED; this
+    guarantees the gate deciding whether to invoke it can SEE the files it
+    would place.
+    """
+
+    DEPLOY = "infrastructure/deploy-on-merge.sh"
+    INFRA = REPO_ROOT / "infrastructure"
+
+    #: Copies whose gate lives elsewhere, each with the reason. Exhaustive and
+    #: add-by-PR-only — an unexplained exemption is how the next one hides.
+    #: Prefer widening the COVERAGE test below over adding a row here.
+    EXEMPT: dict[str, str] = {}
+
+    def _stamp_inputs(self) -> dict[str, set[str]]:
+        """{installer name: basenames its stamp-mode row hashes}.
+
+        A stamp row is weaker than a files row — it proves the installer ran
+        for these inputs, not that the result still stands — but it is a real
+        gate: editing a listed input changes the stamp and the installer runs.
+        `install-cloudwatch-agent-config.sh` is stamp-mode for a measured
+        reason (its CFG_DST is consumed by `amazon-cloudwatch-agent-ctl` and
+        never persists, so a files-mode pair reads stale forever and would
+        restart the agent on every deploy), and it hashes `emit_oom_metric.sh`.
+        Treating that as uncovered would push a correct design toward a
+        pair that is known to be wrong.
+        """
+        import re
+
+        sh = (REPO_ROOT / self.DEPLOY).read_text(encoding="utf-8")
+        block = re.search(r"ROUTED_INSTALLERS=\((.*?)\n\)", sh, re.S)
+        assert block, "deploy-on-merge.sh must declare ROUTED_INSTALLERS"
+        out: dict[str, set[str]] = {}
+        for line in block.group(1).splitlines():
+            line = line.strip().strip('"')
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split("|")
+            if len(parts) == 3 and parts[1] == "stamp":
+                out[parts[0]] = {a.split(":")[0].split("/")[-1] for a in parts[2].split(",")}
+        return out
+
+    def _out_of_tree_copies(self) -> dict[str, set[str]]:
+        """{installer name: {basenames it installs into /usr/local/bin}}."""
+        import re
+
+        found: dict[str, set[str]] = {}
+        pattern = re.compile(
+            r"""install\s+-m\s+0\d{3}\s+"?\$\{?\w+\}?/([\w.-]+)"?\s+"?(/usr/local/bin/[\w.-]+)"?"""
+        )
+        for path in sorted(self.INFRA.glob("install-*.sh")):
+            names = {m.group(1) for m in pattern.finditer(path.read_text(encoding="utf-8"))}
+            if names:
+                found[path.name] = names
+        assert found, "no installer copies into /usr/local/bin — the parser broke, not the repo"
+        return found
+
+    def test_every_out_of_tree_copy_has_a_deploy_gate_pair(self):
+        deploy = (REPO_ROOT / self.DEPLOY).read_text(encoding="utf-8")
+        stamped = self._stamp_inputs()
+        missing: dict[str, list[str]] = {}
+
+        for installer, names in self._out_of_tree_copies().items():
+            for name in sorted(names):
+                if name in self.EXEMPT or name in stamped.get(installer, set()):
+                    continue
+                # Either form counts: a §2x `"$VAR/name:/usr/local/bin/name"`
+                # pair, or a §2f ROUTED_INSTALLERS `name:/usr/local/bin/name`
+                # entry. Both make the gate compare the box against the repo.
+                if f"{name}:/usr/local/bin/{name}" not in deploy:
+                    missing.setdefault(installer, []).append(name)
+
+        assert not missing, (
+            "these files are copied out of the repo tree by an installer but "
+            f"appear in NO deploy-on-merge.sh gate: {missing}. Merging a change "
+            "to them deploys nothing — add "
+            "`\"$INFRA/<name>:/usr/local/bin/<name>\"` to that installer's gate "
+            "(or its ROUTED_INSTALLERS row)."
+        )
+
+    def test_alert_py_specifically_is_gated_everywhere_it_is_installed(self):
+        """The instance that produced the rule, pinned separately: a future
+        edit that drops one of the three gates fails here with its own name."""
+        deploy = (REPO_ROOT / self.DEPLOY).read_text(encoding="utf-8")
+        installers = {
+            i for i, names in self._out_of_tree_copies().items() if "alert_py.sh" in names
+        }
+        assert installers, (
+            "no installer places alert_py.sh any more — if that is deliberate, "
+            "the six publishers now depend solely on the hardcoded legacy "
+            "checkout path (alpha-engine-config-I7211)"
+        )
+        assert deploy.count("alert_py.sh:/usr/local/bin/alert_py.sh") >= 3, (
+            f"alert_py.sh is installed by {sorted(installers)} but appears in "
+            f"fewer than 3 deploy gates — the installers that lost their pair "
+            f"will silently stop deploying it"
+        )
