@@ -4,7 +4,16 @@
 # Source it, then use "$ALERT_PY":
 #
 #     . "$(dirname "${BASH_SOURCE[0]}")/alert_py.sh"
-#     "$ALERT_PY" -m krepis.alerts publish --message ... --severity ...
+#     "$ALERT_PY" -m krepis.alerts publish --message ... --severity ... \
+#         --source box-health
+#
+# `--source` is not optional in the example on purpose: alpha-engine-config's
+# `Check alert-class registry drift` scans this repo for alert source literals
+# and cross-checks them against `playbooks.yaml`, and a `publish` with no
+# `--source` reads to it as an uncovered alert class. It reported this file as
+# the sole fleet-wide drift on 2026-08-13 — from THIS comment, since the file
+# has no live call site. An example that omits the flag also teaches the next
+# call site to omit it, which is the real cost.
 #
 # WHY THIS EXISTS (alpha-engine-config-I7168)
 # ------------------------------------------
