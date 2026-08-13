@@ -55,8 +55,50 @@ THRESHOLDS = {
     # price_cache_slim retired (Wave-4): ArcticDB universe lib is canonical;
     # its freshness is monitored upstream in alpha-engine-data's preflight.
     "daily_closes": 2,      # Daily Mon-Fri
-    "population": 8,        # Updated weekly by Research
+    # population RETIRED 2026-08-13 (alpha-engine-config-I6053) — see the
+    # `universe_membership` entry below, which replaces it.
+    "universe_membership": 8,  # Written weekly (and on every exercise cycle)
+                               # by the Scanner; successor to `population`
 }
+
+# Per-module staleness thresholds for the `health/` module markers, in
+# calendar days. Derived from each producer's DECLARED CADENCE plus one
+# period of slack, per ARCHITECTURE §128 ("set the threshold from the
+# producer's cadence with one period of slack") — NOT from what happens to
+# pass today.
+#
+# Why this map exists (alpha-engine-config-I6053): every module marker was
+# previously judged against a flat 2-day threshold. That is correct for the
+# daily producers and structurally impossible for the weekly ones — the
+# backtester and the research signals producer run on the Saturday weekly
+# pipeline, so a 2-day budget marks them stale on Tuesday through Friday of
+# every single week, whatever their actual health. Measured live 2026-08-13:
+# `health/backtester.json` last written 2026-08-08 (the previous Saturday
+# run, which SUCCEEDED) read as 5d stale against the flat 2d.
+#
+# This is NOT a threshold widened until a stale entry passes. `population`
+# (33 days stale, a genuinely dead producer) is REMOVED rather than
+# re-baselined, and `health/research` is repaired at the producer
+# (crucible-research signals_envelope_handler, config-I6053) — it stays
+# stale here until that producer's write lands. 8 days still catches a
+# weekly producer that misses one whole cycle.
+#
+# The weekly figures match nousergon_lib.health.DASHBOARD_HEALTH_MODULES,
+# which already declares research and predictor_training at 8*24 hours —
+# the flat 2 in this file contradicted the lib's own cadence table.
+HEALTH_MODULE_THRESHOLDS = {
+    "data": 2,          # DataPhase1/2 — daily Mon-Fri
+    "executor": 2,      # Trading daemon — daily Mon-Fri
+    "predictor": 2,     # predictor_inference — daily Mon-Fri
+    "research": 8,      # signals envelope — weekly Saturday pipeline
+    "backtester": 8,    # Backtester stage — weekly Saturday pipeline
+}
+
+#: Fallback for a module present in HEALTH_CHECK_CANDIDATES but absent from
+#: HEALTH_MODULE_THRESHOLDS. Deliberately the DAILY value: a new module
+#: arriving without a declared cadence should read stale and prompt an
+#: explicit entry, never inherit the most forgiving budget in the table.
+DEFAULT_HEALTH_THRESHOLD_DAYS = 2
 
 
 def _last_modified_age(s3, bucket: str, key: str) -> tuple[str | None, int | None]:
@@ -168,11 +210,36 @@ def check_all(bucket: str = DEFAULT_BUCKET) -> list[dict]:
         "status": "ok" if age is not None and age <= threshold else "stale" if age is not None else "missing",
     })
 
-    # 5. Population
-    modified, age = _last_modified_age(s3, bucket, "population/latest.json")
-    threshold = THRESHOLDS["population"]
+    # 5. Universe membership — REPLACES the retired `population` check
+    #    (alpha-engine-config-I6053, closing config-I4921's deferred row).
+    #
+    #    `population/latest.json`'s sole producer was the multi-agent research
+    #    graph's `archive_writer` node (crucible-research
+    #    `archive/manager.py::save_population`). That graph was removed from
+    #    the weekly SF on 2026-07-14 (nousergon-data#814, config-I2515), so
+    #    the file has not changed since 2026-07-10 — 33 days stale against an
+    #    8-day threshold when measured 2026-08-13, and the single largest
+    #    reason SaturdayHealthCheck exits non-zero.
+    #
+    #    The check is REMOVED, not re-baselined. Widening 8 days to 40 would
+    #    convert a working detector into a silent one, and no threshold is
+    #    correct for an artifact nobody writes — a freshness check on a dead
+    #    producer is `principles.md` §2.7's "no data rendered as green" in
+    #    reverse (see ARCHITECTURE §128, which this artifact is the origin
+    #    case of).
+    #
+    #    Its consumer was repointed on 2026-07-27: the predictor now resolves
+    #    its daily universe from `universe_membership/{date}/membership.json`
+    #    + `universe_membership/latest.json` (crucible-research-PR506
+    #    producer, crucible-predictor-PR429 consumer, config-I4818). That is
+    #    the live successor artifact and the thing whose staleness actually
+    #    matters now, so the check follows the capability rather than being
+    #    deleted outright. Registry row `universe_membership_latest` already
+    #    exists in ARTIFACT_REGISTRY.yaml.
+    modified, age = _last_modified_age(s3, bucket, "universe_membership/latest.json")
+    threshold = THRESHOLDS["universe_membership"]
     results.append({
-        "check": "population",
+        "check": "universe_membership",
         "last_updated": modified,
         "age_days": age,
         "threshold_days": threshold,
@@ -209,6 +276,11 @@ def check_all(bucket: str = DEFAULT_BUCKET) -> list[dict]:
     })
 
     # Module health markers — candidate keys from lib (config#1728).
+    # Threshold is per-module and cadence-derived (see
+    # HEALTH_MODULE_THRESHOLDS), not a flat 2 days: the research and
+    # backtester markers are written by the weekly Saturday pipeline and a
+    # 2-day budget marked them stale on four days of every week regardless of
+    # health (alpha-engine-config-I6053).
     for module, candidates in HEALTH_CHECK_CANDIDATES.items():
         modified, age = None, None
         chosen_key = None
@@ -218,12 +290,15 @@ def check_all(bucket: str = DEFAULT_BUCKET) -> list[dict]:
                 continue
             if age is None or (a_ is not None and a_ < age):
                 modified, age, chosen_key = m_, a_, candidate
+        threshold = HEALTH_MODULE_THRESHOLDS.get(
+            module, DEFAULT_HEALTH_THRESHOLD_DAYS
+        )
         results.append({
             "check": f"health/{module}",
             "last_updated": modified,
             "age_days": age,
-            "threshold_days": 2,
-            "status": "ok" if age is not None and age <= 2 else "stale" if age is not None else "missing",
+            "threshold_days": threshold,
+            "status": "ok" if age is not None and age <= threshold else "stale" if age is not None else "missing",
             # When multiple candidate filenames exist for a module, name
             # which one was chosen (most-recently-modified). Empty for
             # single-file modules.
