@@ -123,4 +123,10 @@ fi
 # Per-stage output assertion (config-I7214, sf-pipeline-policy.md §2.1):
 # assert THIS stage wrote what it declared, at the boundary where the fact
 # becomes knowable. OBSERVE MODE — it can never fail the stage.
-"$PYTHON_BIN" -m nousergon_lib.stage_coverage assert --stage WeeklySubstrateHealthCheck --window-start "$_STAGE_WINDOW_START" || echo "WARNING: stage-coverage assertion did not run for WeeklySubstrateHealthCheck (rc=$?) — observe mode, stage NOT failed (config-I7214)" >&2
+#
+# krepis, not nousergon_lib: krepis is the fleet's sanctioned bash/runpy
+# entrypoint namespace (this script already calls `-m nousergon_lib.*` only
+# for genuine non-shim modules like `transparency` — see
+# tests/test_no_runpy_alias_invocation.py's `_REAL_NL_MODULE_EXEMPTIONS`).
+# `stage_coverage` lands in krepis, so no exemption is needed here.
+"$PYTHON_BIN" -m krepis.stage_coverage assert --stage WeeklySubstrateHealthCheck --window-start "$_STAGE_WINDOW_START" || echo "WARNING: stage-coverage assertion did not run for WeeklySubstrateHealthCheck (rc=$?) — observe mode, stage NOT failed (config-I7214)" >&2

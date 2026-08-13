@@ -392,6 +392,13 @@ def _assert_stage_coverage(stage: str, window_start: str) -> None:
     assert THIS stage wrote what it declared, at the boundary where the fact
     becomes knowable. OBSERVE MODE — it can never fail the stage.
 
+    Lives under `krepis`, not `nousergon_lib`: krepis is the fleet's
+    sanctioned bash/runpy entrypoint namespace (`-m krepis.ssm_dispatcher`,
+    `-m krepis.ec2_spot`, ...) — a `-m nousergon_lib.<module>` runpy
+    invocation is a guard-less re-export shim on lib >=0.81.0 that exits 0
+    WITHOUT executing (config#1646/#1649); see this repo's own
+    `tests/test_no_runpy_alias_invocation.py`.
+
     `sys.executable` IS the fleet-standard absolute venv interpreter here:
     the SF invokes this script as
     `/home/ec2-user/alpha-engine-dashboard/.venv/bin/python health_checker.py`,
@@ -403,7 +410,7 @@ def _assert_stage_coverage(stage: str, window_start: str) -> None:
             [
                 sys.executable,
                 "-m",
-                "nousergon_lib.stage_coverage",
+                "krepis.stage_coverage",
                 "assert",
                 "--stage",
                 stage,

@@ -2,13 +2,20 @@
 rescope of I7167's end-of-run `StageCoverageAssert` SF-state design).
 
 Brian ruled the shared SF state NON-SOTA: the assertion belongs in each
-stage's OWN script, calling the one shared primitive, `nousergon_lib.
+stage's OWN script, calling the one shared primitive, `krepis.
 stage_coverage`, directly — never a per-repo reimplementation of its logic
-(`policy-shared-code`'s fork test). SaturdayHealthCheck and
-WeeklySubstrateHealthCheck are the two weekly-SF Task states whose commands
-run scripts out of THIS repo's checkout (`health_checker.py` and
-`infrastructure/substrate_health_check.sh`); both are infrastructure/gate
-stages that declare no durable artifact (`COVERED_NO_OUTPUT`).
+(`policy-shared-code`'s fork test). `krepis`, not `nousergon_lib`, because
+krepis is the fleet's sanctioned bash/runpy entrypoint namespace (`-m
+krepis.ssm_dispatcher`, `-m krepis.ec2_spot`, ...) — a `-m
+nousergon_lib.<module>` runpy invocation is a guard-less re-export shim on
+lib >=0.81.0 that exits 0 WITHOUT executing (config#1646/#1649; see this
+repo's own `tests/test_no_runpy_alias_invocation.py`).
+
+SaturdayHealthCheck and WeeklySubstrateHealthCheck are the two weekly-SF
+Task states whose commands run scripts out of THIS repo's checkout
+(`health_checker.py` and `infrastructure/substrate_health_check.sh`); both
+are infrastructure/gate stages that declare no durable artifact
+(`COVERED_NO_OUTPUT`).
 
 OBSERVE MODE ONLY: neither call site may set `--enforce` /
 `STAGE_COVERAGE_ENFORCE`, and neither call site may be able to make its
@@ -43,8 +50,18 @@ def _executable_lines(path: Path):
 class TestSubstrateHealthCheckStageCoverage:
     def test_calls_stage_coverage_assert_with_correct_stage(self):
         src = _SUBSTRATE_SCRIPT.read_text()
-        assert "nousergon_lib.stage_coverage assert" in src
+        assert "krepis.stage_coverage assert" in src
         assert "--stage WeeklySubstrateHealthCheck" in src
+
+    def test_uses_krepis_not_nousergon_lib_namespace(self):
+        # config#1646/#1649: `-m nousergon_lib.<module>` is a guard-less
+        # re-export shim under runpy on lib >=0.81.0 — silent no-op, not an
+        # error. The new call site must live under the sanctioned krepis
+        # namespace, not nousergon_lib.
+        for _, line in _executable_lines(_SUBSTRATE_SCRIPT):
+            if "stage_coverage assert" in line:
+                assert "krepis.stage_coverage" in line
+                assert "nousergon_lib.stage_coverage" not in line
 
     def test_uses_shared_primitive_not_a_reimplementation(self):
         # The fork test (policy-shared-code): the I7214 assert line itself
@@ -53,13 +70,13 @@ class TestSubstrateHealthCheckStageCoverage:
         # legitimately mentions the registry in its own comments — this
         # guard is scoped to the new executable line only).
         for _, line in _executable_lines(_SUBSTRATE_SCRIPT):
-            if "nousergon_lib.stage_coverage" in line:
+            if "krepis.stage_coverage" in line:
                 assert "ARTIFACT_REGISTRY" not in line
 
     def test_assert_call_cannot_fail_the_script(self):
         lines = list(_executable_lines(_SUBSTRATE_SCRIPT))
         assert_line = next(
-            line for _, line in lines if "nousergon_lib.stage_coverage assert" in line
+            line for _, line in lines if "krepis.stage_coverage assert" in line
         )
         # Must be guarded by `|| echo ...` (not a bare call, not `|| true`,
         # and not chained with `&&` which would still propagate a failure).
@@ -77,14 +94,14 @@ class TestSubstrateHealthCheckStageCoverage:
         # status becomes the script's own exit status. Confirm the `||
         # echo` fallback (return 0) is genuinely the tail of the script.
         lines = list(_executable_lines(_SUBSTRATE_SCRIPT))
-        assert "nousergon_lib.stage_coverage assert" in lines[-1][1]
+        assert "krepis.stage_coverage assert" in lines[-1][1]
 
     def test_does_not_set_enforce(self):
         # Scoped to the new I7214 assert line — the I7167 sweep block above
         # it legitimately discusses `--enforce` in prose comments about its
         # OWN promotion flip, which is a different mechanism.
         for _, line in _executable_lines(_SUBSTRATE_SCRIPT):
-            if "nousergon_lib.stage_coverage" in line:
+            if "krepis.stage_coverage" in line:
                 assert "--enforce" not in line
                 assert "STAGE_COVERAGE_ENFORCE" not in line
 
@@ -96,7 +113,7 @@ class TestSubstrateHealthCheckStageCoverage:
         assert_idx = next(
             i
             for i, (_, line) in enumerate(lines)
-            if "nousergon_lib.stage_coverage assert" in line
+            if "krepis.stage_coverage assert" in line
         )
         assert window_idx < assert_idx
 
@@ -156,7 +173,7 @@ class TestHealthCheckerStageCoverageBehavior:
 
         args, kwargs = mock_run.call_args
         cmd = args[0]
-        assert cmd[1:5] == ["-m", "nousergon_lib.stage_coverage", "assert", "--stage"]
+        assert cmd[1:5] == ["-m", "krepis.stage_coverage", "assert", "--stage"]
         assert "SaturdayHealthCheck" in cmd
         assert "--window-start" in cmd
         assert "2026-08-15T09:00:00Z" in cmd
@@ -172,7 +189,7 @@ class TestHealthCheckerStageCoverageBehavior:
             health_checker._assert_stage_coverage("SaturdayHealthCheck", "2026-08-15T09:00:00Z")
 
     def test_module_not_found_does_not_raise(self):
-        # Simulates the module not existing yet (the shared nousergon-lib
+        # Simulates the module not existing yet (the shared krepis
         # primitive lands in a separate, not-yet-merged PR) — subprocess.run
         # itself raising is the worst case this call site must survive.
         import health_checker
@@ -197,17 +214,17 @@ class TestHealthCheckerStageCoverageBehavior:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Cross-cutting: the nousergon-lib pin is NOT bumped in this PR
+# Cross-cutting: the krepis pin is NOT bumped in this PR
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-class TestNousergonLibPinNotBumped:
-    def test_pin_still_names_the_pre_stage_coverage_tag(self):
-        # config-I7214: the nousergon-lib bump is a separate, mechanical
-        # wave that lands ONLY after the nousergon-lib PR carrying
-        # `stage_coverage` merges and tags a release — pinning a guessed
-        # tag now would be a defect (the tag does not exist yet). This
-        # guard pins the CURRENT tag so a same-PR bump trips it, forcing
-        # the bump to go through its own reviewed diff.
+class TestKrepisPinNotBumped:
+    def test_pin_still_names_the_pre_stage_coverage_version(self):
+        # config-I7214: the krepis bump is a separate, mechanical wave that
+        # lands ONLY after the krepis PR carrying `stage_coverage` merges
+        # and releases to PyPI — pinning a guessed version now would be a
+        # defect (the version does not exist yet). This guard pins the
+        # CURRENT version so a same-PR bump trips it, forcing the bump to
+        # go through its own reviewed diff.
         src = _REQUIREMENTS.read_text()
-        assert "nousergon-lib[flow-doctor,github-app] @ git+https://github.com/nousergon/nousergon-lib@v0.124.45" in src
+        assert "krepis[flow-doctor,openai]==0.54.0" in src
