@@ -543,6 +543,7 @@ fi
 WATCHDOG_INFRA="$REPO_DIR/infrastructure"
 if any_file_state_stale \
     "$WATCHDOG_INFRA/morning-signal-watchdog.sh:/usr/local/bin/morning-signal-watchdog.sh" \
+    "$WATCHDOG_INFRA/alert_py.sh:/usr/local/bin/alert_py.sh" \
     "$WATCHDOG_INFRA/systemd/morning-signal-watchdog.service:/etc/systemd/system/morning-signal-watchdog.service" \
     "$WATCHDOG_INFRA/systemd/morning-signal-watchdog.timer:/etc/systemd/system/morning-signal-watchdog.timer"; then
     log "morning-signal watchdog wrapper/units differ from installed copies — re-installing"
@@ -596,6 +597,20 @@ if any_file_state_stale \
 fi
 
 # ── 2e. Re-install box-health/hygiene watchdog if its script/units changed ──
+#
+# `alert_py.sh` is in the pair list below, and its absence is why it is worth a
+# note (alpha-engine-config-I7211). The gates here compare a FIXED list of
+# src:dst pairs; a file the installer copies but the list omits is invisible to
+# the gate, so the installer never runs for it and the file never lands. That
+# is what happened on 2026-08-13: crucible-dashboard-PR676 taught three
+# installers to place `alert_py.sh` in /usr/local/bin, and merging it changed
+# nothing on the box, because every pair in the list was already byte-identical
+# and `install-box-health.sh` itself is not a pair. A PR that is correct and
+# deploys nothing is the same outcome as a PR that never merged.
+#
+# The rule the list encodes: every file an installer copies out of the tree
+# needs a row here, or the deploy gate cannot see it. Held by
+# tests/test_dash_deploy_infra.py::test_every_out_of_tree_copy_has_a_deploy_gate_pair.
 # box_health.sh + box_hygiene.sh + their units + the journald size cap are
 # /usr/local/bin + /etc provisioned OUT of the repo tree by
 # install-box-health.sh (config#2227).
@@ -647,6 +662,7 @@ manifest_stale() {
 if manifest_stale || any_file_state_stale \
     "$BOX_HEALTH_INFRA/box_health.sh:/usr/local/bin/box_health.sh" \
     "$BOX_HEALTH_INFRA/box_hygiene.sh:/usr/local/bin/box_hygiene.sh" \
+    "$BOX_HEALTH_INFRA/alert_py.sh:/usr/local/bin/alert_py.sh" \
     "$BOX_HEALTH_INFRA/systemd/box-health.service:/etc/systemd/system/box-health.service" \
     "$BOX_HEALTH_INFRA/systemd/box-health.timer:/etc/systemd/system/box-health.timer" \
     "$BOX_HEALTH_INFRA/systemd/box-hygiene.service:/etc/systemd/system/box-hygiene.service" \
@@ -708,7 +724,7 @@ ROUTED_INSTALLERS=(
   # and would restart the CloudWatch agent on every single deploy. Caught by
   # running the gate against the live box before merge, not by inspection.
   "install-cloudwatch-agent-config.sh|stamp|cloudwatch-agent.json,emit_oom_metric.sh,systemd/emit-oom-metric.service,systemd/emit-oom-metric.timer,install-cloudwatch-agent-config.sh"
-  "install-auto-patching.sh|files|dnf-automatic.conf:/etc/dnf/automatic.conf,systemd/dnf-automatic-alert.conf:/etc/systemd/system/dnf-automatic.service.d/10-alert.conf,reboot_if_needed.sh:/usr/local/bin/reboot_if_needed.sh,systemd/reboot-if-needed.service:/etc/systemd/system/reboot-if-needed.service,systemd/reboot-if-needed.timer:/etc/systemd/system/reboot-if-needed.timer"
+  "install-auto-patching.sh|files|dnf-automatic.conf:/etc/dnf/automatic.conf,systemd/dnf-automatic-alert.conf:/etc/systemd/system/dnf-automatic.service.d/10-alert.conf,reboot_if_needed.sh:/usr/local/bin/reboot_if_needed.sh,alert_py.sh:/usr/local/bin/alert_py.sh,systemd/reboot-if-needed.service:/etc/systemd/system/reboot-if-needed.service,systemd/reboot-if-needed.timer:/etc/systemd/system/reboot-if-needed.timer"
   # Drop-ins are rendered per-unit into /etc/systemd/system/<unit>.d/, so there
   # is no single dst pair; budget.yaml plus the renderer fully determine them.
   "install-resource-limits.sh|stamp|systemd/resource-limits/budget.yaml,install-resource-limits.sh"
