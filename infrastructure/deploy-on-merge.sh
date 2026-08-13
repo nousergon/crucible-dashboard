@@ -19,6 +19,10 @@
 
 set -uo pipefail
 
+# Alerts publish through the DECLARED krepis venv, not through whichever
+# checkout happened to carry a krepis (config-I7168).
+. "$(dirname "${BASH_SOURCE[0]}")/alert_py.sh"
+
 REPO_DIR="/home/ec2-user/alpha-engine-dashboard"
 LOG="/var/log/dashboard-deploy.log"
 TARGET_SHA="${1:-HEAD}"
@@ -983,7 +987,9 @@ revert_to_last_good() {
     return 1
 }
 
-ALERT_PY="$REPO_DIR/.venv/bin/python"
+# ALERT_PY comes from alert_py.sh (config-I7168) — the declared krepis venv,
+# not whichever checkout happened to carry a krepis.
+:
 
 health_failed=""
 wait_for_health "$CONSOLE_URL" "dashboard (console)"    || health_failed="console"
