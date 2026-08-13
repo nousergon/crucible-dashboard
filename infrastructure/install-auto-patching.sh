@@ -30,6 +30,10 @@ install -m 0644 "$HERE/systemd/dnf-automatic-alert.conf" \
 
 echo "==> installing conditional reboot job"
 install -m 0755 "$HERE/reboot_if_needed.sh" /usr/local/bin/reboot_if_needed.sh
+# The ALERT_PY helper travels WITH the publisher (alpha-engine-config-I7168):
+# reboot_if_needed.sh resolves `alert_py.sh` as a sibling first, and without
+# this it can only reach the hardcoded legacy checkout path.
+install -m 0755 "$HERE/alert_py.sh" /usr/local/bin/alert_py.sh
 install -m 0644 "$HERE/systemd/reboot-if-needed.service" /etc/systemd/system/
 install -m 0644 "$HERE/systemd/reboot-if-needed.timer"   /etc/systemd/system/
 
