@@ -222,3 +222,84 @@ class TestFixtureMatchesTheProducerContract:
         # stale-cycle verdict is diagnosable from the rendered page.
         assert PASS_BLOCK["backtester"]["source_path"].endswith("/attestation.json")
         assert PASS_BLOCK["backtester"]["schema"].startswith("backtest_attestation-")
+
+
+# ---------------------------------------------------------------------------
+# config-I7039 — surface completeness: the third half, the as-of, the promotion
+# ---------------------------------------------------------------------------
+#
+# The renderer shipped in config-I6974 knew TWO halves. crucible-evaluator#189
+# added the Evaluator STAGE's verdict as a third, and the producer began emitting
+# `as_of` and `promotion_withheld`. None of that reached this surface, so the page
+# rendered a confident two-half PASS for a three-half check and never said WHEN
+# the verdict was established — a stale PASS and a fresh one looked identical,
+# which is the failure mode one layer up from reading absence as green.
+
+class TestThreeHalves:
+    def test_renderer_knows_exactly_the_producer_s_halves(self):
+        # A CLOSED list. A half added upstream and not added here is silently
+        # dropped from the PASS line: the page understates what was checked
+        # while looking exactly as confident, and no test fails.
+        assert set(report_card_v2.ATTESTATION_HALVES) == {
+            k for k in PASS_BLOCK if isinstance(PASS_BLOCK.get(k), dict)
+            and "verdict" in PASS_BLOCK[k]
+        }
+
+    def test_pass_line_names_the_evaluator_stage(self, st_mock):
+        report_card_v2.render_attestation(_card(PASS_BLOCK))
+        text = _texts(st_mock.success)
+        assert "Evaluator stage" in text
+        assert "evaluator_stage 4 checks" in text
+
+    def test_non_pass_names_which_half_withheld(self, st_mock):
+        block = {**PASS_BLOCK, "verdict": "UNKNOWN",
+                 "evaluator_stage": {**PASS_BLOCK["evaluator_stage"], "verdict": "UNKNOWN"}}
+        report_card_v2.render_attestation(_card(block))
+        caption = _texts(st_mock.caption)
+        assert "`evaluator_stage`: **UNKNOWN**" in caption
+        assert "`backtester`: **PASS**" in caption, (
+            "a per-half breakdown that only shows the failing half tells the "
+            "reader nothing about what WAS established"
+        )
+
+
+class TestAsOf:
+    """A verdict with no timestamp cannot read as stale."""
+
+    def test_pass_carries_the_as_of(self, st_mock):
+        report_card_v2.render_attestation(_card(PASS_BLOCK))
+        text = _texts(st_mock.success)
+        assert "2026-08-12T09:41:02Z" in text
+        assert "2026-08-12T10:02:55Z" in text
+
+    def test_fail_carries_the_as_of(self, st_mock):
+        report_card_v2.render_attestation(_card({**PASS_BLOCK, "verdict": "FAIL"}))
+        assert "Verdict as-of" in _texts(st_mock.error)
+
+    def test_unknown_carries_the_as_of(self, st_mock):
+        report_card_v2.render_attestation(_card({**PASS_BLOCK, "verdict": "UNKNOWN"}))
+        assert "Verdict as-of" in _texts(st_mock.warning)
+
+    def test_a_half_with_no_timestamp_renders_never_not_nothing(self, st_mock):
+        block = {**PASS_BLOCK, "as_of": {"backtester": None,
+                                         "evaluator_stage": "2026-08-12T10:02:55Z"}}
+        report_card_v2.render_attestation(_card(block))
+        assert "backtester: never" in _texts(st_mock.success)
+
+    def test_absent_as_of_says_so_rather_than_omitting_the_line(self, st_mock):
+        block = {k: v for k, v in PASS_BLOCK.items() if k != "as_of"}
+        report_card_v2.render_attestation(_card(block))
+        assert "not recorded by the producer" in _texts(st_mock.success)
+
+
+class TestPromotionWithheld:
+    """The parameters this card grades are not necessarily the ones trading."""
+
+    def test_withheld_promotion_is_surfaced(self, st_mock):
+        block = {**PASS_BLOCK, "verdict": "UNKNOWN", "promotion_withheld": True}
+        report_card_v2.render_attestation(_card(block))
+        assert "still on the previous cycle's parameters" in _texts(st_mock.warning)
+
+    def test_clean_cycle_says_nothing_about_promotion(self, st_mock):
+        report_card_v2.render_attestation(_card(PASS_BLOCK))
+        assert "previous cycle's parameters" not in _texts(st_mock.warning)

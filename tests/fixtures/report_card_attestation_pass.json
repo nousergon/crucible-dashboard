@@ -1,8 +1,12 @@
 {
-  "_comment": "Consumer-side fixture for the crucible-evaluator -> crucible-dashboard contract on report_card['attestation'] (config-I6974). Shape mirrors crucible-evaluator grading/attestation.py::build_run_attestation exactly: schema/run_date/verdict/evaluator/backtester/reason, with each half carrying its own status/verdict/checks/n_checks/n_failed/n_errored/engine. Per-check bodies are truncated to one record per half - the renderer reads counts and reasons, never individual checks, and pinning all six would make the fixture drift on every battery edit without testing anything more.",
+  "_comment": "Consumer-side fixture for the crucible-evaluator -> crucible-dashboard contract on report_card['attestation'] (config-I6974, extended config-I7039). Shape mirrors crucible-evaluator grading/attestation.py::build_run_attestation exactly: schema/run_date/verdict/as_of/evaluator/backtester/evaluator_stage/promotion_withheld/reason, with each half carrying its own status/verdict/checks/n_checks/n_failed/n_errored/engine. THREE halves, not two: the Evaluator STAGE's verdict (the ranking metrics it grades and promotes on, run on the spot box) joined in crucible-evaluator#189 and the renderer must name it, or a PASS line understates what was checked while looking exactly as confident. `as_of` carries each upstream object's S3 LastModified so a stale verdict reads stale rather than green. Per-check bodies are truncated to one record per half - the renderer reads counts, as_of and reasons, never individual checks.",
   "schema": "report_card_attestation-1.0.0",
   "run_date": "2026-08-12",
   "verdict": "PASS",
+  "as_of": {
+    "backtester": "2026-08-12T09:41:02Z",
+    "evaluator_stage": "2026-08-12T10:02:55Z"
+  },
   "evaluator": {
     "status": "ok",
     "verdict": "PASS",
@@ -21,7 +25,11 @@
     "n_checks": 6,
     "n_failed": 0,
     "n_errored": 0,
-    "engine": {"python": "3.12.7", "nousergon_lib": "0.108.0", "numpy": "2.5.1"},
+    "engine": {
+      "python": "3.12.7",
+      "nousergon_lib": "0.108.0",
+      "numpy": "2.5.1"
+    },
     "wall_clock_seconds": 0.0041
   },
   "backtester": {
@@ -32,8 +40,31 @@
     "n_checks": 5,
     "n_failed": 0,
     "n_errored": 0,
-    "engine": {"python": "3.12.7", "vectorbt": "0.28.5", "numpy": "2.5.1", "pandas": "3.0.1", "numba": "0.62.0"},
+    "engine": {
+      "python": "3.12.7",
+      "vectorbt": "0.28.5",
+      "numpy": "2.5.1",
+      "pandas": "3.0.1",
+      "numba": "0.62.0"
+    },
     "reason": "backtester attestation PASS (5 known-answer checks)."
   },
-  "reason": "Both halves attested - the deployed quant primitives and the backtest engine each agreed with their hand-derived known answers."
+  "evaluator_stage": {
+    "source_path": "s3://alpha-engine-research/backtest/2026-08-12/evaluator_attestation.json",
+    "run_date": "2026-08-12",
+    "verdict": "PASS",
+    "schema": "evaluator_attestation-1.0.0",
+    "n_checks": 4,
+    "n_failed": 0,
+    "n_errored": 0,
+    "engine": {
+      "python": "3.12.7",
+      "numpy": "2.5.1",
+      "scipy": "1.17.0"
+    },
+    "promotion_withheld": false,
+    "reason": "evaluator stage attestation PASS (4 known-answer checks)."
+  },
+  "promotion_withheld": false,
+  "reason": "All three halves attested - the deployed quant primitives, the backtest engine, and the Evaluator stage's ranking metrics each agreed with their hand-derived known answers."
 }
