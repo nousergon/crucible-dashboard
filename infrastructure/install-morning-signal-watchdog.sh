@@ -29,6 +29,12 @@ fi
 install -m 0755 "$SCRIPT_SRC" "$SCRIPT_DST"
 echo "Installed $SCRIPT_DST"
 
+# The ALERT_PY helper travels WITH the publisher (alpha-engine-config-I7168):
+# morning-signal-watchdog.sh resolves `alert_py.sh` as a sibling first, and
+# without this it can only reach the hardcoded legacy checkout path.
+install -m 0755 "$REPO_INFRA/alert_py.sh" /usr/local/bin/alert_py.sh
+echo "Installed /usr/local/bin/alert_py.sh"
+
 for unit in morning-signal-watchdog.service morning-signal-watchdog.timer; do
     cp "$SYSTEMD_SRC/$unit" "/etc/systemd/system/$unit"
     echo "Installed /etc/systemd/system/$unit"
