@@ -760,6 +760,16 @@ timers:
   - unit: boot-pull.timer
     max_staleness: 26h
     note: daily 12:00 UTC + up to 5min randomized delay
+  - unit: router-spend-export.timer
+    max_staleness: 26h
+    note: >-
+      daily 06:20 UTC + up to 2min randomized delay, Persistent=true; same 26h
+      shape as boot-pull. Arrived with nous-ergon-ops-PR630 (config-I7063) and
+      box_health.sh named it as uncovered on its next run — which is the
+      coverage check doing its job, so the row is added rather than the notice
+      silenced. The export is model-router-policy R31 bound 2: silence here
+      means per-call cost attribution stops accruing, and that is invisible
+      until someone asks what a lane cost.
   - unit: box-hygiene.timer
     max_staleness: 8d
     note: weekly Sun 09:20 UTC; one full missed week is the signal
