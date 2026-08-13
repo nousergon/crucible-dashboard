@@ -16,6 +16,7 @@ import argparse
 import json
 import logging
 import os
+import subprocess
 import sys
 from datetime import date, datetime, timedelta, timezone
 
@@ -43,6 +44,13 @@ import boto3
 from nousergon_lib.health import HEALTH_CHECK_CANDIDATES
 
 logger = logging.getLogger(__name__)
+
+# Stage-coverage window (config-I7214): the instant this stage started.
+# An artifact older than this is a leftover from a previous cycle, not this
+# run's output — an existence-only probe cannot tell those apart.
+_STAGE_WINDOW_START = os.environ.get(
+    "_STAGE_WINDOW_START", datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+)
 
 DEFAULT_BUCKET = "alpha-engine-research"
 
@@ -379,6 +387,49 @@ def _emit_cloudwatch_metrics(results: list[dict]) -> None:
         logger.warning("CloudWatch metric emission failed (non-fatal): %s", e)
 
 
+def _assert_stage_coverage(stage: str, window_start: str) -> None:
+    """Per-stage output assertion (config-I7214, sf-pipeline-policy.md §2.1):
+    assert THIS stage wrote what it declared, at the boundary where the fact
+    becomes knowable. OBSERVE MODE — it can never fail the stage.
+
+    Lives under `krepis`, not `nousergon_lib`: krepis is the fleet's
+    sanctioned bash/runpy entrypoint namespace (`-m krepis.ssm_dispatcher`,
+    `-m krepis.ec2_spot`, ...) — a `-m nousergon_lib.<module>` runpy
+    invocation is a guard-less re-export shim on lib >=0.81.0 that exits 0
+    WITHOUT executing (config#1646/#1649); see this repo's own
+    `tests/test_no_runpy_alias_invocation.py`.
+
+    `sys.executable` IS the fleet-standard absolute venv interpreter here:
+    the SF invokes this script as
+    `/home/ec2-user/alpha-engine-dashboard/.venv/bin/python health_checker.py`,
+    so the running interpreter already resolves to that same absolute path —
+    no separate LIB_PYTHON variable exists in this script.
+    """
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "krepis.stage_coverage",
+                "assert",
+                "--stage",
+                stage,
+                "--window-start",
+                window_start,
+            ],
+            check=False,
+        )
+        rc = result.returncode
+    except Exception as e:  # pragma: no cover - defensive, observe mode only
+        rc = e
+    if rc != 0:
+        print(
+            f"WARNING: stage-coverage assertion did not run for {stage} "
+            f"(rc={rc}) — observe mode, stage NOT failed (config-I7214)",
+            file=sys.stderr,
+        )
+
+
 def main():
     parser = argparse.ArgumentParser(description="Check data pipeline health")
     parser.add_argument("--json", action="store_true", help="JSON output")
@@ -411,6 +462,11 @@ def main():
             )
         except Exception as e:
             logger.warning("SNS alert failed: %s", e)
+
+    # Per-stage output assertion (config-I7214, sf-pipeline-policy.md §2.1):
+    # assert THIS stage wrote what it declared, at the boundary where the fact
+    # becomes knowable. OBSERVE MODE — it can never fail the stage.
+    _assert_stage_coverage("SaturdayHealthCheck", _STAGE_WINDOW_START)
 
     sys.exit(1 if failures else 0)
 
