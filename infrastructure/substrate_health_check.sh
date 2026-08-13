@@ -25,6 +25,11 @@
 # run the three checks in order and propagate the first non-zero exit.
 set -eo pipefail
 
+# Stage-coverage window (config-I7214): the instant this stage started.
+# An artifact older than this is a leftover from a previous cycle, not this
+# run's output — an existence-only probe cannot tell those apart.
+_STAGE_WINDOW_START="${_STAGE_WINDOW_START:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+
 RUN_DATE=""
 EXECUTION_ARN=""
 while [[ $# -gt 0 ]]; do
@@ -114,3 +119,8 @@ if ! "$PYTHON_BIN" -m validators.stage_output_sweep \
        "sweep exits 0 for findings by design). The weekly run is NOT failed for" \
        "this; investigate via _stage_outputs/ and alpha-engine-config-I7167." >&2
 fi
+
+# Per-stage output assertion (config-I7214, sf-pipeline-policy.md §2.1):
+# assert THIS stage wrote what it declared, at the boundary where the fact
+# becomes knowable. OBSERVE MODE — it can never fail the stage.
+"$PYTHON_BIN" -m nousergon_lib.stage_coverage assert --stage WeeklySubstrateHealthCheck --window-start "$_STAGE_WINDOW_START" || echo "WARNING: stage-coverage assertion did not run for WeeklySubstrateHealthCheck (rc=$?) — observe mode, stage NOT failed (config-I7214)" >&2

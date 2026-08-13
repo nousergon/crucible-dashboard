@@ -54,8 +54,22 @@ _RUNPY_ALIAS_RE = re.compile(r"-m\s+alpha_engine_lib\.")
 # extracted to krepis. The identical `-m nousergon_lib.transparency
 # --cadence daily --alert` invocation ran unmodified as the SF Task's SSM
 # command for the same reason before this PR.
+#
+# ``nousergon_lib.stage_coverage`` (alpha-engine-config-I7214): the ruled
+# rescope of the end-of-run `StageCoverageAssert` SF-state design — Brian
+# ruled a new shared SF state NON-SOTA; the per-stage output assertion
+# instead lives in each stage's own script, calling this ONE shared
+# primitive directly. Landing in nousergon-lib as a genuine new module
+# (not a krepis-extracted shim, so no re-export no-op risk applies) on
+# branch `fix/i7214-stage-coverage`; this repo's call site (in
+# infrastructure/substrate_health_check.sh) runs in OBSERVE mode and
+# tolerates the module not existing yet between the two repos' merges (see
+# the `|| echo ... WARNING` fallback beside the call site).
 _RUNPY_NL_SHIM_RE = re.compile(r"-m\s+nousergon_lib\.")
-_REAL_NL_MODULE_EXEMPTIONS: tuple[str, ...] = ("nousergon_lib.transparency",)
+_REAL_NL_MODULE_EXEMPTIONS: tuple[str, ...] = (
+    "nousergon_lib.transparency",
+    "nousergon_lib.stage_coverage",
+)
 
 # Any functional import of the deprecated alias — bare ``import alpha_engine_lib``
 # or ``from alpha_engine_lib import ...`` — NOT a ``-m`` runpy invocation (that
