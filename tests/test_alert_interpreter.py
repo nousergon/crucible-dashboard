@@ -68,6 +68,16 @@ def test_the_publisher_list_matches_what_actually_publishes():
     )
 
 
+#: Publishers INSTALLED out of the repo tree, which run from a directory where
+#: no sibling `alert_py.sh` exists. This is the population that made resolving
+#: only alongside $BASH_SOURCE a dead watchdog.
+_INSTALLED_OUT_OF_TREE = {
+    "box_health.sh",            # /usr/local/bin/box_health.sh
+    "reboot_if_needed.sh",      # /usr/local/bin/reboot_if_needed.sh
+    "morning-signal-watchdog.sh",  # /usr/local/bin/morning-signal-watchdog.sh
+}
+
+
 @pytest.mark.parametrize("name", _PUBLISHERS)
 def test_every_publisher_resolves_through_the_shared_helper(name: str):
     text = _text(name)
@@ -164,3 +174,61 @@ def test_an_explicit_caller_override_wins():
     out, err = _run("/usr/bin/python3", None)
     assert out == "/usr/bin/python3"
     assert err == ""
+
+
+# ── The deploy path, which the file alone does not show ────────────────────
+
+
+def _preamble(name: str) -> str:
+    text = _text(name)
+    start = text.index("# Alerts publish through the DECLARED")
+    end = text.index(': "${ALERT_PY:=', start)
+    return text[start : text.index("\n", end)]
+
+
+@pytest.mark.parametrize("name", _PUBLISHERS)
+def test_the_resolution_preamble_is_identical_everywhere(name: str):
+    """Six copies of a five-line preamble drift silently; the policy lives in
+    alert_py.sh and this keeps the six entry points byte-identical."""
+    assert _preamble(name) == _preamble(_PUBLISHERS[0]), (
+        f"{name}'s ALERT_PY preamble has drifted from {_PUBLISHERS[0]}'s"
+    )
+
+
+@pytest.mark.parametrize("name", sorted(_INSTALLED_OUT_OF_TREE))
+def test_an_installed_publisher_can_still_find_the_helper(name: str):
+    """`/usr/local/bin/box_health.sh` has no sibling `alert_py.sh`.
+
+    MEASURED 2026-08-13, within a minute of deploying the first version of this
+    change: `/usr/local/bin/box_health.sh: line 1215: ALERT_PY: unbound
+    variable` — the box's primary watchdog, failing every 10 minutes, from a
+    file that was correct in the repo. A deploy-path defect is never visible in
+    the file.
+    """
+    text = _preamble(name)
+    assert "/home/ec2-user/alpha-engine-dashboard/infrastructure/alert_py.sh" in text, (
+        f"{name} is installed out of the repo tree and can only find the helper "
+        "as a sibling"
+    )
+
+
+@pytest.mark.parametrize("name", _PUBLISHERS)
+def test_alert_py_is_set_even_when_no_helper_is_found(name: str):
+    """`set -u` turns an unset variable into a dead script at publish time —
+    the moment there is something to report. Whatever happens above it, the
+    `:=` default guarantees delivery is attempted."""
+    assert ': "${ALERT_PY:=' in _preamble(name)
+
+
+def test_the_preamble_resolves_with_neither_sibling_nor_checkout(tmp_path: Path):
+    """Run the preamble itself from a directory with no `alert_py.sh` and with
+    the checkout path unavailable — exactly the installed case."""
+    script = tmp_path / "probe.sh"
+    script.write_text(
+        "set -uo pipefail\n" + _preamble("box_health.sh") + '\necho "$ALERT_PY"\n'
+    )
+    proc = subprocess.run(  # noqa: S603
+        ["bash", str(script)], capture_output=True, text=True
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip().endswith("/bin/python")

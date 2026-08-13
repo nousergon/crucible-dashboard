@@ -35,7 +35,23 @@ set -uo pipefail
 
 # Alerts publish through the DECLARED krepis venv, not through whichever
 # checkout happened to carry a krepis (config-I7168).
-. "$(dirname "${BASH_SOURCE[0]}")/alert_py.sh"
+#
+# TWO candidate paths, because three of these scripts are INSTALLED to
+# /usr/local/bin and run from there, where no sibling exists. Resolving only
+# alongside $BASH_SOURCE is what broke box-health within a minute of deploying
+# I7168: `/usr/local/bin/box_health.sh: line 1215: ALERT_PY: unbound variable`,
+# every 10 minutes, on the box's primary watchdog. The file was correct; the
+# DEPLOY PATH was not, and no amount of reading the file shows that.
+#
+# The final `:=` is the load-bearing line. Whatever happens above it, ALERT_PY
+# is set — an alerting path that cannot start is strictly worse than one on an
+# older krepis, and `set -u` turns an unset variable into a dead watchdog.
+for _ap in "$(dirname "${BASH_SOURCE[0]}")/alert_py.sh" \
+           /home/ec2-user/alpha-engine-dashboard/infrastructure/alert_py.sh; do
+    if [ -r "$_ap" ]; then . "$_ap"; break; fi
+done
+unset _ap
+: "${ALERT_PY:=/home/ec2-user/alpha-engine-dashboard/.venv/bin/python}"
 
 VENV_PY="/home/ec2-user/alpha-engine-dashboard/.venv/bin/python"
 ENV_FILE="/home/ec2-user/alpha-engine-dashboard/.env"
