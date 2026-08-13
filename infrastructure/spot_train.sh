@@ -334,52 +334,41 @@ cleanup() {
   # exit with a provisioned instance, ask the lib whether this was a confirmed AWS
   # reclaim that warrants a fresh-spot relaunch. The lib's classify_termination
   # (describe-instances) MUST run while the instance still exists, so decide HERE,
-  # BEFORE terminate-instances. exit 0 = relaunch; NO_RELAUNCH_EXIT_CODE (75) /
-  # any other = hold (fail loud). The actual `exec` happens AFTER teardown so the
-  # dead worker + its S3 staging are already cleaned when the fresh attempt starts.
+  # BEFORE terminate-instances. The `--json` verdict's "relaunch" field decides;
+  # a non-zero CLI exit means only "could not answer" and holds (fail loud) —
+  # see alpha-engine-config-I7009. The actual `exec` happens AFTER teardown so
+  # the dead worker + its S3 staging are already cleaned when the fresh attempt
+  # starts.
   local _spot_relaunch=0
   if [ "$exit_code" -ne 0 ] && [ -n "${INSTANCE_ID:-}" ] && [ "$SPOT_ATTEMPT" -lt "$MAX_SPOT_ATTEMPTS" ]; then
-    # `|| _decide_rc=$?` is LOAD-BEARING, not defensive noise.
-    #
-    # This script runs under `set -e`, and `relaunch-decision` signals "hold"
-    # by EXIT CODE (NO_RELAUNCH_EXIT_CODE = 75) — the designed answer for every
-    # failure that is not an AWS spot reclaim, i.e. nearly all of them. An
-    # unguarded `VAR="$(cmd)"` is a simple command whose status IS the
-    # substitution's, so on that ordinary answer errexit fired and tore the
-    # shell down INSIDE the EXIT trap: `_decide_rc=$?` was unreachable, and so
-    # were `terminate-instances`, the S3 staging teardown and the
-    # `exit "$exit_code"` that re-raises the workload's real status. `set -e`
-    # does not re-enter a trap it is already running, so the abort emitted
-    # nothing at all — the log simply stops.
-    #
-    # Consequence: every non-reclaim failure leaked its spot instance, which
-    # ran on until its own systemd watchdog stopped it, and the launcher exited
-    # 75 instead of the workload's status. Confirmed in crucible-predictor on
-    # ne-weekly-freshness-pipeline/watch-rerun-2026-08-10-9 (2026-08-11):
-    # CloudTrail records no TerminateInstances for i-092854cbb6e62b753 in the
-    # window while three unrelated instances were terminated normally. Fixed
-    # there in crucible-predictor-PR467; this is the same defect in this repo's
-    # copy of the launcher.
-    local _decide_out="" _decide_rc=0
-    _decide_out="$("$LIB_PYTHON" -m krepis.ec2_spot relaunch-decision \
+    # See alpha-engine-config-I7009 — migrated off the exit-code contract to --json.
+    local _decide_json="" _decide_rc=0
+    _decide_json="$("$LIB_PYTHON" -m krepis.ec2_spot relaunch-decision \
       --instance-id "$INSTANCE_ID" \
       --region "$AWS_REGION" \
       --attempt "$SPOT_ATTEMPT" \
       --max-attempts "$MAX_SPOT_ATTEMPTS" \
       ${SF_EXECUTION_TIMEOUT:+--sf-execution-timeout "$SF_EXECUTION_TIMEOUT" --per-attempt-seconds "$MAX_RUNTIME_SECONDS"} \
+      --json \
       2>/dev/null)" || _decide_rc=$?
-    echo "    spot relaunch-decision (attempt $SPOT_ATTEMPT/$MAX_SPOT_ATTEMPTS): rc=$_decide_rc ${_decide_out:+[$_decide_out]}"
-    if [ "$_decide_rc" -eq 0 ]; then
-      _spot_relaunch=1
-      # Fail-loud-but-recovering: record the absorbed interruption on a named
-      # CloudWatch surface so the retry is observable, never silent (mirrors the
-      # #349 data launcher's AlphaEngine/SpotInterruptionRetry metric).
-      aws cloudwatch put-metric-data \
-        --namespace "AlphaEngine" \
-        --metric-name "SpotInterruptionRetry" \
-        --dimensions "Process=predictor-training" \
-        --value 1 --unit "Count" \
-        --region "$AWS_REGION" 2>/dev/null || true
+    if [ "$_decide_rc" -ne 0 ]; then
+      echo "    spot relaunch-decision: CLI failed to answer (rc=$_decide_rc) — treating as hold" >&2
+    else
+      local _relaunch=""
+      _relaunch="$(printf '%s' "$_decide_json" | "$LIB_PYTHON" -c 'import json,sys; print("1" if json.load(sys.stdin).get("relaunch") else "0")')"
+      echo "    spot relaunch-decision (attempt $SPOT_ATTEMPT/$MAX_SPOT_ATTEMPTS): $_decide_json"
+      if [ "$_relaunch" = "1" ]; then
+        _spot_relaunch=1
+        # Fail-loud-but-recovering: record the absorbed interruption on a named
+        # CloudWatch surface so the retry is observable, never silent (mirrors the
+        # #349 data launcher's AlphaEngine/SpotInterruptionRetry metric).
+        aws cloudwatch put-metric-data \
+          --namespace "AlphaEngine" \
+          --metric-name "SpotInterruptionRetry" \
+          --dimensions "Process=predictor-training" \
+          --value 1 --unit "Count" \
+          --region "$AWS_REGION" 2>/dev/null || true
+      fi
     fi
   fi
 
