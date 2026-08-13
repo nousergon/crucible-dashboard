@@ -250,6 +250,13 @@ def attribution_rows(attribution: dict | None) -> list[dict]:
     return rows
 
 
+#: The closed verdict vocabulary the integrity producers emit
+#: (``crucible-backtester analysis/pit_parity.py``, config#7199). Mirrored here
+#: rather than imported — the dashboard has no dependency on the backtester —
+#: and asserted in ``tests/test_crucible_results_view_model.py``.
+_VERDICTS = frozenset({"PASS", "FAIL", "PARTIAL", "UNKNOWN"})
+
+
 def integrity_rows(
     pit_parity: dict | None,
     sample_size: dict | None,
@@ -274,10 +281,35 @@ def integrity_rows(
             continue
         # Status only when the producer declares one — the dashboard reports
         # verdicts, it never adjudicates thresholds itself.
-        status = str(artifact["status"]).upper() if artifact.get("status") else "REPORTED"
+        #
+        # config#7199: prefer the producer's explicit `verdict` over `status`.
+        # `status` answers "did the stage produce a report"; `verdict` answers
+        # "is the claim true", and this panel is titled "can you trust this
+        # backtest" — it is asking the second question. The two diverge on
+        # exactly the case this panel exists for: a report that was written
+        # successfully (`status: ok`) whose comparison covered only part of the
+        # window reads PARTIAL, not OK. Falls back to `status` for producers
+        # that emit no verdict, so nothing regresses.
+        verdict = artifact.get("verdict")
+        if isinstance(verdict, str) and verdict.upper() in _VERDICTS:
+            status = verdict.upper()
+        else:
+            status = str(artifact["status"]).upper() if artifact.get("status") else "REPORTED"
+        coverage = artifact.get("coverage")
+        coverage_fraction = (
+            _num(coverage.get("coverage_fraction")) if isinstance(coverage, dict) else None
+        )
         delta = _num(artifact.get("headline_log_alpha_delta"))
-        if delta is not None:  # pit_parity's headline verdict (schema pit_parity-1.x)
+        if artifact.get("verdict_reason"):
+            # The producer wrote the sentence; rendering our own paraphrase of
+            # its numbers alongside it is how two surfaces start disagreeing.
+            detail = str(artifact["verdict_reason"])
+            if delta is not None:
+                detail += f" (headline log-alpha delta: {delta:+.3f})"
+        elif delta is not None:  # pit_parity's headline verdict (schema pit_parity-1.x)
             detail = f"headline log-alpha delta (PIT − lookahead): {delta:+.3f}"
+            if coverage_fraction is not None and coverage_fraction < 1.0:
+                detail += f" over {coverage_fraction:.1%} of the window"
         else:
             detail_keys = [k for k in ("summary", "detail", "note", "reason") if artifact.get(k)]
             detail = str(artifact[detail_keys[0]]) if detail_keys else ", ".join(
