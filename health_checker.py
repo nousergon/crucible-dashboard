@@ -410,7 +410,7 @@ def _assert_stage_coverage(stage: str, window_start: str) -> None:
             [
                 sys.executable,
                 "-m",
-                "nousergon_lib.stage_coverage",
+                "krepis.stage_coverage",
                 "assert",
                 "--stage",
                 stage,

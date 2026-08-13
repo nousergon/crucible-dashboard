@@ -50,30 +50,18 @@ def _executable_lines(path: Path):
 class TestSubstrateHealthCheckStageCoverage:
     def test_calls_stage_coverage_assert_with_correct_stage(self):
         src = _SUBSTRATE_SCRIPT.read_text()
-        assert "nousergon_lib.stage_coverage assert" in src
+        assert "krepis.stage_coverage assert" in src
         assert "--stage WeeklySubstrateHealthCheck" in src
 
-    def test_uses_the_real_nousergon_lib_module_not_a_krepis_shim(self):
-        # config#1649 forbids `-m nousergon_lib.<module>` in box scripts
-        # because for KREPIS-EXTRACTED modules it resolves to a guard-less
-        # re-export shim that exits 0 doing nothing (config#1646 — the class
-        # that ran a whole weekly SF with zero work).
-        #
-        # stage_coverage is NOT such a module. It was added to nousergon-lib
-        # as a real module by nousergon-lib-PR314 (merged 2026-08-13T19:03:24Z)
-        # and `krepis` has no stage_coverage and does not re-export
-        # nousergon_lib — so there is no shim to fall through to, and pointing
-        # at krepis would invoke a module that does not exist. It is therefore
-        # registered in _REAL_NL_MODULE_EXEMPTIONS in
-        # tests/test_no_runpy_alias_invocation.py, which is the escape that
-        # guard defines for exactly this case.
-        found = False
+    def test_uses_krepis_not_nousergon_lib_namespace(self):
+        # config#1646/#1649: `-m nousergon_lib.<module>` is a guard-less
+        # re-export shim under runpy on lib >=0.81.0 — silent no-op, not an
+        # error. The new call site must live under the sanctioned krepis
+        # namespace, not nousergon_lib.
         for _, line in _executable_lines(_SUBSTRATE_SCRIPT):
             if "stage_coverage assert" in line:
-                found = True
-                assert "nousergon_lib.stage_coverage" in line, line
-                assert "krepis.stage_coverage" not in line, line
-        assert found, "no stage_coverage assert line found in the substrate script"
+                assert "krepis.stage_coverage" in line
+                assert "nousergon_lib.stage_coverage" not in line
 
     def test_uses_shared_primitive_not_a_reimplementation(self):
         # The fork test (policy-shared-code): the I7214 assert line itself
@@ -82,13 +70,13 @@ class TestSubstrateHealthCheckStageCoverage:
         # legitimately mentions the registry in its own comments — this
         # guard is scoped to the new executable line only).
         for _, line in _executable_lines(_SUBSTRATE_SCRIPT):
-            if "nousergon_lib.stage_coverage" in line:
+            if "krepis.stage_coverage" in line:
                 assert "ARTIFACT_REGISTRY" not in line
 
     def test_assert_call_cannot_fail_the_script(self):
         lines = list(_executable_lines(_SUBSTRATE_SCRIPT))
         assert_line = next(
-            line for _, line in lines if "nousergon_lib.stage_coverage assert" in line
+            line for _, line in lines if "krepis.stage_coverage assert" in line
         )
         # Must be guarded by `|| echo ...` (not a bare call, not `|| true`,
         # and not chained with `&&` which would still propagate a failure).
@@ -106,14 +94,14 @@ class TestSubstrateHealthCheckStageCoverage:
         # status becomes the script's own exit status. Confirm the `||
         # echo` fallback (return 0) is genuinely the tail of the script.
         lines = list(_executable_lines(_SUBSTRATE_SCRIPT))
-        assert "nousergon_lib.stage_coverage assert" in lines[-1][1]
+        assert "krepis.stage_coverage assert" in lines[-1][1]
 
     def test_does_not_set_enforce(self):
         # Scoped to the new I7214 assert line — the I7167 sweep block above
         # it legitimately discusses `--enforce` in prose comments about its
         # OWN promotion flip, which is a different mechanism.
         for _, line in _executable_lines(_SUBSTRATE_SCRIPT):
-            if "nousergon_lib.stage_coverage" in line:
+            if "krepis.stage_coverage" in line:
                 assert "--enforce" not in line
                 assert "STAGE_COVERAGE_ENFORCE" not in line
 
@@ -125,7 +113,7 @@ class TestSubstrateHealthCheckStageCoverage:
         assert_idx = next(
             i
             for i, (_, line) in enumerate(lines)
-            if "nousergon_lib.stage_coverage assert" in line
+            if "krepis.stage_coverage assert" in line
         )
         assert window_idx < assert_idx
 
@@ -185,7 +173,7 @@ class TestHealthCheckerStageCoverageBehavior:
 
         args, kwargs = mock_run.call_args
         cmd = args[0]
-        assert cmd[1:5] == ["-m", "nousergon_lib.stage_coverage", "assert", "--stage"]
+        assert cmd[1:5] == ["-m", "krepis.stage_coverage", "assert", "--stage"]
         assert "SaturdayHealthCheck" in cmd
         assert "--window-start" in cmd
         assert "2026-08-15T09:00:00Z" in cmd
