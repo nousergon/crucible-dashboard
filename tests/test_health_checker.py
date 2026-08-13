@@ -101,11 +101,18 @@ class TestCheckAll:
         assert "predictions" in check_names
         assert "features" in check_names
         assert "fundamentals" in check_names
-        assert "population" in check_names
+        assert "universe_membership" in check_names
         # price_cache_slim check RETIRED (Wave-4): the slim tier is being
         # deleted; ArcticDB-universe freshness is gated upstream in
         # alpha-engine-data's preflight. Guard against accidental reinstate.
         assert "price_cache_slim" not in check_names
+        # population check RETIRED (alpha-engine-config-I6053): its sole
+        # producer (the multi-agent research graph's archive_writer) was
+        # removed from the weekly SF 2026-07-14, and its consumer was
+        # repointed to universe_membership 2026-07-27. Guard against
+        # accidental reinstate — a freshness check on a dead producer can
+        # only ever report stale.
+        assert "population" not in check_names
         assert "daily_closes" in check_names
 
         # Module health markers
@@ -352,3 +359,180 @@ class TestPerModuleHealthCandidates:
             results = check_all("test-bucket")
         predictor = next(r for r in results if r["check"] == "health/predictor")
         assert predictor["status"] == "missing"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Regression: alpha-engine-config-I6053 — the two stale entries that would have
+# FAILED the 2026-08-15 weekly run outright
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestRetiredPopulationCheck:
+    """`population/latest.json` has had no producer since 2026-07-10.
+
+    Its sole writer was `save_population()` in the multi-agent research
+    graph's `archive_writer` node, removed from the weekly SF on 2026-07-14
+    (nousergon-data#814, config-I2515). Its consumer — the predictor's daily
+    scoring universe — was repointed to `universe_membership` on 2026-07-27
+    (config-I4818). The check therefore reported `stale` on every run from
+    ~2026-07-19 onward and could never report anything else.
+
+    Because config-I6891 (2026-08-12) makes a degraded weekly run terminate
+    in a `Fail` state, this permanently-stale entry stopped being cosmetic
+    and became a guaranteed weekly-pipeline failure.
+    """
+
+    def test_population_key_is_never_probed(self):
+        """Stronger than checking the result name: assert no S3 call is made
+        against the dead key at all, so a reinstate cannot sneak in behind a
+        renamed check."""
+        from health_checker import check_all
+        s3 = MagicMock()
+        probed: list[str] = []
+
+        def head_object(Bucket, Key):
+            probed.append(Key)
+            return {"LastModified": datetime.now(timezone.utc) - timedelta(hours=1)}
+
+        s3.head_object.side_effect = head_object
+        paginator = MagicMock()
+        paginator.paginate.return_value = iter([{"Contents": []}])
+        s3.get_paginator.return_value = paginator
+
+        with patch("boto3.client", return_value=s3):
+            check_all("test-bucket")
+
+        assert not any(k.startswith("population/") for k in probed), (
+            f"health_checker still probes the retired population/ prefix: "
+            f"{[k for k in probed if k.startswith('population/')]}"
+        )
+
+    def test_universe_membership_is_probed_in_its_place(self):
+        from health_checker import check_all
+        s3 = MagicMock()
+        probed: list[str] = []
+
+        def head_object(Bucket, Key):
+            probed.append(Key)
+            return {"LastModified": datetime.now(timezone.utc) - timedelta(hours=1)}
+
+        s3.head_object.side_effect = head_object
+        paginator = MagicMock()
+        paginator.paginate.return_value = iter([{"Contents": []}])
+        s3.get_paginator.return_value = paginator
+
+        with patch("boto3.client", return_value=s3):
+            results = check_all("test-bucket")
+
+        assert "universe_membership/latest.json" in probed
+        um = next(r for r in results if r["check"] == "universe_membership")
+        assert um["status"] == "ok"
+        assert um["threshold_days"] == 8
+
+    def test_universe_membership_still_goes_stale(self):
+        """The replacement must be a live detector, not a decoration: a dead
+        successor producer has to surface exactly as the dead predecessor
+        should have."""
+        from health_checker import check_all
+        s3 = MagicMock()
+
+        def head_object(Bucket, Key):
+            if Key == "universe_membership/latest.json":
+                return {"LastModified": datetime.now(timezone.utc) - timedelta(days=20)}
+            return {"LastModified": datetime.now(timezone.utc) - timedelta(hours=1)}
+
+        s3.head_object.side_effect = head_object
+        paginator = MagicMock()
+        paginator.paginate.return_value = iter([{"Contents": []}])
+        s3.get_paginator.return_value = paginator
+
+        with patch("boto3.client", return_value=s3):
+            results = check_all("test-bucket")
+
+        um = next(r for r in results if r["check"] == "universe_membership")
+        assert um["status"] == "stale"
+
+
+class TestCadenceDerivedHealthThresholds:
+    """Module health markers are judged against their producer's declared
+    cadence plus one period of slack (ARCHITECTURE §128), not a flat 2 days.
+
+    Measured live 2026-08-13: `health/backtester.json` was last written
+    2026-08-08 by the previous weekly run, which SUCCEEDED — 5 days, reported
+    stale against the flat 2-day budget. `health/research.json` has the same
+    weekly cadence. A budget a healthy weekly producer cannot meet on four
+    days of every week is a broken detector, not a tight one.
+    """
+
+    def _run(self, ages_by_key: dict[str, int]):
+        from health_checker import check_all
+        s3 = MagicMock()
+
+        def head_object(Bucket, Key):
+            if Key in ages_by_key:
+                return {
+                    "LastModified": datetime.now(timezone.utc)
+                    - timedelta(days=ages_by_key[Key])
+                }
+            raise Exception("NoSuchKey")
+
+        s3.head_object.side_effect = head_object
+        paginator = MagicMock()
+        paginator.paginate.return_value = iter([{"Contents": []}])
+        s3.get_paginator.return_value = paginator
+
+        with patch("boto3.client", return_value=s3):
+            return check_all("test-bucket")
+
+    def test_weekly_backtester_marker_ok_at_five_days(self):
+        results = self._run({"health/backtester.json": 5})
+        bt = next(r for r in results if r["check"] == "health/backtester")
+        assert bt["threshold_days"] == 8
+        assert bt["status"] == "ok"
+
+    def test_weekly_research_marker_ok_at_five_days(self):
+        results = self._run({"health/research.json": 5})
+        rs = next(r for r in results if r["check"] == "health/research")
+        assert rs["threshold_days"] == 8
+        assert rs["status"] == "ok"
+
+    def test_weekly_markers_still_catch_a_missed_cycle(self):
+        """8 days catches a weekly producer that misses one whole cycle —
+        which is the state health/research.json has actually been in since
+        2026-07-21. The threshold is a budget, not an accommodation."""
+        results = self._run(
+            {"health/research.json": 23, "health/backtester.json": 12},
+        )
+        rs = next(r for r in results if r["check"] == "health/research")
+        bt = next(r for r in results if r["check"] == "health/backtester")
+        assert rs["status"] == "stale"
+        assert bt["status"] == "stale"
+
+    def test_daily_markers_keep_the_two_day_budget(self):
+        """The daily producers must NOT inherit the weekly slack."""
+        results = self._run(
+            {
+                "health/daily_data.json": 3,
+                "health/executor.json": 3,
+                "health/predictor_inference.json": 3,
+            },
+        )
+        for name in ("health/data", "health/executor", "health/predictor"):
+            r = next(x for x in results if x["check"] == name)
+            assert r["threshold_days"] == 2, name
+            assert r["status"] == "stale", name
+
+    def test_unknown_module_falls_back_to_the_daily_budget(self):
+        """A module added to HEALTH_CHECK_CANDIDATES without a declared
+        cadence must read stale and prompt an explicit entry, never inherit
+        the most forgiving budget in the table."""
+        import health_checker
+
+        candidates = dict(health_checker.HEALTH_CHECK_CANDIDATES)
+        candidates["newmodule"] = ("newmodule.json",)
+        with patch.object(health_checker, "HEALTH_CHECK_CANDIDATES", candidates):
+            results = self._run({"health/newmodule.json": 5})
+
+        nm = next(r for r in results if r["check"] == "health/newmodule")
+        assert nm["threshold_days"] == health_checker.DEFAULT_HEALTH_THRESHOLD_DAYS == 2
+        assert nm["status"] == "stale"
