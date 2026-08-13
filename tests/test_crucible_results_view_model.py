@@ -126,6 +126,47 @@ class TestIntegrity:
         assert rows[0]["status"] == "REPORTED"
         assert "-0.144" in rows[0]["detail"]
 
+    # ── config#7199: the verdict, not the stage status ──────────────────────
+
+    def test_verdict_is_preferred_over_status(self):
+        """`status: ok` means the compare stage produced a report. It does NOT
+        mean the backtest is clean. This panel asks the second question, so it
+        must render the second answer."""
+        rows = vm.integrity_rows({
+            "status": "ok", "verdict": "PARTIAL",
+            "verdict_reason": "PARTIAL: clean over 62.0% of the window.",
+            "coverage": {"coverage_fraction": 0.62},
+            "headline_log_alpha_delta": -0.01,
+        }, None, None, None)
+        assert rows[0]["status"] == "PARTIAL"
+        assert "62.0%" in rows[0]["detail"]
+
+    def test_a_timed_out_check_still_reads_failed(self):
+        """The 2026-08-07 artifact. This panel already showed FAILED for it
+        while the report card said `ok`; the fix must not regress that to
+        UNKNOWN (Brian ruling 2026-08-13 — a timeout is a failure)."""
+        rows = vm.integrity_rows({
+            "status": "failed", "verdict": "FAIL",
+            "verdict_reason": "FAILED: the walkforward pass timed out.",
+            "error_class": "RuntimeError",
+        }, None, None, None)
+        assert rows[0]["status"] == "FAIL"
+        assert "timed out" in rows[0]["detail"]
+
+    def test_an_unrecognised_verdict_string_falls_back_to_status(self):
+        rows = vm.integrity_rows(
+            {"status": "ok", "verdict": "probably fine"}, None, None, None,
+        )
+        assert rows[0]["status"] == "OK"
+
+    def test_a_pass_verdict_renders_pass(self):
+        rows = vm.integrity_rows({
+            "status": "ok", "verdict": "PASS",
+            "verdict_reason": "PASS: not distinguishable from zero.",
+            "coverage": {"coverage_fraction": 1.0},
+        }, None, None, None)
+        assert rows[0]["status"] == "PASS"
+
 
 class TestMetricRows:
     def test_full_contract_rendered(self):
