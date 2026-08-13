@@ -90,6 +90,48 @@ def _half_checks(block: dict, half: str) -> str:
     return f"{half} {n if n is not None else '—'}"
 
 
+#: The three independently-versioned pieces of arithmetic standing between the
+#: raw data and a number on this card, in the order the producer combines them.
+#: A CLOSED list checked by `tests/test_report_card_attestation.py` against the
+#: producer's own: a half added upstream that this renderer does not know about
+#: would be silently dropped from the PASS line, and the page would understate
+#: what was checked while looking exactly as confident.
+ATTESTATION_HALVES: tuple[str, ...] = ("evaluator", "backtester", "evaluator_stage")
+
+
+def _as_of_line(block: dict) -> str:
+    """When each upstream verdict was established.
+
+    `console-policy.md` §5.2 / the row contract: state without an as-of cannot
+    read as stale, and a stale PASS is indistinguishable from a fresh one — the
+    failure mode one layer up from reading absence as green. Rendered for every
+    verdict state, PASS included, and rendered as `never` rather than omitted
+    when a half produced no timestamp, because an absent line and an absent
+    verdict must not look the same.
+    """
+    as_of = block.get("as_of") if isinstance(block.get("as_of"), dict) else {}
+    if not as_of:
+        return "Verdict as-of: not recorded by the producer."
+    return "Verdict as-of — " + " · ".join(
+        f"{name}: {as_of.get(name) or 'never'}" for name in sorted(as_of)
+    )
+
+
+def _promotion_line(block: dict) -> str | None:
+    """Whether the Evaluator stage was permitted to promote this cycle.
+
+    Not cosmetic: when promotion is withheld the live executor is still running
+    last cycle's `config/executor_params.json` and champion, so the parameters
+    this card grades are NOT the parameters trading tomorrow.
+    """
+    if not block.get("promotion_withheld"):
+        return None
+    return (
+        "Config and champion promotion were **WITHHELD** this cycle — the live "
+        "executor is still on the previous cycle's parameters."
+    )
+
+
 def render_attestation(card: dict | None) -> str:
     """Render the run's correctness verdict. Returns the verdict rendered.
 
@@ -107,10 +149,12 @@ def render_attestation(card: dict | None) -> str:
 
     if verdict == ATTESTATION_PASS:
         st.success(
-            "✅ **Correctness attestation: PASS** — the deployed quant primitives and "
-            "the backtest engine each agreed with their hand-derived known answers "
-            f"this cycle ({_half_checks(block, 'evaluator')} checks, "
-            f"{_half_checks(block, 'backtester')} checks)."
+            "✅ **Correctness attestation: PASS** — the deployed quant primitives, "
+            "the backtest engine, and the Evaluator stage's ranking metrics each "
+            "agreed with their hand-derived known answers this cycle ("
+            + ", ".join(f"{_half_checks(block, h)} checks" for h in ATTESTATION_HALVES)
+            + ").\n\n"
+            + _as_of_line(block)
         )
     elif verdict == ATTESTATION_FAIL:
         st.error(
@@ -118,7 +162,8 @@ def render_attestation(card: dict | None) -> str:
             "not merely unverified.** A known-answer check disagreed with its "
             "hand-derived expectation, so the arithmetic that produced this cycle's "
             "grades has moved. Do not act on the tiles below.\n\n"
-            f"> {block.get('reason') or 'no reason recorded by the producer.'}"
+            f"> {block.get('reason') or 'no reason recorded by the producer.'}\n\n"
+            + _as_of_line(block)
         )
     else:
         reason = block.get("reason") if block else None
@@ -133,8 +178,25 @@ def render_attestation(card: dict | None) -> str:
                 else "The correctness guarantee is WITHHELD for this cycle."
             )
             + " This is an absence of evidence, never a pass.\n\n"
-            + (f"> {reason}" if reason else "")
+            + (f"> {reason}\n\n" if reason else "")
+            + _as_of_line(block)
         )
+
+    # Which halves withheld, named. "The guarantee is withheld" tells the reader
+    # nothing about where to look; a per-half breakdown turns the banner into a
+    # diagnosis. Rendered whenever the combined verdict is not PASS.
+    if verdict != ATTESTATION_PASS and block:
+        per_half = [
+            f"`{h}`: **{(block.get(h) or {}).get('verdict', 'UNKNOWN')}**"
+            for h in ATTESTATION_HALVES
+            if isinstance(block.get(h), dict)
+        ]
+        if per_half:
+            st.caption("Halves — " + " · ".join(per_half))
+
+    promotion = _promotion_line(block)
+    if promotion:
+        st.warning("⚠️ " + promotion)
 
     # config#2885 staleness flags — same rule, different degradation axis.
     if card.get("degraded_staleness"):
