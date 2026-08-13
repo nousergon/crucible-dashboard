@@ -508,10 +508,25 @@ services:
 
   - unit: llm-egress-proxy.service
     port: 8990
-    memory_high: 250M
-    memory_max: 400M
+    memory_high: 210M
+    memory_max: 300M
     note: >
-      DO NOT LOWER — steady state (42M) is wildly unrepresentative of startup.
+      2026-08-12: 250M/400M -> 210M/300M. The DO-NOT-LOWER below is preserved
+      because its REASONING still holds and only its NUMBER was wrong, and the
+      distinction matters if anyone is tempted to go further.
+
+      What it got right: steady state is unrepresentative, startup is what must
+      be budgeted, and at 50M/100M this service genuinely could not boot. What
+      it never had was a measurement of the startup it was reasoning about. The
+      "~150M peak each" for five AWS CLI subprocesses was an estimate.
+
+      Measured: memory.peak 126 MiB over SIXTEEN DAYS of uptime — a window that
+      contains the 2026-07-27 startup those subprocesses run in, so it is a
+      startup-inclusive high-water mark, not a steady-state read. 400M was 3.2x
+      it. 300M is 2.4x, and still three times the 100M that broke it.
+
+      Do NOT take this as licence to trim toward the steady state; the estimate
+      was wrong in size, not in kind.
       Calibrated 2026-07-27 (alpha-engine-config-I4451): at 50M/100M the cgroup
       throttled 11385 times with ~60% memory stall and a single
       `ssm get-parameter` hung for >113s, so the service never finished booting.
@@ -522,9 +537,18 @@ services:
   # ── ingress ─────────────────────────────────────────────────────────────
   - unit: nginx.service
     port: 443
-    memory_high: 70M
-    memory_max: 100M
-    note: sole ingress for all ten vhosts — Restart=always is load-bearing; already runs as its own user, no User= migration needed
+    memory_high: 45M
+    memory_max: 64M
+    note: >-
+      Sole ingress for all ten vhosts — Restart=always is load-bearing; already
+      runs as its own user, no User= migration needed.
+
+      2026-08-12: 70M/100M -> 45M/64M, the FIRST cap on this box ever lowered.
+      Measured peak 28 MiB over 16 days of uptime, so 100M was 3.5x a demand
+      that has had sixteen days to spike and did not. 64M is 2.3x that peak.
+      Reported by check_memory_budget.py's over-provision check on its first
+      tick after install (config-I7102) — the reclaimed 36 MB is headroom the
+      overcommit bound can spend on a unit that needs it.
 
 # Restart semantics applied uniformly to every unit above (policy T1-2).
 #
