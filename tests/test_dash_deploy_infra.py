@@ -614,6 +614,12 @@ class TestProvisioningScriptRouting:
     # which installer owns it — an orphan payload has an orphan installer, and
     # that installer is still caught by the check below.
     NOT_PROVISIONERS = {
+        # Both entered this list on 2026-08-13 (config-I7168) when the shared
+        # ALERT_PY preamble gave every alert publisher a comment naming
+        # /usr/local/bin — the marker, not the behaviour. Each was already a
+        # payload; nothing about what they do changed.
+        "alert_on_failure.sh": "payload; installed as a unit template by install-substrate-health-daily.sh",
+        "reboot_if_needed.sh": "payload; installed by install-auto-patching.sh",
         "boot-pull.sh": "payload; installed + scheduled by install-boot-pull.sh",
         "box_health.sh": "payload; installed by install-box-health.sh",
         "box_hygiene.sh": "payload; installed by install-box-health.sh",
