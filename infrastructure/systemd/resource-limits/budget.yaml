@@ -687,6 +687,21 @@ state:
     disposition: accepted-loss
     rpo: total
     note: zero bytes, last touched 2026-06-25; a dev scratch DB, superseded by personal.sqlite
+  - path: /home/ec2-user/flow-doctor/flow_doctor.db
+    owner: none
+    disposition: external
+    source: git:nousergon/flow-doctor (committed in the repo, refreshed by the daily 12:01 UTC pull)
+    note: >-
+      Measured 2026-08-13: 106,496 bytes, TRACKED IN GIT (last commit
+      2026-08-12 11:25 PT), working tree clean, no process holding it open —
+      so the box copy is a checkout artifact, not box-authored state, and box
+      loss costs a re-clone. Underscore, not hyphen: distinct from
+      morning-signal/flow-doctor.db and morning-signal/episodes/flow-doctor.db,
+      both of which are separate rows above and neither of which is this file.
+      Note the alert that surfaced it named `/home/ec2-user/flow-doctor/flow-doctor.db`,
+      a path that does not exist on the box — the detector's own `find` output
+      is correct, so the mangling is downstream in notification rendering
+      (filed separately).
   - path: /home/ec2-user/.ssh/
     owner: none
     disposition: accepted-loss
