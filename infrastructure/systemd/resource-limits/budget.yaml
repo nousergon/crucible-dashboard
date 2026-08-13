@@ -428,9 +428,35 @@ services:
 
   - unit: nousergon-console.service
     port: 5180
-    memory_high: 160M
+    memory_high: 200M
     memory_max: 224M
     note: >-
+      2026-08-12: memory_high 160M -> 200M, memory_max UNCHANGED, sized from the
+      first UNCENSORED reading this unit has ever had. Caps were lifted to
+      600M/800M at runtime (`systemctl set-property --runtime`, reverted the
+      same session) and the service was sampled every 45s for ten minutes:
+
+        memory.current  oscillated 120-152 MiB
+        memory.peak     163 MiB, and STOPPED THERE
+        MemoryHigh evts  266 before, 266 after -- not one new throttle
+
+      Corroborated independently: one `build_index` pass run in isolation on
+      the box peaked at 159 MiB RSS (93.5s wall, 315 entities). Two methods,
+      four MiB apart.
+
+      SO IT IS NOT A LEAK, AND IT NEVER WAS. The working set is ~163 MiB and
+      the 2026-08-11 raise to 160M landed roughly three MiB under it -- which
+      is why "~2x the censored floor" re-pinned inside a day and read like
+      runaway growth. 200M clears the measured plateau by 37 MiB.
+
+      memory_max stays 224M deliberately: sum(memory_max) is what the box's
+      overcommit bound limits, and it had 49 MB of room, so this raise costs
+      NOTHING. 224M leaves the hard cap 61 MiB above the plateau.
+
+      The 163 MiB is the BUILDER, not the served index -- a full pass takes
+      93.5s against a 60s cadence, so the process is rebuilding 61% of the
+      time. Anyone sizing this cap is sizing that (alpha-engine-config-I7124).
+
       Fleet monitoring console (nousergon/nousergon-console). Stdlib Python
       server on loopback :5180; nginx is the sole ingress. Enabled on the box
       without a budget row → box_health named it unmonitored (2026-08-04).
