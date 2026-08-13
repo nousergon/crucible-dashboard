@@ -15,6 +15,10 @@
 # Installed as a unit template by install-substrate-health-daily.sh.
 set -uo pipefail
 
+# Alerts publish through the DECLARED krepis venv, not through whichever
+# checkout happened to carry a krepis (config-I7168).
+. "$(dirname "${BASH_SOURCE[0]}")/alert_py.sh"
+
 UNIT="${1:?usage: alert_on_failure.sh <failed-unit-name>}"
 
 ENV_FILE="/home/ec2-user/.alpha-engine.env"
@@ -34,7 +38,7 @@ detail="$(journalctl -u "$UNIT" -n 30 --no-pager 2>&1 || true)"
 
 # Per-unit-per-day dedup key → a persistently failing unit pages once a
 # day, not on every retry/timer firing.
-"$VENV_PY" -m krepis.alerts publish \
+"$ALERT_PY" -m krepis.alerts publish \
     --message "🚨 ${UNIT} failed on $(hostname) (${day} UTC). Last 30 journal lines:"$'\n'"${detail}" \
     --severity warning \
     --source "${UNIT%.service}-onfailure" \

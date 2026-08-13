@@ -52,6 +52,10 @@
 # by box-health.timer (every 10 min).
 set -uo pipefail
 
+# Alerts publish through the DECLARED krepis venv, not through whichever
+# checkout happened to carry a krepis (config-I7168).
+. "$(dirname "${BASH_SOURCE[0]}")/alert_py.sh"
+
 ENV_FILE="/home/ec2-user/.alpha-engine.env"
 VENV_PY="/home/ec2-user/alpha-engine-dashboard/.venv/bin/python"
 BUDGET_CHECK="/home/ec2-user/alpha-engine-dashboard/infrastructure/check_memory_budget.py"
@@ -1208,7 +1212,7 @@ publish_problems() {
     # krepis.alerts is the canonical CLI (config#1649): nousergon_lib.alerts is a
     # re-export shim since lib v0.66.0 — guard-less under `python -m` on 0.81.0
     # (silent exit-0 no-op, the config#1646 class). Invoke the real module.
-    "$VENV_PY" -m krepis.alerts publish \
+    "$ALERT_PY" -m krepis.alerts publish \
         --message "$msg" \
         --severity "$severity" \
         --source box-health \

@@ -20,6 +20,10 @@
 # by morning-signal-watchdog.timer (06:15 PT, after the 05:00 PT generate slot).
 set -uo pipefail
 
+# Alerts publish through the DECLARED krepis venv, not through whichever
+# checkout happened to carry a krepis (config-I7168).
+. "$(dirname "${BASH_SOURCE[0]}")/alert_py.sh"
+
 ENV_FILE="/home/ec2-user/.alpha-engine.env"
 DASH_PY="/home/ec2-user/alpha-engine-dashboard/.venv/bin/python"
 MS_BIN="/home/ec2-user/morning-signal/.venv/bin/morning-signal"
@@ -64,7 +68,7 @@ echo "$out" >&2
 # krepis.alerts is the canonical CLI (config#1649): nousergon_lib.alerts is a
 # re-export shim since lib v0.66.0 — guard-less under `python -m` on 0.81.0
 # (silent exit-0 no-op, the config#1646 class). Invoke the real module.
-"$DASH_PY" -m krepis.alerts publish \
+"$ALERT_PY" -m krepis.alerts publish \
     --message "🚨 Morning Signal: today's episode ($day) did NOT publish (watchdog exit=$rc). Detail: $out" \
     --severity warning \
     --source morning-signal-watchdog \

@@ -17,6 +17,10 @@
 
 set -uo pipefail
 
+# Alerts publish through the DECLARED krepis venv, not through whichever
+# checkout happened to carry a krepis (config-I7168).
+. "$(dirname "${BASH_SOURCE[0]}")/alert_py.sh"
+
 LOG="/var/log/boot-pull.log"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$LOG"; }
@@ -463,7 +467,9 @@ if [ -n "$FAILED_UNITS" ]; then
     else
         _gate_msg="REVERT INCOMPLETE — still not active:${STILL_FAILED}. Manual intervention needed NOW"
     fi
-    ALERT_PY="/home/ec2-user/alpha-engine-dashboard/.venv/bin/python"
+    # ALERT_PY comes from alert_py.sh (config-I7168) — the declared krepis
+    # venv, not whichever checkout happened to carry a krepis.
+    :
     if [ -x "$ALERT_PY" ]; then
         "$ALERT_PY" -m krepis.alerts publish \
             --message "boot-pull health gate FAILED on $(hostname):${FAILED_UNITS} not active after restart — ${_gate_msg}. See /var/log/boot-pull.log." \
@@ -523,7 +529,9 @@ fi
 if [ "$PULL_FAILURES" -gt 0 ]; then
     log "=== boot-pull completed with $PULL_FAILURES failure(s): ${FAILED_REPOS[*]} ==="
 
-    ALERT_PY="/home/ec2-user/alpha-engine-dashboard/.venv/bin/python"
+    # ALERT_PY comes from alert_py.sh (config-I7168) — the declared krepis
+    # venv, not whichever checkout happened to carry a krepis.
+    :
     if [ -x "$ALERT_PY" ]; then
         # Dedup on the failing repo set, not the message: the same repo failing
         # every boot should alert once a day, not once per boot. A NEW repo

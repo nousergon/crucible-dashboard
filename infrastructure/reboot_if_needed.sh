@@ -33,6 +33,10 @@
 
 set -uo pipefail
 
+# Alerts publish through the DECLARED krepis venv, not through whichever
+# checkout happened to carry a krepis (config-I7168).
+. "$(dirname "${BASH_SOURCE[0]}")/alert_py.sh"
+
 VENV_PY="/home/ec2-user/alpha-engine-dashboard/.venv/bin/python"
 ENV_FILE="/home/ec2-user/alpha-engine-dashboard/.env"
 [ -f "$ENV_FILE" ] && { set -a; . "$ENV_FILE"; set +a; }
@@ -45,7 +49,7 @@ INSTANCE_ID=$(curl -s --max-time 2 -H "X-aws-ec2-metadata-token: ${_tok}" \
 
 alert() {
     local sev="$1" msg="$2" key="$3"
-    "$VENV_PY" -m krepis.alerts publish \
+    "$ALERT_PY" -m krepis.alerts publish \
         --message "$msg" --severity "$sev" --source reboot-if-needed \
         --dedup-key "$key" --dedup-window-min 1440 \
         || echo "reboot_if_needed: alert publish failed" >&2
