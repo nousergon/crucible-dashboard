@@ -214,17 +214,51 @@ class TestHealthCheckerStageCoverageBehavior:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Cross-cutting: the krepis pin is NOT bumped in this PR
+# Cross-cutting: the krepis pin must not REGRESS below stage_coverage
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-class TestKrepisPinNotBumped:
-    def test_pin_still_names_the_pre_stage_coverage_version(self):
-        # config-I7214: the krepis bump is a separate, mechanical wave that
-        # lands ONLY after the krepis PR carrying `stage_coverage` merges
-        # and releases to PyPI — pinning a guessed version now would be a
-        # defect (the version does not exist yet). This guard pins the
-        # CURRENT version so a same-PR bump trips it, forcing the bump to
-        # go through its own reviewed diff.
+class TestKrepisPinCarriesStageCoverage:
+    """Succeeds `TestKrepisPinNotBumped`, whose precondition is now met.
+
+    That guard asserted the pin still read `==0.54.0`. Its stated purpose
+    (config-I7214) was to stop the bump riding along inside the
+    stage-coverage PR — *"lands ONLY after the krepis PR carrying
+    `stage_coverage` merges and releases to PyPI"* — by forcing it through
+    its own reviewed diff.
+
+    Both halves of that condition are now satisfied, measured 2026-08-13:
+    `krepis` 0.59.3 is on PyPI and `src/krepis/stage_coverage.py` is present
+    on its `main`. This PR IS the separate reviewed diff the guard demanded.
+    Leaving the old assertion in place would not preserve a safeguard — it
+    would make the bump it was designed to sequence permanently impossible,
+    which is the failure mode of every test that pins a version literal
+    instead of the property it cares about.
+
+    So the guard is inverted rather than deleted: it protected against a
+    PREMATURE bump, and now protects against a REGRESSION below the version
+    that carries the module the dashboard depends on.
+    """
+
+    # The first krepis release carrying src/krepis/stage_coverage.py.
+    MIN_STAGE_COVERAGE_VERSION = (0, 59, 3)
+
+    def test_pin_is_at_or_above_the_stage_coverage_release(self):
+        import re
+
         src = _REQUIREMENTS.read_text()
-        assert "krepis[flow-doctor,openai]==0.54.0" in src
+        match = re.search(
+            r"^krepis\[flow-doctor,openai\]==(\d+)\.(\d+)\.(\d+)", src, re.MULTILINE
+        )
+        assert match, (
+            "no pinned krepis[flow-doctor,openai]==X.Y.Z line found in "
+            f"{_REQUIREMENTS.name} — the dashboard box's interpreter is the "
+            "one every weekly-SF stage runs through; it must be pinned."
+        )
+        pinned = tuple(int(g) for g in match.groups())
+        assert pinned >= self.MIN_STAGE_COVERAGE_VERSION, (
+            f"krepis pinned at {'.'.join(map(str, pinned))}, below "
+            f"{'.'.join(map(str, self.MIN_STAGE_COVERAGE_VERSION))} which is the "
+            "first release carrying src/krepis/stage_coverage.py. The dashboard "
+            "imports it; an older pin fails at runtime on the box, not here."
+        )

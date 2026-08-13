@@ -56,7 +56,16 @@ yfinance>=1.5.1
 # This only surfaced once nousergon-data#975 moved weekly dispatch onto a
 # per-execution spot box that builds this venv from scratch; the long-lived
 # dashboard box had 0.18.8 installed out-of-band, masking the stale pin.
-krepis[openai]>=0.54.0
+# Floor raised to 0.59.3 (2026-08-13, alpha-engine-config-I7260): peak-RSS
+# measurement lives in `krepis.ssm_dispatcher`, which is the chokepoint every
+# weekly-SF spot step runs through — and THIS venv is the interpreter that runs
+# it, whatever the dispatcher repos pin for themselves. Measured on the box
+# 2026-08-13: `alpha-engine-dashboard/.venv` had krepis 0.54.0 installed, so
+# without this bump the stage RAM budget publishes nothing and every stage
+# renders UNOBSERVED. No dependency set changed between 0.54.0 and 0.59.x
+# (`git diff v0.54.0 origin/main -- pyproject.toml` touches the version line
+# only), so this is a pin move, not a resolution change.
+krepis[openai]>=0.59.3
 # nousergon-lib (renamed from alpha-engine-lib at v0.60.0) provides
 # setup_logging used by app.py + health_checker.py
 # to attach the FlowDoctorHandler when FLOW_DOCTOR_ENABLED=1, the
