@@ -232,3 +232,79 @@ def test_the_preamble_resolves_with_neither_sibling_nor_checkout(tmp_path: Path)
     )
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip().endswith("/bin/python")
+
+
+# ── The DEPLOY path, not only the file ─────────────────────────────────────
+#
+# Every test above this line passed on 2026-08-13 while the box's primary
+# watchdog was exiting 1 every ten minutes. The scripts were right; nothing
+# put `alert_py.sh` where the installed copies look for it. A deploy-path
+# defect is invisible in the file, so it needs its own assertions.
+
+
+def _installers() -> list[Path]:
+    return sorted(p for p in INFRA.glob("install-*.sh"))
+
+
+def _installs_out_of_tree(text: str) -> set[str]:
+    """Publisher basenames this installer copies into /usr/local/bin."""
+    return {
+        name for name in _PUBLISHERS
+        if f"/usr/local/bin/{name}" in text
+    }
+
+
+def test_every_installer_that_places_a_publisher_also_places_the_helper():
+    """The class fix, not the instance.
+
+    `install-box-health.sh` copied `box_health.sh` to /usr/local/bin and left
+    `alert_py.sh` in the repo tree, so the installed publisher's FIRST
+    resolution candidate — its own sibling — could never exist. It survived on
+    the hardcoded second candidate,
+    `/home/ec2-user/alpha-engine-dashboard/infrastructure/alert_py.sh`: a
+    legacy directory name for a repo now called crucible-dashboard, owned by
+    nobody, asserted nowhere else, and one rename away from taking out all six
+    publishers at the same instant.
+
+    Any future installer that copies a publisher out of the tree fails here
+    until it carries the helper too.
+    """
+    offenders = {}
+    for installer in _installers():
+        text = installer.read_text(encoding="utf-8")
+        placed = _installs_out_of_tree(text)
+        if placed and "/usr/local/bin/alert_py.sh" not in text:
+            offenders[installer.name] = sorted(placed)
+
+    assert not offenders, (
+        "these installers place a publisher out of the repo tree without its "
+        f"ALERT_PY helper: {offenders} — add "
+        "`install -m 0755 \"$REPO_INFRA/alert_py.sh\" /usr/local/bin/alert_py.sh`"
+    )
+
+
+@pytest.mark.parametrize("name", sorted(_INSTALLED_OUT_OF_TREE))
+def test_each_out_of_tree_publisher_has_an_installer_that_ships_the_helper(name: str):
+    """Read from the other direction: every publisher known to run from
+    /usr/local/bin is installed by something that also puts the helper there."""
+    shipping = [
+        i.name for i in _installers()
+        if f"/usr/local/bin/{name}" in (t := i.read_text(encoding="utf-8"))
+        and "/usr/local/bin/alert_py.sh" in t
+    ]
+    assert shipping, (
+        f"{name} runs from /usr/local/bin but no installer puts alert_py.sh "
+        f"beside it — its sibling resolution is dead on arrival"
+    )
+
+
+def test_the_helper_is_installed_with_the_same_mode_as_the_publishers():
+    """0644 would source fine but breaks the moment anything execs it, and a
+    mode drift between the helper and its callers is the kind of thing that
+    only shows up on the box."""
+    for installer in _installers():
+        text = installer.read_text(encoding="utf-8")
+        if "/usr/local/bin/alert_py.sh" in text:
+            assert 'install -m 0755' in text and "alert_py.sh" in text, (
+                f"{installer.name} must install alert_py.sh mode 0755"
+            )
