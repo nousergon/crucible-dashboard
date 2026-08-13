@@ -128,5 +128,7 @@ fi
 # entrypoint namespace (this script already calls `-m nousergon_lib.*` only
 # for genuine non-shim modules like `transparency` — see
 # tests/test_no_runpy_alias_invocation.py's `_REAL_NL_MODULE_EXEMPTIONS`).
-# `stage_coverage` lands in krepis, so no exemption is needed here.
-"$PYTHON_BIN" -m krepis.stage_coverage assert --stage WeeklySubstrateHealthCheck --window-start "$_STAGE_WINDOW_START" || echo "WARNING: stage-coverage assertion did not run for WeeklySubstrateHealthCheck (rc=$?) — observe mode, stage NOT failed (config-I7214)" >&2
+# `stage_coverage` lands in nousergon_lib (nousergon-lib-PR314, merged 19:03:24Z). The
+# runpy guard forbids the alpha_engine_lib ALIAS, not nousergon_lib itself — its
+# own docstring names `-m nousergon_lib.alerts` as the CORRECT invocation.
+"$PYTHON_BIN" -m nousergon_lib.stage_coverage assert --stage WeeklySubstrateHealthCheck --window-start "$_STAGE_WINDOW_START" || echo "WARNING: stage-coverage assertion did not run for WeeklySubstrateHealthCheck (rc=$?) — observe mode, stage NOT failed (config-I7214)" >&2

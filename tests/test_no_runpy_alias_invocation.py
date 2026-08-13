@@ -56,7 +56,19 @@ _RUNPY_ALIAS_RE = re.compile(r"-m\s+alpha_engine_lib\.")
 # command for the same reason before this PR.
 #
 _RUNPY_NL_SHIM_RE = re.compile(r"-m\s+nousergon_lib\.")
-_REAL_NL_MODULE_EXEMPTIONS: tuple[str, ...] = ("nousergon_lib.transparency",)
+_REAL_NL_MODULE_EXEMPTIONS: tuple[str, ...] = (
+    "nousergon_lib.transparency",
+    # nousergon_lib.stage_coverage — a REAL nousergon_lib module, NOT a
+    # krepis-extracted re-export shim. Added by nousergon-lib-PR314 (merged
+    # 2026-08-13T19:03:24Z) for alpha-engine-config-I7214; `krepis` has no
+    # stage_coverage module and does not re-export nousergon_lib, so the
+    # config#1646 silent-exit-0 class this guard exists to prevent cannot
+    # apply — there is no shim to fall through to. Verified against the merged
+    # module: src/nousergon_lib/stage_coverage.py:653 defines the `assert`
+    # subparser with --stage and --window-start, which is exactly what the two
+    # call sites invoke.
+    "nousergon_lib.stage_coverage",
+)
 
 # Any functional import of the deprecated alias — bare ``import alpha_engine_lib``
 # or ``from alpha_engine_lib import ...`` — NOT a ``-m`` runpy invocation (that
