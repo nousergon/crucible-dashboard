@@ -975,17 +975,26 @@ timer_jobs:
       writing empty artifacts over good ones while reporting success.
 
   - unit: morning-signal.service
-    memory_high: 600M
-    memory_max: 900M
-    measured_peak_mb: null
+    memory_high: 370M
+    memory_max: 530M
+    measured_peak_mb: 224
     note: >-
       Caps in infrastructure/systemd/morning-signal.service.d/10-memory.conf.
-      measured_peak_mb is NULL and that is a gap, not a style: these caps were
-      never derived from a measurement, they are the largest single claim on the
-      box's headroom, and 900M against ~1.6 GB of headroom is over half of it.
-      Declared as-is rather than silently corrected — the previous state was a
-      name on a suppression list, which said less. Measure and re-derive before
-      trusting the number.
+
+      2026-08-14 (alpha-engine-config-I5546): 600M/900M -> 370M/530M, and
+      measured_peak_mb is no longer null. The old numbers were the largest
+      single claim on this box's timer-job headroom with nothing behind them;
+      30-record-peak.conf was installed to end that by logging every run's
+      cgroup peak from ExecStopPost, and six runs are now on record in
+      /home/ec2-user/.morning-signal-peak.log, all result=success:
+      72, 158, 206, 224, 71, 204 MiB (2026-08-09 .. 08-13).
+
+      530M is 2.4x the 224 MiB MAXIMUM — the band #662 settled on and the same
+      multiple check_memory_budget.py's proposal loop derives, so this will not
+      be re-argued from a different rule next month. Sized on the maximum and
+      not the mean: the two ~72 MiB entries are short episodes, and a cap fitted
+      to the average would OOM the full-episode-plus-TTS path that produces the
+      224. Timer-job caps total 1250 -> 880 MB against ~2246 MB of headroom.
 
 # ── Observed, deliberately uncapped (alpha-engine-config-I5276) ───────────
 #

@@ -409,3 +409,49 @@ class TestObserveOnlyDisposition:
         capped = {s["unit"] for s in spec["services"]}
         for entry in spec["observe_only"]:
             assert entry["unit"] not in capped
+
+
+class TestTimerJobCapsMatchTheirDropIn:
+    """budget.yaml DECLARES timer-job caps; the drop-in APPLIES them.
+
+    `install-resource-limits.sh` deliberately does not render timer jobs — their
+    caps live with the unit that owns them — so the declaration and the applied
+    value are two files that can disagree silently. On-box drift detection
+    catches that only after a deploy; this catches it in CI.
+    """
+
+    DROPIN = (REPO_ROOT / "infrastructure" / "systemd" /
+              "morning-signal.service.d" / "10-memory.conf")
+
+    def _declared(self):
+        spec = yaml.safe_load(BUDGET.read_text())
+        return next(j for j in spec["timer_jobs"]
+                    if j["unit"] == "morning-signal.service")
+
+    def test_the_dropin_applies_what_budget_yaml_declares(self):
+        job = self._declared()
+        body = self.DROPIN.read_text()
+        assert f"MemoryHigh={job['memory_high']}" in body
+        assert f"MemoryMax={job['memory_max']}" in body
+
+    def test_the_cap_is_backed_by_a_measurement(self):
+        job = self._declared()
+        assert job.get("measured_peak_mb"), (
+            "a timer-job cap with measured_peak_mb null is an estimate — I5546")
+
+    def test_the_cap_sits_in_the_band_over_its_measured_peak(self):
+        job = self._declared()
+        hard = cmb.parse_bytes(job["memory_max"]) // MB
+        peak = job["measured_peak_mb"]
+        assert peak * 2.0 <= hard <= peak * cmb.OVER_PROVISION_RATIO, (
+            f"{hard}M against a {peak} MiB peak is {hard / peak:.1f}x — outside "
+            f"the 2.0-{cmb.OVER_PROVISION_RATIO}x band this box sizes to")
+
+    def test_the_peak_recorder_is_still_installed(self):
+        """The cap above is only re-derivable while the recorder keeps logging."""
+        rec = (REPO_ROOT / "infrastructure" / "systemd" /
+               "morning-signal.service.d" / "30-record-peak.conf")
+        assert "ExecStopPost=" in rec.read_text()
+        deploy = (REPO_ROOT / "infrastructure" / "deploy-on-merge.sh").read_text()
+        assert "30-record-peak.conf:/etc/systemd/system" in deploy, (
+            "a recorder the deploy gate cannot see stops reaching the box")
