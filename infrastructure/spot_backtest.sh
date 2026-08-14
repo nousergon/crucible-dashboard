@@ -776,59 +776,41 @@ run_ssm() {
 }
 
 # ── Bootstrap spot: watchdog + python + git + clone + fetch configs ─────────
-# Single SSM call covering: spot-side hard-timeout watchdog,
-# python3.12/git install, the 3 HTTPS repo clones, 3 config-file
-# fetches from S3 staging (no .env post #890). Watchdog rationale: dispatcher-side
-# `trap cleanup EXIT` only fires when THIS bash script exits cleanly.
-# If the dispatcher SSM command is cancelled, the dispatcher EC2 is
-# stopped mid-run, or the shell gets SIGKILLed, the trap never runs and
-# the spot orphans until manually terminated — hit 3 times in April 2026.
-# Transient systemd timer fires shutdown -h now after
-# MAX_RUNTIME_SECONDS regardless of dispatcher state.
+# Rendered by krepis.spot_bootstrap (alpha-engine-config-I7372) rather than
+# hand-carried as an inline heredoc. That module is the fleet's single
+# canonical source for the SSM-liveness watchdog unit, the strict
+# python3.12 install-then-assert, and the clone/config-copy shape this
+# heredoc used to duplicate (nousergon-data#1294/#1296, crucible-predictor
+# #461/#462/#463 were the same three defects reaching sibling copies hours
+# to days apart). Repo URL / branch / checkout are passed as LAUNCHER-SIDE
+# LITERALS baked into the rendered script — the predictor's REPO_URL/BRANCH
+# class of bug (crucible-predictor#463: a value interpolated into a heredoc
+# but never actually exported, so the remote expansion silently resolved to
+# an empty string) cannot happen when the renderer bakes the value in
+# instead of reading it from the remote environment. STAGED_PREDICTOR_CONFIG
+# and S3_STAGING must reach the spot through --export — the renderer's
+# config-copy body reads them as spot-side env vars, exactly like every
+# other interpolation this module makes (see ConfigCopy.when's docstring).
 echo "==> Bootstrapping spot (watchdog, python, clone, configs)..."
-run_ssm "bootstrap" 600 <<BOOTSTRAP
-set -eo pipefail
-export HOME=/home/ec2-user XDG_CACHE_HOME=/tmp AWS_REGION=${AWS_REGION} AWS_DEFAULT_REGION=${AWS_REGION}
-
-# Spot-side hard-timeout watchdog (see bootstrap-step rationale above).
-systemd-run --on-active=${MAX_RUNTIME_SECONDS} --unit=alpha-engine-watchdog \
-    --description='alpha-engine spot hard-timeout' /sbin/shutdown -h now
-
-dnf install -y -q python3.12 python3.12-pip python3.12-devel git gcc 2>/dev/null || \
-    dnf install -y -q python3 python3-pip python3-devel git gcc
-command -v python3.12 >/dev/null && PYTHON_BIN=python3.12 || PYTHON_BIN=python3
-echo "Using: \$(\$PYTHON_BIN --version)"
-
-# flow-doctor is now pulled in via alpha-engine-lib[flow_doctor] from
-# requirements.txt — no bundled editable install needed.
-# Three HTTPS clones (no SSH key needed; these repos are public siblings).
-# Repos were renamed + moved to the nousergon org 2026-06-15
-# (alpha-engine-* → crucible-*); local checkout dirs intentionally stay
-# alpha-engine-* (dir-name ≠ repo-name split) so every downstream path is
-# unchanged. Clone the new slugs explicitly rather than depending on
-# GitHub's chained rename/transfer 301 redirect from the old cipher813 paths.
-git clone --depth 1 --branch ${BRANCH} https://github.com/nousergon/crucible-backtester.git /home/ec2-user/alpha-engine-backtester
-git clone --depth 1 --branch ${BRANCH} https://github.com/nousergon/crucible-executor.git /home/ec2-user/alpha-engine
-git clone --depth 1 --branch ${BRANCH} https://github.com/nousergon/crucible-predictor.git /home/ec2-user/alpha-engine-predictor
-
-# Fetch staged configs from S3. (.env no longer staged/fetched — #890.)
-aws s3 cp ${S3_STAGING}/config.yaml /home/ec2-user/alpha-engine-backtester/config.yaml --region ${AWS_REGION} --quiet
-echo "Fetched config.yaml"
-
-mkdir -p /home/ec2-user/alpha-engine/config
-aws s3 cp ${S3_STAGING}/risk.yaml /home/ec2-user/alpha-engine/config/risk.yaml --region ${AWS_REGION} --quiet
-echo "Fetched risk.yaml"
-
-if [ "${STAGED_PREDICTOR_CONFIG}" = "1" ]; then
-    mkdir -p /home/ec2-user/alpha-engine-predictor/config
-    aws s3 cp ${S3_STAGING}/predictor.yaml /home/ec2-user/alpha-engine-predictor/config/predictor.yaml --region ${AWS_REGION} --quiet
-    echo "Fetched predictor.yaml"
-else
-    echo "predictor.yaml NOT staged (predictor backtest will be skipped)"
-fi
-
-echo "Bootstrap complete: 3 repos cloned, 3-4 configs fetched from ${S3_STAGING}."
-BOOTSTRAP
+_BOOTSTRAP_SCRIPT="$("$LIB_PYTHON" -m krepis.spot_bootstrap render \
+    --repo-url https://github.com/nousergon/crucible-backtester.git \
+    --checkout /home/ec2-user/alpha-engine-backtester \
+    --branch "${BRANCH}" \
+    --region "${AWS_REGION}" \
+    --extra-clone /home/ec2-user/alpha-engine=https://github.com/nousergon/crucible-executor.git \
+    --extra-clone /home/ec2-user/alpha-engine-predictor=https://github.com/nousergon/crucible-predictor.git \
+    --max-runtime-seconds "$MAX_RUNTIME_SECONDS" \
+    --config-copy config.yaml:/home/ec2-user/alpha-engine-backtester/config.yaml \
+    --config-copy risk.yaml:/home/ec2-user/alpha-engine/config/risk.yaml \
+    --config-copy-if '${STAGED_PREDICTOR_CONFIG}:predictor.yaml:/home/ec2-user/alpha-engine-predictor/config/predictor.yaml' \
+    --export S3_STAGING="${S3_STAGING}" \
+    --export STAGED_PREDICTOR_CONFIG="${STAGED_PREDICTOR_CONFIG}")"
+# Repo-specific tail the renderer cannot express: the "N repos / configs
+# fetched from <prefix>" completion line, appended after the rendered
+# output rather than as a second inline bootstrap.
+_BOOTSTRAP_SCRIPT="${_BOOTSTRAP_SCRIPT}
+echo \"Bootstrap complete: 3 repos cloned, 3-4 configs fetched from ${S3_STAGING}.\""
+run_ssm "bootstrap" 600 <<< "$_BOOTSTRAP_SCRIPT"
 
 # ── Install python dependencies ──────────────────────────────────────────────
 echo "==> Installing Python dependencies..."
@@ -841,7 +823,12 @@ cd /home/ec2-user/alpha-engine-backtester
 # alpha-engine-lib git+https URL in requirements.txt without auth (public repo).
 # Non-secret runtime config (EMAIL_*, OUTPUT_BUCKET) is read from config.yaml
 # by the python pipeline and by the per-stage BUCKET resolution below.
-command -v python3.12 >/dev/null && PIP="python3.12 -m pip" || PIP="python3 -m pip"
+# Strict — no AMI-python3 fallback. The bootstrap step above already
+# installs python3.12 and exits non-zero if it is absent (config-I7372),
+# so resolving anything else here would silently pull wheels against a
+# different interpreter than requirements.txt was compiled for.
+command -v python3.12 >/dev/null || { echo "FATAL: python3.12 not found on spot — bootstrap should have installed it" >&2; exit 1; }
+PIP="python3.12 -m pip"
 
 \$PIP install --upgrade pip -q
 \$PIP install -q -r requirements.txt
@@ -936,7 +923,11 @@ CACHE
 # sibling) — audited forward to prevent the identical Backtester/Parity/
 # Evaluator failure. No .env is sourced; OUTPUT_BUCKET is now read from the
 # staged config.yaml at each per-stage BUCKET resolution below.
-ENV_SOURCE='export XDG_CACHE_HOME=/tmp; export PYTHONUNBUFFERED=1; export ALPHA_ENGINE_DECISION_CAPTURE_SUPPRESS=true; export AWS_REGION=us-east-1; export AWS_DEFAULT_REGION=us-east-1 ALPHA_ENGINE_DEPLOYED=1; command -v python3.12 >/dev/null && PYTHON_BIN=python3.12 || PYTHON_BIN=python3; export PYTHON_BIN;'
+# Strict — no AMI-python3 fallback (config-I7372). The bootstrap step
+# already installed python3.12 and asserted it as a POST-condition; a
+# fallback here would silently resolve wheels against a different
+# interpreter than requirements.txt was compiled for.
+ENV_SOURCE='export XDG_CACHE_HOME=/tmp; export PYTHONUNBUFFERED=1; export ALPHA_ENGINE_DECISION_CAPTURE_SUPPRESS=true; export AWS_REGION=us-east-1; export AWS_DEFAULT_REGION=us-east-1 ALPHA_ENGINE_DEPLOYED=1; command -v python3.12 >/dev/null || { echo "FATAL: python3.12 not found on spot" >&2; exit 1; }; PYTHON_BIN=python3.12; export PYTHON_BIN;'
 
 # Spot-side python is resolved inline per SSM step via PYTHON_BIN in the
 # ENV_SOURCE above. The pre-2026-05-27 SSH transport captured this on the
