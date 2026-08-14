@@ -14,7 +14,7 @@ import streamlit as st
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from loaders.s3_loader import load_predictions_json, list_predictions_dates, load_predictor_metrics, load_predictor_training_state, load_production_health, load_signals_json_with_fallback, load_mode_history, load_feature_importance, load_hold_book_flag, load_executor_params
+from loaders.s3_loader import load_predictions_json, load_predictions_payload, load_universe_membership_by_key, list_predictions_dates, load_predictor_metrics, load_predictor_training_state, load_production_health, load_signals_json_with_fallback, load_mode_history, load_feature_importance, load_hold_book_flag, load_executor_params
 from loaders.db_loader import get_predictor_outcomes, canonicalize_predictor_outcomes
 from loaders.signal_loader import get_available_signal_dates
 from charts.predictor_chart import make_model_drift_chart, make_feature_importance_chart
@@ -598,6 +598,7 @@ if qp_date and qp_date in _pred_dates:
     # keep the URL param round-tripped (bookmarkable), same as EOD Report /
     # Model Zoo.
     selected_date = qp_date
+    _predictions_date_arg = selected_date
     predictions = load_predictions_json(selected_date)
     st.query_params["date"] = selected_date
     st.subheader(f"Predictions — {selected_date}")
@@ -606,10 +607,86 @@ else:
     # from pre-config#856 behavior. Query params are left untouched here so
     # a plain page load doesn't grow a ?date= it wasn't given.
     selected_date = today_str
+    _predictions_date_arg = None
     predictions = load_predictions_json()
     st.subheader("Today's Predictions")
 
 signals_data = load_signals_json_with_fallback(selected_date) if get_available_signal_dates() else None
+
+# ---------------------------------------------------------------------------
+# Predictor Universe — what was ACTUALLY scored (alpha-engine-config-I7325).
+# The predictor resolves its daily scoring universe from the
+# `attractiveness_top_20` cut of the universe_membership artifact — NOT the
+# ~900-name scanner board rendered further down this page. The predictions
+# payload stamps its own provenance (`universe_membership_key` /
+# `_run_date` / `_generated_at`) precisely so this pane never has to
+# re-derive the cut from a date and risk resolving a DIFFERENT cut than the
+# one the predictor actually scored (config-I6785: pointer keys can be
+# rewritten intraday by a later Scanner run). Falling back to the 903-name
+# board on a missing key is the exact defect this pane exists to prevent —
+# so on that path we render an explicit UNMEASURED state and stop, never a
+# silent substitution.
+# ---------------------------------------------------------------------------
+
+st.subheader("Predictor Universe — What Was Actually Scored")
+
+_raw_predictions = load_predictions_payload(_predictions_date_arg)
+_membership_key = _raw_predictions.get("universe_membership_key")
+_membership_run_date = _raw_predictions.get("universe_membership_run_date")
+_membership_generated_at = _raw_predictions.get("universe_membership_generated_at")
+_n_predictions = _raw_predictions.get("n_predictions")
+if not isinstance(_n_predictions, int):
+    _n_predictions = len(predictions)
+
+if not _membership_key:
+    st.warning(
+        "⚠️ **UNMEASURED** — the predictions payload for "
+        f"**{selected_date}** carries no `universe_membership_key`, so the "
+        "cut actually scored cannot be resolved from its own provenance. "
+        "This is deliberately **not** backfilled from the scanner universe "
+        "board below — that board is a different, full-universe artifact, "
+        "and rendering it here is the defect this pane replaces "
+        "(alpha-engine-config-I7325)."
+    )
+else:
+    _membership = load_universe_membership_by_key(_membership_key)
+    if not _membership:
+        st.error(
+            f"🔴 Membership artifact at `{_membership_key}` (named by this "
+            "predictions payload's own provenance) could not be read. The "
+            "cut cannot be shown."
+        )
+    else:
+        _cut_name = _membership.get("predictor_universe_cut", "—")
+        _cut_block = (_membership.get("cuts") or {}).get(_cut_name, {}) or {}
+        _cut_tickers = sorted(_cut_block.get("tickers", []) or [])
+        _held_extra = sorted(set(predictions.keys()) - set(_cut_tickers))
+
+        muc1, muc2, muc3, muc4 = st.columns(4)
+        muc1.metric("Cut scored", _cut_name)
+        muc2.metric("Cut size", len(_cut_tickers))
+        muc3.metric("n_predictions", _n_predictions)
+        muc4.metric("Membership run_date", _membership_run_date or "—")
+
+        if _membership_run_date and _membership_run_date != selected_date:
+            st.warning(
+                f"⚠️ Membership artifact run_date **{_membership_run_date}** "
+                f"does not match the predictions date **{selected_date}** — "
+                "the cut this predictor run scored may be stale. "
+                f"(generated_at: {_membership_generated_at or '—'})"
+            )
+
+        with st.expander(f"`{_cut_name}` — {len(_cut_tickers)} tickers"):
+            st.write(", ".join(_cut_tickers) if _cut_tickers else "—")
+
+        if _held_extra:
+            st.caption(
+                f"Held / buy-candidate additions beyond the cut "
+                f"({len(_held_extra)}, making up the difference to "
+                f"n_predictions={_n_predictions}): " + ", ".join(_held_extra)
+            )
+
+st.divider()
 
 # ---------------------------------------------------------------------------
 # Research Brief + Effective Optimizer Params — relocated here from the
@@ -628,6 +705,13 @@ if signals_data:
     if market_regime:
         st.caption(f"Market Regime: **{market_regime.upper()}**")
 
+    # NOTE (alpha-engine-config-I7325): this is `signals.json::universe` — the
+    # full ~900-name scanner board, browsable/sortable/filterable BY DESIGN
+    # (crucible-research/scoring/universe_board.py). It is NOT the
+    # predictor's input; the predictor scores the `attractiveness_top_20` cut
+    # shown in "Predictor Universe — What Was Actually Scored" above. Do not
+    # relabel this back toward "Population" — that caption is what produced
+    # the defect this fix closes.
     population = signals_data.get("universe", []) or signals_data.get("population", [])
     if population:
         pop_rows = []
@@ -645,7 +729,10 @@ if signals_data:
         pop_df = pd.DataFrame(pop_rows).sort_values(
             "Score", ascending=False, na_position="last"
         ).reset_index(drop=True)
-        st.caption(f"Population ({len(pop_df)})")
+        st.caption(
+            f"Scanner Universe Board ({len(pop_df)}) — browsable/sortable "
+            "full universe, **not** the predictor's input"
+        )
         st.dataframe(
             pop_df.style.format({"Score": "{:.1f}"}, na_rep="—"),
             use_container_width=True, hide_index=True,

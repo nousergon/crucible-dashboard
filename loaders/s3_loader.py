@@ -1798,6 +1798,35 @@ def load_predictions_json(date_str: str | None = None) -> dict:
     return {p["ticker"]: p for p in pred_list if "ticker" in p}
 
 
+def load_predictions_payload(date_str: str | None = None) -> dict:
+    """Load the RAW predictor predictions document as written — unlike
+    ``load_predictions_json``, which reshapes ``predictions`` into a
+    ticker-keyed dict and drops every other top-level field, this keeps the
+    full payload: ``n_predictions``, and the provenance fields the predictor
+    stamps onto every run (``universe_membership_key``,
+    ``universe_membership_run_date``, ``universe_membership_generated_at`` —
+    see ``crucible-predictor/inference/stages/load_universe.py``
+    ``_stamp_membership_provenance``). Returns {} on any failure or
+    non-dict payload (alpha-engine-config-I7325)."""
+    key = _predictions_key(date_str)
+    data = _fetch_s3_json(_research_bucket(), key)
+    return data if isinstance(data, dict) else {}
+
+
+def load_universe_membership_by_key(key: str | None) -> dict | None:
+    """Load a ``universe_membership`` artifact by its EXACT S3 key, as
+    stamped onto a predictions payload's ``universe_membership_key`` — never
+    a date-derived path. The pointer keys (``latest.json`` and the dated
+    ``membership.json``) can be rewritten by a later same-day Scanner run
+    (config-I6785), so re-deriving the key from a date can silently resolve a
+    different cut than the one the predictor actually scored; only the key
+    the predictor itself recorded is trustworthy. Returns None when ``key``
+    is falsy or the object is unreadable (alpha-engine-config-I7325)."""
+    if not key:
+        return None
+    return download_s3_json(_research_bucket(), key)
+
+
 @cached(ttl_key="signals",  show_spinner=False)
 def list_predictions_dates() -> list[str]:
     """Return available predictor predictions dates, newest first.
