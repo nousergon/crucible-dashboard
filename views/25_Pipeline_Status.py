@@ -63,11 +63,13 @@ from nousergon_lib.pipeline_status import (
 )
 from nousergon_lib.pipeline_status.registry import ArchivePageRef, ArtifactReason
 from loaders.pipeline_status_loader import (
+    GateVerdict,
     LoadOutcome,
     LoadResult,
     ReliabilityResult,
     derive_cycle_verdict,
     list_recent_pipeline_runs_for_arn,
+    read_gate_verdict_with_fallback,
     read_pipeline_state_with_fallback,
     read_reliability_with_fallback,
     refresh_and_write_cache,
@@ -143,6 +145,25 @@ _VERDICT_LABEL = {
     "FAILED": "Failed",
     "RUNNING": "Running",
     "NOT_RUN": "Not run",
+}
+
+
+# Gate-verdict badge (alpha-engine-config-I7313) — a second, orthogonal axis
+# from the completion verdict above. VERIFIED only ever renders from a
+# positively-read execution output with all 5 degraded families reported
+# and none fired; DEGRADED and NOT_VERIFIED are visually distinct from it
+# AND from each other, mirroring crucible-evaluator's
+# grading/pipeline_gates.py::_statement VERIFIED / NOT VERIFIED calibration
+# (an absence of evidence is not a defect).
+_GATE_VERDICT_EMOJI = {
+    GateVerdict.VERIFIED: "✅",
+    GateVerdict.DEGRADED: "🟠",
+    GateVerdict.NOT_VERIFIED: "⚪",
+}
+_GATE_VERDICT_LABEL = {
+    GateVerdict.VERIFIED: "Gates clean",
+    GateVerdict.DEGRADED: "Gates degraded",
+    GateVerdict.NOT_VERIFIED: "Not verified",
 }
 
 
@@ -240,6 +261,23 @@ def _render_banner(result: LoadResult) -> None:
     )
 
 
+def _render_gate_verdict(run: PipelineRun, arn: str) -> None:
+    """Render the correctness-gate badge — the axis alpha-engine-config-I7313
+    adds alongside the artifact-completion verdict above. Never renders
+    VERIFIED from absent or unreadable data (see
+    loaders.pipeline_status_loader.read_gate_verdict_with_fallback)."""
+    gv = read_gate_verdict_with_fallback(arn, run.execution_arn, run.status)
+    emoji = _GATE_VERDICT_EMOJI[gv.verdict]
+    label = _GATE_VERDICT_LABEL[gv.verdict]
+    text = f"{emoji} **{label}** — {gv.summary}"
+    if gv.verdict == GateVerdict.DEGRADED:
+        st.warning(text)
+    elif gv.verdict == GateVerdict.NOT_VERIFIED:
+        st.info(text)
+    else:
+        st.success(text)
+
+
 def _render_run_header(run: Optional[PipelineRun], arn: str) -> None:
     """Top-of-section metadata strip."""
     label = PIPELINE_LABELS.get(arn.rsplit(":", 1)[-1], arn.rsplit(":", 1)[-1])
@@ -273,6 +311,8 @@ def _render_run_header(run: Optional[PipelineRun], arn: str) -> None:
     col1.metric("Start (UTC)", _format_utc(run.start_utc))
     col2.metric("End (UTC)", _format_utc(run.end_utc))
     col3.metric("Duration", _format_duration_sec(run.duration_sec))
+
+    _render_gate_verdict(run, arn)
 
     # Transparency: when the cycle produced its artifacts but the SF still
     # exited non-OK, surface the divergence as an info note rather than the

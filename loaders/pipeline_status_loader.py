@@ -30,6 +30,8 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
+import boto3
+
 from loaders.cache import cached
 
 from nousergon_lib.pipeline_status import (
@@ -134,6 +136,210 @@ def derive_cycle_verdict(run: PipelineRun) -> CycleVerdict:
     else:
         verdict = "FAILED"
     return CycleVerdict(verdict, produced, total)
+
+
+# ── Gate verdict (alpha-engine-config-I7313) ────────────────────────────────
+#
+# COMPLETE (derive_cycle_verdict, above) and VERIFIED (below) are two
+# separate axes. A run can produce every artifact and still have spent
+# without its correctness gates ever measuring — sf-pipeline-policy.md
+# §2.3a rule 3: any surface presenting a run's numbers must carry the
+# verdict's state. Every degraded-gate SNS alert deep-links here
+# (nousergon-data step_function.json's NotifyComplete* constants), which
+# makes this the one place the omission cost the most: the alert correctly
+# said the gate degraded, and the page it pointed at said nothing.
+#
+# Data source: the five SF-controlled degraded-flag families threaded onto
+# the execution's own $ scope by exactly one Pass state each
+# (gate_degraded / health_check_degraded / report_card_degraded /
+# parity_degraded / research_predictor_degraded — verified live 2026-08-14
+# against nousergon-data/infrastructure/step_function.json), landing on
+# DescribeExecution's ``output`` for a terminal execution. Consumed here
+# by a SEPARATE DescribeExecution read rather than crucible-evaluator's
+# normalized ``grading/pipeline_gates.py::read_gate_state`` block:
+# crucible-evaluator is not an installable dependency of crucible-dashboard
+# (no setup.py/pyproject.toml, not in requirements.in), and as of this PR
+# its fix for the alpha-engine-config-I7312 verdict defect
+# (crucible-evaluator-PR205) is open but unmerged — consuming it now would
+# import that bug. Mirrored instead: nousergon-data's own
+# ``CheckGateDegradedNotify`` Choice semantics, ``And(IsPresent, Boolean-
+# Equals)`` per flag — absence is NEVER read as False (config#2275
+# invariant) — and crucible-evaluator's VERIFIED / NOT VERIFIED calibration
+# (grading/pipeline_gates.py::_statement): an absent flag is an absence of
+# evidence, never a clean pass; a fired flag is a detected condition and
+# renders distinctly from both.
+#
+# Verified live 2026-08-14: every SUCCEEDED execution of
+# ne-weekly-freshness-pipeline sampled (7 executions, 2026-07-31 through
+# 2026-08-13) carries NONE of the five flags — they are omitted entirely on
+# every production run to date, never present-and-false. Under this module
+# every one of those runs renders NOT_VERIFIED, replacing the prior silent
+# "renders as COMPLETE, says nothing about gates" behavior — this is the
+# defect the issue describes, confirmed on live data, not a hypothetical.
+
+_DEGRADED_FAMILY_LABELS: dict[str, str] = {
+    "gate_degraded": "pre-spend gates (LibPinDriftCheck/PipelineContractCheck/AcquireMutex)",
+    "health_check_degraded": "tail health checks (SaturdayHealthCheck/WeeklySubstrateHealthCheck)",
+    "report_card_degraded": "report card advisory grading (ReportCard Lambda)",
+    "parity_degraded": "parity verdict (pit_parity/replay)",
+    "research_predictor_degraded": "an internal ResearchPredictorParallel fail-open",
+}
+
+
+class GateVerdict(str, Enum):
+    """The run's correctness-gate axis — orthogonal to CycleVerdict's
+    artifact-completion axis. A run can be COMPLETE and still be
+    NOT_VERIFIED or DEGRADED here."""
+
+    VERIFIED = "verified"  # all 5 families reported, none fired true
+    DEGRADED = "degraded"  # at least one family reported true — a detected condition
+    NOT_VERIFIED = "not_verified"  # at least one family absent — an absence of evidence
+
+
+@dataclass(frozen=True)
+class GateVerdictResult:
+    """Outcome of one gate-verdict read. Never constructed as VERIFIED from
+    absent, unparseable, or unreachable data — see read_gate_verdict_with_fallback."""
+
+    verdict: GateVerdict
+    degraded_families: tuple[str, ...] = ()
+    unreported_families: tuple[str, ...] = ()
+    error_message: Optional[str] = None
+
+    @property
+    def summary(self) -> str:
+        if self.verdict == GateVerdict.VERIFIED:
+            return "All 5 SF-controlled degraded-flag families reported, none fired."
+        if self.verdict == GateVerdict.DEGRADED:
+            named = "; ".join(
+                _DEGRADED_FAMILY_LABELS.get(f, f) for f in self.degraded_families
+            )
+            return (
+                f"Fail-open degradation recorded on this run: {named}. "
+                "Every number was still computed; treat them as UNATTESTED, not as wrong."
+            )
+        if self.error_message:
+            return self.error_message
+        named = "; ".join(
+            _DEGRADED_FAMILY_LABELS.get(f, f) for f in self.unreported_families
+        )
+        return (
+            f"The Step Function reported no value for: {named} — "
+            "unreported is not false."
+        )
+
+
+def _gate_verdict_from_execution_output(raw_output: Optional[str]) -> GateVerdictResult:
+    """Pure projection of a DescribeExecution ``output`` JSON string onto a
+    :class:`GateVerdictResult`. Mirrors ``CheckGateDegradedNotify``'s
+    And(IsPresent, BooleanEquals) semantics per flag; a fired family always
+    wins over an unrelated absence (mirrors that Choice's most-specific-
+    first ordering, which routes on ANY true flag regardless of what else
+    is unreported)."""
+    if not raw_output:
+        return GateVerdictResult(
+            GateVerdict.NOT_VERIFIED,
+            unreported_families=tuple(_DEGRADED_FAMILY_LABELS),
+            error_message="No execution output available (run has not reached a terminal state with output).",
+        )
+    try:
+        parsed = json.loads(raw_output)
+    except (ValueError, TypeError) as exc:
+        return GateVerdictResult(
+            GateVerdict.NOT_VERIFIED,
+            unreported_families=tuple(_DEGRADED_FAMILY_LABELS),
+            error_message=f"Could not parse execution output as JSON: {type(exc).__name__}.",
+        )
+    if not isinstance(parsed, dict):
+        return GateVerdictResult(
+            GateVerdict.NOT_VERIFIED,
+            unreported_families=tuple(_DEGRADED_FAMILY_LABELS),
+            error_message="Execution output was not a JSON object.",
+        )
+
+    degraded = tuple(f for f in _DEGRADED_FAMILY_LABELS if parsed.get(f) is True)
+    unreported = tuple(
+        f for f in _DEGRADED_FAMILY_LABELS if not isinstance(parsed.get(f), bool)
+    )
+
+    if degraded:
+        return GateVerdictResult(
+            GateVerdict.DEGRADED, degraded_families=degraded, unreported_families=unreported
+        )
+    if unreported:
+        return GateVerdictResult(GateVerdict.NOT_VERIFIED, unreported_families=unreported)
+    return GateVerdictResult(GateVerdict.VERIFIED)
+
+
+def _sfn_client_for(state_machine_arn: str):
+    """Return a boto3 Step Functions client for the ARN's region.
+
+    Uses the EC2 IAM role automatically (mirrors loaders.s3_loader.get_s3_client).
+    """
+    region = state_machine_arn.split(":")[3] if state_machine_arn.startswith("arn:") else None
+    return boto3.client("stepfunctions", region_name=region)
+
+
+@cached(ttl=_CACHE_TTL_SECONDS)
+def _cached_gate_verdict_output(state_machine_arn: str, execution_arn: str) -> Optional[str]:
+    """Streamlit-cached raw ``output`` JSON string for one execution.
+
+    A separate DescribeExecution call from the one ``read_pipeline_state``
+    already makes internally — nousergon_lib's PipelineRun does not expose
+    ``output`` (alpha-engine-config-I7313; nousergon-lib's read.py never
+    reads ``describe_resp.get("output")``). Raises on any boto3 failure;
+    the caller (read_gate_verdict_with_fallback) is the one that decides
+    what an unreadable execution renders as — never VERIFIED.
+    """
+    client = _sfn_client_for(state_machine_arn)
+    resp = client.describe_execution(executionArn=execution_arn)
+    return resp.get("output")
+
+
+_GATE_VERDICT_TERMINAL_STATUSES = (
+    RunStatus.SUCCEEDED,
+    RunStatus.FAILED,
+    RunStatus.TIMED_OUT,
+    RunStatus.ABORTED,
+)
+
+
+def read_gate_verdict_with_fallback(
+    state_machine_arn: str,
+    execution_arn: Optional[str],
+    run_status: RunStatus,
+) -> GateVerdictResult:
+    """Public loader for the page-25 gate-verdict badge.
+
+    Per alpha-engine-config-I7313 deliverable 3: absence of the verdict
+    data renders as unknown, never as verified. A missing execution, a
+    non-terminal run, or ANY read/parse failure all resolve to
+    NOT_VERIFIED with a named reason — this function has no path that
+    returns VERIFIED except a positively-read, positively-parsed output
+    carrying all 5 families with none true.
+    """
+    if execution_arn is None:
+        return GateVerdictResult(
+            GateVerdict.NOT_VERIFIED,
+            unreported_families=tuple(_DEGRADED_FAMILY_LABELS),
+            error_message="No execution to read a gate verdict from.",
+        )
+    if run_status not in _GATE_VERDICT_TERMINAL_STATUSES:
+        return GateVerdictResult(
+            GateVerdict.NOT_VERIFIED,
+            unreported_families=tuple(_DEGRADED_FAMILY_LABELS),
+            error_message="Execution has not reached a terminal state yet.",
+        )
+    try:
+        raw_output = _cached_gate_verdict_output(state_machine_arn, execution_arn)
+    except Exception as exc:  # noqa: BLE001 — never silently render VERIFIED on a read failure
+        logger.warning("gate-verdict read failed for %s: %s", execution_arn, exc)
+        return GateVerdictResult(
+            GateVerdict.NOT_VERIFIED,
+            unreported_families=tuple(_DEGRADED_FAMILY_LABELS),
+            error_message=f"Could not read execution output: {type(exc).__name__}: {exc}",
+        )
+    return _gate_verdict_from_execution_output(raw_output)
 
 
 @dataclass(frozen=True)
