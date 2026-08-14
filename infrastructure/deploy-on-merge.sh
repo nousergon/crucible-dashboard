@@ -55,6 +55,56 @@ DASH_WEB_URL="http://localhost:3002/dash"
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$LOG"; }
 fail() { log "FAIL $*"; exit 1; }
 
+# ── What this deploy cost, measured (alpha-engine-config-I7298) ─────────────
+#
+# The deploy is the largest single memory event on this box and it was the one
+# thing outside the memory budget. deploy.yml delivers it over `ssm
+# send-command`, so until now every byte the build touched was charged to
+# `amazon-ssm-agent.service`'s cgroup: 1689 MB peak against 34 MB of the
+# agent's own anon (measured 2026-08-14). The budget could read comfortably
+# inside its 4372 MB bound while a multi-hundred-MB build ran beside it on a
+# 3839 MB box, and nothing could tell the two apart because they shared a
+# cgroup named after the wrong thing.
+#
+# deploy.yml now runs this script inside its own transient `systemd-run
+# --scope`, so the accounting is separated. This reports what that scope
+# actually used, every run, on the way out.
+#
+# NO CAP IS APPLIED YET, deliberately. The 1689 MB figure is an 18-day
+# high-water mark over the agent's whole life including page cache — it is not
+# a deploy measurement, and capping from it would be the estimate-instead-of-
+# measurement mistake this file's neighbours keep recording. Three or more real
+# readings from THIS metric are what a cap gets derived from (I7298 step 2).
+#
+# EXIT trap, not a line before `exit 0`: the revert path exits 1 from inside
+# a function, and a failed deploy's footprint is the one we would most want.
+report_deploy_footprint() {
+    local rc=$?
+    local cg peak_mb
+    cg=$(awk -F: '{print $3}' /proc/self/cgroup 2>/dev/null | head -1)
+    peak_mb=$(( $(cat "/sys/fs/cgroup${cg}/memory.peak" 2>/dev/null || echo 0) / 1048576 ))
+    if [ "$peak_mb" -le 0 ]; then
+        # Not a failure: this script is still runnable by hand outside a scope,
+        # and a cgroup v1 or unreadable path is a missing reading, not a bad
+        # deploy. Say so rather than publishing a zero, which would land on the
+        # metric as "the deploy used nothing".
+        log "deploy footprint: unavailable (cgroup ${cg:-unknown}) — not published"
+        return $rc
+    fi
+    log "deploy footprint: peak ${peak_mb} MB in cgroup ${cg}"
+    aws cloudwatch put-metric-data --namespace "AlphaEngine/Box" \
+        --metric-data "MetricName=deploy_peak_mb,Dimensions=[{Name=InstanceId,Value=${INSTANCE_ID}}],Value=${peak_mb},Unit=Megabytes" \
+        2>&1 | head -1 | sed 's/^/deploy footprint publish failed: /' >&2 || true
+    return $rc
+}
+# IMDSv2, mirroring box_health.sh's derivation rather than inventing a second
+# one — the two publish into the same namespace and dimension, and a metric
+# whose InstanceId is derived two different ways splits into two series the
+# first time either derivation degrades.
+_imds_tok=$(curl -s --max-time 2 -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 60" 2>/dev/null || true)
+INSTANCE_ID=$(curl -s --max-time 2 -H "X-aws-ec2-metadata-token: ${_imds_tok}" http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null || echo "dashboard-ec2")
+trap report_deploy_footprint EXIT
+
 # wait_for_health URL LABEL — poll a health endpoint for up to 30s. Defined
 # early (moved up from §4) so the §0 Python-parity self-heal below can reuse
 # it post-restart without duplicating the polling loop.

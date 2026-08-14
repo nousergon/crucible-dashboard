@@ -1122,3 +1122,64 @@ class TestDeployGateSeesEveryOutOfTreeCopy:
             f"fewer than 3 deploy gates — the installers that lost their pair "
             f"will silently stop deploying it"
         )
+
+
+class TestDeployRunsInItsOwnCgroup:
+    """The deploy is the largest memory event on the box (alpha-engine-config-I7298).
+
+    Delivered over `ssm send-command`, it executes inside
+    `amazon-ssm-agent.service`'s cgroup unless something puts it elsewhere.
+    Measured 2026-08-14, that cgroup carried a 1689 MB peak against 34 MB of
+    the agent's own anon — so the box's whole per-service budget could read
+    satisfied while the build ran outside it, and the obvious fix (cap the
+    agent) kills the only remote-management path to a box with SSH closed.
+    """
+
+    def _deploy_yml(self):
+        return (REPO_ROOT / ".github" / "workflows" / "deploy.yml").read_text()
+
+    def _deploy_sh(self):
+        return (REPO_ROOT / "infrastructure" / "deploy-on-merge.sh").read_text()
+
+    def test_the_deploy_is_wrapped_in_a_transient_scope(self):
+        body = self._deploy_yml()
+        assert "systemd-run --scope --collect" in body, (
+            "without the scope the build is charged to the SSM agent's cgroup")
+        assert "--unit=dash-deploy-" in body, "the scope must be identifiable while it runs"
+
+    def test_the_scope_is_not_silently_bypassable(self):
+        """A fallback to the un-scoped path would restore the hole and report success."""
+        body = self._deploy_yml()
+        assert "|| bash infrastructure/deploy-on-merge.sh" not in body
+        assert "command -v systemd-run" not in body
+
+    def test_the_deploy_reports_its_own_footprint(self):
+        sh = self._deploy_sh()
+        assert "report_deploy_footprint" in sh
+        assert "trap report_deploy_footprint EXIT" in sh, (
+            "a line before `exit 0` misses the revert path, which is the "
+            "footprint most worth having")
+        assert "MetricName=deploy_peak_mb" in sh
+
+    def test_a_missing_reading_is_not_published_as_zero(self):
+        sh = self._deploy_sh()
+        block = sh[sh.index("report_deploy_footprint()"):]
+        block = block[:block.index("trap report_deploy_footprint")]
+        assert 'if [ "$peak_mb" -le 0 ]' in block, (
+            "an unreadable cgroup must report unavailable, never publish 0 — "
+            "a zero lands on the metric as 'the deploy used nothing'")
+
+    def test_no_memory_cap_is_applied_before_it_is_measured(self):
+        """Phase 1 buys the measurement; the cap is derived from it (I7298 step 2)."""
+        body = self._deploy_yml()
+        assert "-p MemoryMax=" not in body, (
+            "capping from the 1689 MB agent figure would be an estimate — that "
+            "is the mistake budget.yaml exists to stop repeating")
+
+    def test_the_instance_id_derivation_matches_box_health(self):
+        """Both publish into AlphaEngine/Box with an InstanceId dimension."""
+        sh = self._deploy_sh()
+        bh = (REPO_ROOT / "infrastructure" / "box_health.sh").read_text()
+        needle = "latest/meta-data/instance-id"
+        assert needle in sh and needle in bh, (
+            "two derivations of the same dimension split one series in two")

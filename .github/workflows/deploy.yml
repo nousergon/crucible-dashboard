@@ -76,7 +76,28 @@ jobs:
           #
           # Pinning to GITHUB_SHA (not origin/main) guards against a
           # back-to-back merge racing this deploy.
-          CMD_BODY="set -e; cd /home/ec2-user/alpha-engine-dashboard && sudo -u ec2-user git fetch origin --quiet && sudo -u ec2-user git reset --hard ${GITHUB_SHA} --quiet && bash infrastructure/deploy-on-merge.sh ${GITHUB_SHA}"
+          # The deploy runs in its OWN transient cgroup (alpha-engine-config-I7298).
+          #
+          # Without the scope, everything below executes inside
+          # amazon-ssm-agent.service's cgroup, because that is what delivers
+          # the command. Measured 2026-08-14: that cgroup carried a 1689 MB
+          # peak against 34 MB of the agent's own anon — the peak was the
+          # build. Two consequences, both bad: the largest memory event on the
+          # box sat outside budget.yaml entirely, and it could not be capped
+          # there without capping the agent, whose death removes the only
+          # remote-management path to a box with SSH closed (I5276).
+          #
+          # `--scope` runs it as a child in its own transient unit; `--collect`
+          # reaps that unit afterwards. NO MemoryMax is set here yet — this
+          # change buys the measurement (deploy-on-merge.sh reports the scope's
+          # own memory.peak as AlphaEngine/Box deploy_peak_mb on the way out),
+          # and the cap gets derived from three or more real readings rather
+          # than from the 18-day agent figure, which is not a deploy number.
+          #
+          # Not fallback-guarded: systemd-run is present on AL2023 (verified on
+          # the box), and a silent fallback to the un-scoped path would restore
+          # exactly the accounting hole this closes while reporting success.
+          CMD_BODY="set -e; cd /home/ec2-user/alpha-engine-dashboard && sudo -u ec2-user git fetch origin --quiet && sudo -u ec2-user git reset --hard ${GITHUB_SHA} --quiet && systemd-run --scope --collect --quiet --unit=dash-deploy-${GITHUB_SHA:0:12} bash infrastructure/deploy-on-merge.sh ${GITHUB_SHA}"
           CMD_ID=$(aws ssm send-command \
             --instance-ids ${DASHBOARD_INSTANCE_ID} \
             --document-name AWS-RunShellScript \
