@@ -1,0 +1,149 @@
+name: propose-memory-caps
+
+# Derives the dashboard box's per-service memory caps from what the box has
+# actually done, and opens a PR when the declared numbers disagree with the
+# measurement (alpha-engine-config-I7291).
+#
+# WHY THIS EXISTS. Every memory-cap check on that box detects and stops. The
+# ACT step has always been a human editing budget.yaml — 23 commits, six of
+# them in the eleven days to 2026-08-13 — which makes `memory_high:` a
+# hand-maintained point estimate of a continuously-moving quantity. That is the
+# same defect budget.yaml's own header records for the `observed_mb:` field it
+# deleted in July, relocated one level up. Under principles.md §2.3 a loop that
+# ends at "detected and paged" is partial coverage; this closes it to
+# detect -> derive -> propose, and stops exactly there.
+#
+# WHAT IT DOES NOT DO. It does not merge (auto-merge-policy.md: Claude opens
+# PRs, Brian merges), does not write budget.yaml on the box, does not restart
+# anything, and does not touch a censored unit — a pinned reading is a floor,
+# and sizing a cap from a floor is the one case that stays human. See
+# `propose_for_unit` in check_memory_budget.py for every hold it can take.
+#
+# AWS auth: OIDC -> github-actions-lambda-deploy, the same role deploy.yml uses
+# for the SSM dashboard deploy. Its DashboardDeployViaSSM statement already
+# grants ssm:SendCommand on this instance + AWS-RunShellScript, and
+# DashboardDeployPollCommand grants the reads — no IAM change, no new role.
+#
+# Schedule: Sundays 11:00 UTC. Deliberately NOT Saturday — the weekly freshness
+# pipeline runs then and its stages move memory on this box, and a peak
+# measured mid-pipeline would be read as steady-state demand. Sunday is the
+# buffer day (Brian's standing weekly convention).
+
+on:
+  schedule:
+    - cron: "0 11 * * SUN"
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: propose-memory-caps
+  cancel-in-progress: false
+
+env:
+  DASHBOARD_INSTANCE_ID: i-09b539c844515d549
+
+jobs:
+  propose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: arn:aws:iam::711398986525:role/github-actions-lambda-deploy
+          aws-region: us-east-1
+
+      - name: Read the proposal set off the box
+        id: measure
+        run: |
+          set -euo pipefail
+          # --propose-caps writes nothing and exits 0 whether or not it found
+          # anything: it is a report, not a verdict, and must never page.
+          CMD_BODY="cd /home/ec2-user/alpha-engine-dashboard && python3 infrastructure/check_memory_budget.py --propose-caps"
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "${DASHBOARD_INSTANCE_ID}" \
+            --document-name AWS-RunShellScript \
+            --comment "memory cap proposals" \
+            --parameters "commands=[\"${CMD_BODY}\"]" \
+            --query 'Command.CommandId' --output text)
+          echo "sent ${CMD_ID}"
+          # Poll rather than `ssm wait command-executed`: that waiter is a fixed
+          # 20 x 5s budget with no flag to extend it (the same reason deploy.yml
+          # hand-rolls its loop).
+          STATUS=Pending
+          for _ in $(seq 1 30); do
+            sleep 5
+            STATUS=$(aws ssm get-command-invocation --command-id "${CMD_ID}" \
+              --instance-id "${DASHBOARD_INSTANCE_ID}" --query 'Status' --output text 2>/dev/null || echo Pending)
+            case "$STATUS" in Success|Failed|Cancelled|TimedOut) break ;; esac
+          done
+          if [ "$STATUS" != "Success" ]; then
+            echo "::error::proposal read finished as ${STATUS}"
+            aws ssm get-command-invocation --command-id "${CMD_ID}" \
+              --instance-id "${DASHBOARD_INSTANCE_ID}" --query 'StandardErrorContent' --output text || true
+            exit 1
+          fi
+          aws ssm get-command-invocation --command-id "${CMD_ID}" \
+            --instance-id "${DASHBOARD_INSTANCE_ID}" \
+            --query 'StandardOutputContent' --output text > proposals.json
+          python3 -c "import json;d=json.load(open('proposals.json'));print(f\"read {len(d['records'])} units, {sum(1 for r in d['records'] if r['status']=='propose')} proposals\")"
+
+      - name: Apply the proposals to budget.yaml
+        run: |
+          set -euo pipefail
+          # Captured, not re-run for the PR body: the applier is idempotent, so
+          # a second invocation after the edit correctly reports "nothing to
+          # apply" — which as a PR body would describe the opposite of the diff
+          # it is attached to.
+          python3 infrastructure/apply_cap_proposals.py \
+            --proposals proposals.json \
+            --date "$(date -u +%Y-%m-%d)" | tee cap-report.txt
+
+      - name: The result must still pass the declared budget check
+        run: python3 infrastructure/check_memory_budget.py --declared
+
+      - name: Open a PR if the caps moved
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- infrastructure/systemd/resource-limits/budget.yaml; then
+            echo "no drift — declared caps agree with the measurement"
+            exit 0
+          fi
+          BRANCH="bot/memory-caps-$(date -u +%Y%m%d)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add infrastructure/systemd/resource-limits/budget.yaml
+          git commit -m "fix(budget): re-derive memory caps from measured peaks (config-I7291)"
+          git push -u origin "$BRANCH"
+          {
+            echo "Automated cap derivation from live \`memory.peak\` readings on \`${DASHBOARD_INSTANCE_ID}\` (alpha-engine-config-I7291)."
+            echo
+            echo "\`memory_max\` = 2.4x the measured peak (the band #662 landed on), \`memory_high\` = 70% of max (budget.yaml's reclaim-window convention). Only units with **at least 7 days of unit uptime and an uncensored reading** are sized; everything else is held and named below."
+            echo
+            echo '```'
+            cat cap-report.txt
+            echo '```'
+            echo
+            echo "Read each unit's \`note:\` before merging — a low peak can mean an expensive path has not run, which is why this proposes and never applies."
+            echo
+            echo "Prepared by: propose-memory-caps.yml via [Claude Code](https://claude.com/claude-code)"
+          } > pr-body.md
+          gh pr create --base main --head "$BRANCH" \
+            --title "fix(budget): re-derive memory caps from measured peaks ($(date -u +%Y-%m-%d))" \
+            --body-file pr-body.md
+
+  notify-main-failure:
+    needs: [propose]
+    if: ${{ failure() && github.ref == 'refs/heads/main' }}
+    uses: nousergon/nousergon-lib/.github/workflows/notify-ci-failure.yml@62597e550c08c0b7a7fe0af490cb141e344061b3
+    secrets: inherit

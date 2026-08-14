@@ -70,6 +70,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import json
 import os
 import pathlib
 import subprocess
@@ -373,6 +374,249 @@ def over_provisioned(unit: str, uptime_days: float | None) -> str | None:
         f"(2x peak) -- but READ THIS UNIT'S budget.yaml NOTE FIRST: a low peak "
         f"can mean an expensive path has not run, not that it is cheap."
     )
+
+
+# ── Cap PROPOSALS (alpha-engine-config-I7291) ──────────────────────────────
+#
+# WHAT THIS ADDS THAT THE CHECKS ABOVE DO NOT.
+#
+# Every check above this line detects and stops. `censored_observation` says a
+# cap is too tight, `approaching_the_cap` says one is about to be, and
+# `over_provisioned` says one is too loose — and the ACT step for all three is
+# a human editing a number in budget.yaml. Twenty-three commits have done
+# exactly that, six of them in the eleven days to 2026-08-13. A `memory_high:`
+# is therefore a hand-maintained point estimate of a continuously-moving
+# quantity, which is precisely the defect this file's own header records for
+# the `observed_mb:` field it deleted in July — relocated one level up rather
+# than removed.
+#
+# This block closes the loop: it DERIVES the number from the same measurement
+# the checks already read, and emits it as machine-readable JSON that
+# `apply_cap_proposals.py` turns into a pull request. The human keeps the
+# merge. Nothing here ever writes budget.yaml, restarts a unit, or touches the
+# box — a proposal is a diff with a measurement attached, not an action.
+#
+# WHY THESE MULTIPLES. `memory_max` at 2.4x the measured peak is the band
+# #662 landed on when it lowered the box's first two caps ever (nginx 2.3x,
+# llm-egress-proxy 2.4x), argued there against sixteen days of startup-
+# inclusive peak. `memory_high` at 70% of max is budget.yaml's stated
+# reclaim-window convention.
+#
+# The two are chosen so a freshly proposed cap does not immediately trip the
+# checks above — 2.4x < OVER_PROVISION_RATIO (2.5x), and the APPROACHING line
+# sits at 0.9 * 1.68x peak = 1.51x peak, well clear. A proposal that would
+# instantly re-report is not a proposal, it is a loop, and
+# `test_cap_proposals.py` asserts the arithmetic rather than trusting this
+# paragraph.
+PROPOSAL_MAX_MULTIPLE = 2.4
+PROPOSAL_HIGH_FRACTION = 0.70
+#: Same seven days `over_provisioned` requires, and for the identical reason:
+#: a peak is only as good as the window behind it, and a unit restarted an hour
+#: ago has not run its weekly path. Imported from that constant rather than
+#: repeated, so the two can never drift into disagreeing about what "long
+#: enough to trust" means.
+PROPOSAL_MIN_UPTIME_DAYS = OVER_PROVISION_MIN_UPTIME_DAYS
+#: Below this much disagreement, the declared cap is left alone. Without it,
+#: every weekly run opens a PR shaving 4 MB off something — churn that trains
+#: the reader to merge these without reading, which is the one failure mode a
+#: proposal loop must not have.
+PROPOSAL_TOLERANCE = 0.15
+#: No proposal ever goes below this, whatever the peak says. A 20 MB cap on a
+#: Python service is arithmetically derivable and operationally absurd.
+PROPOSAL_MIN_MAX_MB = 64
+PROPOSAL_ROUND_MB = 10
+
+#: Per-unit opt-out key in budget.yaml: `cap_proposals: manual`. For a unit
+#: whose correct cap is an argument rather than a measurement.
+PROPOSAL_OPT_OUT = "manual"
+
+
+def _round_up_mb(value_mb: float) -> int:
+    """Round up to the next PROPOSAL_ROUND_MB, so proposals are readable numbers."""
+    return int(PROPOSAL_ROUND_MB * -(-value_mb // PROPOSAL_ROUND_MB))
+
+
+def _round_down_mb(value_mb: float) -> int:
+    return int(PROPOSAL_ROUND_MB * (value_mb // PROPOSAL_ROUND_MB))
+
+
+def derive_caps(peak_bytes: int) -> tuple[int, int]:
+    """(memory_high, memory_max) in MB, derived from one measured peak.
+
+    Pure arithmetic, deliberately: this is the one function whose output
+    becomes a diff against budget.yaml, so it must be exercisable without a
+    cgroup, a box, or a systemd.
+
+    `memory_max` rounds DOWN to the readable step and `memory_high` rounds UP,
+    which is not cosmetic. At a 10 MB step and a small peak, rounding the hard
+    cap up carries it past 2.5x — so a proposal derived at 2.4x would be
+    reported as over-provisioned by the very next tick of the check above it.
+    Rounding the two ends outward-from-the-peak keeps every derived pair inside
+    the band both checks agree on, at every peak size.
+    """
+    peak_mb = peak_bytes / 1024**2
+    max_mb = max(PROPOSAL_MIN_MAX_MB, _round_down_mb(peak_mb * PROPOSAL_MAX_MULTIPLE))
+    high_mb = _round_up_mb(max_mb * PROPOSAL_HIGH_FRACTION)
+    # The reclaim window is the point of having two numbers; a rounding
+    # collision that erased it would ship a unit that goes from unconstrained
+    # straight to a kill.
+    if high_mb >= max_mb:
+        high_mb = max_mb - PROPOSAL_ROUND_MB
+    return high_mb, max_mb
+
+
+def propose_for_unit(
+    svc: dict,
+    *,
+    peak: int | None,
+    high: int | None,
+    hard: int | None,
+    uptime_days: float | None,
+) -> dict:
+    """One unit's proposal record, or the reason there isn't one.
+
+    Every outcome is RECORDED, including the holds. A proposal loop that
+    silently omits the units it could not size reports "3 proposals" over a box
+    where twelve units went unexamined, and reads as coverage it does not have
+    (observability-policy.md §8.3 — UNREPORTED must never collapse into
+    HEALTHY).
+    """
+    unit = svc["unit"]
+    declared_high = parse_bytes(svc["memory_high"]) // 1024**2
+    declared_max = parse_bytes(svc["memory_max"]) // 1024**2
+    rec = {
+        "unit": unit,
+        "declared_high_mb": declared_high,
+        "declared_max_mb": declared_max,
+        "peak_mb": None if peak is None else peak // 1024**2,
+        "uptime_days": None if uptime_days is None else round(uptime_days, 1),
+    }
+
+    if str(svc.get("cap_proposals", "")).lower() == PROPOSAL_OPT_OUT:
+        return {**rec, "status": "hold-manual",
+                "detail": "budget.yaml declares cap_proposals: manual for this unit"}
+    if peak is None or high is None or hard is None or hard == sys.maxsize:
+        return {**rec, "status": "hold-unmeasurable",
+                "detail": "no live cgroup reading (unit not running, or uncapped)"}
+    if peak >= high:
+        # The one case that stays human, on purpose. A censored peak is a
+        # FLOOR, so sizing a cap from it re-pins on the next growth — the
+        # nousergon-console 80M -> 160M -> re-pinned-in-a-day sequence. The
+        # remedy is a raise clear of the pin, which is a judgement about how
+        # much clearance to buy, not an arithmetic operation on a number
+        # nobody trusts.
+        return {**rec, "status": "hold-censored",
+                "detail": (f"memory.peak ({peak // 1024**2} MiB) has reached memory.high "
+                           f"({high // 1024**2} MiB) — the reading is a floor. Needs a "
+                           f"human raise CLEAR of the pin before it can be sized.")}
+    if uptime_days is None or uptime_days < PROPOSAL_MIN_UPTIME_DAYS:
+        return {**rec, "status": "hold-young",
+                "detail": (f"uptime {rec['uptime_days']}d is under the "
+                           f"{PROPOSAL_MIN_UPTIME_DAYS}d minimum — a peak this fresh has "
+                           f"not seen the unit's weekly paths (the vires.service case)")}
+
+    want_high, want_max = derive_caps(peak)
+    moved = (abs(want_max - declared_max) > PROPOSAL_TOLERANCE * declared_max
+             or abs(want_high - declared_high) > PROPOSAL_TOLERANCE * declared_high)
+    if not moved:
+        return {**rec, "status": "ok",
+                "detail": (f"declared caps are within {PROPOSAL_TOLERANCE:.0%} of the "
+                           f"measured derivation ({want_high}M/{want_max}M)")}
+    return {
+        **rec,
+        "status": "propose",
+        "proposed_high_mb": want_high,
+        "proposed_max_mb": want_max,
+        "direction": "raise" if want_max > declared_max else "lower",
+        "detail": (f"memory.peak {peak // 1024**2} MiB over {rec['uptime_days']}d up: "
+                   f"memory_max = {PROPOSAL_MAX_MULTIPLE}x peak, memory_high = "
+                   f"{PROPOSAL_HIGH_FRACTION:.0%} of max"),
+    }
+
+
+def enforce_overcommit(records: list[dict], bound_mb: int) -> list[dict]:
+    """Drop RAISING proposals until the proposed sum fits the overcommit bound.
+
+    THE RATIO IS NEVER SHAVED TO FIT, and this function is where that rule is
+    mechanised. budget.yaml's header is explicit: if the bound blocks a
+    MEASURED cap, that is a signal to re-derive the ratio — a human decision on
+    a policy constant — "not to shave the cap to fit". So a blocked raise is
+    reported as blocked, with the shortfall named, and never silently resized
+    down to whatever was left over. A proposal loop that quietly fits itself
+    inside the bound would make the bound look satisfied while the unit that
+    needed the memory still does not have it.
+
+    Lowering proposals are never dropped: they only ever move the sum away from
+    the bound.
+    """
+    def eff(rec: dict, use_proposed: bool) -> int:
+        if use_proposed and rec.get("status") == "propose":
+            return rec["proposed_max_mb"]
+        return rec["declared_max_mb"]
+
+    total = sum(eff(r, True) for r in records)
+    if total <= bound_mb:
+        return records
+    # Largest raise first: dropping the biggest offender recovers the most room
+    # per proposal withheld, so the smaller measured raises still land.
+    raises = sorted(
+        (r for r in records if r.get("status") == "propose" and r["direction"] == "raise"),
+        key=lambda r: r["proposed_max_mb"] - r["declared_max_mb"],
+        reverse=True,
+    )
+    for rec in raises:
+        if total <= bound_mb:
+            break
+        total -= rec["proposed_max_mb"] - rec["declared_max_mb"]
+        rec["status"] = "blocked-overcommit"
+        rec["detail"] = (
+            f"measured derivation is {rec['proposed_high_mb']}M/{rec['proposed_max_mb']}M, "
+            f"but applying it puts sum(memory_max) over the {bound_mb} MB bound. "
+            f"Re-derive max_overcommit_ratio or give memory back elsewhere — do NOT "
+            f"shave this cap to fit (budget.yaml header)."
+        )
+        rec.pop("proposed_high_mb", None)
+        rec.pop("proposed_max_mb", None)
+    return records
+
+
+def collect_proposals(spec: dict) -> dict:
+    """The whole box's proposal set, as the JSON `apply_cap_proposals.py` consumes."""
+    ram_mb = ram_mb_from_proc()
+    ceiling_mb = int(ram_mb * (1 - float(spec["reserve_fraction"])))
+    bound_mb = int(ceiling_mb * float(spec["max_overcommit_ratio"]))
+
+    records = [
+        propose_for_unit(
+            svc,
+            peak=cgroup_value(svc["unit"], "memory.peak"),
+            high=cgroup_value(svc["unit"], "memory.high"),
+            hard=cgroup_value(svc["unit"], "memory.max"),
+            uptime_days=unit_uptime_days(svc["unit"]),
+        )
+        for svc in spec["services"]
+    ]
+    records = enforce_overcommit(records, bound_mb)
+
+    sum_before = sum(r["declared_max_mb"] for r in records)
+    sum_after = sum(
+        r["proposed_max_mb"] if r["status"] == "propose" else r["declared_max_mb"]
+        for r in records
+    )
+    return {
+        "schema_version": 1,
+        "ceiling_mb": ceiling_mb,
+        "overcommit_bound_mb": bound_mb,
+        "sum_max_before_mb": sum_before,
+        "sum_max_after_mb": sum_after,
+        "derivation": {
+            "max_multiple_of_peak": PROPOSAL_MAX_MULTIPLE,
+            "high_fraction_of_max": PROPOSAL_HIGH_FRACTION,
+            "min_uptime_days": PROPOSAL_MIN_UPTIME_DAYS,
+            "tolerance": PROPOSAL_TOLERANCE,
+        },
+        "records": records,
+    }
 
 
 def unit_uptime_days(unit: str) -> float | None:
@@ -799,6 +1043,9 @@ def main() -> int:
                       help="check budget.yaml against itself (CI mode)")
     mode.add_argument("--installed", action="store_true",
                       help="check systemd's loaded values and assert no drift (on-box mode)")
+    mode.add_argument("--propose-caps", action="store_true",
+                      help="derive per-unit caps from live peaks and print the proposal "
+                           "set as JSON (on-box; writes nothing, see I7291)")
     ap.add_argument("--quiet", action="store_true", help="only print on failure")
     ap.add_argument("--emit-check", action="store_true",
                     help="publish the per-unit headroom fleet-check envelope to "
@@ -812,6 +1059,15 @@ def main() -> int:
     installed = (args.installed or args.emit_check) and not args.declared
 
     spec = yaml.safe_load(BUDGET.read_text())
+
+    # Proposals are a REPORT, not a verdict: they exit 0 whether or not they
+    # found anything, because "the caps disagree with the measurement" is not a
+    # box-health problem and must never page. box_health.sh does not call this
+    # mode; propose-memory-caps.yml does.
+    if args.propose_caps:
+        print(json.dumps(collect_proposals(spec), indent=2))
+        return 0
+
     reserve = float(spec["reserve_fraction"])
 
     # Two lists, deliberately not one. `breaches` are invariant violations and
