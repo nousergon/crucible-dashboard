@@ -376,6 +376,134 @@ def over_provisioned(unit: str, uptime_days: float | None) -> str | None:
     )
 
 
+# ── Rolling peak MARKS (alpha-engine-config-I7294) ─────────────────────────
+#
+# `memory.peak` is a cgroup counter that RESETS WHEN THE UNIT RESTARTS, and
+# deploy-on-merge.sh restarts services on merge. Every check on this box that
+# needs a trustworthy observation window therefore loses its evidence on the
+# cadence the box ships code — measured 2026-08-14, immediately after the #682
+# deploy: 13 of 15 units were under the 7-day minimum, and the only two that
+# were not are the two nothing had deployed in seventeen days.
+#
+# The units that change most often are exactly the ones whose peak never
+# survives long enough to be believed, which is backwards. Three separate
+# tracked items were stuck behind the same missing thing: the cap-proposal loop
+# (I7291) had almost nothing eligible to size, `dashboard.service` had never
+# been measured over 72h because deploys kept landing inside the window
+# (I6287), and the AWS agents had never had a normal-day reading recorded at
+# all (I5276).
+#
+# So the high-water mark is kept HERE, in box-health's own state directory,
+# across restarts. It resets on exactly one event: the unit's declared cap
+# changing. That is deliberate — a new cap is a new experiment, and carrying a
+# mark measured under the old ceiling into the new one would report a bound
+# the unit was never free to exceed as though it were demand.
+#
+# WHAT THE MARK MEASURES, STATED HONESTLY. `memory.peak` counts anonymous
+# memory AND reclaimable page cache. That overstates demand — but it is also
+# exactly what `memory.high`/`memory.max` count, so a cap sized from this mark
+# and the cap's own enforcement agree by construction. Where the two would
+# disagree is a cgroup hosting foreign work: `amazon-ssm-agent.service` reads
+# 518 MB current / 1689 MB peak while its own processes hold 34 MB of anon,
+# because every SSM-delivered command — including the deploy build — runs
+# inside it, and 421 MB of that current is page cache. That is why the agents
+# are OBSERVED and not capped; see budget.yaml's `observe_only:` block.
+_PEAK_MARKS = pathlib.Path(
+    os.environ.get("STATE_DIRECTORY", "/var/lib/box-health")
+) / "peak-marks.json"
+
+
+def read_peak_marks(path: pathlib.Path | None = None) -> dict[str, dict]:
+    """The stored marks, or {} if there are none yet.
+
+    Empty is legitimate (first run after a deploy that added this) and every
+    caller falls back to the live cgroup reading rather than treating a missing
+    mark as a zero — same rule as `throttle_baseline` above.
+    """
+    try:
+        raw = (path or _PEAK_MARKS).read_text()
+    except OSError:
+        return {}
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        # A truncated write is a broken observation, not a fresh start: say so
+        # by discarding it, and let the caller's hygiene line report it.
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def update_peak_marks(
+    units: list[tuple[str, int | None]],
+    *,
+    now: "_dt.datetime | None" = None,
+    path: pathlib.Path | None = None,
+) -> dict[str, dict]:
+    """Fold this tick's live peaks into the stored marks and persist them.
+
+    `units` is (unit, declared_max_mb) — None for an observe-only unit, which
+    has no declared cap and therefore never resets on one.
+    """
+    marks = read_peak_marks(path)
+    stamp = (now or _dt.datetime.now(_dt.timezone.utc)).replace(microsecond=0).isoformat()
+    for unit, declared_max_mb in units:
+        live = cgroup_value(unit, "memory.peak")
+        if live is None or live == sys.maxsize:
+            continue
+        live_mb = live // 1024**2
+        prev = marks.get(unit)
+        if prev is None or prev.get("cap_mb") != declared_max_mb:
+            marks[unit] = {"peak_mb": live_mb, "window_start": stamp,
+                           "cap_mb": declared_max_mb}
+            continue
+        marks[unit] = {
+            "peak_mb": max(int(prev.get("peak_mb", 0)), live_mb),
+            "window_start": prev.get("window_start", stamp),
+            "cap_mb": declared_max_mb,
+        }
+    target = path or _PEAK_MARKS
+    # Atomic: box_health.sh's tick and a manual run can overlap, and a
+    # half-written marks file would silently reset every window on the box.
+    tmp = target.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(marks, indent=2, sort_keys=True))
+    tmp.replace(target)
+    return marks
+
+
+def _anon_mb(unit: str) -> int | None:
+    """Anonymous memory from `memory.stat`, in MB, or None.
+
+    Reported alongside `memory.current` for observe-only units because the two
+    differ by an order of magnitude there and only one of them is demand:
+    `amazon-ssm-agent` read 518 MB current against 34 MB anon on 2026-08-14,
+    the remaining 421 MB being reclaimable page cache. A disposition argued
+    from `memory.current` on a cgroup like that is arguing from the cache.
+    """
+    p = _CGROUP_ROOT / unit / "memory.stat"
+    try:
+        for line in p.read_text().splitlines():
+            if line.startswith("anon "):
+                return int(line.split()[1]) // 1024**2
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
+def mark_window_days(mark: dict, now: "_dt.datetime | None" = None) -> float | None:
+    """Days of observation behind a mark, or None if it carries no start."""
+    start = mark.get("window_start")
+    if not start:
+        return None
+    try:
+        began = _dt.datetime.fromisoformat(start)
+    except ValueError:
+        return None
+    if began.tzinfo is None:
+        began = began.replace(tzinfo=_dt.timezone.utc)
+    ref = now or _dt.datetime.now(_dt.timezone.utc)
+    return max(0.0, (ref - began).total_seconds() / 86400)
+
+
 # ── Cap PROPOSALS (alpha-engine-config-I7291) ──────────────────────────────
 #
 # WHAT THIS ADDS THAT THE CHECKS ABOVE DO NOT.
@@ -472,6 +600,8 @@ def propose_for_unit(
     high: int | None,
     hard: int | None,
     uptime_days: float | None,
+    mark: dict | None = None,
+    now: "_dt.datetime | None" = None,
 ) -> dict:
     """One unit's proposal record, or the reason there isn't one.
 
@@ -484,12 +614,31 @@ def propose_for_unit(
     unit = svc["unit"]
     declared_high = parse_bytes(svc["memory_high"]) // 1024**2
     declared_max = parse_bytes(svc["memory_max"]) // 1024**2
+
+    # The ROLLING mark is the evidence when there is one, and the live cgroup
+    # reading only when there is not (I7294). A mark whose cap_mb no longer
+    # matches what budget.yaml declares was reset by the writer on the tick the
+    # cap changed, so a stale ceiling can never be read as demand here — but
+    # assert it rather than trust the writer, because the two run in different
+    # processes and the failure is silent.
+    window_days = uptime_days
+    observed = peak
+    source = "live memory.peak"
+    if mark and mark.get("cap_mb") == declared_max:
+        days = mark_window_days(mark, now)
+        if days is not None:
+            marked = int(mark.get("peak_mb", 0)) * 1024**2
+            observed = max(observed or 0, marked) or None
+            window_days = days
+            source = f"rolling mark since {mark.get('window_start')}"
+
     rec = {
         "unit": unit,
         "declared_high_mb": declared_high,
         "declared_max_mb": declared_max,
-        "peak_mb": None if peak is None else peak // 1024**2,
-        "uptime_days": None if uptime_days is None else round(uptime_days, 1),
+        "peak_mb": None if observed is None else observed // 1024**2,
+        "uptime_days": None if window_days is None else round(window_days, 1),
+        "observation": source,
     }
 
     if str(svc.get("cap_proposals", "")).lower() == PROPOSAL_OPT_OUT:
@@ -509,13 +658,13 @@ def propose_for_unit(
                 "detail": (f"memory.peak ({peak // 1024**2} MiB) has reached memory.high "
                            f"({high // 1024**2} MiB) — the reading is a floor. Needs a "
                            f"human raise CLEAR of the pin before it can be sized.")}
-    if uptime_days is None or uptime_days < PROPOSAL_MIN_UPTIME_DAYS:
+    if window_days is None or window_days < PROPOSAL_MIN_UPTIME_DAYS:
         return {**rec, "status": "hold-young",
-                "detail": (f"uptime {rec['uptime_days']}d is under the "
-                           f"{PROPOSAL_MIN_UPTIME_DAYS}d minimum — a peak this fresh has "
-                           f"not seen the unit's weekly paths (the vires.service case)")}
+                "detail": (f"observation window {rec['uptime_days']}d ({source}) is under "
+                           f"the {PROPOSAL_MIN_UPTIME_DAYS}d minimum — a peak this fresh "
+                           f"has not seen the unit's weekly paths (the vires.service case)")}
 
-    want_high, want_max = derive_caps(peak)
+    want_high, want_max = derive_caps(observed)
     moved = (abs(want_max - declared_max) > PROPOSAL_TOLERANCE * declared_max
              or abs(want_high - declared_high) > PROPOSAL_TOLERANCE * declared_high)
     if not moved:
@@ -528,9 +677,9 @@ def propose_for_unit(
         "proposed_high_mb": want_high,
         "proposed_max_mb": want_max,
         "direction": "raise" if want_max > declared_max else "lower",
-        "detail": (f"memory.peak {peak // 1024**2} MiB over {rec['uptime_days']}d up: "
-                   f"memory_max = {PROPOSAL_MAX_MULTIPLE}x peak, memory_high = "
-                   f"{PROPOSAL_HIGH_FRACTION:.0%} of max"),
+        "detail": (f"peak {observed // 1024**2} MiB over {rec['uptime_days']}d "
+                   f"({source}): memory_max = {PROPOSAL_MAX_MULTIPLE}x peak, "
+                   f"memory_high = {PROPOSAL_HIGH_FRACTION:.0%} of max"),
     }
 
 
@@ -586,6 +735,7 @@ def collect_proposals(spec: dict) -> dict:
     ceiling_mb = int(ram_mb * (1 - float(spec["reserve_fraction"])))
     bound_mb = int(ceiling_mb * float(spec["max_overcommit_ratio"]))
 
+    marks = read_peak_marks()
     records = [
         propose_for_unit(
             svc,
@@ -593,6 +743,7 @@ def collect_proposals(spec: dict) -> dict:
             high=cgroup_value(svc["unit"], "memory.high"),
             hard=cgroup_value(svc["unit"], "memory.max"),
             uptime_days=unit_uptime_days(svc["unit"]),
+            mark=marks.get(svc["unit"]),
         )
         for svc in spec["services"]
     ]
@@ -603,8 +754,30 @@ def collect_proposals(spec: dict) -> dict:
         r["proposed_max_mb"] if r["status"] == "propose" else r["declared_max_mb"]
         for r in records
     )
+    # Observe-only units are REPORTED, never proposed against: they carry no
+    # declared cap by decision, and the whole point of recording them is that
+    # "not mentioned anywhere" was the state I5276 refused to accept. Their
+    # numbers land in the same artifact as everything else so a disposition can
+    # be revisited against evidence rather than against the July estimate.
+    observed_only = []
+    for entry in spec.get("observe_only", []) or []:
+        unit = entry["unit"]
+        mark = marks.get(unit, {})
+        live_peak = cgroup_value(unit, "memory.peak")
+        observed_only.append({
+            "unit": unit,
+            "status": "observe-only",
+            "peak_mb": None if live_peak is None else live_peak // 1024**2,
+            "rolling_peak_mb": mark.get("peak_mb"),
+            "window_start": mark.get("window_start"),
+            "current_mb": (lambda v: None if v is None else v // 1024**2)(
+                cgroup_value(unit, "memory.current")),
+            "anon_mb": _anon_mb(unit),
+        })
+
     return {
-        "schema_version": 1,
+        "schema_version": 2,
+        "observe_only": observed_only,
         "ceiling_mb": ceiling_mb,
         "overcommit_bound_mb": bound_mb,
         "sum_max_before_mb": sum_before,
@@ -1176,6 +1349,26 @@ def main() -> int:
     timer_jobs = spec.get("timer_jobs") or []
 
     if installed:
+        # Fold this tick's peaks into the rolling marks (I7294). box_health.sh
+        # runs this every 10 minutes, so this IS the observation cadence — the
+        # proposal loop and the two stalled soak measurements (I6287, I5276)
+        # all read what accumulates here.
+        #
+        # A write failure is HYGIENE, not a breach: the box is fine, our
+        # ability to measure it over time is not. Reported rather than
+        # swallowed, because a marks file that silently stopped updating looks
+        # exactly like a box whose units never grow.
+        try:
+            update_peak_marks(
+                [(s["unit"], parse_bytes(s["memory_max"]) // 1024**2)
+                 for s in spec["services"]]
+                + [(e["unit"], None) for e in (spec.get("observe_only") or [])]
+            )
+        except OSError as exc:
+            hygiene.append(
+                f"peak marks not writable ({_PEAK_MARKS}): {exc} — every observation "
+                f"window on this box restarts from zero until this is fixed")
+
         hygiene.extend(orphan_dropins(
             {s["unit"] for s in spec["services"]} | {t["unit"] for t in timer_jobs}
         ))
