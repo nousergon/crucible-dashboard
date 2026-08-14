@@ -285,3 +285,127 @@ class TestWorkflowContract:
         rec["unit"] = "mnemon.service"
         new, changed = acp.apply_records(BUDGET.read_text(), [rec], date="2026-08-14")
         assert changed == ["mnemon.service"]
+
+
+class TestRollingMarks:
+    """The observation window has to outlive the deploy that resets the counter.
+
+    alpha-engine-config-I7294. Measured 2026-08-14, minutes after a deploy: 13
+    of 15 units were under the 7-day minimum and the only two above it were the
+    two nothing had deployed in seventeen days. A window that resets on the
+    cadence the box ships code is not an observation window.
+    """
+
+    def _marks_file(self, tmp_path):
+        return tmp_path / "peak-marks.json"
+
+    def test_a_missing_store_reads_empty_not_zero(self, tmp_path):
+        assert cmb.read_peak_marks(tmp_path / "absent.json") == {}
+
+    def test_a_truncated_store_is_discarded_rather_than_half_believed(self, tmp_path):
+        p = self._marks_file(tmp_path)
+        p.write_text('{"a.service": {"peak_mb": 10,')
+        assert cmb.read_peak_marks(p) == {}
+
+    def test_the_mark_is_the_evidence_when_it_beats_the_live_reading(self):
+        """A unit restarted an hour ago still carries its pre-restart peak."""
+        mark = {"peak_mb": 300, "window_start": "2026-08-01T00:00:00+00:00", "cap_mb": 500}
+        now = __import__("datetime").datetime.fromisoformat("2026-08-14T00:00:00+00:00")
+        rec = cmb.propose_for_unit(
+            _svc(high="350M", hard="500M"),
+            peak=20 * MB, high=350 * MB, hard=500 * MB, uptime_days=0.04,
+            mark=mark, now=now)
+        assert rec["status"] == "propose"
+        assert rec["peak_mb"] == 300
+        assert rec["uptime_days"] == 13.0
+        assert "rolling mark" in rec["observation"]
+
+    def test_a_mark_from_a_different_cap_is_ignored(self):
+        """A new cap is a new experiment; the old ceiling is not demand."""
+        mark = {"peak_mb": 300, "window_start": "2026-08-01T00:00:00+00:00", "cap_mb": 250}
+        rec = cmb.propose_for_unit(
+            _svc(high="350M", hard="500M"),
+            peak=20 * MB, high=350 * MB, hard=500 * MB, uptime_days=0.04, mark=mark)
+        assert rec["status"] == "hold-young"
+        assert rec["observation"] == "live memory.peak"
+
+    def test_a_live_peak_above_the_mark_wins(self):
+        mark = {"peak_mb": 100, "window_start": "2026-08-01T00:00:00+00:00", "cap_mb": 500}
+        now = __import__("datetime").datetime.fromisoformat("2026-08-14T00:00:00+00:00")
+        rec = cmb.propose_for_unit(
+            _svc(high="350M", hard="500M"),
+            peak=200 * MB, high=350 * MB, hard=500 * MB, uptime_days=1, mark=mark, now=now)
+        assert rec["peak_mb"] == 200
+
+    def test_a_censored_unit_stays_censored_even_with_a_mark(self):
+        """Censoring is a LIVE fact; a historical mark must not paper over it."""
+        mark = {"peak_mb": 300, "window_start": "2026-08-01T00:00:00+00:00", "cap_mb": 250}
+        rec = cmb.propose_for_unit(
+            _svc(high="175M", hard="250M"),
+            peak=175 * MB, high=175 * MB, hard=250 * MB, uptime_days=30, mark=mark)
+        assert rec["status"] == "hold-censored"
+
+    def test_the_window_survives_a_restart(self, tmp_path, monkeypatch):
+        p = self._marks_file(tmp_path)
+        dt = __import__("datetime")
+        monkeypatch.setattr(cmb, "cgroup_value", lambda unit, f: 300 * MB)
+        t0 = dt.datetime(2026, 8, 1, tzinfo=dt.timezone.utc)
+        cmb.update_peak_marks([("a.service", 500)], now=t0, path=p)
+        # The unit restarts: its cgroup counter drops to a fresh, low peak.
+        monkeypatch.setattr(cmb, "cgroup_value", lambda unit, f: 20 * MB)
+        marks = cmb.update_peak_marks(
+            [("a.service", 500)], now=t0 + dt.timedelta(days=9), path=p)
+        assert marks["a.service"]["peak_mb"] == 300, "the restart erased the evidence"
+        assert marks["a.service"]["window_start"] == "2026-08-01T00:00:00+00:00"
+        assert round(cmb.mark_window_days(marks["a.service"],
+                                          t0 + dt.timedelta(days=9))) == 9
+
+    def test_a_cap_change_resets_the_window(self, tmp_path, monkeypatch):
+        p = self._marks_file(tmp_path)
+        dt = __import__("datetime")
+        monkeypatch.setattr(cmb, "cgroup_value", lambda unit, f: 300 * MB)
+        t0 = dt.datetime(2026, 8, 1, tzinfo=dt.timezone.utc)
+        cmb.update_peak_marks([("a.service", 500)], now=t0, path=p)
+        monkeypatch.setattr(cmb, "cgroup_value", lambda unit, f: 40 * MB)
+        marks = cmb.update_peak_marks(
+            [("a.service", 900)], now=t0 + dt.timedelta(days=3), path=p)
+        assert marks["a.service"]["peak_mb"] == 40
+        assert marks["a.service"]["window_start"] == "2026-08-04T00:00:00+00:00"
+
+    def test_an_observe_only_unit_is_tracked_without_a_cap(self, tmp_path, monkeypatch):
+        p = self._marks_file(tmp_path)
+        dt = __import__("datetime")
+        monkeypatch.setattr(cmb, "cgroup_value", lambda unit, f: 1689 * MB)
+        marks = cmb.update_peak_marks(
+            [("amazon-ssm-agent.service", None)],
+            now=dt.datetime(2026, 8, 14, tzinfo=dt.timezone.utc), path=p)
+        assert marks["amazon-ssm-agent.service"]["peak_mb"] == 1689
+        assert marks["amazon-ssm-agent.service"]["cap_mb"] is None
+
+    def test_the_store_is_written_atomically(self, tmp_path, monkeypatch):
+        p = self._marks_file(tmp_path)
+        dt = __import__("datetime")
+        monkeypatch.setattr(cmb, "cgroup_value", lambda unit, f: 10 * MB)
+        cmb.update_peak_marks([("a.service", 100)],
+                              now=dt.datetime(2026, 8, 1, tzinfo=dt.timezone.utc), path=p)
+        assert p.exists() and not p.with_suffix(".json.tmp").exists()
+        assert json.loads(p.read_text())["a.service"]["peak_mb"] == 10
+
+
+class TestObserveOnlyDisposition:
+    """I5276: 'not mentioned anywhere' is not an acceptable end state."""
+
+    def test_both_aws_agents_carry_a_written_disposition(self):
+        spec = yaml.safe_load(BUDGET.read_text())
+        units = {e["unit"]: e for e in spec.get("observe_only", [])}
+        assert "amazon-ssm-agent.service" in units
+        assert "amazon-cloudwatch-agent.service" in units
+        for entry in units.values():
+            assert len(entry.get("reason", "")) > 80, (
+                "an uncapped unit needs a stated reason, not a name on a list")
+
+    def test_observe_only_units_are_not_in_the_capped_sum(self):
+        spec = yaml.safe_load(BUDGET.read_text())
+        capped = {s["unit"] for s in spec["services"]}
+        for entry in spec["observe_only"]:
+            assert entry["unit"] not in capped

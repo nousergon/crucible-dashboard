@@ -987,6 +987,56 @@ timer_jobs:
       name on a suppression list, which said less. Measure and re-derive before
       trusting the number.
 
+# ── Observed, deliberately uncapped (alpha-engine-config-I5276) ───────────
+#
+# Everything in `services:` above carries a declared cap. These two do not, and
+# the whole point of this block is that the absence is now a DECISION with a
+# measurement behind it rather than an omission. I5276 refused "not mentioned
+# anywhere" as an end state, and it was right to: the two AWS agents were left
+# out of the budget because they were on `manifest_exclude` for WATCHDOG
+# COVERAGE reasons ("has its own supervision"), and a liveness-monitoring
+# exclusion silently became a memory-budgeting one.
+#
+# WHAT THE JULY READING ACTUALLY MEASURED. I5276 recorded amazon-ssm-agent at
+# 435 MiB — "largest single consumer on the box" — and flagged it as a hole in
+# T1-1. Measured again 2026-08-14 over 18 days of agent uptime:
+#
+#   memory.current   518 MB      memory.peak   1689 MB
+#   anon (memory.stat)  34 MB    file (page cache)  421 MB
+#   its own processes: amazon-ssm-agent 11 MB RSS + ssm-agent-worker 18 MB
+#
+# The agent's own demand is ~34 MB. The rest is (a) reclaimable page cache the
+# kernel charges to this cgroup and gives back under pressure, and (b) every
+# command SSM has ever delivered — which on this box includes
+# deploy-on-merge.sh, since deploy.yml runs the entire build through
+# `ssm send-command`. The 1689 MB peak is a deploy, not an agent.
+#
+# So a cap here would not bound the agent; it would bound the deploy, and an
+# OOM inside it would kill the box's ONLY remote-management path (SSH is
+# closed). I5276 anticipated exactly this in its deliverable 4. The correct
+# place for that bound is around the deploy itself, not around the agent that
+# happens to host it — filed separately rather than done here, because it
+# changes the deploy path and this file is not where that lands.
+#
+# Both are therefore uncapped ON PURPOSE, and OBSERVED: check_memory_budget.py
+# folds their peaks into the rolling marks every 10 minutes (I7294) and reports
+# them in `--propose-caps` output, with anon shown next to current so the next
+# reader is not arguing from the page cache. Never proposed against — they have
+# no declared cap for a proposal to move.
+observe_only:
+  - unit: amazon-ssm-agent.service
+    reason: >-
+      Uncapped by decision, 2026-08-14. Hosts every SSM-delivered command
+      including the deploy build, so its cgroup readings are not its own
+      demand (34 MB anon against 518 MB current). Capping it caps the deploy
+      and risks killing the only remote-management path to this box.
+  - unit: amazon-cloudwatch-agent.service
+    reason: >-
+      Uncapped by decision, 2026-08-14. Measured 41 MB current / 65 MB peak
+      over 15 days — the smallest footprint on the box. A cap here would be
+      ceremony: there is no plausible growth path it would catch that the
+      box-level MemAvailable alarm would not.
+
 manifest_exclude:
   - unit: "alert-on-failure@.service"
     reason: systemd template unit, never instantiated directly
