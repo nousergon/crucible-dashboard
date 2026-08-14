@@ -65,7 +65,18 @@ yfinance>=1.5.1
 # renders UNOBSERVED. No dependency set changed between 0.54.0 and 0.59.x
 # (`git diff v0.54.0 origin/main -- pyproject.toml` touches the version line
 # only), so this is a pin move, not a resolution change.
-krepis[openai]>=0.59.3
+# Floor raised again to 0.59.6 (2026-08-14, alpha-engine-config-I7372): the
+# spot-bootstrap collapse — infrastructure/spot_backtest.sh and
+# infrastructure/spot_train.sh now render their bootstrap via
+# `krepis.spot_bootstrap.render_bootstrap`/`.render_install_deps` instead of
+# hand-carrying it, and tests/test_spot_bootstrap_cutover.py imports
+# `scan_for_inline_bootstraps`. Neither symbol exists in 0.59.3 — measured:
+# `pip install krepis==0.59.3; python -c "import krepis.spot_bootstrap as m;
+# print(hasattr(m, 'scan_for_inline_bootstraps'))"` prints False;
+# `krepis.spot_bootstrap` itself (the whole module) does not exist before
+# 0.59.x's EC2-spot/SSM resilience surface, per this file's own package
+# summary line.
+krepis[openai]>=0.59.6
 # nousergon-lib (renamed from alpha-engine-lib at v0.60.0) provides
 # setup_logging used by app.py + health_checker.py
 # to attach the FlowDoctorHandler when FLOW_DOCTOR_ENABLED=1, the
