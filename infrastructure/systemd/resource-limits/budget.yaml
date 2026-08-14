@@ -232,8 +232,39 @@ services:
 
   - unit: nous-ergon-live.service
     port: 8502
-    memory_high: 175M
-    memory_max: 250M
+    memory_high: 280M
+    memory_max: 380M
+    note: >-
+      2026-08-13: 175M/250M -> 280M/380M. This unit had been pinned at its soft
+      cap since at least 2026-08-11: `memory.peak` (175 MiB) == `memory.high`
+      (175 MiB) with 34 high-events in the first 40 minutes after a restart, so
+      every reading it contributed to the steady-state sum was a FLOOR and the
+      sum understated the box by an unknown amount. It is the only unit on the
+      box currently censored, and the last remaining source of the daily
+      `notice: memory budget observation hygiene` alert.
+
+      The 175M soft cap dates from an era when this service was recorded at
+      56-72 MB (`observed_mb`, since removed). It now sits at 164 MiB of anon
+      memory while throttled, which is a lower bound, not a working set.
+
+      280M is deliberately NOT "just above the pinned number" — the check's own
+      remedy text forbids that, because re-capping to the censored value
+      re-pins on the next growth and produces the same finding again. It is
+      1.6x the censored floor, in line with the 2.3-2.4x that #662 settled on
+      for units whose peak WAS measurable. max at 380M keeps high at ~74% of
+      max, the reclaim-window convention stated above.
+
+      sum(memory_max) 4188 -> 4318 MB against the 4372 MB bound (1.32x of the
+      3263 MB ceiling): paid for out of the 185 MB of headroom #662 reclaimed,
+      without touching max_overcommit_ratio and without a resize. The steady
+      state bound is not the binding one — 1593 MB measured, 41% of RAM against
+      a 60% limit, with 1465 MB MemAvailable.
+
+      THE NUMBER ABOVE IS PROVISIONAL AND MUST BE RE-DERIVED FROM A SOAK. A cap
+      set while the reading is censored is an estimate by construction; the
+      first uncensored `memory.peak` after several days up is the measurement
+      this entry is owed. Same discipline as #661 for nousergon-console.
+      Re-exam: alpha-engine-config-I7290.
 
   - unit: crucible-dash-api.service
     port: 8506
