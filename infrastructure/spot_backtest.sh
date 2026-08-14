@@ -43,8 +43,9 @@
 # Prerequisites:
 #   - AWS CLI with perms to RunInstances / TerminateInstances /
 #     DescribeInstances / SendCommand / GetCommandInvocation
-#   - alpha-engine-lib installed in the dispatcher venv (ec2_spot +
-#     ssm_dispatcher CLIs); LIB_PYTHON points at it
+#   - /opt/nousergon/bin/lib-python present on the dispatcher host — the
+#     ops-owned guard over the declared krepis venv (ec2_spot +
+#     ssm_dispatcher CLIs); LIB_PYTHON names it
 #   - Code committed and pushed to origin (instance clones from GitHub
 #     via HTTPS — no SSH key needed)
 #   - config.yaml + executor risk.yaml + predictor predictor.yaml
@@ -121,10 +122,16 @@ SECURITY_GROUP="sg-03cd3c4bd91e610b0"
 # launchers (same VPC vpc-566f002e, same SG).
 SUBNETS="${SUBNETS:-subnet-a61ec0fb,subnet-1e58307a,subnet-789d3857,subnet-c670118d,subnet-7cff7c43,subnet-e07166ec}"
 IAM_PROFILE="alpha-engine-executor-profile"
-# Lib CLI path: ae-dashboard is the SSM target for Backtester / Parity
-# / Evaluator states; the dispatcher's .venv has alpha-engine-lib
-# installed.
-LIB_PYTHON="${LIB_PYTHON:-/home/ec2-user/alpha-engine-dashboard/.venv/bin/python}"
+# Lib CLI path: every spot launcher on the dispatcher box resolves its
+# interpreter through the ops-owned guard /opt/nousergon/bin/lib-python
+# (nous-ergon-ops: alpha-engine-dashboard/live/infrastructure/bin/lib-python).
+# That guard execs the box's DECLARED krepis venv and aborts with EX_CONFIG
+# (78), naming the version it found, when the venv is absent or below the
+# launcher floor. It never falls back to a co-tenant checkout — the silent
+# fallback is exactly the defect alpha-engine-config-I6931/I7343 removes.
+# Do NOT add a guard block here: the contract lives ONCE, in the repo that
+# owns this box's provisioning (nine copies across five repos is I6922).
+LIB_PYTHON="${LIB_PYTHON:-/opt/nousergon/bin/lib-python}"
 BACKTEST_MODE="all"
 
 # ── Parse flags ──────────────────────────────────────────────────────────────
