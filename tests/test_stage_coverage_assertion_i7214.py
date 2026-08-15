@@ -89,12 +89,34 @@ class TestSubstrateHealthCheckStageCoverage:
         )
         assert " && " not in assert_line
 
-    def test_assert_line_is_the_last_executable_line(self):
-        # The riskiest placement: as the script's LAST command, its exit
-        # status becomes the script's own exit status. Confirm the `||
-        # echo` fallback (return 0) is genuinely the tail of the script.
+    def test_assert_line_is_the_last_work_the_script_does(self):
+        # Was `..._is_the_last_executable_line`, on the reasoning that as the
+        # script's LAST command its exit status becomes the script's own.
+        # config-I7415 made that reasoning obsolete in the safe direction: the
+        # script now ends with an aggregate verdict block whose exit status is
+        # the three GATING checks' and nothing else, so this observe-mode
+        # assertion can no longer reach the exit status even by accident.
+        #
+        # The invariant that survives is the placement one — the assertion
+        # measures what THIS stage wrote, so no further work may run after it.
+        # Only the verdict block may.
         lines = list(_executable_lines(_SUBSTRATE_SCRIPT))
-        assert "krepis.stage_coverage assert" in lines[-1][1]
+        assert_idx = next(
+            i
+            for i, (_, line) in enumerate(lines)
+            if "krepis.stage_coverage assert" in line
+        )
+        after = [line for _, line in lines[assert_idx + 1:]]
+        assert after, "the terminal verdict block is missing (config-I7415)"
+        for line in after:
+            assert any(
+                tok in line
+                for tok in ("_FAILED_CHECKS", "exit 1", "echo", "if", "fi")
+            ), (
+                f"line after the stage-coverage assertion does real work: "
+                f"{line.strip()!r} — the assertion must measure the stage's "
+                f"final state"
+            )
 
     def test_does_not_set_enforce(self):
         # Scoped to the new I7214 assert line — the I7167 sweep block above

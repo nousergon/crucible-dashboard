@@ -147,3 +147,76 @@ class TestCommandCoverage:
             and not line.strip().startswith("#")
         )
         assert '--run-date "$RUN_DATE"' in sweep_line
+
+
+class TestOneRunMeasuresTheWholeSurface:
+    """alpha-engine-config-I7415.
+
+    The three gating checks used to run as bare commands under `set -e`, so
+    the FIRST non-zero exit aborted the script and the rest never ran. On a
+    tail health check of an already-finished ~4h pipeline there is nothing
+    downstream to protect by stopping early — the only thing the abort bought
+    was that each Saturday revealed exactly one problem, at a cost of one
+    four-hour run per finding. Measured 2026-08-15.
+    """
+
+    def test_every_gating_check_goes_through_run_check(self):
+        """A bare invocation is the regression: it restores first-failure-wins
+        for whichever check is added next."""
+        for lineno, line in _executable_lines():
+            for mod in (
+                "nousergon_lib.transparency",
+                "validators.constituents_drift_check",
+                "validators.phase_marker_sweep",
+            ):
+                if mod in line:
+                    # the invocation must be an argument to run_check, which
+                    # means the preceding non-blank executable line opens one.
+                    assert "run_check" in _preceding_run_check_block(lineno), (
+                        f"{_SCRIPT.name}:{lineno} invokes {mod} outside "
+                        f"run_check — its failure would abort the remaining "
+                        f"gating checks under set -e"
+                    )
+
+    def test_a_failed_check_still_exits_non_zero(self):
+        src = _SCRIPT.read_text()
+        assert "_FAILED_CHECKS" in src
+        assert "exit 1" in src
+
+    def test_the_failure_summary_is_the_last_thing_written(self):
+        """krepis.ssm_log_capture quotes the command's LAST output line when it
+        summarises a non-zero exit, so the summary has to BE the last line —
+        the 2026-08-15 run's DEGRADED reason named a non-fatal row instead
+        (config-I7393)."""
+        lines = [line for _, line in _executable_lines()]
+        exit_idx = next(
+            i for i, line in enumerate(lines) if line.strip() == "exit 1"
+        )
+        summary_idx = next(
+            i for i, line in enumerate(lines)
+            if "EXIT 1 —" in line and "_FAILED_CHECKS[*]" in line
+        )
+        assert summary_idx == exit_idx - 1, (
+            "the failure summary must be the last line written before exiting"
+        )
+
+    def test_observe_mode_checks_never_reach_the_failure_list(self):
+        """The stage-output sweep and the stage-coverage assertion are
+        observe-mode by ruling (detect before enforcing when the floor is
+        unmeasured, Brian 2026-08-11) — they must not be able to fail the
+        run."""
+        for lineno, line in _executable_lines():
+            if "stage_output_sweep" in line or "krepis.stage_coverage" in line:
+                assert "run_check" not in line, (
+                    f"{_SCRIPT.name}:{lineno} routes an observe-mode check "
+                    f"through run_check, which would let it fail a four-hour "
+                    f"production run"
+                )
+
+
+def _preceding_run_check_block(lineno: int) -> str:
+    """The two executable lines ending at ``lineno`` — enough to see the
+    ``run_check`` that a wrapped invocation is an argument to."""
+    lines = list(_executable_lines())
+    idx = next(i for i, (ln, _) in enumerate(lines) if ln == lineno)
+    return "\n".join(line for _, line in lines[max(0, idx - 1): idx + 1])
