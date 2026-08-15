@@ -310,8 +310,17 @@ class TestLibVersionPin:
             "nousergon_lib import alias still works via the shim)"
         )
         assert "@main" not in text, "nousergon-lib must be pinned to a tag, not @main"
-        assert "@v0.124.45" in text, (
-            "nousergon-lib should pin to v0.124.45 (alpha-engine-config-I6919, "
+        assert "@v0.124.60" in text, (
+            "nousergon-lib should pin to v0.124.60 (alpha-engine-config-I7412, "
+            "nousergon-lib#319): adds the GATED verdict to "
+            "nousergon_lib.transparency — a row whose declared producer's "
+            "EventBridge rule is DISABLED reports gated rather than fail. "
+            "infrastructure/substrate_health_check.sh runs on this box and is "
+            "what the weekly SF's WeeklySubstrateHealthCheck stage invokes, so "
+            "the venv here IS where that verdict has to exist; without it "
+            "cost_telemetry keeps failing against a producer switched off by "
+            "the 2026-08-07 ruling and the weekly SF keeps terminating "
+            "DEGRADED. Earlier: v0.124.45 (alpha-engine-config-I6919, "
             "nousergon-lib#301): adds nousergon_lib.pipeline_status.cycles, the "
             "cycle-level reliability projection behind the page-25 progress "
             "strip; loaders/pipeline_status_loader.py imports "
