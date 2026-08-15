@@ -68,16 +68,46 @@ fi
 # missing in production before.
 PYTHON_BIN=/home/ec2-user/alpha-engine-dashboard/.venv/bin/python
 
+# ── the three gating checks run to COMPLETION, then the script reports all
+# of them (alpha-engine-config-I7415) ──────────────────────────────────────
+#
+# These used to run as three bare commands under `set -e`, so the FIRST
+# non-zero exit aborted the script and the remaining checks never ran. The
+# stage is a tail health check on an already-finished ~4h pipeline: there is
+# no work downstream of it to protect by stopping early, and the only thing
+# the early abort bought was that each Saturday revealed exactly one problem.
+# Measured 2026-08-15: the run reported `cost_telemetry` as its single
+# finding, and whether the constituents-drift and phase-marker checks would
+# ALSO have failed was unknowable without a second four-hour run.
+#
+# Each check's own exit code is preserved and the script exits non-zero if
+# ANY failed — the stage's degrade semantics are unchanged. What changes is
+# that one run now measures the whole surface.
+_FAILED_CHECKS=()
+
+run_check() {
+  local label="$1"; shift
+  echo "--- ${label} ---"
+  if "$@"; then
+    return 0
+  fi
+  local rc=$?
+  echo "substrate_health_check.sh: ${label} FAILED (rc=${rc})" >&2
+  _FAILED_CHECKS+=("${label} (rc=${rc})")
+  return 0
+}
+
 cd /home/ec2-user/alpha-engine-dashboard
-"$PYTHON_BIN" -m nousergon_lib.transparency --cadence weekly --alert
+run_check "transparency inventory (weekly)" \
+  "$PYTHON_BIN" -m nousergon_lib.transparency --cadence weekly --alert
 
-echo "--- constituents drift check ---"
 cd /home/ec2-user/alpha-engine-data
-"$PYTHON_BIN" -m validators.constituents_drift_check
+run_check "constituents drift check" \
+  "$PYTHON_BIN" -m validators.constituents_drift_check
 
-echo "--- phase marker sweep ---"
 export RUN_DATE
-"$PYTHON_BIN" -m validators.phase_marker_sweep --run-date "$RUN_DATE" --alert
+run_check "phase marker sweep" \
+  "$PYTHON_BIN" -m validators.phase_marker_sweep --run-date "$RUN_DATE" --alert
 
 # ── stage-output assertion (alpha-engine-config-I7167) ──────────────────────
 #
@@ -130,3 +160,21 @@ fi
 # tests/test_no_runpy_alias_invocation.py's `_REAL_NL_MODULE_EXEMPTIONS`).
 # `stage_coverage` lands in krepis, so no exemption is needed here.
 "$PYTHON_BIN" -m krepis.stage_coverage assert --stage WeeklySubstrateHealthCheck --window-start "$_STAGE_WINDOW_START" || echo "WARNING: stage-coverage assertion did not run for WeeklySubstrateHealthCheck (rc=$?) — observe mode, stage NOT failed (config-I7214)" >&2
+
+# ── terminal verdict (alpha-engine-config-I7415) ────────────────────────────
+#
+# LAST, and deliberately the last line this script writes: krepis.ssm_log_capture
+# summarises a non-zero exit by quoting the command's final output line, so the
+# summary has to BE the final line or the alert names something else. The
+# 2026-08-15 weekly run is the measured instance — the SF's DEGRADED reason
+# quoted a row that was explicitly non-fatal (config-I7393).
+#
+# The observe-mode sections above are excluded by construction: they never
+# append to _FAILED_CHECKS, so a brand-new detector still cannot fail a
+# four-hour production run.
+if (( ${#_FAILED_CHECKS[@]} > 0 )); then
+  echo "substrate_health_check.sh: EXIT 1 — ${#_FAILED_CHECKS[@]} gating check(s) failed: ${_FAILED_CHECKS[*]}" >&2
+  exit 1
+fi
+
+echo "substrate_health_check.sh: OK — all 3 gating checks passed for ${RUN_DATE}"
