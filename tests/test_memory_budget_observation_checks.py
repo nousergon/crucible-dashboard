@@ -34,7 +34,8 @@ _SPEC.loader.exec_module(cmb)
 MB = 1024**2
 
 
-def _cgroup(tmp_path, unit, *, current=None, peak=None, high=None):
+def _cgroup(tmp_path, unit, *, current=None, peak=None, high=None,
+            anon=None, file_cache=0, swap=None):
     """Build a fake cgroup v2 tree for one unit."""
     d = tmp_path / unit
     d.mkdir(parents=True, exist_ok=True)
@@ -42,9 +43,17 @@ def _cgroup(tmp_path, unit, *, current=None, peak=None, high=None):
         ("memory.current", current),
         ("memory.peak", peak),
         ("memory.high", high),
+        ("memory.swap.current", swap),
     ):
         if value is not None:
             (d / name).write_text("max\n" if value == "max" else f"{value}\n")
+    # Written only when a test asks for it: absent memory.stat is the state
+    # every pre-2026-08-16 case was written against, and the code must keep its
+    # verdict when the table cannot be read.
+    if anon is not None:
+        (d / "memory.stat").write_text(
+            f"anon {anon}\nfile {file_cache}\nkernel_stack 0\n"
+        )
     return d
 
 
@@ -265,6 +274,66 @@ class TestSteadyStateIsMeasured:
         assert total == 340
         assert unmeasurable == []
         assert censored == ["pinned.service"]
+
+
+class TestTheBoundMeasuresTheWorkingSet:
+    """Brian ruling 2026-08-16 (alpha-engine-config-I7449, option (c)).
+
+    The bound used to key on `sum(memory.current)`, which charges reclaimable
+    page cache. Measured on the box with warm caches that day: 1795 MB charged,
+    ~375 MB of it cache, and `dashboard.service` alone holding 224 MiB of cache
+    against a 183 MiB working set. Cache is returned under pressure by design,
+    so a bound keyed on it trips on a condition that is not the failure the
+    bound exists to prevent.
+
+    The constant moved with the basis (0.60 -> 0.50), derived to hold the
+    absolute headroom unchanged at the switch. These tests pin the pair: a
+    basis change without the constant would have loosened the invariant by ~10
+    points of RAM as a side effect of a reporting change.
+    """
+
+    def test_the_declared_constant_matches_its_derivation(self):
+        import yaml
+        spec = yaml.safe_load(
+            (REPO_ROOT / "infrastructure" / "systemd" / "resource-limits"
+             / "budget.yaml").read_text()
+        )
+        ram = int(spec["ram_mb"])
+        old_limit = 0.60 * ram              # the bound before the switch
+        warm_charge_mb = 1795               # box, 2026-08-16, warm caches
+        warm_working_set_mb = 1420          # same reading, anon over budgeted units
+        headroom_preserved = warm_working_set_mb + (old_limit - warm_charge_mb)
+        assert round(headroom_preserved / ram, 2) == float(
+            spec["max_steady_state_fraction"]
+        ) == 0.50
+
+    def test_cache_no_longer_counts_toward_the_bound(self, cgroup_root):
+        """The whole point. A unit charged 400 MB of which 100 MB is working
+        set contributes 100 MB, not 400 MB."""
+        _cgroup(cgroup_root, "a.service", current=400 * MB, peak=410 * MB,
+                high=420 * MB, anon=100 * MB, file_cache=300 * MB)
+        assert cmb.working_set_total_mb(["a.service"]) == (100, [])
+        # The charge is still measured — it is simply not what the bound keys on.
+        assert cmb.steady_state_mb(["a.service"], WARN)[0] == 400
+
+    def test_swap_counts_toward_the_bound(self, cgroup_root):
+        """An evicted page is working set that was pushed out. Excluding it
+        would let a swapping box read as comfortable, which is the one state
+        where the bound most needs to be honest."""
+        _cgroup(cgroup_root, "a.service", current=100 * MB, peak=110 * MB,
+                high=420 * MB, anon=100 * MB, swap=200 * MB)
+        assert cmb.working_set_total_mb(["a.service"]) == (300, [])
+
+    def test_an_unreadable_unit_leaves_the_bound_unproven(self, cgroup_root):
+        """A sum missing a unit understates, and understating is the direction
+        that reads as safe. It must be named rather than silently dropped."""
+        _cgroup(cgroup_root, "a.service", current=100 * MB, peak=10 * MB,
+                high=400 * MB, anon=90 * MB)
+        _cgroup(cgroup_root, "b.service", current=100 * MB, peak=10 * MB,
+                high=400 * MB)
+        assert cmb.working_set_total_mb(["a.service", "b.service"]) == (
+            90, ["b.service"]
+        )
 
 
 class TestTimerJobBudget:

@@ -17,7 +17,7 @@
 # THE TWO INVARIANTS
 # ------------------
 #   sum(memory_max_mb)      <= ceiling * max_overcommit_ratio    (bounded overcommit)
-#   sum(live memory.current) <= RAM_MB * max_steady_state_fraction (steady-state safety)
+#   sum(anon + swap)        <= RAM_MB * max_steady_state_fraction (steady-state safety)
 #
 # where ceiling = RAM_MB * (1 - reserve_fraction). See the overcommit note below
 # for why the first bound is a ratio rather than 1.0.
@@ -35,7 +35,7 @@
 # compared it to the box, three of fourteen units disagreed with their own
 # entry — one by 2.8x. Every one of those findings was TRUE and none was
 # actionable beyond editing the number back. Removed 2026-07-29; the sum is now
-# read from `memory.current`, and the failure mode it generated cannot recur
+# read from the cgroups, and the failure mode it generated cannot recur
 # because the value it needed no longer exists.
 #
 # Per-service caps bound ONE runaway. They do nothing about several services
@@ -127,7 +127,40 @@ headroom_warn_fraction: 0.90
 # above says to re-derive from, not shave the service to fit. Steady-state
 # remains the safety bound: the box measured 1601 MB available at the time.
 max_overcommit_ratio: 1.34      # sum(memory_max) / ceiling. 1.33 with console at 224M.
-max_steady_state_fraction: 0.60 # sum(live memory.current) / RAM. 0.37 on 2026-07-29.
+# 2026-08-16: this bound now measures the WORKING SET (sum of anon + swap),
+# not sum(memory.current), and the constant was re-derived rather than carried
+# across (Brian ruling, alpha-engine-config-I7449, option (c)).
+#
+# WHY THE BASIS CHANGED. memory.current charges anonymous memory AND
+# reclaimable page cache, so the bound counted cache as demand. Measured
+# 2026-08-16 with warm caches: 1795 MB charged, of which ~375 MB was page cache
+# — dashboard.service alone held 224 MiB of it against a 183 MiB working set.
+# Reclaimable cache is returned under pressure by design (it is what the
+# kernel's own memory.high reclaim does) and can never exhaust the box, so a
+# bound keyed on it trips on a condition that is not the failure it exists to
+# prevent. Swapped-out pages ARE counted: an evicted page is working set that
+# was pushed out, not memory the service stopped needing.
+#
+# WHY 0.50 AND NOT 0.60. Changing the input without changing the constant would
+# have loosened the invariant by ~10 points of RAM as a side effect of a
+# reporting change, which is the accident this file's own header warns about
+# for max_overcommit_ratio. Derived to hold the ABSOLUTE headroom unchanged at
+# the moment of the switch, against the warm 2026-08-16 reading:
+#
+#   RAM 3839 MB · old limit 0.60 * 3839      = 2303 MB
+#   warm charge (memory.current)             = 1795 MB  -> headroom 508 MB
+#   warm working set (anon, budgeted units)  = 1420 MB
+#   new limit = 1420 + 508                   = 1928 MB  -> 1928 / 3839 = 0.50
+#
+# The warm working set is the tighter of the two available derivations: that
+# 1420 MB counts anon only, because per-unit swap was not captured in the same
+# reading. Including the 155 MB of swap those units hold today would have given
+# 0.54. 0.50 is chosen deliberately as the conservative end.
+#
+# Read this the way the ratio above is read: a DECLARED policy constant, not a
+# property of the box. Re-derive it if it ever blocks a measured need; do not
+# shave a service to fit it.
+max_steady_state_fraction: 0.50 # sum(anon + swap) / RAM. 0.37 on 2026-08-16 (cold).
 
 # memory_high is the SOFT limit: the kernel throttles and reclaims against the
 # service rather than killing it. memory_max is the HARD cap. Setting high at
