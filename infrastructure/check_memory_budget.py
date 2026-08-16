@@ -538,16 +538,33 @@ def update_peak_marks(
         if live is None or live == sys.maxsize:
             continue
         live_mb = live // 1024**2
+        # The WORKING-SET high-water mark, tracked alongside the peak because
+        # the two answer different questions and only one of them survives a
+        # cache-dominated cgroup. `memory.peak` has no working-set counterpart
+        # in cgroup v2, so this is a sampled maximum: it can only miss a spike
+        # between ticks, never invent one, and box_health.sh ticks every 10
+        # minutes. Sampled-low is the safe direction for a number that argues
+        # for a LOWER cap only after a 7-day window.
+        live_ws = non_reclaimable_bytes(unit)
+        live_ws_mb = None if live_ws is None else live_ws // 1024**2
         prev = marks.get(unit)
         if prev is None or prev.get("cap_mb") != declared_max_mb:
             marks[unit] = {"peak_mb": live_mb, "window_start": stamp,
                            "cap_mb": declared_max_mb}
+            if live_ws_mb is not None:
+                marks[unit]["ws_peak_mb"] = live_ws_mb
             continue
-        marks[unit] = {
+        merged = {
             "peak_mb": max(int(prev.get("peak_mb", 0)), live_mb),
             "window_start": prev.get("window_start", stamp),
             "cap_mb": declared_max_mb,
         }
+        prev_ws = prev.get("ws_peak_mb")
+        if live_ws_mb is not None or prev_ws is not None:
+            merged["ws_peak_mb"] = max(
+                int(prev_ws or 0), int(live_ws_mb or 0)
+            )
+        marks[unit] = merged
     target = path or _PEAK_MARKS
     # Atomic: box_health.sh's tick and a manual run can overlap, and a
     # half-written marks file would silently reset every window on the box.
@@ -689,6 +706,8 @@ def propose_for_unit(
     uptime_days: float | None,
     mark: dict | None = None,
     now: "_dt.datetime | None" = None,
+    working_set: int | None = None,
+    warn_fraction: float = 0.90,
 ) -> dict:
     """One unit's proposal record, or the reason there isn't one.
 
@@ -735,16 +754,78 @@ def propose_for_unit(
         return {**rec, "status": "hold-unmeasurable",
                 "detail": "no live cgroup reading (unit not running, or uncapped)"}
     if peak >= high:
-        # The one case that stays human, on purpose. A censored peak is a
-        # FLOOR, so sizing a cap from it re-pins on the next growth — the
-        # nousergon-console 80M -> 160M -> re-pinned-in-a-day sequence. The
-        # remedy is a raise clear of the pin, which is a judgement about how
-        # much clearance to buy, not an arithmetic operation on a number
-        # nobody trusts.
-        return {**rec, "status": "hold-censored",
-                "detail": (f"memory.peak ({peak // 1024**2} MiB) has reached memory.high "
-                           f"({high // 1024**2} MiB) — the reading is a floor. Needs a "
-                           f"human raise CLEAR of the pin before it can be sized.")}
+        # A CACHE-DOMINATED PIN IS SIZEABLE, AND SIZING IT FROM THE PEAK WOULD
+        # BE CIRCULAR (config-I7445). When the charge holding a cgroup at its
+        # cap is reclaimable page cache, `memory.peak` is a function of the CAP
+        # — cache grows into whatever clearance it is given — so 2.4x that peak
+        # proposes a ceiling derived from the previous ceiling. dashboard.service
+        # measured 2026-08-16: peak 421 MiB of which 183 MiB was working set;
+        # sizing from the peak proposes ~1010M against a box with 49 MB of
+        # overcommit headroom, while sizing from demand proposes 430M.
+        #
+        # So this case is only a HOLD while the working set is unknown or is
+        # itself against the cap. Where the working set is measured, has a
+        # window behind it, and is comfortably clear of the cap, the unit is
+        # sized from DEMAND and the cache lives inside the result.
+        ws_observed = working_set
+        ws_source = "live memory.stat"
+        ws_window = uptime_days
+        if mark and mark.get("cap_mb") == declared_max and mark.get("ws_peak_mb"):
+            days = mark_window_days(mark, now)
+            if days is not None:
+                ws_observed = max(
+                    ws_observed or 0, int(mark["ws_peak_mb"]) * 1024**2
+                ) or None
+                ws_window = days
+                ws_source = f"rolling working-set mark since {mark.get('window_start')}"
+        cache_dominated = (
+            ws_observed is not None and ws_observed < warn_fraction * high
+        )
+        if not cache_dominated:
+            # The one case that stays human, on purpose. A censored peak is a
+            # FLOOR, so sizing a cap from it re-pins on the next growth — the
+            # nousergon-console 80M -> 160M -> re-pinned-in-a-day sequence. The
+            # remedy is a raise clear of the pin, which is a judgement about how
+            # much clearance to buy, not an arithmetic operation on a number
+            # nobody trusts.
+            return {**rec, "status": "hold-censored",
+                    "detail": (f"memory.peak ({peak // 1024**2} MiB) has reached memory.high "
+                               f"({high // 1024**2} MiB) — the reading is a floor. Needs a "
+                               f"human raise CLEAR of the pin before it can be sized.")}
+        if ws_window is None or ws_window < PROPOSAL_MIN_UPTIME_DAYS:
+            return {**rec, "status": "hold-young",
+                    "detail": (f"pin is page cache (working set "
+                               f"{ws_observed // 1024**2} MiB against a "
+                               f"{high // 1024**2} MiB soft cap), so it is sizeable from "
+                               f"demand — but the working-set window "
+                               f"({None if ws_window is None else round(ws_window, 1)}d, "
+                               f"{ws_source}) is under the {PROPOSAL_MIN_UPTIME_DAYS}d "
+                               f"minimum")}
+        want_high, want_max = derive_caps(ws_observed)
+        rec = {**rec, "observation": ws_source,
+               "working_set_mb": ws_observed // 1024**2}
+        moved = (abs(want_max - declared_max) > PROPOSAL_TOLERANCE * declared_max
+                 or abs(want_high - declared_high) > PROPOSAL_TOLERANCE * declared_high)
+        if not moved:
+            return {**rec, "status": "ok",
+                    "detail": (f"pinned by page cache, but the declared caps are within "
+                               f"{PROPOSAL_TOLERANCE:.0%} of the working-set derivation "
+                               f"({want_high}M/{want_max}M)")}
+        return {
+            **rec,
+            "status": "propose",
+            "proposed_high_mb": want_high,
+            "proposed_max_mb": want_max,
+            "direction": "raise" if want_max > declared_max else "lower",
+            "detail": (f"pinned at its soft cap by reclaimable page cache, NOT by demand: "
+                       f"working set {ws_observed // 1024**2} MiB over "
+                       f"{round(ws_window, 1)}d ({ws_source}) against a "
+                       f"{high // 1024**2} MiB soft cap. Sized from demand, because "
+                       f"memory.peak here is a function of the cap: "
+                       f"memory_max = {PROPOSAL_MAX_MULTIPLE}x working set, "
+                       f"memory_high = {PROPOSAL_HIGH_FRACTION:.0%} of max. Cache lives "
+                       f"inside the result; expect more reclaim, not less memory."),
+        }
     if window_days is None or window_days < PROPOSAL_MIN_UPTIME_DAYS:
         return {**rec, "status": "hold-young",
                 "detail": (f"observation window {rec['uptime_days']}d ({source}) is under "
@@ -831,6 +912,8 @@ def collect_proposals(spec: dict) -> dict:
             hard=cgroup_value(svc["unit"], "memory.max"),
             uptime_days=unit_uptime_days(svc["unit"]),
             mark=marks.get(svc["unit"]),
+            working_set=non_reclaimable_bytes(svc["unit"]),
+            warn_fraction=warn_fraction_of(spec),
         )
         for svc in spec["services"]
     ]
@@ -925,6 +1008,33 @@ def steady_state_mb(
         if censored_observation(unit, warn_fraction):
             censored.append(unit)
     return total, unmeasurable, censored
+
+
+def working_set_total_mb(units: list[str]) -> tuple[int, list[str]]:
+    """The same sum over memory the caps cannot reclaim. (total_mb, unknown).
+
+    Reported next to `steady_state_mb`, NOT substituted for it. The two differ
+    by the page cache the services hold — 375 MB of the 1795 MB total measured
+    2026-08-16 — and `max_steady_state_fraction` was calibrated against the
+    inclusive number. Swapping the input under a bound whose constant was
+    derived from the other quantity would loosen the invariant by ~10 points of
+    RAM as a side effect of a reporting change, which is exactly the move
+    `principles.md` §2.2 forbids. Which quantity the bound should key on is a
+    policy decision with a real argument on both sides (cache is reclaimable
+    and never OOMs; cache is also how the box stays fast), and it is Brian's:
+    see the Decision Queue item filed with alpha-engine-config-I7445.
+
+    Units whose `memory.stat` cannot be read are returned as unknown rather
+    than skipped, so the subtotal can never read as complete when it is not.
+    """
+    total, unknown = 0, []
+    for unit in units:
+        ws = non_reclaimable_bytes(unit)
+        if ws is None:
+            unknown.append(unit)
+            continue
+        total += ws // 1024**2
+    return total, unknown
 
 
 def memory_events_high(unit: str) -> int | None:
@@ -1617,6 +1727,20 @@ def main() -> int:
             print(f"  {'TOTAL (steady state)':<28} {ss_mb:>5} MB  "
                   f"{ss_mb / ram_mb:.0%} of RAM "
                   f"({verdict}, limit {max_ss:.0%})")
+            # The same sum over memory the caps cannot reclaim. Printed, not
+            # substituted: the bound's constant was calibrated against the
+            # inclusive number above, and swapping the input would loosen the
+            # invariant as a side effect of a reporting change. The gap is the
+            # page cache the services hold — legible now rather than folded
+            # into a total that reads as demand.
+            ws_mb, ws_unknown = working_set_total_mb(
+                [s["unit"] for s in spec["services"]]
+            )
+            note = (f", {len(ws_unknown)} unit(s) unreadable"
+                    if ws_unknown else "")
+            print(f"  {'  of which working set':<28} {ws_mb:>5} MB  "
+                  f"{ws_mb / ram_mb:.0%} of RAM "
+                  f"(anon + swap; the rest is reclaimable cache{note})")
         else:
             print(f"  {'TOTAL (steady state)':<28} {'--':>5}     "
                   f"not evaluable off-box (measured from cgroups by "

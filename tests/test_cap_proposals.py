@@ -337,6 +337,73 @@ class TestRollingMarks:
             peak=200 * MB, high=350 * MB, hard=500 * MB, uptime_days=1, mark=mark, now=now)
         assert rec["peak_mb"] == 200
 
+    def test_a_cache_pinned_unit_is_sized_from_demand_not_from_its_peak(self):
+        """dashboard.service, measured 2026-08-16 (config-I7445).
+
+        peak 421 MiB == the 420M soft cap, so the old rule held it forever. But
+        183 MiB of that was working set and 224 MiB was reclaimable page cache,
+        and cache grows into whatever clearance a cap gives it — so
+        `memory.peak` here is a function of the CAP. Sizing from it proposes
+        ~1010M on a box with 49 MB of overcommit headroom left; sizing from
+        demand proposes 430M.
+        """
+        mark = {"peak_mb": 421, "ws_peak_mb": 183, "cap_mb": 450,
+                "window_start": "2026-08-01T00:00:00+00:00"}
+        now = __import__("datetime").datetime.fromisoformat("2026-08-16T00:00:00+00:00")
+        rec = cmb.propose_for_unit(
+            _svc(high="420M", hard="450M"),
+            peak=421 * MB, high=420 * MB, hard=450 * MB, uptime_days=0.5,
+            mark=mark, now=now, working_set=183 * MB)
+        assert rec["status"] == "propose"
+        assert rec["proposed_max_mb"] == 430   # 2.4x the working set, rounded down
+        assert rec["direction"] == "lower"
+        assert rec["working_set_mb"] == 183
+        assert "function of the cap" in rec["detail"]
+
+    def test_a_cache_pinned_unit_with_no_window_is_held_not_proposed(self):
+        """The 7-day minimum is not waived by knowing the working set: a
+        working set measured over hours has not seen the weekly path either."""
+        rec = cmb.propose_for_unit(
+            _svc(high="420M", hard="450M"),
+            peak=421 * MB, high=420 * MB, hard=450 * MB, uptime_days=0.5,
+            working_set=183 * MB)
+        assert rec["status"] == "hold-young"
+        assert "page cache" in rec["detail"]
+
+    def test_a_working_set_pin_is_still_held(self):
+        """The case the hold exists for: the charge IS demand, so the reading
+        is a real floor and the remedy is a human raise clear of the pin."""
+        mark = {"peak_mb": 421, "ws_peak_mb": 415, "cap_mb": 450,
+                "window_start": "2026-08-01T00:00:00+00:00"}
+        now = __import__("datetime").datetime.fromisoformat("2026-08-16T00:00:00+00:00")
+        rec = cmb.propose_for_unit(
+            _svc(high="420M", hard="450M"),
+            peak=421 * MB, high=420 * MB, hard=450 * MB, uptime_days=30,
+            mark=mark, now=now, working_set=415 * MB)
+        assert rec["status"] == "hold-censored"
+
+    def test_an_unknown_working_set_is_held_never_sized(self):
+        """No `memory.stat`, no claim. Unknown must not read as "mostly cache"
+        — that would size a cap from a number nobody measured."""
+        rec = cmb.propose_for_unit(
+            _svc(high="420M", hard="450M"),
+            peak=421 * MB, high=420 * MB, hard=450 * MB, uptime_days=30,
+            working_set=None)
+        assert rec["status"] == "hold-censored"
+
+    def test_the_working_set_mark_beats_a_momentary_live_dip(self):
+        """A cap must never be sized from an instantaneous low. The rolling
+        mark is a high-water mark; the live reading only raises it."""
+        mark = {"peak_mb": 421, "ws_peak_mb": 300, "cap_mb": 450,
+                "window_start": "2026-08-01T00:00:00+00:00"}
+        now = __import__("datetime").datetime.fromisoformat("2026-08-16T00:00:00+00:00")
+        rec = cmb.propose_for_unit(
+            _svc(high="420M", hard="450M"),
+            peak=421 * MB, high=420 * MB, hard=450 * MB, uptime_days=30,
+            mark=mark, now=now, working_set=60 * MB)
+        assert rec["working_set_mb"] == 300
+        assert rec["proposed_max_mb"] == 720
+
     def test_a_censored_unit_stays_censored_even_with_a_mark(self):
         """Censoring is a LIVE fact; a historical mark must not paper over it."""
         mark = {"peak_mb": 300, "window_start": "2026-08-01T00:00:00+00:00", "cap_mb": 250}
@@ -381,6 +448,41 @@ class TestRollingMarks:
             now=dt.datetime(2026, 8, 14, tzinfo=dt.timezone.utc), path=p)
         assert marks["amazon-ssm-agent.service"]["peak_mb"] == 1689
         assert marks["amazon-ssm-agent.service"]["cap_mb"] is None
+
+    def test_the_mark_tracks_the_working_set_high_water_too(self, tmp_path, monkeypatch):
+        """A cache-pinned unit can only be sized from demand if demand has a
+        window behind it — and `memory.stat` has no cgroup-provided high-water
+        counterpart to `memory.peak`, so this mark IS the record."""
+        p = self._marks_file(tmp_path)
+        dt = __import__("datetime")
+        monkeypatch.setattr(cmb, "cgroup_value", lambda unit, f: 421 * MB)
+        monkeypatch.setattr(cmb, "non_reclaimable_bytes", lambda unit: 183 * MB)
+        t0 = dt.datetime(2026, 8, 1, tzinfo=dt.timezone.utc)
+        cmb.update_peak_marks([("a.service", 450)], now=t0, path=p)
+        # A later tick reads a LOWER working set: the high-water mark holds.
+        monkeypatch.setattr(cmb, "non_reclaimable_bytes", lambda unit: 90 * MB)
+        marks = cmb.update_peak_marks(
+            [("a.service", 450)], now=t0 + dt.timedelta(days=2), path=p)
+        assert marks["a.service"]["ws_peak_mb"] == 183
+        # And a cap change resets it with everything else — a new cap is a new
+        # experiment, and cache behaviour changes with the ceiling.
+        marks = cmb.update_peak_marks(
+            [("a.service", 300)], now=t0 + dt.timedelta(days=3), path=p)
+        assert marks["a.service"]["ws_peak_mb"] == 90
+
+    def test_an_unreadable_memory_stat_leaves_the_mark_without_a_working_set(
+        self, tmp_path, monkeypatch
+    ):
+        """Absent is absent. A zero here would propose a 64M cap on a service
+        whose demand was never measured."""
+        p = self._marks_file(tmp_path)
+        dt = __import__("datetime")
+        monkeypatch.setattr(cmb, "cgroup_value", lambda unit, f: 421 * MB)
+        monkeypatch.setattr(cmb, "non_reclaimable_bytes", lambda unit: None)
+        marks = cmb.update_peak_marks(
+            [("a.service", 450)],
+            now=dt.datetime(2026, 8, 1, tzinfo=dt.timezone.utc), path=p)
+        assert "ws_peak_mb" not in marks["a.service"]
 
     def test_the_store_is_written_atomically(self, tmp_path, monkeypatch):
         p = self._marks_file(tmp_path)
