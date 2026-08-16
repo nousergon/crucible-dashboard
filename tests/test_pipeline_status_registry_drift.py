@@ -10,7 +10,8 @@ or alpha-engine-data) asserts every substantive Task state in the live
 SF JSONs has a registry entry; that's how the two stay in sync without
 a runtime coupling."``
 
-The data SF JSONs live in a sibling checkout (~/Development/alpha-engine-data/).
+The data SF JSONs live in a sibling checkout (~/Development/nousergon-data/,
+formerly alpha-engine-data — both names are tried, see below).
 If that checkout isn't present (CI machine, fresh clone), the test
 SKIPs rather than fails — the invariant only needs to hold on a dev
 laptop or in the dashboard-side CI environment that does the cross-repo
@@ -43,8 +44,25 @@ from nousergon_lib.pipeline_status.registry import (
 )
 
 
-# Sibling checkout convention — adjust if the layout changes.
-_SIBLING_DATA_REPO = Path.home() / "Development" / "alpha-engine-data"
+# Sibling checkout convention. THE REPO WAS RENAMED (alpha-engine-data ->
+# nousergon-data) and this path was not, which is worse than either a pass or a
+# fail: on 2026-08-16 the laptop still held an ABANDONED alpha-engine-data
+# checkout last written 2026-07-22, so this guard walked a three-week-old SF
+# definition and reported drift ('Evaluator' has no registry entry) against a
+# state the deployed Saturday SF has not had since it split into
+# EvaluatorDiagnostics/EvaluatorOptimize. A stale checkout can just as easily
+# report a PASS over a definition that has since drifted — same defect, silent.
+#
+# Ordered by preference, first existing wins: the current name, then the
+# historical one (which is also what the box clones it as, per boot-pull.sh).
+_SIBLING_DATA_REPO_CANDIDATES = [
+    Path.home() / "Development" / "nousergon-data",
+    Path.home() / "Development" / "alpha-engine-data",
+]
+_SIBLING_DATA_REPO = next(
+    (p for p in _SIBLING_DATA_REPO_CANDIDATES if p.is_dir()),
+    _SIBLING_DATA_REPO_CANDIDATES[0],
+)
 _SF_JSON_FILES = [
     ("Saturday", _SIBLING_DATA_REPO / "infrastructure" / "step_function.json"),
     ("Weekday", _SIBLING_DATA_REPO / "infrastructure" / "step_function_daily.json"),
