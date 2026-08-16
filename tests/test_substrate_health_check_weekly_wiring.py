@@ -13,6 +13,7 @@ its own log or S3 upload; the SF's krepis wrapper owns that.
 from __future__ import annotations
 
 import re
+import pytest
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -52,6 +53,7 @@ class TestScriptInterpreter:
     def test_uses_absolute_venv_interpreter(self):
         src = _SCRIPT.read_text()
         assert "/home/ec2-user/alpha-engine-dashboard/.venv/bin/python" in src
+        assert "/home/ec2-user/alpha-engine-data/.venv/bin/python" in src
 
     def test_does_not_source_activate(self):
         for lineno, line in _executable_lines():
@@ -262,3 +264,59 @@ def _preceding_run_check_block(lineno: int) -> str:
     lines = list(_executable_lines())
     idx = next(i for i, (ln, _) in enumerate(lines) if ln == lineno)
     return "\n".join(line for _, line in lines[max(0, idx - 1): idx + 1])
+
+class TestPerRepoInterpreter:
+    """config-I7427: each repo's code runs under that repo's own venv.
+
+    Three of the four checks are alpha-engine-data's code. Running them under
+    the DASHBOARD venv meant the constituents drift check never once reached
+    its comparison — `No module named 'arcticdb'`, and an `openpyxl` import
+    failure that reported `0 tickers` as a RESULT (measured 2026-08-15,
+    weekly-SF execution watch-rerun-2026-08-15-2). The two closures cannot be
+    merged: the dashboard venv is pinned numpy<2 and alpha-engine-data
+    declares numpy>=2.4.6.
+    """
+
+    def _line_for(self, module: str) -> str:
+        return next(
+            line for _, line in _executable_lines() if module in line
+        )
+
+    @pytest.mark.parametrize("module", [
+        "validators.constituents_drift_check",
+        "validators.phase_marker_sweep",
+        "validators.stage_output_sweep",
+    ])
+    def test_alpha_engine_data_modules_use_the_data_interpreter(self, module):
+        line = self._line_for(module)
+        assert "$DATA_PYTHON_BIN" in line, (
+            f"{module} runs under the dashboard venv, whose closure has "
+            f"neither arcticdb nor openpyxl: {line.strip()!r}"
+        )
+
+    @pytest.mark.parametrize("module", [
+        "nousergon_lib.transparency",
+        "krepis.stage_coverage",
+    ])
+    def test_dashboard_modules_use_the_dashboard_interpreter(self, module):
+        line = self._line_for(module)
+        assert "$DATA_PYTHON_BIN" not in line, (
+            f"{module} is resolved from the dashboard venv, not the data one: "
+            f"{line.strip()!r}"
+        )
+
+    def test_a_missing_data_venv_aborts_rather_than_falling_back(self):
+        """No fallback to PYTHON_BIN.
+
+        A fallback restores the silent wrong-interpreter state this fixes, on
+        exactly the day the bootstrap stopped building the venv.
+        """
+        src = _SCRIPT.read_text()
+        assert 'if [[ ! -x "$DATA_PYTHON_BIN" ]]; then' in src
+        assert "DATA_PYTHON_BIN=${PYTHON_BIN" not in src, (
+            "the data interpreter must not default to the dashboard one"
+        )
+        assert 'DATA_PYTHON_BIN:-' not in src, (
+            "the data interpreter must not carry a fallback default"
+        )
+
