@@ -172,6 +172,56 @@ def cgroup_value(unit: str, filename: str) -> int | None:
         return None
 
 
+def cgroup_stat(unit: str, key: str) -> int | None:
+    """One key out of a unit's `memory.stat`. None if unreadable or absent.
+
+    Separate from `cgroup_value()` for the same reason `memory_events_high()`
+    is: `memory.stat` is a key/value table, not a bare integer. None rather
+    than 0 on failure — a key that cannot be read has not been shown to be
+    zero, and a zero here would make a service look like pure page cache.
+    """
+    p = _CGROUP_ROOT / unit / "memory.stat"
+    try:
+        raw = p.read_text()
+    except OSError:
+        return None
+    for line in raw.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0] == key:
+            try:
+                return int(parts[1])
+            except ValueError:
+                return None
+    return None
+
+
+def non_reclaimable_bytes(unit: str) -> int | None:
+    """The part of a unit's charge that a cap cannot reclaim: anon + swapped-out.
+
+    `memory.current`, `memory.peak` and the caps themselves all count anonymous
+    memory AND reclaimable page cache. For sizing a cap that is the right
+    quantity — the kernel enforces on the same total. For deciding whether a
+    reading has been CENSORED it is the wrong one, because page cache pinned at
+    `memory.high` is not suppressed demand: it is a cache that grew until the
+    cap reclaimed it, which is the cap working, at the cost of some reclaim.
+
+    Swap is included because a swapped-out page is working set that was pushed
+    out, not memory the service stopped needing. This box runs with 1 GB of
+    swap and ~310 MB of it in use.
+
+    None when `memory.stat` cannot be read, and every caller treats that as
+    "unknown" rather than as a small number — an unreadable table must never
+    downgrade a finding.
+    """
+    anon = cgroup_stat(unit, "anon")
+    if anon is None:
+        return None
+    swap = cgroup_value(unit, "memory.swap.current")
+    if swap is None or swap == sys.maxsize:
+        swap = 0
+    return anon + swap
+
+
 def warn_fraction_of(spec: dict) -> float:
     """budget.yaml's `headroom_warn_fraction`, read in one place.
 
@@ -227,6 +277,27 @@ def censored_observation(unit: str, warn_fraction: float) -> str | None:
     for -- vires 115/112 (103%), dashboard 335/340 (98.5%), metron-api at the
     time of config-I5216 384/385 (99.7%) -- all still fire. metron-api today,
     at 214/280 (76%), does not.
+
+    A PIN MADE OF PAGE CACHE IS NOT A CENSORED READING EITHER (2026-08-16).
+    `memory.current` counts anonymous memory AND reclaimable page cache, so a
+    service that reads files steadily fills the gap between its working set and
+    its soft cap with cache and then sits at the cap indefinitely. Measured on
+    dashboard.service the day this was added: current 411 MiB against a 420 MiB
+    soft cap -- 98%, peak 421, verdict CENSORED -- of which anon was 183 MiB and
+    page cache 224 MiB. Its working set was 44% of the cap it was reported as
+    pinned against, and it was the ONLY budgeted unit on the box where cache
+    dominated; every other one was >= 90% anon.
+
+    The cost of getting this wrong is not noise, it is the remedy. This
+    function's own text says "raise the cap"; a fourth raise for this unit
+    would have spent scarce overcommit headroom on a cache that grows straight
+    back into it, and budget.yaml's note had already escalated the next raise
+    to a right-sizing DECISION -- a human ruling requested on a quantity that
+    was never the working set.
+
+    So the pin must be made of memory the cap cannot reclaim. When
+    `memory.stat` is unreadable the working set is UNKNOWN and the finding
+    stands: an absent table never downgrades a verdict.
     """
     peak = cgroup_value(unit, "memory.peak")
     high = cgroup_value(unit, "memory.high")
@@ -240,6 +311,13 @@ def censored_observation(unit: str, warn_fraction: float) -> str | None:
     # delta and the memory-pressure check both fire on a service that IS being
     # held down, so this case is covered by signals that key on the present.
     if current is not None and current < warn_fraction * high:
+        return None
+    # The pin is current but reclaimable: what holds the cgroup at its cap is
+    # page cache, not demand. Silent here -- the console row still renders the
+    # unit as `tight` with the anon/cache split in its detail, and the
+    # throttle-delta check still owns the cost of the reclaim.
+    working_set = non_reclaimable_bytes(unit)
+    if working_set is not None and working_set < warn_fraction * high:
         return None
     return (
         f"{unit}: CENSORED reading -- memory.peak ({peak // 1024**2} MiB) has "
@@ -284,6 +362,12 @@ def approaching_the_cap(unit: str, warn_fraction: float) -> str | None:
     a restart, so a service that grazed 90% once would otherwise report for the
     rest of its uptime. `metron-api` at 214/280 (76% current) is the standing
     counter-example and stays silent here too.
+
+    Carries the working-set qualifier too, and for a sharper reason: this
+    check's remedy is "raise `memory_high` now, while it is still free". A unit
+    whose approach to the cap is page cache would be handed a raise it does not
+    need and cannot be sized from, at exactly the moment the advice reads as
+    cheap.
     """
     peak = cgroup_value(unit, "memory.peak")
     high = cgroup_value(unit, "memory.high")
@@ -295,6 +379,9 @@ def approaching_the_cap(unit: str, warn_fraction: float) -> str | None:
     if peak >= high or peak < APPROACHING_FRACTION * high:
         return None
     if current is not None and current < warn_fraction * high:
+        return None
+    working_set = non_reclaimable_bytes(unit)
+    if working_set is not None and working_set < warn_fraction * high:
         return None
     return (
         f"{unit}: APPROACHING its soft cap -- memory.peak ({peak // 1024**2} "
@@ -906,6 +993,7 @@ def headroom_rows(spec: dict) -> list[dict]:
         high = cgroup_value(unit, "memory.high")
         hard = cgroup_value(unit, "memory.max")
         peak = cgroup_value(unit, "memory.peak")
+        working_set = non_reclaimable_bytes(unit)
         events = memory_events_high(unit)
         prev = baseline.get(unit)
 
@@ -925,6 +1013,12 @@ def headroom_rows(spec: dict) -> list[dict]:
             "peak_mb": None if peak in (None, sys.maxsize) else peak // 1024**2,
             "throttle_delta": delta,
             "censored": bool(censored_observation(unit, warn_fraction)),
+            # The part of `current_mb` a cap cannot reclaim. None when
+            # `memory.stat` is unreadable -- rendered as unknown, never as
+            # "all of it is working set" and never as zero.
+            "working_set_mb": (
+                None if working_set is None else working_set // 1024**2
+            ),
             "state": "ok",
         }
 
@@ -984,6 +1078,21 @@ def _row_detail(row: dict) -> str:
         parts.append(f"+{row['throttle_delta']} throttle events this tick")
     if row["censored"]:
         parts.append("CENSORED: peak has reached the soft cap, so current is a FLOOR")
+    # Only where it changes the reading: a unit sitting high on its cap whose
+    # charge is mostly reclaimable page cache is not short of memory, and the
+    # row would otherwise be read as demand. dashboard.service, 2026-08-16:
+    # 411/420 MiB soft (98%) of which 183 MiB was working set.
+    ws = row.get("working_set_mb")
+    if (
+        ws is not None
+        and row["current_mb"]
+        and row.get("used_fraction", 0) >= 0.90
+        and ws < 0.75 * row["current_mb"]
+    ):
+        parts.append(
+            f"working set {ws} MiB -- the rest is reclaimable page cache, "
+            f"not demand"
+        )
     return ", ".join(parts)
 
 
