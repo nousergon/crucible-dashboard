@@ -227,6 +227,33 @@ def test_the_working_set_subtotal_is_reported_beside_the_steady_state_sum(
     assert cmb.working_set_total_mb(["a.service", "b.service"]) == (281, [])
 
 
+def test_the_working_set_total_may_exceed_the_charge_when_swapping(
+    cgroups, baseline_file
+):
+    """Measured on the box 2026-08-16, within an hour of the subtotal shipping:
+    steady state 1373 MB, working set 1377 MB. `memory.current` does not charge
+    swapped-out pages, so anon + swap legitimately exceeds the live charge on a
+    box that swaps — and the printed label must not claim containment."""
+    _cgroup(cgroups, "a.service", current=100 * MB, high=200 * MB, peak=110 * MB,
+            anon=95 * MB, file_cache=5 * MB, swap=40 * MB, events=0)
+    total, unknown = cmb.working_set_total_mb(["a.service"])
+    assert total == 135 > 100
+    assert unknown == []
+    assert cmb.swap_total_mb(["a.service"]) == 40
+
+
+def test_swap_that_cannot_be_read_counts_as_zero_not_as_unknown(
+    cgroups, baseline_file
+):
+    """A cgroup with swap accounting off has no swapped pages to miss. This is
+    the one place a missing file is legitimately zero rather than unknown, and
+    it is asserted so the reasoning is not re-litigated as a bug."""
+    _cgroup(cgroups, "a.service", current=100 * MB, high=200 * MB, peak=110 * MB,
+            anon=95 * MB, file_cache=5 * MB, events=0)
+    assert cmb.swap_total_mb(["a.service"]) == 0
+    assert cmb.working_set_total_mb(["a.service"])[0] == 95
+
+
 def test_a_unit_with_no_memory_stat_is_named_not_skipped(cgroups, baseline_file):
     """A subtotal missing a unit understates. It must not read as complete."""
     _cgroup(cgroups, "a.service", current=411 * MB, high=420 * MB, peak=421 * MB,

@@ -1037,6 +1037,24 @@ def working_set_total_mb(units: list[str]) -> tuple[int, list[str]]:
     return total, unknown
 
 
+def swap_total_mb(units: list[str]) -> int:
+    """Swapped-out bytes across `units`, in MB. Unreadable units count as 0.
+
+    Exists only so the printed cache figure can be derived honestly:
+    `memory.current` charges anon + cache but NOT swap, so cache is
+    `current - (anon + swap) + swap`, i.e. `current - anon`. Subtracting swap
+    back out of the working-set total is the same arithmetic expressed against
+    the two totals that are actually printed, which keeps the three numbers on
+    screen reconcilable by the reader.
+    """
+    total = 0
+    for unit in units:
+        swap = cgroup_value(unit, "memory.swap.current")
+        if swap is not None and swap != sys.maxsize:
+            total += swap // 1024**2
+    return total
+
+
 def memory_events_high(unit: str) -> int | None:
     """The cgroup's lifetime MemoryHigh event count, or None if unreadable.
 
@@ -1730,17 +1748,30 @@ def main() -> int:
             # The same sum over memory the caps cannot reclaim. Printed, not
             # substituted: the bound's constant was calibrated against the
             # inclusive number above, and swapping the input would loosen the
-            # invariant as a side effect of a reporting change. The gap is the
-            # page cache the services hold — legible now rather than folded
-            # into a total that reads as demand.
+            # invariant as a side effect of a reporting change.
+            #
+            # NOT A SUBSET OF THE LINE ABOVE, and the label must not imply it
+            # is. Measured on the box within an hour of the first version
+            # shipping: steady state 1373 MB, working set 1377 MB. `memory.
+            # current` does not charge swapped-out pages, so anon + swap can
+            # legitimately EXCEED the live charge whenever the box is swapping
+            # — this one runs ~310 MB of swap in use. The first wording said
+            # "of which", which reads as containment and would make a reader
+            # doubt the arithmetic rather than the label.
             ws_mb, ws_unknown = working_set_total_mb(
                 [s["unit"] for s in spec["services"]]
             )
             note = (f", {len(ws_unknown)} unit(s) unreadable"
                     if ws_unknown else "")
-            print(f"  {'  of which working set':<28} {ws_mb:>5} MB  "
+            cache_mb = ss_mb - (ws_mb - swap_total_mb(
+                [s["unit"] for s in spec["services"]]
+            ))
+            print(f"  {'TOTAL (working set)':<28} {ws_mb:>5} MB  "
                   f"{ws_mb / ram_mb:.0%} of RAM "
-                  f"(anon + swap; the rest is reclaimable cache{note})")
+                  f"(anon + swap; NOT a subset of the line above — swapped "
+                  f"pages are not charged to memory.current{note})")
+            print(f"  {'  (of the charge above,':<28} {cache_mb:>5} MB is "
+                  f"reclaimable page cache)")
         else:
             print(f"  {'TOTAL (steady state)':<28} {'--':>5}     "
                   f"not evaluable off-box (measured from cgroups by "
