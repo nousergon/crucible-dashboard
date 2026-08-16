@@ -536,3 +536,100 @@ class TestCadenceDerivedHealthThresholds:
         nm = next(r for r in results if r["check"] == "health/newmodule")
         assert nm["threshold_days"] == health_checker.DEFAULT_HEALTH_THRESHOLD_DAYS == 2
         assert nm["status"] == "stale"
+
+
+class TestFeaturesFreshnessProbe:
+    """config-I7434.
+
+    The features probe used to HeadObject `features/{today}/technical.parquet`
+    then `features/{yesterday}/...` and report `missing` when neither existed —
+    a two-day lookback under a threshold that PERMITS two days. An artifact
+    sitting exactly at the boundary its own threshold accepts was reported as
+    never having existed.
+
+    Measured 2026-08-16 on weekly-SF execution `watch-rerun-2026-08-16-3`:
+
+        features   age=N/A  threshold=2d  last=never
+
+    while `s3://alpha-engine-research/features/2026-08-14/` existed and the
+    SAME check had reported `age=1d last=2026-08-14 20:32 UTC` seventeen hours
+    earlier. Nothing about the data changed — only which side of a hard-coded
+    two-date window the calendar had moved. It degraded the whole weekly run.
+    """
+
+    @patch("health_checker.boto3")
+    def test_a_three_day_old_partition_is_found_not_reported_missing(self, mock_boto3):
+        """The exact shape that failed: Friday's features read on a Monday."""
+        s3 = MagicMock()
+        mock_boto3.client.return_value = s3
+        s3.head_object.side_effect = Exception("NoSuchKey")
+
+        three_days_ago = (date.today() - timedelta(days=3)).isoformat()
+        paginator = MagicMock()
+
+        def paginate(Bucket, Prefix, MaxKeys=100):
+            if Prefix == "features/":
+                yield {"Contents": [
+                    {"Key": f"features/{three_days_ago}/technical.parquet"}
+                ]}
+            else:
+                yield {"Contents": []}
+
+        paginator.paginate.side_effect = paginate
+        s3.get_paginator.return_value = paginator
+
+        features = next(r for r in check_all() if r["check"] == "features")
+        assert features["status"] != "missing", (
+            "a partition three days old was reported as never having existed — "
+            "the probe cannot see what its own threshold accepts"
+        )
+        assert features["age_days"] == 3
+        assert features["last_updated"] == three_days_ago
+
+    def test_the_threshold_covers_a_weekday_producer_across_a_weekend(self):
+        """features runs Mon-Fri, so Friday's partition is 3 days old on Monday."""
+        from health_checker import THRESHOLDS
+
+        assert THRESHOLDS["features"] >= 3, (
+            "a Mon-Fri producer's newest partition is up to three calendar "
+            "days old on a Monday morning; a threshold below 3 fails every "
+            "weekend on data that is exactly as fresh as the producer can "
+            "make it (config-I7434)"
+        )
+
+    @patch("health_checker.boto3")
+    def test_genuinely_absent_features_still_report_missing(self, mock_boto3):
+        """The fix must not turn a real producer outage into a pass."""
+        s3 = MagicMock()
+        mock_boto3.client.return_value = s3
+        s3.head_object.side_effect = Exception("NoSuchKey")
+        paginator = MagicMock()
+        paginator.paginate.return_value = [{"Contents": []}]
+        s3.get_paginator.return_value = paginator
+
+        features = next(r for r in check_all() if r["check"] == "features")
+        assert features["status"] == "missing"
+
+    @patch("health_checker.boto3")
+    def test_a_partition_beyond_the_threshold_reports_stale_not_missing(self, mock_boto3):
+        s3 = MagicMock()
+        mock_boto3.client.return_value = s3
+        s3.head_object.side_effect = Exception("NoSuchKey")
+
+        long_ago = (date.today() - timedelta(days=30)).isoformat()
+        paginator = MagicMock()
+
+        def paginate(Bucket, Prefix, MaxKeys=100):
+            if Prefix == "features/":
+                yield {"Contents": [{"Key": f"features/{long_ago}/technical.parquet"}]}
+            else:
+                yield {"Contents": []}
+
+        paginator.paginate.side_effect = paginate
+        s3.get_paginator.return_value = paginator
+
+        features = next(r for r in check_all() if r["check"] == "features")
+        assert features["status"] == "stale", (
+            "'stale' and 'missing' are different findings — one says the "
+            "producer is behind, the other says it never ran"
+        )
