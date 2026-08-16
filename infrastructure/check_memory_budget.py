@@ -1676,13 +1676,34 @@ def main() -> int:
     warn_fraction = warn_fraction_of(spec)
     ss_over = False
     ss_mb = 0
+    ws_mb = 0
+    ws_unknown: list[str] = []
     unmeasurable: list[str] = []
     censored: list[str] = []
     if installed:
         ss_mb, unmeasurable, censored = steady_state_mb(
             [s["unit"] for s in spec["services"]], warn_fraction
         )
-        ss_over = ss_mb > ss_allowed
+        # THE BOUND IS EVALUATED ON THE WORKING SET, not on the total charge
+        # (Brian ruling 2026-08-16, alpha-engine-config-I7449, option (c)).
+        # `memory.current` counts reclaimable page cache, which the kernel
+        # returns under pressure by design and which therefore cannot exhaust
+        # the box — 375 MB of the warm 1795 MB reading that day was cache. The
+        # charge is still measured and still printed; it is no longer what the
+        # invariant keys on. budget.yaml's constant was re-derived in the same
+        # change (0.60 -> 0.50) so the switch did not loosen the bound.
+        ws_mb, ws_unknown = working_set_total_mb(
+            [s["unit"] for s in spec["services"]]
+        )
+        ss_over = ws_mb > ss_allowed
+        if ws_unknown:
+            hygiene.append(
+                f"steady-state bound measured over {len(rows) - len(ws_unknown)} "
+                f"of {len(rows)} units -- memory.stat unreadable for: "
+                f"{', '.join(ws_unknown)}. The working-set sum understates by "
+                f"whatever those hold, so the bound is unproven rather than "
+                f"satisfied."
+            )
         for unit in censored:
             hygiene.append(
                 censored_observation(unit, warn_fraction) or f"{unit}: censored"
@@ -1738,40 +1759,43 @@ def main() -> int:
               f"{ratio:.2f}x ceiling "
               f"({'OVER' if over else 'within declared overcommit'})")
         if installed:
-            # "FLOOR" rather than "ok" whenever the reading is impaired: the
-            # bound is unproven, not satisfied, and the word has to say so.
-            impaired = bool(censored or unmeasurable)
-            verdict = "OVER" if ss_over else ("FLOOR, unproven" if impaired else "ok")
-            print(f"  {'TOTAL (steady state)':<28} {ss_mb:>5} MB  "
-                  f"{ss_mb / ram_mb:.0%} of RAM "
-                  f"({verdict}, limit {max_ss:.0%})")
-            # The same sum over memory the caps cannot reclaim. Printed, not
-            # substituted: the bound's constant was calibrated against the
-            # inclusive number above, and swapping the input would loosen the
-            # invariant as a side effect of a reporting change.
+            # THE BOUND LINE NAMES ITS OWN BASIS. Whoever reads this next has
+            # to know which of the two totals the limit applies to without
+            # opening the source — the change of basis is invisible otherwise,
+            # and a percentage against an unnamed quantity is how the wrong
+            # number gets quoted in the next incident.
             #
-            # NOT A SUBSET OF THE LINE ABOVE, and the label must not imply it
-            # is. Measured on the box within an hour of the first version
-            # shipping: steady state 1373 MB, working set 1377 MB. `memory.
-            # current` does not charge swapped-out pages, so anon + swap can
-            # legitimately EXCEED the live charge whenever the box is swapping
-            # — this one runs ~310 MB of swap in use. The first wording said
-            # "of which", which reads as containment and would make a reader
-            # doubt the arithmetic rather than the label.
-            ws_mb, ws_unknown = working_set_total_mb(
-                [s["unit"] for s in spec["services"]]
-            )
+            # "unproven" rather than "ok" whenever the reading is impaired: a
+            # bound whose input is incomplete is not satisfied, and the word
+            # has to say so. `ws_unknown` is the impairment that matters for
+            # THIS bound; a censored charge no longer affects it, but it is
+            # still carried because the charge line below is still printed.
+            impaired = bool(ws_unknown or unmeasurable)
+            verdict = "OVER" if ss_over else ("unproven" if impaired else "ok")
             note = (f", {len(ws_unknown)} unit(s) unreadable"
                     if ws_unknown else "")
+            print(f"  {'TOTAL (working set)':<28} {ws_mb:>5} MB  "
+                  f"{ws_mb / ram_mb:.0%} of RAM "
+                  f"({verdict}, limit {max_ss:.0%} — THIS is the bound; "
+                  f"anon + swap{note})")
+            # The total charge, still measured and still printed. It is what
+            # the caps themselves enforce against, so it stays legible — it is
+            # simply no longer what the invariant keys on, because it counts
+            # reclaimable page cache the kernel gives back under pressure.
+            #
+            # NOT A SUPERSET OF THE LINE ABOVE, and the label must not imply
+            # containment either way. Measured within an hour of the subtotal
+            # first shipping: charge 1373 MB, working set 1377 MB —
+            # `memory.current` does not charge swapped-out pages, so anon +
+            # swap can legitimately exceed it on a box that swaps.
             cache_mb = ss_mb - (ws_mb - swap_total_mb(
                 [s["unit"] for s in spec["services"]]
             ))
-            print(f"  {'TOTAL (working set)':<28} {ws_mb:>5} MB  "
-                  f"{ws_mb / ram_mb:.0%} of RAM "
-                  f"(anon + swap; NOT a subset of the line above — swapped "
-                  f"pages are not charged to memory.current{note})")
-            print(f"  {'  (of the charge above,':<28} {cache_mb:>5} MB is "
-                  f"reclaimable page cache)")
+            floor_note = " (FLOOR: a censored unit understates it)" if censored else ""
+            print(f"  {'TOTAL (charge)':<28} {ss_mb:>5} MB  "
+                  f"{ss_mb / ram_mb:.0%} of RAM "
+                  f"(memory.current, of which {cache_mb} MB is reclaimable "
+                  f"page cache; not bounded{floor_note})")
         else:
             print(f"  {'TOTAL (steady state)':<28} {'--':>5}     "
                   f"not evaluable off-box (measured from cgroups by "
@@ -1799,10 +1823,11 @@ def main() -> int:
               f"the ratio WITH a written rationale, or move a service off this "
               f"box (policy T1-1 / decision framework section 4).", file=sys.stderr)
     if ss_over:
-        print(f"BREACH: steady-state total {ss_mb} MB is {ss_mb / ram_mb:.0%} of "
-              f"RAM, above the {max_ss:.0%} limit. This is the bound that governs "
-              f"normal operation -- the box is genuinely too small for what it "
-              f"runs (policy T1-7 / exit trigger E3).", file=sys.stderr)
+        print(f"BREACH: steady-state working set {ws_mb} MB is "
+              f"{ws_mb / ram_mb:.0%} of RAM, above the {max_ss:.0%} limit. Anon + "
+              f"swap, so this is memory the kernel CANNOT reclaim -- the box is "
+              f"genuinely too small for what it runs (policy T1-7 / exit trigger "
+              f"E3).", file=sys.stderr)
 
     if tj_over:
         print(f"BREACH: timer-job caps total {tj_mb} MB against only "
@@ -1826,8 +1851,8 @@ def main() -> int:
                 f"{ceiling_mb} MB ceiling (max {max_ratio:.2f}x)")
         if ss_over:
             aggregate.append(
-                f"steady-state total {ss_mb} MB is {ss_mb / ram_mb:.0%} of RAM "
-                f"(limit {max_ss:.0%})")
+                f"steady-state working set {ws_mb} MB is {ws_mb / ram_mb:.0%} of "
+                f"RAM (limit {max_ss:.0%}, anon + swap)")
         if tj_over:
             aggregate.append(
                 f"timer-job caps total {tj_mb} MB against {tj_headroom_mb} MB "
