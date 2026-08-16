@@ -39,15 +39,24 @@ MB = 1024**2
 
 
 def _cgroup(root, unit, *, current=None, high=None, hard=None, peak=None,
-            events=None):
+            events=None, anon=None, file_cache=0, swap=None):
     d = root / unit
     d.mkdir(parents=True, exist_ok=True)
     for name, value in (("memory.current", current), ("memory.high", high),
-                        ("memory.max", hard), ("memory.peak", peak)):
+                        ("memory.max", hard), ("memory.peak", peak),
+                        ("memory.swap.current", swap)):
         if value is not None:
             (d / name).write_text("max\n" if value == "max" else f"{value}\n")
     if events is not None:
         (d / "memory.events").write_text(f"low 0\nhigh {events}\nmax 0\noom 0\n")
+    # memory.stat is written ONLY when the test asks for it. Leaving it absent
+    # is the honest default: it is the state every pre-2026-08-16 case was
+    # written against, and the code must keep its verdict when the table cannot
+    # be read rather than silently downgrading it.
+    if anon is not None:
+        (d / "memory.stat").write_text(
+            f"anon {anon}\nfile {file_cache}\nkernel_stack 0\n"
+        )
     return d
 
 
@@ -124,6 +133,83 @@ def test_a_historical_touch_without_a_current_pin_is_not_censored(
     assert row["state"] == "ok"
     # The evidence is still on the row for anyone who wants it.
     assert row["peak_mb"] == 280
+
+
+def test_a_pin_made_of_page_cache_is_not_a_censored_reading(
+    cgroups, baseline_file
+):
+    """dashboard.service, measured 2026-08-16 — the case this gate exists for.
+
+    current 411 MiB against a 420 MiB soft cap (98%), peak 421: every earlier
+    qualifier passes and the verdict was CENSORED. But 224 MiB of that charge
+    was reclaimable page cache and only 183 MiB was anon — the working set was
+    44% of the cap it was reported as pinned against.
+
+    The cost of the false positive is the remedy, not the noise: the message
+    says "raise the cap", it would have been this unit's FOURTH raise, and
+    budget.yaml had already escalated the next one to a human right-sizing
+    decision — a ruling requested on a quantity that was never demand.
+    """
+    _cgroup(cgroups, "a.service", current=411 * MB, high=420 * MB,
+            hard=450 * MB, peak=421 * MB, events=0,
+            anon=183 * MB, file_cache=224 * MB)
+    row = cmb.headroom_rows(_spec("a.service"))[0]
+    assert row["censored"] is False
+    assert row["state"] == "tight"
+    assert row["working_set_mb"] == 183
+    # And the row has to SAY why it is high, or it reads as demand.
+    assert "reclaimable page cache" in cmb._row_detail(row)
+
+
+def test_a_pin_made_of_working_set_is_still_censored(cgroups, baseline_file):
+    """The gate must not swallow the case the check exists for. Same shape as
+    above, but the charge is anon: this is suppressed demand and the cap IS the
+    thing bounding the reading."""
+    _cgroup(cgroups, "a.service", current=411 * MB, high=420 * MB,
+            hard=450 * MB, peak=421 * MB, events=0,
+            anon=405 * MB, file_cache=6 * MB)
+    row = cmb.headroom_rows(_spec("a.service"))[0]
+    assert row["censored"] is True
+    assert row["state"] == "censored"
+
+
+def test_swapped_out_pages_count_as_working_set(cgroups, baseline_file):
+    """A page pushed to swap is working set that was evicted, not memory the
+    service stopped needing. Counting only `anon` would read a swapping unit as
+    a cache pin and silence the finding on the box where it matters most — this
+    one runs with 1 GB of swap and ~310 MB of it in use."""
+    _cgroup(cgroups, "a.service", current=411 * MB, high=420 * MB,
+            hard=450 * MB, peak=421 * MB, events=0,
+            anon=200 * MB, file_cache=211 * MB, swap=200 * MB)
+    row = cmb.headroom_rows(_spec("a.service"))[0]
+    assert row["censored"] is True
+
+
+def test_an_unreadable_memory_stat_never_downgrades_the_verdict(
+    cgroups, baseline_file
+):
+    """No `memory.stat` means the working set is UNKNOWN, and unknown is not
+    "mostly cache". The finding stands — absence of evidence never clears a
+    finding on this box (observability-policy.md §8.3)."""
+    _cgroup(cgroups, "a.service", current=411 * MB, high=420 * MB,
+            hard=450 * MB, peak=421 * MB, events=0)
+    row = cmb.headroom_rows(_spec("a.service"))[0]
+    assert row["censored"] is True
+    assert row["working_set_mb"] is None
+
+
+def test_approaching_the_cap_carries_the_same_qualifier(cgroups, baseline_file):
+    """Same class, the other check. `approaching_the_cap`'s remedy is "raise
+    memory_high NOW, while it is free" — handing that to a unit whose approach
+    is page cache spends headroom on a cache that grows straight back."""
+    _cgroup(cgroups, "a.service", current=400 * MB, high=420 * MB,
+            hard=450 * MB, peak=400 * MB, events=0,
+            anon=180 * MB, file_cache=220 * MB)
+    assert cmb.approaching_the_cap("a.service", 0.90) is None
+    _cgroup(cgroups, "b.service", current=400 * MB, high=420 * MB,
+            hard=450 * MB, peak=400 * MB, events=0,
+            anon=395 * MB, file_cache=5 * MB)
+    assert "APPROACHING" in (cmb.approaching_the_cap("b.service", 0.90) or "")
 
 
 def test_censored_outranks_tight(cgroups, baseline_file):

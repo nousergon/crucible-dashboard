@@ -167,6 +167,22 @@ services:
     memory_high: 420M
     memory_max: 450M
     note: >-
+      2026-08-16: THE SOAK ANSWERED, AND THE ANSWER IS THAT THREE OF THE FOUR
+      RAISES BELOW WERE SIZED ON THE WRONG QUANTITY. Measured on the box:
+      current 411 MiB / 420M soft (98%, peak 421, reported CENSORED) of which
+      anon was 183 MiB and reclaimable page cache 224 MiB. The working set is
+      ~183 MiB — 44% of this cap — and the pin is a Streamlit process caching
+      the files it reads until the cap reclaims them. That is the cap working,
+      not demand being suppressed, and it is why this unit re-pinned within days
+      of every raise: cache grows into whatever clearance it is given.
+      Caps NOT changed on this reading, deliberately. 420M/450M sits ~2.3x the
+      working set, the box has 49 MB of overcommit headroom left, and lowering a
+      cap to squeeze a cache is a right-sizing decision with a real cost (more
+      reclaim, slower page loads) that wants its own measurement — see
+      config-I6287. What changed is the DETECTOR: check_memory_budget.py now
+      judges a pin on anon + swap rather than on memory.current, so this unit
+      stops asking for a fourth raise it does not need.
+
       2026-08-12: memory_high 340M -> 420M, memory_max UNCHANGED. memory.peak
       reached 341 MiB against a 340 MiB soft cap, so the service has been pinned
       since it last started and memory.current is a floor rather than a working
