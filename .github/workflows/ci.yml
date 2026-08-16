@@ -51,10 +51,26 @@ jobs:
           pip install -r requirements.txt
           pip install pytest ruff
 
+      # The SF definitions this repo's registry-drift guard walks live in
+      # nousergon-data. Without them the guard SKIPPED on every runner, so a
+      # cross-repo invariant held only on a laptop that happened to have both
+      # repos cloned (alpha-engine-config-I7446). Checked out at main, not a
+      # pinned SHA: the guard's whole job is to notice when that repo moves.
+      - name: Check out SF definitions (nousergon-data)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          repository: nousergon/nousergon-data
+          ref: main
+          path: .sf-defs
+          sparse-checkout: infrastructure
+          sparse-checkout-cone-mode: false
+
       - name: Lint (undefined names / unused imports)
         run: ruff check --select F821,F401 .
 
       - name: Run tests
+        env:
+          SF_DEFS_DIR: ${{ github.workspace }}/.sf-defs
         run: pytest tests/ -v
 
       - name: Security audit

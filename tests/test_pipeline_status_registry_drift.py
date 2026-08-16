@@ -12,11 +12,12 @@ a runtime coupling."``
 
 The data SF JSONs live in a sibling checkout (~/Development/nousergon-data/,
 formerly alpha-engine-data — both names are tried, see below).
-If that checkout isn't present (CI machine, fresh clone), the test
-SKIPs rather than fails — the invariant only needs to hold on a dev
-laptop or in the dashboard-side CI environment that does the cross-repo
-walk. (Phase 3 of the revamp will land the same guard on the
-alpha-engine-data side as part of its SF JSON edits.)
+CI checks that repo out itself and points SF_DEFS_DIR at it, so this
+guard RUNS on every pull request. A missing checkout is a skip on a
+laptop and a FAILURE on a runner (alpha-engine-config-I7446): for its
+whole life before that, this test skipped on every CI machine, which
+made a cross-repo invariant hold only where someone happened to have
+both repos cloned side by side.
 
 What constitutes a "substantive Task state" here:
   - Type == "Task"
@@ -30,6 +31,7 @@ What constitutes a "substantive Task state" here:
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -59,10 +61,45 @@ _SIBLING_DATA_REPO_CANDIDATES = [
     Path.home() / "Development" / "nousergon-data",
     Path.home() / "Development" / "alpha-engine-data",
 ]
-_SIBLING_DATA_REPO = next(
-    (p for p in _SIBLING_DATA_REPO_CANDIDATES if p.is_dir()),
-    _SIBLING_DATA_REPO_CANDIDATES[0],
+# SF_DEFS_DIR is EXCLUSIVE when set — CI checks the data repo out and points it
+# here (ci.yml, `test` job). Falling back to a laptop path when an explicitly
+# named directory is missing is how a guard silently reads the wrong tree; if
+# the caller named a location, that location is the answer or there isn't one.
+_SIBLING_DATA_REPO = (
+    Path(os.environ["SF_DEFS_DIR"])
+    if os.environ.get("SF_DEFS_DIR")
+    else next(
+        (p for p in _SIBLING_DATA_REPO_CANDIDATES if p.is_dir()),
+        _SIBLING_DATA_REPO_CANDIDATES[0],
+    )
 )
+
+#: On a runner, a missing checkout is a BROKEN GUARD, not an absent laptop
+#: (alpha-engine-config-I7446). This guard skipped on every CI machine for its
+#: whole life, so the cross-repo invariant it enforces held only where someone
+#: happened to have both repos cloned — and a skip is indistinguishable from a
+#: pass in the summary line everyone reads.
+_ON_CI = os.environ.get("CI", "").lower() in {"1", "true", "yes"}
+
+
+def _require_definitions(label: str, json_path: Path) -> None:
+    """Skip on a laptop without the sibling checkout; FAIL on a runner."""
+    if json_path.exists():
+        return
+    message = (
+        f"{label} SF JSON not present at {json_path}. CI checks the data repo "
+        f"out and sets SF_DEFS_DIR (see ci.yml, `test` job); a dev laptop uses "
+        f"~/Development/nousergon-data."
+    )
+    if _ON_CI:
+        pytest.fail(
+            f"{message} On CI this is a broken guard, not an absent layout — "
+            f"skipping here would report a cross-repo invariant as satisfied "
+            f"without ever evaluating it."
+        )
+    pytest.skip(message)
+
+
 _SF_JSON_FILES = [
     ("Saturday", _SIBLING_DATA_REPO / "infrastructure" / "step_function.json"),
     ("Weekday", _SIBLING_DATA_REPO / "infrastructure" / "step_function_daily.json"),
@@ -110,12 +147,7 @@ def test_every_substantive_state_has_registry_entry(label, json_path):
     visible-but-degraded. Fix: add the new state name + ArchivePageRef or
     ArtifactReason to ``nousergon_lib.pipeline_status.registry`` and
     bump the lib version."""
-    if not json_path.exists():
-        pytest.skip(
-            f"{label} SF JSON not present at {json_path} — sibling alpha-engine-data "
-            f"checkout missing. Test skips on CI machines without the cross-repo "
-            f"layout; runs on dev laptops + the dashboard CI environment."
-        )
+    _require_definitions(label, json_path)
 
     substantive = _all_substantive_states(json_path)
     # Wait companions roll up into their parent row per WAIT_GROUPING (the
@@ -141,8 +173,7 @@ def test_wait_companions_in_json_are_in_wait_grouping(label, json_path):
     """Every state named ``WaitFor*`` in the SF JSON must appear in
     WAIT_GROUPING — otherwise the Wait state would render as its own row
     instead of rolling into its parent."""
-    if not json_path.exists():
-        pytest.skip(f"{label} SF JSON not present at {json_path}")
+    _require_definitions(label, json_path)
 
     sf = json.loads(json_path.read_text())
 
