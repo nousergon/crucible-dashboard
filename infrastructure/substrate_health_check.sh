@@ -68,6 +68,41 @@ fi
 # missing in production before.
 PYTHON_BIN=/home/ec2-user/alpha-engine-dashboard/.venv/bin/python
 
+# ── one interpreter per REPO, not one per box (alpha-engine-config-I7427) ───
+#
+# Three of the four checks below are alpha-engine-data's code, and until the
+# launcher box grew a second venv they ran under the DASHBOARD interpreter
+# above. The constituents drift check therefore never once reached its
+# comparison (measured 2026-08-15, execution watch-rerun-2026-08-15-2):
+#
+#   WARNING [collectors.constituents] Constituents fetch failed
+#     (`Import openpyxl` failed...); trying local cache...
+#   ERROR   [collectors.constituents] No cache found — cannot build universe
+#   ERROR   [__main__] Drift check failed at stage=arctic_list:
+#     No module named 'arcticdb'
+#
+# The closures cannot be merged: the dashboard venv is pinned `numpy<2`
+# (every spot workload's pyarrow is compiled against 1.x) and
+# alpha-engine-data declares `numpy>=2.4.6`.
+#
+# HARD FAIL when the data venv is absent, rather than falling back to
+# PYTHON_BIN. A fallback would restore exactly the silent wrong-interpreter
+# state this fixes, and would do it on the day the bootstrap stopped building
+# the venv — the one day nobody is looking. The venv is provisioned by
+# nousergon-data's weekly-freshness-spot-dispatcher bootstrap
+# (nousergon-data-PR1399), which must be merged and deployed first.
+DATA_PYTHON_BIN=/home/ec2-user/alpha-engine-data/.venv/bin/python
+if [[ ! -x "$DATA_PYTHON_BIN" ]]; then
+  echo "substrate_health_check.sh: $DATA_PYTHON_BIN is missing or not executable." >&2
+  echo "  alpha-engine-data's validators cannot run under the dashboard venv —" >&2
+  echo "  its closure has neither arcticdb nor openpyxl, and its numpy pin is" >&2
+  echo "  incompatible. The launcher-box bootstrap builds this venv" >&2
+  echo "  (weekly-freshness-spot-dispatcher, config-I7427); if it is absent the" >&2
+  echo "  bootstrap did not complete and NO result from these checks is" >&2
+  echo "  trustworthy. Failing loudly rather than measuring the wrong thing." >&2
+  exit 2
+fi
+
 # ── the three gating checks run to COMPLETION, then the script reports all
 # of them (alpha-engine-config-I7415) ──────────────────────────────────────
 #
@@ -110,7 +145,7 @@ run_check "transparency inventory (weekly)" \
 
 cd /home/ec2-user/alpha-engine-data
 run_check "constituents drift check" \
-  "$PYTHON_BIN" -m validators.constituents_drift_check
+  "$DATA_PYTHON_BIN" -m validators.constituents_drift_check
 
 export RUN_DATE
 # NO `--alert` flag: phase_marker_sweep alerts by DEFAULT (`alert=not
@@ -120,7 +155,7 @@ export RUN_DATE
 # the sweep exited 2 on `argument --alert-severity: expected one argument`
 # and had never once run since the flag was added (config-I7415).
 run_check "phase marker sweep" \
-  "$PYTHON_BIN" -m validators.phase_marker_sweep --run-date "$RUN_DATE"
+  "$DATA_PYTHON_BIN" -m validators.phase_marker_sweep --run-date "$RUN_DATE"
 
 # ── stage-output assertion (alpha-engine-config-I7167) ──────────────────────
 #
@@ -155,7 +190,7 @@ run_check "phase marker sweep" \
 # reporter destroying the thing it reports.
 echo "--- stage output sweep (observe) ---"
 cd /home/ec2-user/alpha-engine-data
-if ! "$PYTHON_BIN" -m validators.stage_output_sweep \
+if ! "$DATA_PYTHON_BIN" -m validators.stage_output_sweep \
     --run-date "$RUN_DATE" \
     ${EXECUTION_ARN:+--execution-arn "$EXECUTION_ARN"}; then
   echo "substrate_health_check.sh: stage_output_sweep CRASHED (not a finding — the" \
