@@ -895,6 +895,18 @@ timers:
       answers "is the timer still firing at all", and the 2026-08-12 install
       produced exactly the state where those two differ — a timer that fired
       and a drill that deliberately did not run.
+  - unit: router-funded-depth-probe.timer
+    max_staleness: 26h
+    note: >-
+      Daily 11:30 UTC + up to 90s randomized delay, Persistent=true — the same
+      26h shape as router-spend-export next to it. Arrived on the box with
+      nous-ergon-ops-PR704 (config-I7465) carrying no row here, and box_health
+      named the hole on its first snapshot, which is the coverage rule working
+      rather than a second gap. The staleness half matters more for this unit
+      than for most: the probe exists so that a provider whose balance crossed
+      zero overnight is on the console 45 minutes BEFORE the preopen SF calls
+      it, so a run that silently stops firing restores exactly the blindness
+      the probe was built to end (config-I6613, I6561, I7448).
 
   # ── metron ──────────────────────────────────────────────────────────────
   - unit: metron-refresh.timer
