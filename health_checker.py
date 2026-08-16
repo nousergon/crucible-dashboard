@@ -58,7 +58,15 @@ DEFAULT_BUCKET = "alpha-engine-research"
 THRESHOLDS = {
     "signals": 8,           # Research runs weekly Saturday
     "predictions": 2,       # Predictor runs daily Mon-Fri
-    "features": 2,          # Feature store runs daily Mon-Fri
+    # Feature store runs daily Mon-Fri, so its newest partition is up to THREE
+    # calendar days old on a Monday morning (Friday's) and four across a
+    # Monday holiday. A calendar threshold of 2 made this check fail every
+    # Sunday by construction, on data that was exactly as fresh as a Mon-Fri
+    # producer can make it. 4 is the smallest value correct for that cadence.
+    # The principled fix is to measure age in TRADING days for every
+    # weekday-cadence row here (`predictions` and `daily_closes` carry the
+    # same latent defect) — tracked as config-I7434.
+    "features": 4,
     "fundamentals": 100,    # FMP quarterly, updated weekly in DataPhase1
     # price_cache_slim retired (Wave-4): ArcticDB universe lib is canonical;
     # its freshness is monitored upstream in alpha-engine-data's preflight.
@@ -192,12 +200,24 @@ def check_all(bucket: str = DEFAULT_BUCKET) -> list[dict]:
     })
 
     # 3. Feature store
-    today_str = date.today().isoformat()
-    modified, age = _last_modified_age(s3, bucket, f"features/{today_str}/technical.parquet")
-    if modified is None:
-        # Check yesterday
-        yesterday = (date.today() - timedelta(days=1)).isoformat()
-        modified, age = _last_modified_age(s3, bucket, f"features/{yesterday}/technical.parquet")
+    #
+    # `_find_latest_prefix`, NOT two hard-coded date probes. This used to
+    # HeadObject `features/{today}/technical.parquet` and then
+    # `features/{yesterday}/...`, and report `missing` when neither existed —
+    # a two-day lookback under a threshold that permits two days, so an
+    # artifact sitting exactly at the boundary its own threshold accepts was
+    # reported as never having existed. `missing` and `stale` are different
+    # findings: one says the producer never ran, the other says it ran and is
+    # behind, and only the second is true here.
+    #
+    # Measured 2026-08-16 on weekly-SF execution `watch-rerun-2026-08-16-3`:
+    #   features   age=N/A  threshold=2d  last=never
+    # while `s3://alpha-engine-research/features/2026-08-14/` existed and the
+    # SAME check had reported `age=1d last=2026-08-14 20:32 UTC` seventeen
+    # hours earlier. Nothing about the data changed between the two runs —
+    # only which side of a hard-coded two-date window the calendar had moved.
+    # Every other freshness check in this file already scans (config-I7434).
+    modified, age = _find_latest_prefix(s3, bucket, "features/")
     threshold = THRESHOLDS["features"]
     results.append({
         "check": "features",
