@@ -85,13 +85,20 @@ PYTHON_BIN=/home/ec2-user/alpha-engine-dashboard/.venv/bin/python
 # that one run now measures the whole surface.
 _FAILED_CHECKS=()
 
+# `rc` is captured on the SAME command as the failure, not after an `if`
+# block: `$?` inside the `if`'s else path is the exit status of the *`if`
+# construct*, which is 0 by definition. Measured 2026-08-15 — all three
+# gating checks were reported as `FAILED (rc=0)`, so the one number that
+# says WHICH failure mode a check hit was destroyed by the reporter, on
+# every failure, since the run_check helper shipped (config-I7415).
 run_check() {
   local label="$1"; shift
   echo "--- ${label} ---"
-  if "$@"; then
+  local rc=0
+  "$@" || rc=$?
+  if (( rc == 0 )); then
     return 0
   fi
-  local rc=$?
   echo "substrate_health_check.sh: ${label} FAILED (rc=${rc})" >&2
   _FAILED_CHECKS+=("${label} (rc=${rc})")
   return 0
@@ -106,8 +113,14 @@ run_check "constituents drift check" \
   "$PYTHON_BIN" -m validators.constituents_drift_check
 
 export RUN_DATE
+# NO `--alert` flag: phase_marker_sweep alerts by DEFAULT (`alert=not
+# args.no_alert`) and declares `--no-alert` / `--alert-severity`. argparse
+# accepts unambiguous prefixes, so `--alert` was silently rebound to
+# `--alert-severity`, which then demanded a value that was never there —
+# the sweep exited 2 on `argument --alert-severity: expected one argument`
+# and had never once run since the flag was added (config-I7415).
 run_check "phase marker sweep" \
-  "$PYTHON_BIN" -m validators.phase_marker_sweep --run-date "$RUN_DATE" --alert
+  "$PYTHON_BIN" -m validators.phase_marker_sweep --run-date "$RUN_DATE"
 
 # ── stage-output assertion (alpha-engine-config-I7167) ──────────────────────
 #

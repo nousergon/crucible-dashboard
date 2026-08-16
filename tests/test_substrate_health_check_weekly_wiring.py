@@ -12,6 +12,7 @@ its own log or S3 upload; the SF's krepis wrapper owns that.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -106,14 +107,55 @@ class TestCommandCoverage:
                     f"exit code: {line.strip()!r}"
                 )
 
-    def test_phase_marker_sweep_passes_alert_flag(self):
+    def test_phase_marker_sweep_does_not_pass_a_flag_the_sweep_does_not_declare(self):
+        """`--alert` is not an option of validators.phase_marker_sweep.
+
+        config-I7415. The sweep alerts by DEFAULT (`alert=not args.no_alert`)
+        and declares `--no-alert` / `--alert-severity`. argparse accepted
+        `--alert` as an unambiguous prefix of `--alert-severity`, which then
+        aborted with `expected one argument` — so the sweep exited 2 without
+        sweeping, on every weekly run since the flag was added, and the caller
+        recorded that usage error as a failing gating check.
+
+        This test previously asserted `--alert` was PRESENT: a guard keyed on
+        the defect, which passed on its own bug. Turning alerting on is the
+        default; the only correct assertion is that alerting is not turned OFF.
+        """
         src = _SCRIPT.read_text()
         sweep_line = next(
             line for line in src.splitlines()
             if "validators.phase_marker_sweep" in line
             and not line.strip().startswith("#")
         )
-        assert "--alert" in sweep_line
+        assert "--alert" not in sweep_line, (
+            f"{_SCRIPT.name} passes an undeclared flag to phase_marker_sweep, "
+            f"which argparse rebinds to --alert-severity: {sweep_line.strip()!r}"
+        )
+        assert "--no-alert" not in sweep_line, (
+            "the weekly sweep must alert; --no-alert is diagnostic-mode only"
+        )
+
+    def test_run_check_captures_the_real_exit_code(self):
+        """`rc` must be captured on the failing command, not after an `if`.
+
+        config-I7415. `local rc=$?` placed after an `if "$@"; then ... fi`
+        block reads the exit status of the *`if` construct*, which is 0 by
+        definition — so every failure the helper ever reported carried
+        `rc=0`. Measured on ne-weekly-freshness-pipeline execution
+        `watch-rerun-2026-08-15-2` (2026-08-15): three distinct failures,
+        three identical `(rc=0)`.
+        """
+        src = _SCRIPT.read_text()
+        body = src.split("run_check() {", 1)[1].split("\n}", 1)[0]
+        assert 'rc=$?' in body, "run_check must record the check's exit code"
+        # The capture has to be attached to the invocation itself.
+        assert re.search(r'"\$@"\s*\|\|\s*rc=\$\?', body), (
+            "run_check must capture rc on the same command as the failure; "
+            f"body was: {body!r}"
+        )
+        assert 'if "$@"; then' not in body, (
+            "the `if`-then-capture shape always yields rc=0"
+        )
 
     def test_phase_marker_sweep_runs_after_constituents_drift(self):
         lines = list(_executable_lines())
