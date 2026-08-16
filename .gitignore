@@ -50,3 +50,6 @@ marketing/public/blog/
 .gitleaks.toml
 
 .gitleaksbaseline.json
+
+# CI checks nousergon-data out here for the SF registry-drift guard.
+.sf-defs/
