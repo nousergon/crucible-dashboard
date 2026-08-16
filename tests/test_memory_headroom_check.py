@@ -212,6 +212,32 @@ def test_approaching_the_cap_carries_the_same_qualifier(cgroups, baseline_file):
     assert "APPROACHING" in (cmb.approaching_the_cap("b.service", 0.90) or "")
 
 
+def test_the_working_set_subtotal_is_reported_beside_the_steady_state_sum(
+    cgroups, baseline_file
+):
+    """The steady-state sum adds up `memory.current`, so it includes page
+    cache — 375 MB of the 1795 MB measured on the box 2026-08-16. The bound's
+    input is deliberately UNCHANGED (its constant was calibrated against the
+    inclusive number); the subtotal exists so nobody reasons about demand from
+    a total that is not demand."""
+    _cgroup(cgroups, "a.service", current=411 * MB, high=420 * MB, peak=421 * MB,
+            anon=183 * MB, file_cache=224 * MB, events=0)
+    _cgroup(cgroups, "b.service", current=100 * MB, high=200 * MB, peak=110 * MB,
+            anon=98 * MB, file_cache=2 * MB, events=0)
+    assert cmb.working_set_total_mb(["a.service", "b.service"]) == (281, [])
+
+
+def test_a_unit_with_no_memory_stat_is_named_not_skipped(cgroups, baseline_file):
+    """A subtotal missing a unit understates. It must not read as complete."""
+    _cgroup(cgroups, "a.service", current=411 * MB, high=420 * MB, peak=421 * MB,
+            anon=183 * MB, file_cache=224 * MB, events=0)
+    _cgroup(cgroups, "b.service", current=100 * MB, high=200 * MB, peak=110 * MB,
+            events=0)
+    total, unknown = cmb.working_set_total_mb(["a.service", "b.service"])
+    assert total == 183
+    assert unknown == ["b.service"]
+
+
 def test_censored_outranks_tight(cgroups, baseline_file):
     """Both conditions true: the row must say the one that invalidates the
     other, not the one that is merely alarming."""
