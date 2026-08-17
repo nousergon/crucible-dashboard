@@ -8,10 +8,14 @@ source text instead.
 """
 
 import ast
+import json
+import os
 import re
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -370,3 +374,92 @@ class TestEvidenceRendering:
         assert mod._evidence_label(
             {"outcome": "no_contest", "arm_confidence": None},
         ) == ""
+
+
+# Sibling checkout convention, mirroring test_pipeline_status_registry_drift.py's
+# SF_DEFS_DIR handling exactly (alpha-engine-config-I7446's lesson: a missing
+# checkout is a laptop-only skip, never a silent pass on CI). CI checks out
+# crucible-backtester's `contracts/` directory into `.backtester-contracts`
+# and sets BACKTESTER_CONTRACTS_DIR (see ci.yml, `test` job); a dev laptop
+# falls back to a sibling ~/Development/crucible-backtester checkout — both
+# layouts nest the schema under a `contracts/` subdirectory, so the join
+# below is the same for either source.
+_BACKTESTER_REPO_ROOT = (
+    Path(os.environ["BACKTESTER_CONTRACTS_DIR"])
+    if os.environ.get("BACKTESTER_CONTRACTS_DIR")
+    else Path.home() / "Development" / "crucible-backtester"
+)
+_BACKTESTER_AUDIT_SCHEMA = (
+    _BACKTESTER_REPO_ROOT / "contracts" / "producer_champion_audit.schema.json"
+)
+
+_ON_CI = os.environ.get("CI", "").lower() in {"1", "true", "yes"}
+
+
+class TestBlockedBySlugContractParity:
+    """Reads crucible-backtester's ``producer_champion_audit.schema.json``
+    directly (alpha-engine-config-I7558) rather than a hand-copied slug
+    list (contrast ``TestChampionVocabularyParity`` above, whose snapshot
+    must be updated by hand on every backtester vocabulary change and says
+    so in its own docstring). This test needs no such update: the next
+    ``blocked_by`` slug crucible-backtester's optimizer/champion_promotion.py
+    adds turns this RED the moment CI checks out that repo's contract,
+    instead of silently degrading to raw-slug display on the Experiments
+    page (``_gate_state_label``'s ``.get(b, b)`` fallback).
+
+    crucible-dashboard is PUBLIC and must not depend on the PRIVATE
+    alpha-engine-config repo — crucible-backtester is also public, so
+    reading its committed, versioned contract schema carries no such risk.
+    """
+
+    def _schema_or_skip(self) -> dict:
+        if not _BACKTESTER_AUDIT_SCHEMA.exists():
+            message = (
+                f"crucible-backtester contract not present at "
+                f"{_BACKTESTER_AUDIT_SCHEMA}. CI checks that repo's "
+                f"contracts/ out and sets BACKTESTER_CONTRACTS_DIR (see "
+                f"ci.yml, `test` job); a dev laptop uses "
+                f"~/Development/crucible-backtester."
+            )
+            if _ON_CI:
+                pytest.fail(
+                    f"{message} On CI this is a broken guard, not an "
+                    f"absent layout — skipping here would report this "
+                    f"cross-repo invariant as satisfied without ever "
+                    f"evaluating it."
+                )
+            pytest.skip(message)
+        return json.loads(_BACKTESTER_AUDIT_SCHEMA.read_text())
+
+    def test_every_schema_blocked_by_slug_has_a_dashboard_label(self):
+        schema = self._schema_or_skip()
+        variants = schema["properties"]["blocked_by"]["oneOf"]
+        array_variant = next(v for v in variants if v.get("type") == "array")
+        slugs = set(array_variant["items"]["enum"])
+
+        src = (REPO_ROOT / "views" / "46_Experiments.py").read_text()
+        labels = set(_extract_literal(src, "_BLOCKED_BY_LABELS"))
+
+        missing = slugs - labels
+        assert not missing, (
+            f"_BLOCKED_BY_LABELS in views/46_Experiments.py is missing "
+            f"human labels for blocked_by slug(s) present in "
+            f"crucible-backtester's producer_champion_audit.schema.json: "
+            f"{sorted(missing)}. See _BLOCKED_BY_LABELS in "
+            f"views/46_Experiments.py."
+        )
+
+    def test_arm_confidence_field_declared_in_schema(self):
+        """Guards the assumption ``_evidence_label`` (46_Experiments.py,
+        config-I7549) relies on: ``arm_confidence`` is a nullable object of
+        arm -> string verdict. A shape change here (e.g. a nested structure)
+        would make that renderer silently print something wrong instead of
+        failing."""
+        schema = self._schema_or_skip()
+        arm_confidence = schema["properties"].get("arm_confidence")
+        assert arm_confidence is not None, (
+            "producer_champion_audit.schema.json no longer declares "
+            "arm_confidence — views/46_Experiments.py::_evidence_label "
+            "needs re-checking against the new shape."
+        )
+        assert "object" in arm_confidence["type"]
