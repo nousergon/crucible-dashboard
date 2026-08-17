@@ -189,7 +189,8 @@ class TestChampionVocabularyParity:
     feasible in this repo's CI environment. The sets below are a hardcoded
     snapshot of that module's ground truth as verified 2026-08-04
     (``VALID_CHAMPIONS`` L233, ``_BLOCKED_BY_SLUGS`` L250-276 as of that
-    read). This test catches the DASHBOARD's constants drifting from this
+    read; re-verified 2026-08-17 for the alpha-engine-config-I7549 evidence
+    -admissibility slugs). This test catches the DASHBOARD's constants drifting from this
     recorded snapshot; it does NOT automatically detect the backtester's
     vocabulary changing again — re-verify and update this snapshot whenever
     champion_promotion.py's VALID_CHAMPIONS or _BLOCKED_BY_SLUGS changes.
@@ -212,6 +213,13 @@ class TestChampionVocabularyParity:
         "feed_producer_dead",
         "frozen",
         "unclassified_error",
+        # Evidence-admissibility verdicts (alpha-engine-config-I7549,
+        # 2026-08-17) — re-verified against champion_promotion.py
+        # _BLOCKED_BY_SLUGS on that date.
+        "thinktank_coverage_thin_evidence",
+        "thinktank_coverage_confidence_unknown",
+        "scanner_predictor_direct_thin_evidence",
+        "scanner_predictor_direct_confidence_unknown",
     }
 
     # Retired vocabularies _BLOCKED_BY_SLUGS keeps read-tolerated for
@@ -259,3 +267,87 @@ class TestChampionVocabularyParity:
         src = (REPO_ROOT / "views" / "46_Experiments.py").read_text()
         prefixes = _extract_literal(src, "_PRODUCER_COHORT_PREFIXES")
         assert prefixes.get("thinktank_coverage") == "signals_shadow/thinktank_coverage/"
+
+
+class TestEvidenceRendering:
+    """alpha-engine-config-I7549 — a week the gate declined to decide must be
+    readable as such, not as a defended incumbency.
+
+    The backtester's weekly audit record now carries an ``evidence`` block
+    naming, per arm, the confidence that admitted or refused its score. This
+    page is the surface where "the challenger lost" and "we could not tell"
+    have to be distinguishable.
+    """
+
+    def _view(self):
+        """The page's module-level body renders the Streamlit page on import,
+        so import the DEFINITIONS only: parse the source and execute just the
+        imports, constants and function defs. Same source of truth as the
+        _extract_literal tests above, exercised as real code rather than as
+        text."""
+        import ast
+        import types
+        path = REPO_ROOT / "views" / "46_Experiments.py"
+        src = path.read_text()
+        tree = ast.parse(src)
+        def _is_constant_assign(node):
+            # Module-level constants only (_LEADING_UNDERSCORE or UPPER_CASE)
+            # — the page body's own `producer_tab, ... = st.tabs(...)` is also
+            # an Assign, and executing it would render the page.
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                return False
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            return all(
+                isinstance(t, ast.Name)
+                and (t.id.startswith("_") or t.id.isupper())
+                for t in targets
+            )
+
+        tree.body = [
+            n for n in tree.body
+            if isinstance(n, (ast.Import, ast.ImportFrom, ast.FunctionDef, ast.ClassDef))
+            or _is_constant_assign(n)
+        ]
+        mod = types.ModuleType("_experiments_view_defs")
+        mod.__file__ = str(path)
+        exec(compile(tree, str(path), "exec"), mod.__dict__)
+        return mod
+
+    def test_thin_evidence_renders_as_its_own_phrase(self):
+        src = (REPO_ROOT / "views" / "46_Experiments.py").read_text()
+        labels = _extract_literal(src, "_BLOCKED_BY_LABELS")
+        thin = labels["thinktank_coverage_thin_evidence"]
+        lost = labels["thinktank_coverage_no_resolved_outcomes"]
+        assert thin != lost
+        assert "thin" in thin.lower()
+
+    def test_confidence_column_is_rendered_beside_the_mean(self):
+        """I7542's closes-when: no consumer presents a thin arm's mean as a
+        comparison without the status alongside it."""
+        src = (REPO_ROOT / "views" / "46_Experiments.py").read_text()
+        columns = _extract_literal(src, "_METRIC_COLUMNS")
+        assert "confidence" in columns
+        assert "n_dates_scored" in columns
+
+    def test_evidence_label_names_each_arms_confidence(self):
+        mod = self._view()
+        audit = {
+            "outcome": "no_contest",
+            "blocked_by": ["thinktank_coverage_thin_evidence"],
+            "evidence": {
+                "scanner_predictor_direct": {"confidence": "ok", "n_cycles": 15},
+                "thinktank_coverage": {"confidence": "thin", "n_dates_scored": 1},
+            },
+        }
+        label = mod._evidence_label(audit)
+        assert "thin" in label
+        assert "n=1" in label
+        assert "ok" in label
+
+    def test_pre_i7549_audit_record_renders_empty_not_ok(self):
+        """A record with no evidence block makes no claim about evidence —
+        rendering it as "ok" would be the console asserting something the
+        artifact never said."""
+        mod = self._view()
+        assert mod._evidence_label({"outcome": "no_contest"}) == ""
+        assert mod._evidence_label({"outcome": "no_contest", "evidence": None}) == ""
