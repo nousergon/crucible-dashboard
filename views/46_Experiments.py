@@ -80,6 +80,15 @@ _METRIC_COLUMNS = {
     "realized_rank_ic": "Realized rank-IC (21d)",
     "topn_alpha_vs_champion": "Top-N alpha vs champion",
     "n_dates_scored": "Cohorts scored",
+    # alpha-engine-config-I7542/I7549 — how much evidence stands behind the
+    # row's mean ("ok" / "thin" / "insufficient", written by crucible-research
+    # scoring/leaderboard_scoring.py::confidence_for). Rendered BESIDE the
+    # mean, never instead of it: a one-date mean carrying a null se and a null
+    # t_stat renders in exactly the same shape as a well-evidenced one, and a
+    # reader (human or agent) has no way to tell them apart without this
+    # column. Absent on pre-2026-08-17 artifacts — _spec_frame keeps only the
+    # columns actually present, so those simply render without it.
+    "confidence": "Evidence",
 }
 
 # Live champion/challenger rotation — MUST mirror alpha-engine-backtester's
@@ -109,6 +118,22 @@ _BLOCKED_BY_LABELS = {
     "leaderboard_stale_gt_8d": "leaderboard stale (>8d)",
     "arm_score_unavailable": "arm score unavailable",
     "feed_producer_dead": "feed producer dead (config-I3165)",
+    # Evidence-confidence verdicts (alpha-engine-config-I7549) — the THIRD
+    # verdict: not "the challenger lost", not "the challenger won", but "the
+    # evidence could not support a comparison". Rendered as its own phrase for
+    # exactly that reason. Challenger-side slugs land with
+    # crucible-backtester#688, champion-side with its follow-up; both are
+    # inert here until the producer emits them.
+    "thinktank_coverage_thin_evidence":
+        "Think Tank coverage scored on too few dates to compare (evidence thin)",
+    "thinktank_coverage_confidence_unknown":
+        "Think Tank coverage evidence unrated (pre-I7542 leaderboard)",
+    "scanner_predictor_direct_thin_evidence":
+        "scanner→predictor scored on too few cycles to compare (evidence thin)",
+    "scanner_predictor_direct_confidence_unknown":
+        "scanner→predictor evidence unrated (counterfactual reported no cycle count)",
+    "leaderboard_horizon_mismatch":
+        "leaderboard primary horizon ≠ the horizon this gate decides on",
     "frozen": "frozen (--freeze)",
     "unclassified_error": "error",
     # RETIRED pre-I2518 HAC/hysteresis/cooldown engine — read-tolerated for
@@ -194,6 +219,35 @@ def _gate_state_label(audit: dict) -> str:
     return ", ".join(labels)
 
 
+def _evidence_label(audit: dict) -> str:
+    """Per-arm evidence verdict behind this week's gate decision, read from the
+    audit record's ``arm_confidence`` block (alpha-engine-config-I7549).
+
+    Why this column exists: a no_contest, a defended incumbency and a week
+    whose evidence was too thin to compare all leave the pointer where it was.
+    Without this, all three render as "the pointer did not move", and "we could
+    not tell" is indistinguishable from "the challenger lost" — the fleet's
+    rule that no data is never rendered as green, run in the other direction.
+
+    ``arm_confidence`` is ``{arm: verdict}`` with STRING verdicts only
+    (``ok``/``thin``/``insufficient``/``unknown``/``unrecognised``, plus
+    ``not_leaderboard_scored`` on records written before the champion-side
+    half landed — read-tolerated, rendered as-is). Empty string on a
+    pre-I7549 record, which carries no such block: never "ok", which would be
+    a claim the artifact does not make.
+    """
+    verdicts = audit.get("arm_confidence")
+    if not isinstance(verdicts, dict) or not verdicts:
+        return ""
+    parts = []
+    for arm in _CHAMPION_ARMS:
+        verdict = verdicts.get(arm)
+        if not isinstance(verdict, str) or not verdict:
+            continue
+        parts.append(f"{_CHAMPION_ARM_LABELS.get(arm, arm)}: {verdict}")
+    return "; ".join(parts)
+
+
 def _champion_history_frame(dates: list[str], limit: int = 30) -> pd.DataFrame:
     rows = []
     for d in dates[-limit:]:
@@ -211,6 +265,7 @@ def _champion_history_frame(dates: list[str], limit: int = 30) -> pd.DataFrame:
             "Consecutive wins": audit.get("consecutive_wins"),
             "Cooldown until": audit.get("cooldown_until"),
             "Gate state": _gate_state_label(audit),
+            "Evidence": _evidence_label(audit),
         })
     return pd.DataFrame(rows)
 
