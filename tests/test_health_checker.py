@@ -7,6 +7,10 @@ from health_checker import (
     format_report,
     _last_modified_age,
     _find_latest_prefix,
+    _trading_day_age,
+    WEEKDAY_CADENCE_ROWS,
+    TRADING_DAY_THRESHOLDS,
+    THRESHOLDS,
 )
 
 
@@ -278,11 +282,15 @@ class TestDailyClosesLookbackWindow:
     today(5/24)+yesterday(5/23) found no parquet → false ``missing``
     even though Friday(5/22)'s parquet was 0 trading days behind."""
 
-    def test_finds_parquet_two_days_back(self):
-        """Sunday redrive: today + yesterday absent, Friday(2d back) present."""
+    def test_finds_parquet_two_calendar_days_back_and_reads_zero_trading_day_age(self):
+        """Sunday redrive: today + yesterday absent, Friday(2 calendar days
+        back) present. 2 calendar days back from a Sunday IS Friday, i.e.
+        the most recently closed trading day — 0 trading-day age, `ok`
+        against the 0 trading-day threshold (config-I7434)."""
         from health_checker import check_all
         s3 = MagicMock()
-        # Find the Friday parquet 2 days back; everything else returns NoSuchKey
+        # Find the Friday parquet 2 calendar days back; everything else
+        # returns NoSuchKey.
         target_friday = (date.today() - timedelta(days=2)).isoformat()
 
         def head_object(Bucket, Key):
@@ -295,14 +303,16 @@ class TestDailyClosesLookbackWindow:
         paginator.paginate.return_value = iter([{"Contents": []}])
         s3.get_paginator.return_value = paginator
 
-        with patch("boto3.client", return_value=s3):
+        with patch("boto3.client", return_value=s3), patch(
+            "health_checker.last_closed_trading_day",
+            return_value=date.fromisoformat(target_friday),
+        ):
             results = check_all("test-bucket")
         dc = next(r for r in results if r["check"] == "daily_closes")
-        # 2 calendar days back is at-threshold (default 2) → ok
         assert dc["status"] == "ok", (
-            f"Daily closes 2-day-back lookback failed: {dc}"
+            f"Daily closes 2-calendar-day-back lookback failed: {dc}"
         )
-        assert dc["age_days"] == 2
+        assert dc["age_days"] == 0
 
 
 class TestPerModuleHealthCandidates:
@@ -559,18 +569,20 @@ class TestFeaturesFreshnessProbe:
 
     @patch("health_checker.boto3")
     def test_a_three_day_old_partition_is_found_not_reported_missing(self, mock_boto3):
-        """The exact shape that failed: Friday's features read on a Monday."""
+        """The exact shape that failed: Friday's features read on a Monday.
+        Three CALENDAR days old, but 0 TRADING days old (Friday IS the most
+        recently closed session on a Monday) — `ok`, not `missing`."""
         s3 = MagicMock()
         mock_boto3.client.return_value = s3
         s3.head_object.side_effect = Exception("NoSuchKey")
 
-        three_days_ago = (date.today() - timedelta(days=3)).isoformat()
+        friday = date.today() - timedelta(days=3)
         paginator = MagicMock()
 
         def paginate(Bucket, Prefix, MaxKeys=100):
             if Prefix == "features/":
                 yield {"Contents": [
-                    {"Key": f"features/{three_days_ago}/technical.parquet"}
+                    {"Key": f"features/{friday.isoformat()}/technical.parquet"}
                 ]}
             else:
                 yield {"Contents": []}
@@ -578,24 +590,27 @@ class TestFeaturesFreshnessProbe:
         paginator.paginate.side_effect = paginate
         s3.get_paginator.return_value = paginator
 
-        features = next(r for r in check_all() if r["check"] == "features")
+        with patch("health_checker.last_closed_trading_day", return_value=friday):
+            features = next(r for r in check_all() if r["check"] == "features")
         assert features["status"] != "missing", (
             "a partition three days old was reported as never having existed — "
             "the probe cannot see what its own threshold accepts"
         )
-        assert features["age_days"] == 3
-        assert features["last_updated"] == three_days_ago
-
-    def test_the_threshold_covers_a_weekday_producer_across_a_weekend(self):
-        """features runs Mon-Fri, so Friday's partition is 3 days old on Monday."""
-        from health_checker import THRESHOLDS
-
-        assert THRESHOLDS["features"] >= 3, (
-            "a Mon-Fri producer's newest partition is up to three calendar "
-            "days old on a Monday morning; a threshold below 3 fails every "
-            "weekend on data that is exactly as fresh as the producer can "
-            "make it (config-I7434)"
+        assert features["status"] == "ok", (
+            "Friday's partition IS the most recently closed trading day on a "
+            "Monday — 0 trading-day age, not stale"
         )
+        assert features["age_days"] == 0
+        assert features["last_updated"] == friday.isoformat()
+
+    def test_the_threshold_is_expressed_in_trading_days_not_calendar_days(self):
+        """features runs Mon-Fri, so a calendar-day threshold fails every
+        weekend by construction. It must be re-expressed in TRADING days
+        (config-I7434 deliverable 2) — a weekday-cadence row can never carry
+        a calendar-day THRESHOLDS entry (deliverable 4's guard)."""
+        assert "features" in WEEKDAY_CADENCE_ROWS
+        assert "features" not in THRESHOLDS
+        assert TRADING_DAY_THRESHOLDS["features"] == 0
 
     @patch("health_checker.boto3")
     def test_genuinely_absent_features_still_report_missing(self, mock_boto3):
@@ -633,3 +648,93 @@ class TestFeaturesFreshnessProbe:
             "'stale' and 'missing' are different findings — one says the "
             "producer is behind, the other says it never ran"
         )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# config-I7434 deliverable 3: every weekday-cadence row passes on a Monday
+# morning with Friday's artifact, and fails on a Monday with Thursday's.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestWeekdayCadenceRowsJudgedInTradingDays:
+    """`predictions`, `features` and `daily_closes` all only run Mon-Fri.
+    `last_closed_trading_day` is patched to a fixed Monday-morning answer
+    (Friday) rather than freezing wall-clock time, so these assertions hold
+    regardless of what day the suite itself runs on."""
+
+    _MONDAY = date(2026, 8, 17)  # a real Monday
+    _FRIDAY = date(2026, 8, 14)  # the trading day Monday morning resolves to
+    _THURSDAY = date(2026, 8, 13)
+
+    def _run_with_artifact_date(self, artifact_date: date):
+        s3 = MagicMock()
+
+        def head_object(Bucket, Key):
+            if Key in (
+                "predictor/predictions/latest.json",
+                f"staging/daily_closes/{artifact_date.isoformat()}.parquet",
+            ):
+                # LastModified needs to fall ON artifact_date in UTC.
+                return {
+                    "LastModified": datetime(
+                        artifact_date.year, artifact_date.month, artifact_date.day,
+                        12, 0, tzinfo=timezone.utc,
+                    )
+                }
+            raise Exception("NoSuchKey")
+
+        s3.head_object.side_effect = head_object
+        paginator = MagicMock()
+
+        def paginate(Bucket, Prefix, MaxKeys=100):
+            if Prefix == "features/":
+                yield {"Contents": [
+                    {"Key": f"features/{artifact_date.isoformat()}/technical.parquet"}
+                ]}
+            else:
+                yield {"Contents": []}
+
+        paginator.paginate.side_effect = paginate
+        s3.get_paginator.return_value = paginator
+
+        with patch("boto3.client", return_value=s3), patch(
+            "health_checker.last_closed_trading_day", return_value=self._FRIDAY
+        ):
+            return check_all("test-bucket")
+
+    def test_passes_monday_morning_with_fridays_artifact(self):
+        results = self._run_with_artifact_date(self._FRIDAY)
+        for row in WEEKDAY_CADENCE_ROWS:
+            r = next(x for x in results if x["check"] == row)
+            assert r["status"] == "ok", f"{row}: {r}"
+            assert r["age_days"] == 0, f"{row}: {r}"
+
+    def test_fails_monday_with_thursdays_artifact(self):
+        results = self._run_with_artifact_date(self._THURSDAY)
+        for row in WEEKDAY_CADENCE_ROWS:
+            r = next(x for x in results if x["check"] == row)
+            assert r["status"] == "stale", (
+                f"{row}: Thursday's artifact on a Monday morning is one "
+                f"trading day behind Friday — must read stale, got {r}"
+            )
+            assert r["age_days"] == 1, f"{row}: {r}"
+
+
+class TestWeekdayCadenceCannotCarryACalendarThreshold:
+    """config-I7434 deliverable 4: a row declared weekday-cadence must not
+    also carry a calendar-day THRESHOLDS entry — the module-level guard
+    assertion in health_checker.py enforces this at import time; this test
+    exercises it directly rather than relying on import having already
+    succeeded."""
+
+    def test_the_guard_rejects_a_row_in_both_maps(self):
+        weekday_rows = set(WEEKDAY_CADENCE_ROWS)
+        calendar_rows = set(THRESHOLDS)
+        overlap = weekday_rows & calendar_rows
+        assert overlap == set(), (
+            f"weekday-cadence rows also carry a calendar-day THRESHOLDS "
+            f"entry: {overlap} — this reintroduces the config-I7434 defect"
+        )
+
+    def test_every_trading_day_threshold_row_is_declared_weekday_cadence(self):
+        assert set(TRADING_DAY_THRESHOLDS) == set(WEEKDAY_CADENCE_ROWS)
