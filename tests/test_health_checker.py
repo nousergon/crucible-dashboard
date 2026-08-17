@@ -7,7 +7,6 @@ from health_checker import (
     format_report,
     _last_modified_age,
     _find_latest_prefix,
-    _trading_day_age,
     WEEKDAY_CADENCE_ROWS,
     TRADING_DAY_THRESHOLDS,
     THRESHOLDS,
