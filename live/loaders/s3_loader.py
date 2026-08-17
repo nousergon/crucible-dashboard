@@ -257,10 +257,12 @@ def load_live_day_return(ticker: str) -> float | None:
     return None
 
 
-@cached(ttl_key="research")
-def load_population_json() -> dict | None:
-    """Load population/latest.json from the research bucket."""
-    return download_s3_json(_research_bucket(), "population/latest.json")
+# `load_population_json` (`population/latest.json`) deleted here —
+# alpha-engine-config-I7177. That artifact has had no producer since
+# 2026-07-10 (config-I2515 removed the writing graph from the weekly SF) and
+# this loader had ZERO callers in this repo at deletion time. The live
+# successor is `universe_membership/latest.json`, whose `cuts` block carries
+# the named predictor cut (config-I4818).
 
 
 @cached(ttl_key="research")
