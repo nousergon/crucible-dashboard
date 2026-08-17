@@ -426,67 +426,12 @@ def load_predictor_metrics() -> dict | None:
     return download_s3_json(_research_bucket(), "predictor/metrics/latest.json")
 
 
-@cached(ttl_key="research")
-def load_latest_grading() -> dict | None:
-    """Return the newest `backtest/{date}/grading.json` from the research bucket.
-
-    Scans the `backtest/` prefix for date directories, finds the most recent
-    one that actually contains a `grading.json`, and returns the parsed dict.
-    Returns None if nothing is found.
-    """
-    import json
-    import re
-
-    client = get_s3_client()
-    bucket = _research_bucket()
-    date_re = re.compile(r"^backtest/(\d{4}-\d{2}-\d{2})/")
-
-    date_keys: set[str] = set()
-    continuation: str | None = None
-    try:
-        while True:
-            kwargs = {"Bucket": bucket, "Prefix": "backtest/", "Delimiter": "/"}
-            if continuation:
-                kwargs["ContinuationToken"] = continuation
-            resp = client.list_objects_v2(**kwargs)
-            for cp in resp.get("CommonPrefixes", []) or []:
-                m = date_re.match(cp["Prefix"])
-                if m:
-                    date_keys.add(m.group(1))
-            if not resp.get("IsTruncated"):
-                break
-            continuation = resp.get("NextContinuationToken")
-    except Exception as e:
-        logger.warning("list backtest/ failed: %s", e)
-        return None
-
-    for d in sorted(date_keys, reverse=True):
-        key = f"backtest/{d}/grading.json"
-        try:
-            body = client.get_object(Bucket=bucket, Key=key)["Body"].read()
-            data = json.loads(body)
-            data["_run_date"] = d
-            return data
-        except Exception as e:
-            code = getattr(getattr(e, "response", {}), "get", lambda *a: {})("Error", {}).get("Code", "")
-            if code == "NoSuchKey":
-                continue
-            logger.warning("load %s failed: %s", key, e)
-            continue
-    return None
-
-
-@cached(ttl_key="research")
-def load_grade_history() -> list[dict]:
-    """Return `backtest/grade_history.json` as a chronological list.
-
-    Appended weekly by the evaluator. Empty list if the file is missing or
-    malformed.
-    """
-    data = download_s3_json(_research_bucket(), "backtest/grade_history.json")
-    if not isinstance(data, list):
-        return []
-    return data
+# load_latest_grading / load_grade_history deleted RC v3 T1
+# (config-I7474, 2026-08-16): both were dead code (no caller anywhere in
+# this repo — pages/evaluation.py, the only consumer, was itself deleted
+# in the same PR). The v1 letter-grade `grading.json` / `grade_history.json`
+# artifacts they read are retired as a rendered surface; v2's
+# evaluator/{date}/report_card.json is the one card.
 
 
 @cached(ttl_key="trades")

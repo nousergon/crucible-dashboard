@@ -1261,45 +1261,11 @@ def load_uptime_history(max_sessions: int = 20) -> list[dict]:
     return records
 
 
-@cached(ttl_key="research")
-def load_latest_grading() -> dict | None:
-    """Return the newest `backtest/{date}/grading.json` from the research bucket.
-
-    Scans `backtest/` for date-stamped directories, finds the most recent
-    one that actually contains a `grading.json`, and returns the parsed
-    dict with a `_run_date` field added. Returns None if nothing found.
-    """
-    bucket = _research_bucket()
-    date_re = re.compile(r"^backtest/(\d{4}-\d{2}-\d{2})/")
-
-    date_keys: set[str] = set()
-    continuation: str | None = None
-    client = get_s3_client()
-    try:
-        while True:
-            kwargs: dict = {"Bucket": bucket, "Prefix": "backtest/", "Delimiter": "/"}
-            if continuation:
-                kwargs["ContinuationToken"] = continuation
-            resp = client.list_objects_v2(**kwargs)
-            for cp in resp.get("CommonPrefixes") or []:
-                m = date_re.match(cp["Prefix"])
-                if m:
-                    date_keys.add(m.group(1))
-            if not resp.get("IsTruncated"):
-                break
-            continuation = resp.get("NextContinuationToken")
-    except Exception as e:
-        logger.warning("list backtest/ failed: %s", e)
-        _record_s3_error(bucket, "backtest/", type(e).__name__, str(e))
-        return None
-
-    for d in sorted(date_keys, reverse=True):
-        key = f"backtest/{d}/grading.json"
-        data = _fetch_s3_json(bucket, key)
-        if isinstance(data, dict):
-            data["_run_date"] = d
-            return data
-    return None
+# load_latest_grading deleted RC v3 T1 (config-I7474, 2026-08-16): the v1
+# letter-grade `backtest/{date}/grading.json` reader — dead code (no caller
+# anywhere in this repo; live/pages/evaluation.py, the only consumer, was
+# itself deleted in the same PR). v2's evaluator/{date}/report_card.json
+# (load_report_card) is the one card.
 
 
 @cached(ttl_key="research")
@@ -1308,9 +1274,9 @@ def load_latest_provenance_grounding() -> dict | None:
     the research bucket.
 
     Per-agent tool-call + input-trace metrics emitted by the backtester
-    evaluator on Saturday SF runs (alpha-engine-backtester#148). Companion
-    to ``load_latest_grading`` — same scan-for-date-stamped-dir pattern,
-    different filename.
+    evaluator on Saturday SF runs (alpha-engine-backtester#148). Scans the
+    `backtest/` prefix for date-stamped directories, same pattern as the
+    (deleted) load_latest_grading used.
     """
     bucket = _research_bucket()
     date_re = re.compile(r"^backtest/(\d{4}-\d{2}-\d{2})/")

@@ -40,14 +40,14 @@ pg = st.navigation([
     st.Page(os.path.join(_HERE, "pages", "system_pulse.py"), title="System Pulse"),
     # Uptime page absorbed into System Pulse as its Reliability strip
     # (L4570e, 2026-06-09) — same substrate + renderer, one fewer nav stop.
-    # Page file retained (unreachable) like evaluation/performance below.
+    # Page file retained (unreachable) like performance below.
     # st.Page(os.path.join(_HERE, "pages", "uptime.py"), title="Uptime"),
-    # Evaluation page removed from the public nav 2026-06-08 — the legacy
-    # backtest/{date}/grading.json report card (A–F, 3 modules) it renders is
-    # superseded by the console's Report Card v2 (evaluator/{date}/report_card.json,
-    # 7 tiles). Publishing thin-sample self-grades on a brand surface was all
-    # downside; the page file is retained (unreachable) for easy re-enable.
-    # st.Page(os.path.join(_HERE, "pages", "evaluation.py"), title="Evaluation"),
+    # Evaluation page (the legacy backtest/{date}/grading.json v1 letter
+    # report card) removed from the public nav 2026-06-08, then DELETED
+    # outright RC v3 T1 (config-I7474, 2026-08-16) — components/report_card.py
+    # + pages/evaluation.py + loaders.s3_loader.load_latest_grading retired,
+    # not left dormant (champion-challenger §6). The console's Report Card v2
+    # (evaluator/{date}/report_card.json, 9 tiles) is the one card.
     # Performance page also removed from the public nav 2026-06-08 — it
     # publishes Cumulative Alpha vs S&P 500 + the NAV-vs-SPY chart, which
     # currently shows the portfolio underperforming SPY (Phase 2). Same
