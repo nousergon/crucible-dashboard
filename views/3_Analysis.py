@@ -346,56 +346,10 @@ with tab_backtest:
             st.markdown("**Signal Quality Detail**")
             st.dataframe(signal_quality_df, use_container_width=True, hide_index=True)
 
-        # ---- Per-Sector Signal Accuracy ----
-        if metrics and metrics.get("report_card"):
-            st.divider()
-            st.subheader("System Report Card")
-            rc = metrics["report_card"]
-            c1, c2, c3 = st.columns(3)
-            for col, key, label in [(c1, "research", "Research"), (c2, "predictor", "Predictor"), (c3, "executor", "Executor")]:
-                mod = rc.get(key, {})
-                g = mod.get("grade")
-                letter = mod.get("letter", "N/A")
-                with col:
-                    st.metric(label, letter, f"{g:.0f}/100" if g is not None else None)
-
-            # Component detail table
-            rows = []
-            for mod_key in ("research", "predictor", "executor"):
-                mod = rc.get(mod_key, {})
-                for comp_key, comp in mod.get("components", {}).items():
-                    if comp_key in ("sector_teams", "sector_teams_avg"):
-                        continue
-                    if isinstance(comp, dict) and "grade" in comp:
-                        detail = comp.get("detail", {})
-                        detail_str = ", ".join(f"{k}: {v}" for k, v in detail.items() if not isinstance(v, list))
-                        rows.append({
-                            "Module": mod_key.title(),
-                            "Component": comp_key.replace("_", " ").title(),
-                            "Grade": comp.get("letter", "N/A"),
-                            "Score": f"{comp['grade']:.0f}" if comp.get("grade") is not None else "—",
-                            "Detail": detail_str,
-                        })
-            if rows:
-                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-
-            # Sector team grades
-            teams = rc.get("research", {}).get("components", {}).get("sector_teams", [])
-            if teams:
-                st.markdown("**Sector Team Grades**")
-                team_rows = []
-                for t in teams:
-                    detail = t.get("detail", {})
-                    team_rows.append({
-                        "Team": t.get("team_id", "?").replace("_", " ").title(),
-                        "Grade": t.get("letter", "N/A"),
-                        "Score": f"{t['grade']:.0f}" if t.get("grade") is not None else "—",
-                        "Precision": detail.get("precision", "—"),
-                        "Recall": detail.get("recall", "—"),
-                        "Lift vs Sector": detail.get("lift_vs_sector", "—"),
-                        "Picks": detail.get("n_picks", "—"),
-                    })
-                st.dataframe(pd.DataFrame(team_rows), use_container_width=True, hide_index=True)
+        # RC v3 T1 (config-I7474, 2026-08-16): the "System Report Card" v1
+        # letter-grade block (metrics["report_card"]) rendered here is
+        # retired — that key is no longer written by reporter.py, and v2's
+        # report_card.json (see the Report Card view) is the one card.
 
         st.divider()
 
