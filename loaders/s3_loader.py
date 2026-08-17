@@ -470,7 +470,6 @@ def check_key_exists(bucket: str, key: str) -> bool:
 _PREDICTOR_PREDICTIONS_PREFIX = "predictor/predictions"
 _PREDICTOR_METRICS_PREFIX = "predictor/metrics"
 _CONFIG_PREFIX = "config"
-_POPULATION_KEY = "population/latest.json"
 
 
 def _predictions_key(date_str: str | None = None) -> str:
@@ -2139,14 +2138,16 @@ def load_feature_importance() -> dict:
     return data if isinstance(data, dict) else {}
 
 
-@cached(ttl_key="research")
-def load_population_json() -> dict | None:
-    """Load population/latest.json from the research bucket.
-
-    Returns the full dict with 'population', 'date', 'market_regime', etc.
-    Returns None if the file does not exist.
-    """
-    return download_s3_json(_research_bucket(), _POPULATION_KEY)
+# `load_population_json` (`population/latest.json`) deleted here —
+# alpha-engine-config-I7177. That artifact has had no producer since
+# 2026-07-10 (config-I2515 removed the writing graph from the weekly SF) and
+# this loader had ZERO callers in this repo at deletion time (its one
+# consumer, the home page's "Investment Universe" section, was already
+# removed — commit 577e654). The live successor,
+# `universe_membership/latest.json` / `universe_membership/{date}/
+# membership.json`, is read by `load_universe_membership_history` and
+# `load_universe_membership_by_key` below; health_checker.py's freshness
+# check was already repointed to it (config-I6053, PR #671).
 
 
 @cached(ttl_key="research")
