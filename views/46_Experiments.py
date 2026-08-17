@@ -118,18 +118,22 @@ _BLOCKED_BY_LABELS = {
     "leaderboard_stale_gt_8d": "leaderboard stale (>8d)",
     "arm_score_unavailable": "arm score unavailable",
     "feed_producer_dead": "feed producer dead (config-I3165)",
-    # Evidence-admissibility verdicts (alpha-engine-config-I7549) — the THIRD
+    # Evidence-confidence verdicts (alpha-engine-config-I7549) — the THIRD
     # verdict: not "the challenger lost", not "the challenger won", but "the
     # evidence could not support a comparison". Rendered as its own phrase for
-    # exactly that reason.
+    # exactly that reason. Challenger-side slugs land with
+    # crucible-backtester#688, champion-side with its follow-up; both are
+    # inert here until the producer emits them.
     "thinktank_coverage_thin_evidence":
         "Think Tank coverage scored on too few dates to compare (evidence thin)",
-    "scanner_predictor_direct_thin_evidence":
-        "scanner→predictor scored on too few cycles to compare (evidence thin)",
     "thinktank_coverage_confidence_unknown":
         "Think Tank coverage evidence unrated (pre-I7542 leaderboard)",
+    "scanner_predictor_direct_thin_evidence":
+        "scanner→predictor scored on too few cycles to compare (evidence thin)",
     "scanner_predictor_direct_confidence_unknown":
         "scanner→predictor evidence unrated (counterfactual reported no cycle count)",
+    "leaderboard_horizon_mismatch":
+        "leaderboard primary horizon ≠ the horizon this gate decides on",
     "frozen": "frozen (--freeze)",
     "unclassified_error": "error",
     # RETIRED pre-I2518 HAC/hysteresis/cooldown engine — read-tolerated for
@@ -216,31 +220,31 @@ def _gate_state_label(audit: dict) -> str:
 
 
 def _evidence_label(audit: dict) -> str:
-    """Per-arm confidence behind this week's gate decision, from the audit
-    record's ``evidence`` block (alpha-engine-config-I7549).
+    """Per-arm evidence verdict behind this week's gate decision, read from the
+    audit record's ``arm_confidence`` block (alpha-engine-config-I7549).
 
     Why this column exists: a no_contest, a defended incumbency and a week
     whose evidence was too thin to compare all leave the pointer where it was.
-    Without this, all three render as "the pointer did not move", and "we
-    could not tell" is indistinguishable from "the challenger lost" — the
-    fleet's rule that no data is never rendered as green, run in the other
-    direction. Empty string on pre-I7549 audit records, which carry no
-    ``evidence`` block at all (never "ok", which would be a claim the record
-    does not make)."""
-    evidence = audit.get("evidence")
-    if not isinstance(evidence, dict) or not evidence:
+    Without this, all three render as "the pointer did not move", and "we could
+    not tell" is indistinguishable from "the challenger lost" — the fleet's
+    rule that no data is never rendered as green, run in the other direction.
+
+    ``arm_confidence`` is ``{arm: verdict}`` with STRING verdicts only
+    (``ok``/``thin``/``insufficient``/``unknown``/``unrecognised``, plus
+    ``not_leaderboard_scored`` on records written before the champion-side
+    half landed — read-tolerated, rendered as-is). Empty string on a
+    pre-I7549 record, which carries no such block: never "ok", which would be
+    a claim the artifact does not make.
+    """
+    verdicts = audit.get("arm_confidence")
+    if not isinstance(verdicts, dict) or not verdicts:
         return ""
     parts = []
     for arm in _CHAMPION_ARMS:
-        row = evidence.get(arm)
-        if not isinstance(row, dict):
+        verdict = verdicts.get(arm)
+        if not isinstance(verdict, str) or not verdict:
             continue
-        verdict = row.get("confidence")
-        if verdict is None:
-            continue
-        n = row.get("n_dates_scored", row.get("n_cycles"))
-        label = _CHAMPION_ARM_LABELS.get(arm, arm)
-        parts.append(f"{label}: {verdict}" + (f" (n={n})" if n is not None else ""))
+        parts.append(f"{_CHAMPION_ARM_LABELS.get(arm, arm)}: {verdict}")
     return "; ".join(parts)
 
 

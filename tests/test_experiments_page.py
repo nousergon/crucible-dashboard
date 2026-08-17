@@ -213,11 +213,14 @@ class TestChampionVocabularyParity:
         "feed_producer_dead",
         "frozen",
         "unclassified_error",
-        # Evidence-admissibility verdicts (alpha-engine-config-I7549,
+        # Evidence-confidence verdicts (alpha-engine-config-I7549,
         # 2026-08-17) — re-verified against champion_promotion.py
-        # _BLOCKED_BY_SLUGS on that date.
+        # _BLOCKED_BY_SLUGS at crucible-backtester 1070a4e (#688, the
+        # challenger-side half + leaderboard_horizon_mismatch) plus the
+        # champion-side half in its open follow-up PR.
         "thinktank_coverage_thin_evidence",
         "thinktank_coverage_confidence_unknown",
+        "leaderboard_horizon_mismatch",
         "scanner_predictor_direct_thin_evidence",
         "scanner_predictor_direct_confidence_unknown",
     }
@@ -334,15 +337,29 @@ class TestEvidenceRendering:
         audit = {
             "outcome": "no_contest",
             "blocked_by": ["thinktank_coverage_thin_evidence"],
-            "evidence": {
-                "scanner_predictor_direct": {"confidence": "ok", "n_cycles": 15},
-                "thinktank_coverage": {"confidence": "thin", "n_dates_scored": 1},
+            # The shape crucible-backtester actually writes (#688): a flat
+            # arm -> verdict map of strings.
+            "arm_confidence": {
+                "scanner_predictor_direct": "ok",
+                "thinktank_coverage": "thin",
             },
         }
         label = mod._evidence_label(audit)
         assert "thin" in label
-        assert "n=1" in label
         assert "ok" in label
+        assert "Think Tank" in label
+
+    def test_pre_champion_side_verdict_is_read_tolerated(self):
+        """Records written between #688 and the champion-side half carry
+        `not_leaderboard_scored` for that arm — rendered as-is, not dropped."""
+        mod = self._view()
+        label = mod._evidence_label({
+            "arm_confidence": {
+                "scanner_predictor_direct": "not_leaderboard_scored",
+                "thinktank_coverage": "ok",
+            },
+        })
+        assert "not_leaderboard_scored" in label
 
     def test_pre_i7549_audit_record_renders_empty_not_ok(self):
         """A record with no evidence block makes no claim about evidence —
@@ -350,4 +367,6 @@ class TestEvidenceRendering:
         artifact never said."""
         mod = self._view()
         assert mod._evidence_label({"outcome": "no_contest"}) == ""
-        assert mod._evidence_label({"outcome": "no_contest", "evidence": None}) == ""
+        assert mod._evidence_label(
+            {"outcome": "no_contest", "arm_confidence": None},
+        ) == ""
