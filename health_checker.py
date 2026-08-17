@@ -41,6 +41,7 @@ setup_logging(
 )
 
 import boto3
+from krepis.trading_calendar import count_trading_days, last_closed_trading_day
 from nousergon_lib.health import HEALTH_CHECK_CANDIDATES
 
 logger = logging.getLogger(__name__)
@@ -54,28 +55,61 @@ _STAGE_WINDOW_START = os.environ.get(
 
 DEFAULT_BUCKET = "alpha-engine-research"
 
-# Staleness thresholds (calendar days)
+# Staleness thresholds (calendar days) for CALENDAR-cadence producers only —
+# i.e. ones that write on a fixed day regardless of markets (weekly Saturday,
+# quarterly). A weekday-cadence (Mon-Fri) row must NEVER appear here: see
+# `WEEKDAY_CADENCE_ROWS` / `TRADING_DAY_THRESHOLDS` below, and the guard
+# assertion that enforces the split (config-I7434).
 THRESHOLDS = {
     "signals": 8,           # Research runs weekly Saturday
-    "predictions": 2,       # Predictor runs daily Mon-Fri
-    # Feature store runs daily Mon-Fri, so its newest partition is up to THREE
-    # calendar days old on a Monday morning (Friday's) and four across a
-    # Monday holiday. A calendar threshold of 2 made this check fail every
-    # Sunday by construction, on data that was exactly as fresh as a Mon-Fri
-    # producer can make it. 4 is the smallest value correct for that cadence.
-    # The principled fix is to measure age in TRADING days for every
-    # weekday-cadence row here (`predictions` and `daily_closes` carry the
-    # same latent defect) — tracked as config-I7434.
-    "features": 4,
     "fundamentals": 100,    # FMP quarterly, updated weekly in DataPhase1
     # price_cache_slim retired (Wave-4): ArcticDB universe lib is canonical;
     # its freshness is monitored upstream in alpha-engine-data's preflight.
-    "daily_closes": 2,      # Daily Mon-Fri
     # population RETIRED 2026-08-13 (alpha-engine-config-I6053) — see the
     # `universe_membership` entry below, which replaces it.
     "universe_membership": 8,  # Written weekly (and on every exercise cycle)
                                # by the Scanner; successor to `population`
 }
+
+# Weekday-cadence (Mon-Fri) producers: `predictions`, `features` and
+# `daily_closes` all only ever write Monday-Friday, so their newest
+# partition is up to THREE calendar days old on a Monday morning (Friday's)
+# and FOUR across a Monday holiday. A calendar-day threshold fails every
+# weekend by construction, on data exactly as fresh as the producer can
+# make it — measured live 2026-08-16 on `features` (weekly-SF execution
+# `watch-rerun-2026-08-16-3`; `SaturdayHealthCheck` degraded the whole run
+# on a false `missing`; config-I7434).
+#
+# The fix is to judge these rows in TRADING days via
+# `krepis.trading_calendar.last_closed_trading_day` — the fleet's date
+# chokepoint for "what is the most recent session that has actually
+# closed", already used the same way by `krepis.stage_coverage` and by
+# crucible-research-PR635's ChallengerShadow fix — rather than inventing a
+# wider calendar-day constant per row.
+WEEKDAY_CADENCE_ROWS = frozenset({"predictions", "features", "daily_closes"})
+
+# Staleness thresholds for weekday-cadence rows, in TRADING days: how many
+# NYSE sessions the artifact may lag behind `last_closed_trading_day()`. 0
+# is the correct budget for a producer that runs every session — trading-day
+# age already absorbs every weekend and holiday, so a healthy producer reads
+# age=0 on a Saturday, a Sunday, and a Monday morning alike, and age>=1 only
+# when it genuinely skipped its most recent scheduled session.
+TRADING_DAY_THRESHOLDS = {
+    "predictions": 0,   # Predictor runs daily Mon-Fri
+    "features": 0,      # Feature store runs daily Mon-Fri
+    "daily_closes": 0,  # Daily Mon-Fri
+}
+
+assert set(TRADING_DAY_THRESHOLDS) == WEEKDAY_CADENCE_ROWS, (
+    "TRADING_DAY_THRESHOLDS and WEEKDAY_CADENCE_ROWS have drifted apart"
+)
+# Guard (config-I7434 deliverable 4): a row declared weekday-cadence can
+# never also carry a calendar-day THRESHOLDS entry — that would silently
+# reintroduce the exact defect this fixes under a second name.
+assert not (WEEKDAY_CADENCE_ROWS & THRESHOLDS.keys()), (
+    "weekday-cadence rows must not carry a calendar-day THRESHOLDS entry: "
+    f"{sorted(WEEKDAY_CADENCE_ROWS & THRESHOLDS.keys())}"
+)
 
 # Per-module staleness thresholds for the `health/` module markers, in
 # calendar days. Derived from each producer's DECLARED CADENCE plus one
@@ -126,6 +160,40 @@ def _last_modified_age(s3, bucket: str, key: str) -> tuple[str | None, int | Non
         return modified.strftime("%Y-%m-%d %H:%M UTC"), age
     except Exception:
         return None, None
+
+
+def _last_modified_date(s3, bucket: str, key: str) -> tuple[str | None, date | None]:
+    """Like `_last_modified_age`, but returns the artifact's calendar date
+    (UTC) instead of a calendar-day age. Feeds `_trading_day_age` for the
+    weekday-cadence rows (config-I7434)."""
+    try:
+        resp = s3.head_object(Bucket=bucket, Key=key)
+        modified = resp["LastModified"]
+        return (
+            modified.strftime("%Y-%m-%d %H:%M UTC"),
+            modified.astimezone(timezone.utc).date(),
+        )
+    except Exception:
+        return None, None
+
+
+def _trading_day_age(artifact_date: date | None) -> int | None:
+    """Age of an artifact in NYSE TRADING days, not calendar days.
+
+    For a weekday-cadence (Mon-Fri) row, compares `artifact_date` against
+    `last_closed_trading_day()` — the most recent NYSE session that has
+    actually closed. A producer that ran on every session it had reads
+    age=0 on a Saturday, a Sunday, and a Monday morning alike; the
+    calendar-day equivalent read 2, 3 and 3 respectively, depending purely
+    on which day the check happened to run (config-I7434).
+
+    `count_trading_days` is `(start, end]` — half-open — so an artifact
+    dated exactly `last_closed_trading_day()` correctly reads age=0 rather
+    than the off-by-one an inclusive interval would give.
+    """
+    if artifact_date is None:
+        return None
+    return count_trading_days(artifact_date, last_closed_trading_day())
 
 
 def _find_latest_prefix(s3, bucket: str, prefix: str) -> tuple[str | None, int | None]:
@@ -188,9 +256,11 @@ def check_all(bucket: str = DEFAULT_BUCKET) -> list[dict]:
         "status": "ok" if age is not None and age <= threshold else "stale" if age is not None else "missing",
     })
 
-    # 2. Predictions
-    modified, age = _last_modified_age(s3, bucket, "predictor/predictions/latest.json")
-    threshold = THRESHOLDS["predictions"]
+    # 2. Predictions — weekday cadence (Mon-Fri); judged in TRADING days via
+    # `_trading_day_age`, not calendar days (config-I7434).
+    modified, artifact_date = _last_modified_date(s3, bucket, "predictor/predictions/latest.json")
+    age = _trading_day_age(artifact_date)
+    threshold = TRADING_DAY_THRESHOLDS["predictions"]
     results.append({
         "check": "predictions",
         "last_updated": modified,
@@ -199,7 +269,7 @@ def check_all(bucket: str = DEFAULT_BUCKET) -> list[dict]:
         "status": "ok" if age is not None and age <= threshold else "stale" if age is not None else "missing",
     })
 
-    # 3. Feature store
+    # 3. Feature store — weekday cadence (Mon-Fri).
     #
     # `_find_latest_prefix`, NOT two hard-coded date probes. This used to
     # HeadObject `features/{today}/technical.parquet` and then
@@ -217,11 +287,18 @@ def check_all(bucket: str = DEFAULT_BUCKET) -> list[dict]:
     # hours earlier. Nothing about the data changed between the two runs —
     # only which side of a hard-coded two-date window the calendar had moved.
     # Every other freshness check in this file already scans (config-I7434).
-    modified, age = _find_latest_prefix(s3, bucket, "features/")
-    threshold = THRESHOLDS["features"]
+    #
+    # Age is judged in TRADING days (`_trading_day_age`), not calendar days:
+    # a Mon-Fri producer's newest partition is always a legitimate 0
+    # trading-day age regardless of whether the check itself runs on a
+    # Saturday, a Sunday, or a Monday morning.
+    latest_date_str, _ = _find_latest_prefix(s3, bucket, "features/")
+    artifact_date = date.fromisoformat(latest_date_str) if latest_date_str else None
+    age = _trading_day_age(artifact_date)
+    threshold = TRADING_DAY_THRESHOLDS["features"]
     results.append({
         "check": "features",
-        "last_updated": modified,
+        "last_updated": latest_date_str,
         "age_days": age,
         "threshold_days": threshold,
         "status": "ok" if age is not None and age <= threshold else "stale" if age is not None else "missing",
@@ -284,17 +361,24 @@ def check_all(bucket: str = DEFAULT_BUCKET) -> list[dict]:
     # 7. Daily closes — staging/ prefix per 2026-04-29 migration
     # (alpha-engine-data PR #112). The parquet is intermediate state with
     # 7-day S3 lifecycle; canonical home is ArcticDB universe library.
-    # Walk back up to threshold+2 calendar days to find the latest written
-    # parquet. The earlier today+yesterday-only lookup false-flagged
-    # Sat/Sun runs as "missing" because Friday's parquet was always >1
-    # calendar day back. Surfaced 2026-05-24 in the false-positives audit.
-    modified, age = None, None
-    for back in range(THRESHOLDS["daily_closes"] + 3):
-        candidate = (date.today() - timedelta(days=back)).isoformat()
-        modified, age = _last_modified_age(s3, bucket, f"staging/daily_closes/{candidate}.parquet")
+    # Walk back 10 CALENDAR days to find the latest written parquet — enough
+    # to clear any long weekend plus a holiday regardless of what day the
+    # check itself runs on. The earlier today+yesterday-only lookup
+    # false-flagged Sat/Sun runs as "missing" because Friday's parquet was
+    # always >1 calendar day back. Surfaced 2026-05-24 in the false-positives
+    # audit. Staleness itself is judged in TRADING days (`_trading_day_age`),
+    # not by how far back this scan had to walk (config-I7434) — weekday
+    # cadence, same as `predictions` and `features` above.
+    modified, artifact_date = None, None
+    for back in range(10):
+        candidate = date.today() - timedelta(days=back)
+        modified, artifact_date = _last_modified_date(
+            s3, bucket, f"staging/daily_closes/{candidate.isoformat()}.parquet"
+        )
         if modified is not None:
             break
-    threshold = THRESHOLDS["daily_closes"]
+    age = _trading_day_age(artifact_date)
+    threshold = TRADING_DAY_THRESHOLDS["daily_closes"]
     results.append({
         "check": "daily_closes",
         "last_updated": modified,
