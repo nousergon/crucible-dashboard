@@ -19,6 +19,7 @@ made the weekday Telegram digest render empty for months
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -150,7 +151,20 @@ _SF_FILES = {
     "ne-postclose-trading-pipeline": "step_function_eod.json",
 }
 
-_DATA_INFRA = Path.home() / "Development" / "nousergon-data" / "infrastructure"
+# alpha-engine-config-I7605: this previously hardcoded a bare sibling-checkout
+# path with no SF_DEFS_DIR override and no CI-hard-fail guard, unlike
+# test_pipeline_status_registry_drift.py's identical-purpose walk of the same
+# SF definitions — so on every CI runner (no ~/Development/nousergon-data
+# checkout) this SILENTLY skipped forever, which is indistinguishable from a
+# pass in the summary line everyone reads. Now consults the same SF_DEFS_DIR
+# ci.yml already sets for the sibling guard, and hard-fails (not skips) on CI
+# when the checkout is missing.
+_DATA_INFRA = (
+    Path(os.environ["SF_DEFS_DIR"]) / "infrastructure"
+    if os.environ.get("SF_DEFS_DIR")
+    else Path.home() / "Development" / "nousergon-data" / "infrastructure"
+)
+_ON_CI = os.environ.get("CI", "").lower() in {"1", "true", "yes"}
 
 
 def _all_state_names(states: dict) -> set[str]:
@@ -180,7 +194,18 @@ def test_every_declared_stage_exists_in_the_live_definition(sf_name: str, filena
     """
     path = _DATA_INFRA / filename
     if not path.exists():
-        pytest.skip(f"{path} not present (cross-repo checkout absent)")
+        message = (
+            f"{path} not present. CI checks the data repo out and sets "
+            f"SF_DEFS_DIR (see ci.yml, `test` job); a dev laptop uses "
+            f"~/Development/nousergon-data."
+        )
+        if _ON_CI:
+            pytest.fail(
+                f"{message} On CI this is a broken guard, not an absent "
+                f"layout — skipping here would report a cross-repo "
+                f"invariant as satisfied without ever evaluating it."
+            )
+        pytest.skip(message)
     known = _all_state_names(json.loads(path.read_text())["States"])
     declared = RELIABILITY_STAGE_ORDER[sf_name]
     missing = sorted(s for s in declared if s not in known)

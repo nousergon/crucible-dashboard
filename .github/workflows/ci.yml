@@ -66,17 +66,12 @@ jobs:
           sparse-checkout-cone-mode: false
 
       # The champion-gate blocked_by contract this repo's vocabulary-parity
-      # guard reads lives in crucible-backtester (both public repos —
-      # alpha-engine-config-I7558). Checked out at main, not a pinned SHA:
-      # the guard's job is to notice when that contract moves.
-      - name: Check out champion-gate contract (crucible-backtester)
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
-        with:
-          repository: nousergon/crucible-backtester
-          ref: main
-          path: .backtester-contracts
-          sparse-checkout: contracts
-          sparse-checkout-cone-mode: false
+      # guard reads is now published in nousergon-lib as the
+      # producer_champion_audit contract (alpha-engine-config-I7605) —
+      # installed via requirements.txt like any other nousergon-lib
+      # contract, so no sibling checkout of crucible-backtester is needed
+      # here any more (was: a sparse checkout into .backtester-contracts +
+      # BACKTESTER_CONTRACTS_DIR, alpha-engine-config-I7558).
 
       - name: Lint (undefined names / unused imports)
         run: ruff check --select F821,F401 .
@@ -84,7 +79,6 @@ jobs:
       - name: Run tests
         env:
           SF_DEFS_DIR: ${{ github.workspace }}/.sf-defs
-          BACKTESTER_CONTRACTS_DIR: ${{ github.workspace }}/.backtester-contracts
         run: pytest tests/ -v
 
       - name: Security audit
