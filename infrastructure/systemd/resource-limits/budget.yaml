@@ -126,7 +126,26 @@ headroom_warn_fraction: 0.90
 # again — 1.29 of a 1.30 bound — which is precisely the condition the paragraph
 # above says to re-derive from, not shave the service to fit. Steady-state
 # remains the safety bound: the box measured 1601 MB available at the time.
-max_overcommit_ratio: 1.34      # sum(memory_max) / ceiling. 1.33 with console at 224M.
+# Raised again 1.34 -> 1.43 on 2026-08-18, fourth application of the same rule,
+# for the Anthropic-wire egress tenant (alpha-engine-config-I7681 — the box had
+# no anthropic-wire listener at all, so EC2 had no fallback with the router
+# down). Derived, not fitted:
+#
+#   sum(memory_max) with the new 300M row = 4618 MB
+#   ceiling (RAM 3839 MB, reserve 15%)    = 3263 MB
+#   4618 / 3263                           = 1.42
+#
+# Set to 1.43, not 1.42. A bound equal to its own current value is the exact
+# condition the paragraph above says to re-derive away from — it leaves the next
+# service with nothing and forces the choice between shaving a measured cap and
+# raising the ratio again in the same breath. 1.43 leaves ~33 MB.
+#
+# Steady state remains the safety bound and is not close: this tenant is a
+# fallback path that serves zero requests while litellm-proxy is healthy, and
+# its ~12-29 MiB steady RSS (measured on the laptop's single-tenant 8971
+# instance, same program and mode) is a rounding error against the 50%
+# working-set limit. What the 300M buys is a startup peak, per its row's note.
+max_overcommit_ratio: 1.43      # sum(memory_max) / ceiling. 1.42 with the anthropic tenant at 300M.
 # 2026-08-16: this bound now measures the WORKING SET (sum of anon + swap),
 # not sum(memory.current), and the constant was re-derived rather than carried
 # across (Brian ruling, alpha-engine-config-I7449, option (c)).
@@ -613,6 +632,28 @@ services:
       Startup shells out to the AWS CLI 5x (~150M peak each) to resolve provider
       keys, then runs gitleaks subprocesses per scan. The 6x gap between
       observed and cap is entirely startup and subprocess spikes.
+
+  - unit: llm-egress-proxy-anthropic.service
+    port: 8971
+    memory_high: 210M
+    memory_max: 300M
+    note: >
+      The ANTHROPIC-WIRE tenant (alpha-engine-config-I7681). Same program as
+      the :8990 sibling above, single-tenant instead of five routes, and it
+      resolves ONE key from SSM instead of five.
+
+      The cap is INHERITED from that sibling rather than measured, and that is
+      a deliberate conservative choice, not an oversight. What is known: this
+      process does strictly LESS startup work than the one measured at
+      memory.peak 126 MiB over sixteen days, so 300M is an upper bound that
+      cannot be too small. What is NOT known is how much smaller it could
+      safely be, and the header above is explicit that trimming toward an
+      unmeasured steady state is how this box got a cap that could not boot
+      (I4451: 50M/100M, 11385 throttle events, ~60% memory stall).
+
+      Re-cap from an uncensored memory.peak after 14 days of uptime:
+      alpha-engine-config-I7686. Until that reading exists this row is
+      honestly labelled as an inheritance.
 
   # ── ingress ─────────────────────────────────────────────────────────────
   - unit: nginx.service
