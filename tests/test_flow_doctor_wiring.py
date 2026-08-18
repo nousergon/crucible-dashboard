@@ -310,8 +310,14 @@ class TestLibVersionPin:
             "nousergon_lib import alias still works via the shim)"
         )
         assert "@main" not in text, "nousergon-lib must be pinned to a tag, not @main"
-        assert "@v0.124.66" in text, (
-            "nousergon-lib should pin to v0.124.66, which carries BOTH "
+        assert "@v0.124.68" in text, (
+            "nousergon-lib should pin to v0.124.68 -- nousergon-lib-PR327's "
+            "merge-time autobump, adding "
+            "nousergon_lib.quant.riskstats.downside_deviation and the "
+            "`denominator` parameter on sortino_ratio (config-I7597: "
+            "shared/accuracy_metrics.py::compute_sharpe now calls the "
+            "library instead of re-deriving the ratio locally). "
+            "Earlier: v0.124.66, which carries BOTH "
             "changes this repo depends on. (1) nousergon-lib#325 "
             "(alpha-engine-config-I7605): producer_champion_audit.schema.json "
             "moved INTO the library, so tests/test_experiments_page.py reads "

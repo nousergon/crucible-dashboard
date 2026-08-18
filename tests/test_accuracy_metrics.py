@@ -56,11 +56,26 @@ class TestComputeDrawdown:
 
 
 class TestComputeSharpe:
-    def test_positive_returns(self):
+    def test_constant_returns_are_undefined_not_a_float_artifact(self):
+        """A flat series has zero volatility — the Sharpe is undefined.
+
+        This asserted ``sharpe > 10`` on the strength of "constant returns =
+        infinite Sharpe, but float precision". The number it was accepting was
+        **7.3e+16**: pandas' Welford variance leaves a 2.2e-19 residue on a
+        constant series, and dividing 0.001 by it produced an artifact that
+        rendered on the dashboard as a Sharpe. Since config-I7597 the maths is
+        `nousergon_lib.quant.riskstats.sharpe_ratio`, whose zero-volatility
+        answer is ``None`` — undefined, never a measured value. That is the
+        fleet convention (`crucible-backtester/vectorbt_bridge.py:360`).
+        """
         daily = pd.Series([0.001] * 252)
+        assert compute_sharpe(daily, min_rows=10) is None
+
+    def test_real_positive_returns_score(self):
+        daily = pd.Series([0.001, 0.002, 0.0005, 0.0015] * 63)
         sharpe = compute_sharpe(daily, min_rows=10)
         assert sharpe is not None
-        assert sharpe > 10  # constant returns = infinite Sharpe, but float precision
+        assert sharpe > 10
 
     def test_insufficient_rows(self):
         daily = pd.Series([0.01, 0.02])
