@@ -310,10 +310,17 @@ class TestLibVersionPin:
             "nousergon_lib import alias still works via the shim)"
         )
         assert "@main" not in text, "nousergon-lib must be pinned to a tag, not @main"
-        assert "@v0.124.68" in text, (
-            "nousergon-lib should pin to v0.124.68 -- nousergon-lib-PR327's "
-            "merge-time autobump, adding "
-            "nousergon_lib.quant.riskstats.downside_deviation and the "
+        assert "@v0.124.70" in text, (
+            "nousergon-lib should pin to v0.124.70 -- the first published "
+            "release registering the weekly SF's `RunScope` Task state in "
+            "nousergon_lib.pipeline_status.registry.STATE_TO_ARCHIVE_PAGE "
+            "(nousergon-lib#329, alpha-engine-config-I7620/I7649). Below "
+            "this pin tests/test_pipeline_status_registry_drift.py fails on "
+            "main: the drift detector correctly reports a live SF state the "
+            "installed registry does not know about, and a detector left red "
+            "cannot report the NEXT drift. "
+            "Prior: v0.124.68 -- nousergon-lib-PR327's merge-time autobump, "
+            "adding nousergon_lib.quant.riskstats.downside_deviation and the "
             "`denominator` parameter on sortino_ratio (config-I7597: "
             "shared/accuracy_metrics.py::compute_sharpe now calls the "
             "library instead of re-deriving the ratio locally). "
