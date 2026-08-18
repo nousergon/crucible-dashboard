@@ -310,8 +310,17 @@ class TestLibVersionPin:
             "nousergon_lib import alias still works via the shim)"
         )
         assert "@main" not in text, "nousergon-lib must be pinned to a tag, not @main"
-        assert "@v0.124.62" in text, (
-            "nousergon-lib should pin to v0.124.62, which carries TWO changes "
+        assert "@v0.124.65" in text, (
+            "nousergon-lib should pin to v0.124.65 (alpha-engine-config-I7608, "
+            "nousergon-lib#324): report_card.schema.json declares "
+            "`attestation` + `degraded_attestation` (required) and "
+            "`degraded_staleness` + `degraded_pipeline_gates` (required) + "
+            "`stale_tiles` (optional array) — the schema this repo's own "
+            "consumer contract test (test_report_card_consumer_contract.py) "
+            "checks against, closing the drift where "
+            "report_card_v2.py::render_attestation read fields the pinned "
+            "schema did not yet declare. "
+            "Earlier: v0.124.62, which carries TWO changes "
             "this box is the execution site for. (1) alpha-engine-config-I7393 "
             "(nousergon-lib#320): the substrate report prints GATED/DEGRADED "
             "before ACTIONS NEEDED and ends with an explicit "
