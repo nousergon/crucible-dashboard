@@ -196,11 +196,26 @@ PREDICTOR_REALIZED_SERIES_COLS: tuple[str, ...] = (
 
 # Which table each named projection reads, so ``join`` can validate every
 # projected name against that table's contract.
-_PROJECTION_TABLE: dict[int, str] = {}
+#
+# Keyed by the projection TUPLE ITSELF, never ``id(projection)`` (config#7643
+# — id-in-a-cache-key defect class, same shape as the panel-cache fix in
+# crucible-research PR657). ``id()`` is unique only among objects alive at the
+# same moment; CPython reuses a freed object's address, so a later tuple could
+# collide with an earlier one's registered id. Every value registered here
+# currently is a permanent module-level global (also held by ``PROJECTIONS``
+# below), so no registration is ever freed in production today and the old
+# code was not observed to be exploitable — but ``_register``/``join``/
+# ``projection_table`` are a general-purpose registry API, not restricted to
+# module globals, so the collision hazard is structural, not merely unused. A
+# tuple of column-name strings is hashable and compares by VALUE, so keying on
+# the object directly is strictly simpler than the loader-identity pattern in
+# PR657 (which needed the object held alive specifically to pin an address) —
+# here there is no address to pin at all.
+_PROJECTION_TABLE: dict[tuple[str, ...], str] = {}
 
 
 def _register(projection: tuple[str, ...], table: str) -> tuple[str, ...]:
-    _PROJECTION_TABLE[id(projection)] = table
+    _PROJECTION_TABLE[projection] = table
     return projection
 
 
@@ -234,7 +249,7 @@ PROJECTIONS: dict[str, tuple[str, ...]] = {
 
 def projection_table(projection: tuple[str, ...]) -> str | None:
     """Return the table a registered projection reads (None if unregistered)."""
-    return _PROJECTION_TABLE.get(id(projection))
+    return _PROJECTION_TABLE.get(projection)
 
 
 def join(projection: tuple[str, ...]) -> str:
@@ -246,7 +261,7 @@ def join(projection: tuple[str, ...]) -> str:
     return an empty frame at runtime). Returns the comma+space-joined column
     list — byte-identical to the literal it replaces.
     """
-    table = _PROJECTION_TABLE.get(id(projection))
+    table = _PROJECTION_TABLE.get(projection)
     if table is not None:
         contract = CONTRACT[table]
         unknown = [c for c in projection if c not in contract]
