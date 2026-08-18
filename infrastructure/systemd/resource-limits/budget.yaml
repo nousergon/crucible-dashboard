@@ -126,7 +126,18 @@ headroom_warn_fraction: 0.90
 # again — 1.29 of a 1.30 bound — which is precisely the condition the paragraph
 # above says to re-derive from, not shave the service to fit. Steady-state
 # remains the safety bound: the box measured 1601 MB available at the time.
-max_overcommit_ratio: 1.34      # sum(memory_max) / ceiling. 1.33 with console at 224M.
+# Raised again 1.34 -> 1.42 on 2026-08-18, fourth application of the same rule:
+# llm-egress-proxy-anthropic.service (alpha-engine-config-I7681) needed a
+# DECLARED cap (300M, inherited from its 8990 sibling, not measured — see its
+# note above) and 1.34 left no room. Measured: sum(memory_max) = 4318 MB over
+# 15 services; ceiling = 3839 * 0.85 = 3263.15 MB; +300 MB = 4618 MB -> 4618 /
+# 3263.15 = 1.4152, rounded up to 1.42. The ceiling itself is inherited rather
+# than re-measured this time, same as every prior raise in this block; it is
+# expected to come back DOWN once alpha-engine-config-I7686 re-caps both
+# egress-proxy units from an uncensored `memory.peak` read. max_steady_state_
+# fraction (0.50) is untouched — the new process is one more Python
+# interpreter against a live sum that sits well under its bound.
+max_overcommit_ratio: 1.42      # sum(memory_max) / ceiling. 1.42 with anthropic tenant at 300M.
 # 2026-08-16: this bound now measures the WORKING SET (sum of anon + swap),
 # not sum(memory.current), and the constant was re-derived rather than carried
 # across (Brian ruling, alpha-engine-config-I7449, option (c)).
@@ -613,6 +624,37 @@ services:
       Startup shells out to the AWS CLI 5x (~150M peak each) to resolve provider
       keys, then runs gitleaks subprocesses per scan. The 6x gap between
       observed and cap is entirely startup and subprocess spikes.
+
+  - unit: llm-egress-proxy-anthropic.service
+    port: 8971
+    memory_high: 210M
+    memory_max: 300M
+    note: >
+      The ANTHROPIC-WIRE tenant of the egress proxy, added 2026-08-18
+      (alpha-engine-config-I7681). Same binary and same launcher shape as
+      llm-egress-proxy.service above; a SECOND process because the port is the
+      wire selector -- both wires terminate at api.deepseek.com, the
+      multi-tenant route table is keyed on upstream HOST, and the per-request
+      selector (X-Upstream-Host) carries no wire, so one process cannot hold
+      two path prefixes for one host.
+
+      WHY A SECOND UNIT RATHER THAN TWO PROCESSES UNDER ONE. A launcher that
+      `exec`s becomes one process; supervising a second child from bash would
+      re-implement what systemd already does (restart, backoff, OOMPolicy,
+      per-unit journal) and its failure mode is a half-dead pair reporting
+      `active` -- a green watchdog over a dead lane, which is the failure class
+      this box has the most of. It would also blend both processes into one
+      cgroup, and per-unit cgroup accounting is exactly what this file and
+      check_memory_budget.py measure. The cost of the correct shape is one more
+      declared cap and the ratio re-derivation below; that is the trade taken.
+
+      CAPS ARE INHERITED FROM THE 8990 SIBLING, NOT MEASURED, and deliberately
+      not trimmed. This launcher resolves ONE SSM parameter instead of five, so
+      its startup peak should sit at or below the sibling's measured 126 MiB --
+      but an egress-proxy cap sized below the startup peak is the I4451 failure
+      (unit reports active, never binds its port), and guessing downward
+      reproduces it. Re-derive both numbers from an uncensored `memory.peak`
+      read after >=14 days of uptime: alpha-engine-config-I7686.
 
   # ── ingress ─────────────────────────────────────────────────────────────
   - unit: nginx.service

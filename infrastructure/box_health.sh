@@ -114,10 +114,11 @@ else
     SERVICES=(dashboard.service nous-ergon-live.service signal.service \
               metron-api.service metron-dash-web.service crucible-dash-api.service \
               crucible-dash-web.service litellm-proxy.service llm-egress-proxy.service \
+              llm-egress-proxy-anthropic.service \
               telos-web.service vires.service mnemon.service nousergon-auth.service \
               nousergon-console.service nginx.service)
-    PORTS=(8501 8502 8503 8505 8000 3003 8506 3002 3001 8530 4100 5180 8980 8990 443)
-    EXPECTED_SERVICE_COUNT=15
+    PORTS=(8501 8502 8503 8505 8000 3003 8506 3002 3001 8530 4100 5180 8980 8990 8971 443)
+    EXPECTED_SERVICE_COUNT=16
 fi
 # Minimum MemoryHigh events in one 10-min tick before throttling is reported.
 #
