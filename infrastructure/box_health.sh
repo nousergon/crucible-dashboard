@@ -347,6 +347,7 @@ human_age() {
 #   $5 triggered service's Result
 classify_timer_staleness() {
     local name="$1" now="$2" last="$3" budget="$4" result="$5" age
+    local fail_since="${6:-}" next_elapse="${7:-}"
 
     # Execution outcome. FIRST, and before any coverage guard, because it needs
     # NOTHING from budget.yaml: a job can fail promptly and on schedule forever,
@@ -362,7 +363,18 @@ classify_timer_staleness() {
     # it-protects shape, again, and the reason the ordering here is load-bearing
     # rather than stylistic. Asserted in test_box_health_timer_staleness.sh.
     if [ -n "$result" ] && [ "$result" != "success" ]; then
-        echo "timer job failing: $name (last run result=$result)"
+        # The failing run's OWN timestamp and the timer's next scheduled
+        # attempt, both raw systemd calendar strings (stable across ticks --
+        # neither changes until the run itself changes). This is what makes a
+        # repeat page recognisable as the SAME failing run rather than a new
+        # one (alpha-engine-config-I7677). Deliberately NOT a computed
+        # relative age ("3h ago"): that would change every 10-min tick, which
+        # would defeat both confirm-on-retry stability and the identity-keyed
+        # dedup below.
+        local detail=""
+        [ -n "$fail_since" ] && detail="${detail}, failing run started ${fail_since}"
+        [ -n "$next_elapse" ] && detail="${detail}, next attempt ${next_elapse}"
+        echo "timer job failing: $name (last run result=$result${detail})"
     fi
 
     # No declared budget = the STALENESS half is unmonitored. NAMED, not
@@ -409,6 +421,30 @@ classify_timer_staleness() {
     if [ "$age" -gt "$budget" ]; then
         echo "timer has not run in $(human_age "$age") (budget $(human_age "$budget")): $name"
     fi
+}
+
+# timer_failure_dedup_key UNIT RESULT INACTIVE_EXIT_RAW
+#
+# Identity for ONE "timer job failing" finding, keyed on (unit, Result,
+# InactiveExitTimestamp) rather than on message text plus a cooldown
+# (alpha-engine-config-I7677). `systemctl show <unit> -p Result` is a LEVEL,
+# not an event -- it stays e.g. `exit-code` until the unit's NEXT run, so a
+# text/cooldown dedup on "timer job failing: ..." re-fires every cooldown
+# window for as long as the timer's interval, up to 7 days for a weekly timer,
+# on ONE already-fixed failure. Keying on the run's own identity instead means
+# the SAME failing run pages once: the key only changes when
+# InactiveExitTimestamp advances, which happens exactly when the timer runs
+# again (success clears it; another failure is correctly a NEW page for a NEW
+# run).
+#
+# Pure (date -d is a deterministic function of its argument, not of wall
+# clock) so this is unit-testable without systemd -- see
+# test_box_health_timer_staleness.sh.
+timer_failure_dedup_key() {
+    local unit="$1" result="$2" ts_raw="$3" ts_epoch=""
+    [ -n "$ts_raw" ] && ts_epoch=$(date -d "$ts_raw" +%s 2>/dev/null)
+    printf 'boxhealth-critical-timerfail-%s' \
+        "$(printf '%s-%s-%s' "$unit" "${result:-unknown}" "${ts_epoch:-$ts_raw}" | tr ' /:' '___')"
 }
 
 # classify_throttle_delta — decide whether a cgroup's MemoryHigh throttling is
@@ -783,7 +819,7 @@ snapshot_problems() {
     # A job that fires on time and fails every run is invisible to the first
     # and caught only by the second (config-I5209).
     local t props active sub next_real next_mono timer_units _k _v
-    local svc last_epoch now_epoch result budget staleness_ok
+    local svc last_epoch now_epoch result budget staleness_ok inactive_exit_raw
     now_epoch=$(date +%s)
 
     # The thresholds live in the generated manifest, so they can be absent for
@@ -858,6 +894,10 @@ snapshot_problems() {
         # Result of the unit this timer triggers, not of the timer itself.
         result=""
         [ -n "$svc" ] && result=$(systemctl show "$svc" -p Result --value 2>/dev/null)
+        # Failing-run identity (alpha-engine-config-I7677): only fetched when
+        # there IS a triggered service, same guard as Result above.
+        inactive_exit_raw=""
+        [ -n "$svc" ] && inactive_exit_raw=$(systemctl show "$svc" -p InactiveExitTimestamp --value 2>/dev/null)
         # Convert systemd's human timestamp to epoch. Guarded on non-empty
         # because `date -d ""` returns TODAY'S MIDNIGHT and exits 0 — a
         # never-triggered timer would otherwise acquire a plausible, wrong
@@ -869,7 +909,8 @@ snapshot_problems() {
             last_epoch=$(date -d "$last_raw" +%s 2>/dev/null) || last_epoch="$last_raw"
             [ -n "$last_epoch" ] || last_epoch="$last_raw"
         fi
-        classify_timer_staleness "$t" "$now_epoch" "$last_epoch" "$budget" "$result"
+        classify_timer_staleness "$t" "$now_epoch" "$last_epoch" "$budget" "$result" \
+            "$inactive_exit_raw" "$next_real"
     done
 
     # ── per-service cgroup memory pressure (alpha-engine-config-I4512) ─────
@@ -1215,16 +1256,24 @@ aws cloudwatch put-metric-data --namespace "AlphaEngine/Box" \
 # One path for both tiers so they cannot drift apart in formatting, dedup
 # behaviour, or failure reporting.
 publish_problems() {
-    local severity="$1" dedup_min="$2" prefix="$3" lines="$4"
+    local severity="$1" dedup_min="$2" prefix="$3" lines="$4" dkey_override="${5:-}"
     [ -z "$lines" ] && return 0
     local msg dkey p
     mapfile -t _problems <<< "$lines"
     msg="dashboard EC2 (${INSTANCE_ID}) ${prefix}:"
     for p in "${_problems[@]}"; do msg="$msg"$'\n'" - $p"; done
-    # dedup key derived from the problem set, so the same ongoing issue alerts
-    # once per window rather than every 10 min. Namespaced by severity so a
-    # notice cannot suppress an alert that happens to share its text.
-    dkey="boxhealth-${severity}-$(printf '%s' "${_problems[*]}" | tr ' /' '__' | cut -c1-64)"
+    if [ -n "$dkey_override" ]; then
+        # A caller with a stable, non-textual identity for this finding (the
+        # timer-job-failing dedup, alpha-engine-config-I7677) -- used verbatim
+        # rather than folded into the set-derived key below.
+        dkey="$dkey_override"
+    else
+        # dedup key derived from the problem set, so the same ongoing issue
+        # alerts once per window rather than every 10 min. Namespaced by
+        # severity so a notice cannot suppress an alert that happens to share
+        # its text.
+        dkey="boxhealth-${severity}-$(printf '%s' "${_problems[*]}" | tr ' /' '__' | cut -c1-64)"
+    fi
     # krepis.alerts is the canonical CLI (config#1649): nousergon_lib.alerts is a
     # re-export shim since lib v0.66.0 — guard-less under `python -m` on 0.81.0
     # (silent exit-0 no-op, the config#1646 class). Invoke the real module.
@@ -1236,6 +1285,60 @@ publish_problems() {
         --dedup-window-min "$dedup_min" \
         || echo "box_health: $severity publish failed" >&2
 }
+
+# timer-job-failing findings get their OWN identity-keyed publish, one per
+# unit, instead of sharing the general critical tier's set-derived
+# text+cooldown dedup (alpha-engine-config-I7677 items 2-3). See
+# timer_failure_dedup_key's docstring for why: a Result LEVEL that stays
+# `exit-code` for a whole weekly cadence must page once for that run, not once
+# per cooldown window for up to 7 days.
+#
+# The window (43200min = 30d) is a backstop against a stuck alerts store, not
+# the actual dedup mechanism -- the KEY changing when InactiveExitTimestamp
+# advances is what clears the page, so no window shorter than the longest
+# timer cadence on this box (currently ~7d, see router-degraded-mode-drill,
+# morning-signal-bakeoff, reboot-if-needed, box-hygiene, fstrim) could ever be
+# both short enough to re-arm promptly and long enough not to re-page a stale
+# already-fixed run in between.
+#
+# On-demand re-verification (item 3, DECIDED): re-running the failing unit by
+# hand -- `systemctl start <unit>` -- is the repair/reverify path. Success
+# advances InactiveExitTimestamp and Result, which rolls the key and clears
+# the finding on the box's own next tick; a repeat failure correctly produces
+# a NEW key and a NEW page. Chosen over degrading to `warning` once
+# (age > 1 box-health cycle AND a newer deployed ExecStart target exists):
+# that alternative needs a freshness comparison against the unit's ExecStart
+# target through this box's multiple path-indirection layers (see the
+# ALERT_PY two-candidate-path resolution near the top of this file for how
+# fragile that kind of comparison already is here) for a benefit
+# `systemctl start` already delivers directly and unambiguously.
+timer_criticals=""; other_criticals=""
+while IFS= read -r _line; do
+    [ -z "$_line" ] && continue
+    case "$_line" in
+        "timer job failing: "*) timer_criticals="${timer_criticals}${_line}"$'\n' ;;
+        *)                      other_criticals="${other_criticals}${_line}"$'\n' ;;
+    esac
+done <<< "$criticals"
+timer_criticals="${timer_criticals%$'\n'}"
+other_criticals="${other_criticals%$'\n'}"
+
+while IFS= read -r _tf_line; do
+    [ -z "$_tf_line" ] && continue
+    _tf_unit="${_tf_line#timer job failing: }"
+    _tf_unit="${_tf_unit%% (*}"
+    _tf_svc=""
+    [ -n "$_tf_unit" ] && _tf_svc=$(systemctl show "$_tf_unit" -p Unit --value 2>/dev/null)
+    _tf_result=""; _tf_ts=""
+    if [ -n "$_tf_svc" ]; then
+        _tf_result=$(systemctl show "$_tf_svc" -p Result --value 2>/dev/null)
+        _tf_ts=$(systemctl show "$_tf_svc" -p InactiveExitTimestamp --value 2>/dev/null)
+    fi
+    publish_problems critical 43200 "health alert" "$_tf_line" \
+        "$(timer_failure_dedup_key "$_tf_unit" "$_tf_result" "$_tf_ts")"
+done <<< "$timer_criticals"
+
+criticals="$other_criticals"
 
 # `critical`, not `error`. Both push identically today (krepis.alerts'
 # SEVERITY_PUSH is {error, critical}), so this is not what makes the tier loud —
