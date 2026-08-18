@@ -1,0 +1,1422 @@
+{
+  "_provenance": {
+    "artifacts": {
+      "artifacts_missing": [
+        "team_metrics.json"
+      ],
+      "artifacts_read": [
+        "action_entropy.json",
+        "cio_opt.json",
+        "e2e_lift.json",
+        "exit_timing.json",
+        "macro_eval.json",
+        "metrics.json",
+        "portfolio_calibration.json",
+        "portfolio_excursion.json",
+        "portfolio_stats.json",
+        "predictor_sizing.json",
+        "scanner_opt.json",
+        "score_calibration.json",
+        "shadow_book.json",
+        "sizing_ab.json",
+        "trigger_scorecard.json",
+        "veto_analysis.json",
+        "veto_value.json"
+      ],
+      "bucket": "alpha-engine-research",
+      "n_missing": 1,
+      "n_read": 17,
+      "prefix": "backtest/2026-08-14",
+      "run_date": "2026-08-14"
+    },
+    "freshness_preflight": {
+      "checks": [
+        {
+          "artifact_id": "metrics_json",
+          "content_date": "2026-08-14",
+          "status": "ok",
+          "window": "week of 2026-08-10"
+        },
+        {
+          "artifact_id": "e2e_lift_json",
+          "content_date": "2026-08-14",
+          "status": "ok",
+          "window": "week of 2026-08-10"
+        },
+        {
+          "artifact_id": "predictor_meta_weights_manifest",
+          "content_date": "2026-08-14",
+          "status": "ok",
+          "window": "week of 2026-08-10"
+        },
+        {
+          "artifact_id": "research_signals",
+          "content_date": "2026-08-14",
+          "status": "ok",
+          "window": "week of 2026-08-10"
+        },
+        {
+          "artifact_id": "eod_reconcile_pnl",
+          "content_date": "2026-08-14",
+          "status": "ok",
+          "window": "<= 1 trading day(s) of 2026-08-14"
+        }
+      ],
+      "run_date": "2026-08-14"
+    },
+    "grader_source": "alpha-engine-evaluator/grading/scorecard.py (ported from backtester @f46e7e6)",
+    "run_date": "2026-08-14"
+  },
+  "attestation": {
+    "arithmetic_verdict": "PASS",
+    "as_of": {
+      "backtester": "2026-08-15T16:31:20Z",
+      "contamination": null,
+      "evaluator_stage": "2026-08-15T16:29:59Z"
+    },
+    "backtester": {
+      "as_of": "2026-08-15T16:31:20Z",
+      "engine": {
+        "numba": "0.67.0",
+        "numpy": "2.5.2",
+        "pandas": "2.3.3",
+        "python": "3.12.12",
+        "vectorbt": "0.28.5"
+      },
+      "n_checks": 9,
+      "n_errored": 0,
+      "n_failed": 0,
+      "reason": "backtester attestation PASS (9 known-answer checks).",
+      "run_date": "2026-08-14",
+      "schema": "backtest_attestation-1.0.0",
+      "source_path": "s3://alpha-engine-research/backtest/2026-08-14/attestation.json",
+      "verdict": "PASS"
+    },
+    "contamination": {
+      "as_of": null,
+      "reason": "contamination attestation absent at s3://alpha-engine-research/backtest/2026-08-14/pit_parity.json \u2014 the producer never ran this cycle.",
+      "run_date": "2026-08-14",
+      "source_path": "s3://alpha-engine-research/backtest/2026-08-14/pit_parity.json",
+      "verdict": "UNKNOWN"
+    },
+    "contamination_coverage_fraction": null,
+    "contamination_verdict": "UNKNOWN",
+    "evaluator": {
+      "checks": [
+        {
+          "abs_error": 0.0,
+          "atol": 1e-15,
+          "description": "sample-sd (ddof=1) Sharpe on the frozen series, \u00d7\u221a252",
+          "expected": 5.243177385031818,
+          "name": "sharpe_annualization",
+          "observed": 5.243177385031818,
+          "passed": true,
+          "rtol": 1e-12
+        }
+      ],
+      "engine": {
+        "nousergon_lib": "0.124.3",
+        "numpy": "2.5.2",
+        "python": "3.12.13"
+      },
+      "n_checks": 6,
+      "n_errored": 0,
+      "n_failed": 0,
+      "status": "ok",
+      "verdict": "PASS",
+      "wall_clock_seconds": 0.0003
+    },
+    "evaluator_stage": {
+      "as_of": "2026-08-15T16:29:59Z",
+      "engine": {
+        "numba": "0.67.0",
+        "numpy": "2.5.2",
+        "pandas": "2.3.3",
+        "python": "3.12.12",
+        "vectorbt": "0.28.5"
+      },
+      "n_checks": 11,
+      "n_errored": 0,
+      "n_failed": 0,
+      "promotion_withheld": false,
+      "reason": "evaluator stage attestation PASS (11 known-answer checks).",
+      "run_date": "2026-08-14",
+      "schema": "evaluator_attestation-1.0.0",
+      "source_path": "s3://alpha-engine-research/backtest/2026-08-14/evaluator_attestation.json",
+      "verdict": "PASS"
+    },
+    "promotion_withheld": false,
+    "reason": "Correctness guarantee WITHHELD: contamination=UNKNOWN. contamination attestation absent at s3://alpha-engine-research/backtest/2026-08-14/pit_parity.json \u2014 the producer never ran this cycle.",
+    "run_date": "2026-08-14",
+    "schema": "report_card_attestation-1.0.0",
+    "verdict": "UNKNOWN"
+  },
+  "contamination_verdict": "UNKNOWN",
+  "degraded_attestation": true,
+  "degraded_contamination": true,
+  "degraded_pipeline_gates": true,
+  "degraded_self_test": false,
+  "degraded_staleness": false,
+  "executor": {
+    "components": {
+      "action_entropy": {
+        "detail": {
+          "alarm": false,
+          "entropy_normalized": 0.796,
+          "most_common": "quality",
+          "most_common_fraction": "63.7%",
+          "n": 245
+        },
+        "grade": 85.44220064624447,
+        "letter": "A-"
+      },
+      "entry_triggers": {
+        "detail": {
+          "avg_slippage": "+0.30%",
+          "n_triggers": 6,
+          "per_trigger": [
+            {
+              "grade": 53.9395,
+              "letter": "C+",
+              "n_trades": 66,
+              "trigger": "other"
+            },
+            {
+              "grade": 65.157,
+              "letter": "B",
+              "n_trades": 14,
+              "trigger": "pullback"
+            },
+            {
+              "grade": 59.025,
+              "letter": "B-",
+              "n_trades": 4,
+              "trigger": "support"
+            },
+            {
+              "grade": 0.0,
+              "letter": "F",
+              "n_trades": 26,
+              "trigger": "time_expiry"
+            },
+            {
+              "grade": null,
+              "letter": "N/A",
+              "n_trades": 19,
+              "trigger": "unknown"
+            },
+            {
+              "grade": 56.932,
+              "letter": "C+",
+              "n_trades": 50,
+              "trigger": "vwap"
+            }
+          ],
+          "total_entries": 179
+        },
+        "grade": 44.664500000000004,
+        "letter": "C"
+      },
+      "excursion": {
+        "grade": null,
+        "letter": "N/A",
+        "reason": "portfolio excursion status: insufficient_data"
+      },
+      "exit_rules": {
+        "detail": {
+          "avg_return": "+3.78%",
+          "capture_ratio": "-1.10",
+          "diagnosis": "exits_well_timed",
+          "n_roundtrips": 245
+        },
+        "grade": 51.108000000000004,
+        "letter": "C+"
+      },
+      "portfolio": {
+        "detail": {
+          "calmar": "0.21",
+          "cvar_95": "-0.08%",
+          "max_drawdown": "-2.1%",
+          "sharpe": "0.28",
+          "sortino": "0.54"
+        },
+        "grade": 61.6565390784576,
+        "letter": "B-"
+      },
+      "position_sizing": {
+        "grade": null,
+        "letter": "N/A",
+        "reason": "sizing A/B status: error"
+      },
+      "risk_guard": {
+        "detail": {
+          "assessment": "neutral",
+          "f1": "0.744",
+          "guard_lift": "-0.17%",
+          "n_blocked": 1233,
+          "precision": "63.2%",
+          "recall": "90.2%"
+        },
+        "grade": 65.11461904761904,
+        "letter": "B"
+      }
+    },
+    "coverage": {
+      "components_declared": 7,
+      "components_failed": [
+        "position_sizing"
+      ],
+      "components_present": 5,
+      "components_skipped": [
+        "position_sizing",
+        "excursion"
+      ],
+      "floor": null,
+      "floor_status": "unset-unmeasured (config-I7202: no card has ever reached full coverage, so there is no distribution to place a floor below)",
+      "provisional": false,
+      "qualifier": "PARTIAL-MASKED-FAILURE",
+      "renormalization_factor": 1.333333,
+      "renormalized": true,
+      "skip_classes": {
+        "excursion": "insufficient_data",
+        "position_sizing": "failed"
+      },
+      "skips": [
+        {
+          "component": "position_sizing",
+          "reason": "sizing A/B status: error",
+          "skip_class": "failed",
+          "weight": 0.1
+        },
+        {
+          "component": "excursion",
+          "reason": "portfolio excursion status: insufficient_data",
+          "skip_class": "insufficient_data",
+          "weight": 0.15
+        }
+      ],
+      "weight_declared": 1.0,
+      "weight_failed": 0.1,
+      "weight_present": 0.75,
+      "weight_present_effective": 0.75,
+      "weights": {
+        "action_entropy": 0.1,
+        "entry_triggers": 0.1,
+        "excursion": 0.15,
+        "exit_rules": 0.15,
+        "portfolio": 0.25,
+        "position_sizing": 0.1,
+        "risk_guard": 0.15
+      }
+    },
+    "display": "B- (PARTIAL \u2014 75% of declared weight; 10% DROPPED ON FAILURE: position_sizing \u2014 grade is inflated)",
+    "grade": 61.14426358850894,
+    "letter": "B-"
+  },
+  "grading_weights": {
+    "executor": {
+      "action_entropy": 0.1,
+      "entry_triggers": 0.1,
+      "excursion": 0.15,
+      "exit_rules": 0.15,
+      "portfolio": 0.25,
+      "position_sizing": 0.1,
+      "risk_guard": 0.15
+    },
+    "overall": {
+      "executor": 0.35,
+      "predictor": 0.25,
+      "research": 0.4
+    },
+    "predictor": {
+      "meta_model": 0.55,
+      "veto_gate": 0.45
+    },
+    "research": {
+      "calibration_diagnostics": 0.15,
+      "cio": 0.2,
+      "composite_scoring": 0.2,
+      "macro_agent": 0.1,
+      "scanner": 0.1,
+      "sector_teams_avg": 0.25
+    },
+    "rule": "A component whose grade is null is removed from the denominator; the remaining declared weights are rescaled to sum to 1. grade = sum(w_i * g_i for graded i) / sum(w_i for graded i). weight_present is sum(w_i for graded i) against a declared total of 1.0.",
+    "version": "2026-08-13"
+  },
+  "overall": {
+    "coverage": {
+      "components_declared": 3,
+      "components_failed": [
+        "position_sizing"
+      ],
+      "components_present": 3,
+      "components_skipped": [],
+      "floor": null,
+      "floor_status": "unset-unmeasured (config-I7202: no card has ever reached full coverage, so there is no distribution to place a floor below)",
+      "provisional": false,
+      "qualifier": "PARTIAL-MASKED-FAILURE",
+      "renormalization_factor": 1.0,
+      "renormalized": false,
+      "skip_classes": {},
+      "skips": [],
+      "weight_declared": 1.0,
+      "weight_failed": 0.035,
+      "weight_present": 1.0,
+      "weight_present_effective": 0.7325,
+      "weights": {
+        "executor": 0.35,
+        "predictor": 0.25,
+        "research": 0.4
+      }
+    },
+    "display": "C+ (PARTIAL \u2014 73% of declared weight; 4% DROPPED ON FAILURE: position_sizing \u2014 grade is inflated)",
+    "grade": 57.59552335292287,
+    "letter": "C+"
+  },
+  "pipeline_gates": {
+    "degraded_families": [
+      "health_check_degraded",
+      "research_predictor_degraded"
+    ],
+    "families_unreported": [],
+    "gates": {
+      "lib_pin_drift": {
+        "reason": null,
+        "status": "MEASURED"
+      },
+      "pipeline_contract": {
+        "reason": null,
+        "status": "MEASURED"
+      }
+    },
+    "present": true,
+    "reason": "",
+    "schema": "sf_gate_state-1.0.0",
+    "schema_version": 1,
+    "statement": "NOT VERIFIED \u2014 2 of 2 pre-spend correctness gates did not run this cycle: LibPinDriftCheck (cross-repo library pin coherence) \u2014 in_sync; PipelineContractCheck (declared pipeline contract validity) \u2014 in_sync. Every number on this card was computed normally; what is missing is the check that says the inputs behind them were sound. Treat the grades as UNATTESTED, not as wrong. Fail-open degradation recorded on this run: tail health checks (SaturdayHealthCheck/WeeklySubstrateHealthCheck); an internal ResearchPredictorParallel fail-open.",
+    "unmeasured": [
+      "lib_pin_drift",
+      "pipeline_contract"
+    ],
+    "verdict": "UNKNOWN"
+  },
+  "predictor": {
+    "components": {
+      "meta_model": {
+        "detail": {
+          "rank_ic": "0.0198",
+          "sizing_lift": "+0.64%",
+          "stability": "6/8 weeks positive"
+        },
+        "grade": 54.23291666666667,
+        "letter": "C+"
+      },
+      "veto_gate": {
+        "detail": {
+          "f1": "0.298",
+          "lift": "+9.02pp",
+          "precision": "57.1%",
+          "recall": "20.2%",
+          "threshold": 0.65
+        },
+        "grade": 54.98673469387755,
+        "letter": "C+"
+      }
+    },
+    "coverage": {
+      "components_declared": 2,
+      "components_failed": [],
+      "components_present": 2,
+      "components_skipped": [],
+      "floor": null,
+      "floor_status": "unset-unmeasured (config-I7202: no card has ever reached full coverage, so there is no distribution to place a floor below)",
+      "provisional": false,
+      "qualifier": "COMPLETE",
+      "renormalization_factor": 1.0,
+      "renormalized": false,
+      "skip_classes": {},
+      "skips": [],
+      "weight_declared": 1.0,
+      "weight_failed": 0.0,
+      "weight_present": 1.0,
+      "weight_present_effective": 1.0,
+      "weights": {
+        "meta_model": 0.55,
+        "veto_gate": 0.45
+      }
+    },
+    "display": "C+",
+    "grade": 54.57213477891157,
+    "letter": "C+"
+  },
+  "research": {
+    "components": {
+      "calibration_diagnostics": {
+        "detail": {
+          "brier_score": 0.2468,
+          "ece": 0.0317,
+          "n": 534,
+          "n_bins": 4,
+          "quality": "good"
+        },
+        "grade": 90.0,
+        "letter": "A"
+      },
+      "cio": {
+        "grade": null,
+        "letter": "N/A",
+        "reason": "CIO lift status: retired"
+      },
+      "composite_scoring": {
+        "detail": {
+          "monotonic": "NO"
+        },
+        "grade": 40.0,
+        "letter": "C-"
+      },
+      "macro_agent": {
+        "detail": {
+          "accuracy_lift": "-0.82pp",
+          "alpha_lift": "+0.00%",
+          "assessment": "neutral"
+        },
+        "grade": 36.72,
+        "letter": "C-"
+      },
+      "scanner": {
+        "arm": "tech_score_baseline (retired from live feed 2026-06-29)",
+        "detail": {
+          "arm": "tech_score_baseline (retired from live feed 2026-06-29)",
+          "base_rate": "47.5%",
+          "f1": "0.086",
+          "horizon": "21d",
+          "lift": "-0.34%",
+          "live_arm_graded_by": "attractiveness_ic (config-I2994) \u2014 the live champion feed's attractiveness_score IC. This component is NOT the live scanner.",
+          "n_passing": 653,
+          "n_universe": 14376,
+          "n_universe_basis": "(ticker, eval_date) observations, not tickers",
+          "precision": "50.5%",
+          "precision_5d_diagnostic": "44.1%",
+          "recall": "4.7%",
+          "recall_ceiling": "9.3%",
+          "recall_graded": false,
+          "recall_not_graded_reason": "max achievable recall at this pass rate is 9.3%, below the 10% grading baseline \u2014 a perfect filter would score at the floor, so the band measures selectivity, not skill",
+          "selection_edge": "+2.99pp"
+        },
+        "grade": 58.36996428048167,
+        "letter": "B-"
+      },
+      "sector_teams": [],
+      "sector_teams_avg": {
+        "grade": null,
+        "letter": "N/A",
+        "reason": "sector teams status: retired (2026-07-12) \u2014 six-team + macro-economist + CIO research orchestration retired (config#1580); last producing cycle 2026-07-11, research.db team_candidates/cio_evaluations rows end 2026-07-10"
+      }
+    },
+    "coverage": {
+      "components_declared": 6,
+      "components_failed": [],
+      "components_present": 4,
+      "components_skipped": [
+        "sector_teams_avg",
+        "cio"
+      ],
+      "floor": null,
+      "floor_status": "unset-unmeasured (config-I7202: no card has ever reached full coverage, so there is no distribution to place a floor below)",
+      "provisional": false,
+      "qualifier": "PARTIAL",
+      "renormalization_factor": 1.818182,
+      "renormalized": true,
+      "skip_classes": {
+        "cio": "retired",
+        "sector_teams_avg": "retired"
+      },
+      "skips": [
+        {
+          "component": "sector_teams_avg",
+          "reason": "sector teams status: retired (2026-07-12) \u2014 six-team + macro-economist + CIO research orchestration retired (config#1580); last producing cycle 2026-07-11, research.db team_candidates/cio_evaluations rows end 2026-07-10",
+          "skip_class": "retired",
+          "weight": 0.25
+        },
+        {
+          "component": "cio",
+          "reason": "CIO lift status: retired",
+          "skip_class": "retired",
+          "weight": 0.2
+        }
+      ],
+      "weight_declared": 1.0,
+      "weight_failed": 0.0,
+      "weight_present": 0.55,
+      "weight_present_effective": 0.55,
+      "weights": {
+        "calibration_diagnostics": 0.15,
+        "cio": 0.2,
+        "composite_scoring": 0.2,
+        "macro_agent": 0.1,
+        "scanner": 0.1,
+        "sector_teams_avg": 0.25
+      }
+    },
+    "display": "C+ (PARTIAL \u2014 55% of declared weight)",
+    "grade": 56.37999350554212,
+    "letter": "C+"
+  },
+  "schema_version": 1,
+  "self_test": {
+    "case_timeout_seconds": 30.0,
+    "cases": [
+      {
+        "abs_error": 4.440892098500626e-16,
+        "actual": 3.224127789030702,
+        "case": "sharpe_closed_form",
+        "description": "mean = (60(+1%) + 40(-1%))/100 = 0.002; sample variance (ddof=1) = [60(0.008)^2 + 40(0.012)^2]/99 = 0.0096/99; Sharpe = mean/sd * sqrt(252)",
+        "expected": 3.2241277890307014,
+        "inputs": {
+          "annualization_days": 252,
+          "daily_return_down": -0.01,
+          "daily_return_up": 0.01,
+          "ddof": 1,
+          "initial_nav": 1000000.0,
+          "n_days": 100,
+          "n_down": 40,
+          "n_up": 60,
+          "risk_free_rate": 0.0,
+          "spy_daily_return": 0.0,
+          "units": "ratio"
+        },
+        "tolerance": 1e-09,
+        "verdict": "PASS",
+        "wall_clock_seconds": 0.457
+      },
+      {
+        "abs_error": 8.881784197001252e-16,
+        "actual": 5.019960159204453,
+        "case": "sortino_closed_form",
+        "description": "Downside deviation is the RMS of min(0, r) over ALL 100 observations, not over the 40 negatives: dd = sqrt(40(0.01)^2/100); Sortino = mean/dd * sqrt(252). The denominator convention is the load-bearing half \u2014 the plausible alternative differs by 1.58x",
+        "expected": 5.0199601592044525,
+        "inputs": {
+          "annualization_days": 252,
+          "daily_return_down": -0.01,
+          "daily_return_up": 0.01,
+          "downside_denominator": "N (all observations)",
+          "initial_nav": 1000000.0,
+          "n_days": 100,
+          "n_down": 40,
+          "n_up": 60,
+          "spy_daily_return": 0.0,
+          "target": 0.0,
+          "units": "ratio"
+        },
+        "tolerance": 1e-09,
+        "verdict": "PASS",
+        "wall_clock_seconds": 0.0
+      },
+      {
+        "abs_error": 1.1102230246251565e-16,
+        "actual": -0.3310282414303196,
+        "case": "max_drawdown_closed_form",
+        "description": "NAV rises monotonically for 60 days then falls monotonically for 40, so peak is day 60 and trough is the last day: max_drawdown = 0.99^40 - 1",
+        "expected": -0.3310282414303197,
+        "inputs": {
+          "annualization_days": 252,
+          "daily_return_down": -0.01,
+          "daily_return_up": 0.01,
+          "initial_nav": 1000000.0,
+          "n_days": 100,
+          "n_down": 40,
+          "n_up": 60,
+          "spy_daily_return": 0.0,
+          "units": "fraction (negative)"
+        },
+        "tolerance": 1e-09,
+        "verdict": "PASS",
+        "wall_clock_seconds": 0.0
+      },
+      {
+        "abs_error": 3.3306690738754696e-15,
+        "actual": 1.7948651359925045,
+        "case": "calmar_closed_form",
+        "description": "annualized return over |max drawdown|: nav[-1]/nav[0] = 1.01^59 * 0.99^40 (nav[0] already carries day 1's return), annualized by ^(252/100), divided by |0.99^40 - 1|",
+        "expected": 1.7948651359925012,
+        "inputs": {
+          "annualization_days": 252,
+          "annualization_exponent": 2.52,
+          "daily_return_down": -0.01,
+          "daily_return_up": 0.01,
+          "initial_nav": 1000000.0,
+          "n_days": 100,
+          "n_down": 40,
+          "n_up": 60,
+          "spy_daily_return": 0.0,
+          "units": "ratio"
+        },
+        "tolerance": 1e-09,
+        "verdict": "PASS",
+        "wall_clock_seconds": 0.0
+      },
+      {
+        "abs_error": 5.204170427930421e-18,
+        "actual": -0.010000000000000005,
+        "case": "cvar_95_closed_form",
+        "description": "Empirical 95% CVaR of the two-valued series: the interpolated loss quantile at rank 0.95*99 = 94.05 lands on 0.01, and the mean of the 40 losses at or beyond it is 0.01 \u2014 reported on the RETURN scale, so -0.01 exactly. Pins the tail definition AND the sign convention",
+        "expected": -0.01,
+        "inputs": {
+          "annualization_days": 252,
+          "confidence": 0.95,
+          "daily_return_down": -0.01,
+          "daily_return_up": 0.01,
+          "initial_nav": 1000000.0,
+          "n_days": 100,
+          "n_down": 40,
+          "n_up": 60,
+          "sign_convention": "return scale",
+          "spy_daily_return": 0.0,
+          "units": "fraction (negative)"
+        },
+        "tolerance": 1e-09,
+        "verdict": "PASS",
+        "wall_clock_seconds": 0.0
+      },
+      {
+        "abs_error": 0.0,
+        "actual": 1.0,
+        "case": "flat_returns_sharpe_is_undefined",
+        "description": "A constant 0.500%/day series has zero volatility, so its Sharpe is UNDEFINED. 1.0 iff the tile reports None rather than a finite number \u2014 a measured zero and an undefined value must be distinguishable",
+        "expected": 1.0,
+        "inputs": {
+          "constant_daily_return": 0.005,
+          "n_days": 100,
+          "units": "boolean-encoded contract"
+        },
+        "tolerance": 0.0,
+        "verdict": "PASS",
+        "wall_clock_seconds": 0.098
+      },
+      {
+        "abs_error": 0.0,
+        "actual": 1.0,
+        "case": "flat_returns_sortino_is_undefined",
+        "description": "Same series has no below-target day, so downside deviation is zero and Sortino is UNDEFINED. 1.0 iff the tile reports None",
+        "expected": 1.0,
+        "inputs": {
+          "constant_daily_return": 0.005,
+          "n_days": 100,
+          "units": "boolean-encoded contract"
+        },
+        "tolerance": 0.0,
+        "verdict": "PASS",
+        "wall_clock_seconds": 0.0
+      },
+      {
+        "abs_error": 4.440892098500626e-16,
+        "actual": 4.440892098500626e-16,
+        "case": "sharpe_scale_invariance",
+        "description": "METAMORPHIC. Multiplying every daily return by 3 leaves the Sharpe ratio unchanged \u2014 mean and volatility scale together at a zero risk-free rate. Difference expected 0.0",
+        "expected": 0.0,
+        "inputs": {
+          "annualization_days": 252,
+          "daily_return_down": -0.01,
+          "daily_return_up": 0.01,
+          "initial_nav": 1000000.0,
+          "n_days": 100,
+          "n_down": 40,
+          "n_up": 60,
+          "return_scale": 3.0,
+          "spy_daily_return": 0.0,
+          "units": "ratio (difference)"
+        },
+        "tolerance": 1e-09,
+        "verdict": "PASS",
+        "wall_clock_seconds": 0.296
+      },
+      {
+        "abs_error": 0.0,
+        "actual": 0.0,
+        "case": "max_drawdown_currency_invariance",
+        "description": "METAMORPHIC. Multiplying the whole NAV series by 7 leaves max drawdown unchanged \u2014 it is a ratio, so it carries no currency units. Difference expected 0.0",
+        "expected": 0.0,
+        "inputs": {
+          "annualization_days": 252,
+          "daily_return_down": -0.01,
+          "daily_return_up": 0.01,
+          "initial_nav": 1000000.0,
+          "n_days": 100,
+          "n_down": 40,
+          "n_up": 60,
+          "nav_scale": 7.0,
+          "spy_daily_return": 0.0,
+          "units": "fraction (difference)"
+        },
+        "tolerance": 1e-09,
+        "verdict": "PASS",
+        "wall_clock_seconds": 0.287
+      }
+    ],
+    "code_sha": "02e6a5262fae844f483aabdfccf0a698370792ba",
+    "component": "evaluator",
+    "libraries": {
+      "boto3": "1.43.72",
+      "krepis": "0.59.6",
+      "nousergon-lib": "0.124.3",
+      "numpy": "2.5.2",
+      "pandas": "3.0.5",
+      "pydantic": "2.13.4",
+      "scipy": "1.18.0"
+    },
+    "n_cases": 9,
+    "n_errored": 0,
+    "n_failed": 0,
+    "platform": "Linux-5.10.255-260-301.1061.amzn2.x86_64-x86_64-with-glibc2.34",
+    "python": "3.12.13",
+    "run_date": "2026-08-14",
+    "schema": "evaluator_self_test-1.0.0",
+    "status": "ok",
+    "verdict": "PASS",
+    "wall_clock_seconds": 1.41
+  },
+  "status": "partial",
+  "status_reason": "correctness verdict UNKNOWN \u2014 Correctness guarantee WITHHELD: contamination=UNKNOWN. contamination attestation absent at s3://alpha-engine-research/backtest/2026-08-14/pit_parity.json \u2014 the producer never ran this cycle.",
+  "tiles": {
+    "agent": {
+      "as_of": "2026-08-15T16:33:40.683875Z",
+      "components": [
+        {
+          "arm": null,
+          "bh_fdr_adjusted_p": null,
+          "ci_high": null,
+          "ci_low": null,
+          "ci_method": null,
+          "criticality": "critical",
+          "derived_letter": "N/A",
+          "estimator": "wilson_failure_rate",
+          "last_updated_utc": "2026-08-15T16:33:40.576958Z",
+          "measurement_horizon": "per_run",
+          "metric_type": "pct",
+          "module": "agent",
+          "n_floor": 50,
+          "n_samples": null,
+          "name": "agent_validation_failure_rate",
+          "permanent_na": false,
+          "permanent_na_reason": null,
+          "red_line": 0.1,
+          "reliability": null,
+          "source_path": "s3://alpha-engine-research/backtest/2026-08-14/agent_quality.json",
+          "status": "N/A-MISSING-INPUT",
+          "status_reason": "agent_validation_failure_rate: agent_quality.json absent or no value this cycle (research agent-quality producer, config#1149).",
+          "target": 0.02,
+          "trend_4w": null,
+          "trend_decoration": "\u2192",
+          "value": null
+        },
+        {
+          "arm": null,
+          "bh_fdr_adjusted_p": null,
+          "ci_high": null,
+          "ci_low": null,
+          "ci_method": null,
+          "criticality": "supporting",
+          "derived_letter": "N/A",
+          "estimator": null,
+          "last_updated_utc": "2026-08-15T16:33:40.577013Z",
+          "measurement_horizon": null,
+          "metric_type": "ratio",
+          "module": "agent",
+          "n_floor": 5,
+          "n_samples": null,
+          "name": "cost_per_signal",
+          "permanent_na": false,
+          "permanent_na_reason": null,
+          "red_line": 5.0,
+          "reliability": null,
+          "source_path": "s3://alpha-engine-research/backtest/2026-08-14/agent_quality.json",
+          "status": "N/A-MISSING-INPUT",
+          "status_reason": "cost_per_signal: agent_quality.json absent or no value this cycle (research agent-quality producer, config#1149).",
+          "target": 1.0,
+          "trend_4w": null,
+          "trend_decoration": "\u2192",
+          "value": null
+        }
+      ],
+      "letter": "C",
+      "module": "agent",
+      "n_components": 11,
+      "numeric_grade": null,
+      "source_artifact_dates": [
+        "2026-08-14"
+      ],
+      "status": "WATCH"
+    },
+    "backtester": {
+      "as_of": "2026-08-15T16:33:24.128099Z",
+      "components": [
+        {
+          "arm": null,
+          "bh_fdr_adjusted_p": null,
+          "ci_high": null,
+          "ci_low": null,
+          "ci_method": null,
+          "criticality": "critical",
+          "derived_letter": "C",
+          "estimator": "coverage_proportion",
+          "last_updated_utc": "2026-08-15T16:33:23.746560Z",
+          "measurement_horizon": "trailing_4w",
+          "metric_type": "pct",
+          "module": "backtester",
+          "n_floor": 1,
+          "n_samples": 13,
+          "name": "evaluator_coverage",
+          "permanent_na": false,
+          "permanent_na_reason": null,
+          "red_line": 0.8,
+          "reliability": "high",
+          "source_path": "s3://alpha-engine-research/backtest/2026-08-14/grading.json",
+          "status": "WATCH",
+          "status_reason": "evaluator_coverage = 85% (11/13 leaf components graded, non-N/A) vs target 95% / red-line 80%.",
+          "target": 0.95,
+          "trend_4w": null,
+          "trend_decoration": "\u2192",
+          "value": 0.8461538461538461
+        },
+        {
+          "arm": null,
+          "bh_fdr_adjusted_p": null,
+          "ci_high": null,
+          "ci_low": null,
+          "ci_method": null,
+          "criticality": "critical",
+          "derived_letter": "A",
+          "estimator": "known_answer_battery",
+          "last_updated_utc": "2026-08-15T16:33:23.775269Z",
+          "measurement_horizon": "this_cycle",
+          "metric_type": "pct",
+          "module": "backtester",
+          "n_floor": 1,
+          "n_samples": 9,
+          "name": "numeric_attestation",
+          "permanent_na": false,
+          "permanent_na_reason": null,
+          "red_line": 1.0,
+          "reliability": "high",
+          "source_path": "s3://alpha-engine-research/backtest/2026-08-14/attestation.json",
+          "status": "GREEN",
+          "status_reason": "backtester attestation PASS (9 known-answer checks).",
+          "target": 1.0,
+          "trend_4w": null,
+          "trend_decoration": "\u2192",
+          "value": 1.0
+        }
+      ],
+      "letter": "F",
+      "module": "backtester",
+      "n_components": 13,
+      "numeric_grade": 59.48717948717948,
+      "source_artifact_dates": [
+        "2026-08-13",
+        "2026-08-14"
+      ],
+      "status": "RED"
+    },
+    "behavioral": {
+      "as_of": "2026-08-15T16:33:40.786890Z",
+      "components": [
+        {
+          "arm": null,
+          "bh_fdr_adjusted_p": null,
+          "ci_high": null,
+          "ci_low": null,
+          "ci_method": null,
+          "criticality": "diagnostic",
+          "derived_letter": "C",
+          "estimator": "l4515_tripwire_rolling_sum",
+          "last_updated_utc": "2026-08-15T16:33:40.786765Z",
+          "measurement_horizon": "5d_rolling",
+          "metric_type": "ratio",
+          "module": "behavioral",
+          "n_floor": 1,
+          "n_samples": 5,
+          "name": "turnover",
+          "permanent_na": false,
+          "permanent_na_reason": null,
+          "red_line": 0.6,
+          "reliability": "high",
+          "source_path": "s3://alpha-engine-research/predictor/optimizer_shadow/2026-08-14.json",
+          "status": "WATCH",
+          "status_reason": "one-way turnover rolling sum 30.4% over 5 session(s) vs band 60%; daily_breach=False, rolling_breach=False (executor L4515 tripwire pages on breach independently).",
+          "target": 0.3,
+          "trend_4w": null,
+          "trend_decoration": "\u2192",
+          "value": 0.30422
+        },
+        {
+          "arm": null,
+          "bh_fdr_adjusted_p": null,
+          "ci_high": null,
+          "ci_low": null,
+          "ci_method": null,
+          "criticality": "supporting",
+          "derived_letter": "C",
+          "estimator": "reversal_rate_rolling_window",
+          "last_updated_utc": "2026-08-15T16:33:40.786827Z",
+          "measurement_horizon": "10d_window",
+          "metric_type": "pct",
+          "module": "behavioral",
+          "n_floor": 10,
+          "n_samples": 106,
+          "name": "decision_reversal",
+          "permanent_na": false,
+          "permanent_na_reason": null,
+          "red_line": 0.3,
+          "reliability": "medium",
+          "source_path": "s3://alpha-engine-research/backtest/2026-08-14/behavioral_anomaly.json",
+          "status": "WATCH",
+          "status_reason": "28/106 exits re-entered within 10td (rate 26.4%) vs provisional target 10% / red-line 30%.",
+          "target": 0.1,
+          "trend_4w": null,
+          "trend_decoration": "\u2192",
+          "value": 0.2642
+        }
+      ],
+      "letter": "A",
+      "module": "behavioral",
+      "n_components": 5,
+      "numeric_grade": 47.225,
+      "source_artifact_dates": [
+        "2026-08-14"
+      ],
+      "status": "GREEN"
+    },
+    "director_quality": {
+      "as_of": "2026-08-15T16:33:40.899024Z",
+      "components": [
+        {
+          "arm": null,
+          "bh_fdr_adjusted_p": null,
+          "ci_high": null,
+          "ci_low": null,
+          "ci_method": null,
+          "criticality": "supporting",
+          "derived_letter": "A",
+          "estimator": null,
+          "last_updated_utc": "2026-08-15T16:33:40.898948Z",
+          "measurement_horizon": null,
+          "metric_type": "ratio",
+          "module": "director_quality",
+          "n_floor": 1,
+          "n_samples": 1,
+          "name": "director_grounding",
+          "permanent_na": false,
+          "permanent_na_reason": null,
+          "red_line": 40.0,
+          "reliability": null,
+          "source_path": "s3://alpha-engine-research/director/retro_trend.json",
+          "status": "GREEN",
+          "status_reason": "director_grounding = 91/100 (prior_run_date=2026-07-10, judge_model=claude-sonnet-4-6) vs target 75 / red-line 40.",
+          "target": 75.0,
+          "trend_4w": null,
+          "trend_decoration": "\u2192",
+          "value": 91.0
+        },
+        {
+          "arm": null,
+          "bh_fdr_adjusted_p": null,
+          "ci_high": null,
+          "ci_low": null,
+          "ci_method": null,
+          "criticality": "supporting",
+          "derived_letter": "C",
+          "estimator": null,
+          "last_updated_utc": "2026-08-15T16:33:40.899008Z",
+          "measurement_horizon": null,
+          "metric_type": "ratio",
+          "module": "director_quality",
+          "n_floor": 1,
+          "n_samples": 1,
+          "name": "director_calibration",
+          "permanent_na": false,
+          "permanent_na_reason": null,
+          "red_line": 40.0,
+          "reliability": null,
+          "source_path": "s3://alpha-engine-research/director/retro_trend.json",
+          "status": "WATCH",
+          "status_reason": "director_calibration = 72/100 (prior_run_date=2026-07-10, judge_model=claude-sonnet-4-6) vs target 75 / red-line 40.",
+          "target": 75.0,
+          "trend_4w": null,
+          "trend_decoration": "\u2192",
+          "value": 72.0
+        }
+      ],
+      "letter": "A",
+      "module": "director_quality",
+      "n_components": 3,
+      "numeric_grade": 95.23809523809524,
+      "source_artifact_dates": [],
+      "status": "GREEN"
+    },
+    "executor": {
+      "as_of": "2026-08-15T16:33:23.675162Z",
+      "components": [
+        {
+          "arm": null,
+          "bh_fdr_adjusted_p": null,
+          "ci_high": null,
+          "ci_low": null,
+          "ci_method": null,
+          "criticality": "critical",
+          "derived_letter": "N/A",
+          "estimator": "wilson_winrate",
+          "last_updated_utc": "2026-08-15T16:33:23.674977Z",
+          "measurement_horizon": "intraday_to_exit",
+          "metric_type": "pct",
+          "module": "executor",
+          "n_floor": 30,
+          "n_samples": null,
+          "name": "entry_triggers",
+          "permanent_na": false,
+          "permanent_na_reason": null,
+          "red_line": 0.45,
+          "reliability": null,
+          "source_path": "s3://alpha-engine-research/backtest/2026-08-14/trigger_scorecard.json",
+          "status": "N/A-MISSING-INPUT",
+          "status_reason": "entry_triggers: trigger_scorecard has no win-rate/entries this cycle.",
+          "target": 0.55,
+          "trend_4w": null,
+          "trend_decoration": "\u2192",
+          "value": null
+        },
+        {
+          "arm": null,
+          "bh_fdr_adjusted_p": null,
+          "ci_high": 0.6587583896229683,
+          "ci_low": 0.6046064620375484,
+          "ci_method": "wilson",
+          "criticality": "critical",
+          "derived_letter": "A",
+          "estimator": "wilson_precision",
+          "last_updated_utc": "2026-08-15T16:33:23.675063Z",
+          "measurement_horizon": null,
+          "metric_type": "pct",
+          "module": "executor",
+          "n_floor": 20,
+          "n_samples": 1215,
+          "name": "risk_guard",
+          "permanent_na": false,
+          "permanent_na_reason": null,
+          "red_line": 0.4,
+          "reliability": "high",
+          "source_path": "s3://alpha-engine-research/backtest/2026-08-14/shadow_book.json",
+          "status": "GREEN",
+          "status_reason": "risk_guard block-precision = 63.2% (Wilson CI [0.60, 0.66], N=1215 blocked); assessment=neutral.",
+          "target": 0.55,
+          "trend_4w": null,
+          "trend_decoration": "\u2192",
+          "value": 0.6321
+        }
+      ],
+      "letter": "F",
+      "module": "executor",
+      "n_components": 7,
+      "numeric_grade": 71.66666666666667,
+      "source_artifact_dates": [
+        "2026-08-14"
+      ],
+      "status": "RED"
+    },
+    "portfolio_outcome": {
+      "as_of": "2026-08-15T16:33:22.505746Z",
+      "components": [
+        {
+          "arm": null,
+          "bh_fdr_adjusted_p": null,
+          "ci_high": 3.9513765639018796,
+          "ci_low": -1.6874386659697436,
+          "ci_method": "bootstrap",
+          "criticality": "critical",
+          "derived_letter": "F",
+          "estimator": "sharpe_with_bootstrap_ci",
+          "last_updated_utc": "2026-08-15T16:33:19.161877Z",
+          "measurement_horizon": "since_inception",
+          "metric_type": "sharpe",
+          "module": "portfolio_outcome",
+          "n_floor": 60,
+          "n_samples": 110,
+          "name": "sharpe_ratio",
+          "permanent_na": false,
+          "permanent_na_reason": null,
+          "red_line": 0.0,
+          "reliability": "high",
+          "source_path": "s3://alpha-engine-research/trades/eod_pnl.csv",
+          "status": "RED",
+          "status_reason": "sharpe_ratio = 1.224, CI [-1.687, 3.951], N=110 vs target 1 / red-line 0 \u2014 RED.",
+          "target": 1.0,
+          "trend_4w": [
+            0.6511776737811377,
+            1.1587339275230941,
+            1.2157897697077906,
+            1.2235196423304746
+          ],
+          "trend_decoration": "\u2191\u2191",
+          "value": 1.2235196423304746
+        },
+        {
+          "arm": null,
+          "bh_fdr_adjusted_p": null,
+          "ci_high": 1.0936798098988367,
+          "ci_low": -4.939573474939124,
+          "ci_method": "bootstrap",
+          "criticality": "critical",
+          "derived_letter": "F",
+          "estimator": "info_ratio_bootstrap_ci",
+          "last_updated_utc": "2026-08-15T16:33:19.203217Z",
+          "measurement_horizon": "since_inception",
+          "metric_type": "ratio",
+          "module": "portfolio_outcome",
+          "n_floor": 60,
+          "n_samples": 110,
+          "name": "information_ratio",
+          "permanent_na": false,
+          "permanent_na_reason": null,
+          "red_line": 0.0,
+          "reliability": "high",
+          "source_path": "s3://alpha-engine-research/trades/eod_pnl.csv",
+          "status": "RED",
+          "status_reason": "information_ratio = -1.882, CI [-4.94, 1.094], N=110 vs target 0.5 / red-line 0 \u2014 RED.",
+          "target": 0.5,
+          "trend_4w": null,
+          "trend_decoration": "\u2192",
+          "value": -1.8821494476791316
+        }
+      ],
+      "letter": "F",
+      "module": "portfolio_outcome",
+      "n_components": 14,
+      "numeric_grade": 44.49620264011186,
+      "rows_dropped": 0,
+      "source_artifact_dates": [],
+      "status": "RED"
+    },
+    "predictor": {
+      "as_of": "2026-08-15T16:33:22.721908Z",
+      "components": [
+        {
+          "arm": null,
+          "bh_fdr_adjusted_p": null,
+          "ci_high": 0.16747067897727272,
+          "ci_low": 0.09443884261363636,
+          "ci_method": "bootstrap",
+          "criticality": "critical",
+          "derived_letter": "A",
+          "estimator": "rank_ic",
+          "last_updated_utc": "2026-08-15T16:33:22.653000Z",
+          "measurement_horizon": "21d",
+          "metric_type": "ic",
+          "module": "predictor",
+          "n_floor": 10,
+          "n_samples": 44,
+          "name": "meta_l2_ic",
+          "permanent_na": false,
+          "permanent_na_reason": null,
+          "red_line": 0.0,
+          "reliability": "high",
+          "source_path": "s3://alpha-engine-research/predictor/weights/meta/manifest.json",
+          "status": "GREEN",
+          "status_reason": "meta_l2_ic (leak-free CPCV) = 0.132 over 44 purged-CV paths (86% positive) vs target 0.05 / red-line 0.0 \u2014 NOT the in-sample fit IC (0.295085). ",
+          "target": 0.05,
+          "trend_4w": [
+            0.149423,
+            0.145258,
+            0.12235,
+            0.131924
+          ],
+          "trend_decoration": "\u2192",
+          "value": 0.131924
+        },
+        {
+          "arm": null,
+          "bh_fdr_adjusted_p": null,
+          "ci_high": null,
+          "ci_low": null,
+          "ci_method": null,
+          "criticality": "critical",
+          "derived_letter": "F",
+          "estimator": "rank_ic_oos",
+          "last_updated_utc": "2026-08-15T16:33:22.653076Z",
+          "measurement_horizon": "21d",
+          "metric_type": "ic",
+          "module": "predictor",
+          "n_floor": 8,
+          "n_samples": 16,
+          "name": "momentum_l1_ic",
+          "permanent_na": false,
+          "permanent_na_reason": null,
+          "red_line": 0.0,
+          "reliability": "high",
+          "source_path": "s3://alpha-engine-research/predictor/weights/meta/manifest.json",
+          "status": "RED",
+          "status_reason": "momentum_l1_ic = -0.02442, N=16 vs target 0.03 / red-line 0 \u2014 RED.",
+          "target": 0.03,
+          "trend_4w": null,
+          "trend_decoration": "\u2192",
+          "value": -0.024421
+        }
+      ],
+      "letter": "F",
+      "module": "predictor",
+      "n_components": 14,
+      "numeric_grade": 51.16818181818182,
+      "source_artifact_dates": [
+        "2026-08-14"
+      ],
+      "status": "RED"
+    },
+    "research": {
+      "as_of": "2026-08-15T16:33:23.438125Z",
+      "components": [
+        {
+          "arm": "tech_score_baseline (retired from live feed 2026-06-29)",
+          "bh_fdr_adjusted_p": null,
+          "ci_high": 0.07000883591010593,
+          "ci_low": -0.0102809997501494,
+          "ci_method": "wilson",
+          "criticality": "supporting",
+          "derived_letter": "C",
+          "estimator": "wilson_precision_edge",
+          "last_updated_utc": "2026-08-15T16:33:22.874652Z",
+          "measurement_horizon": "21d",
+          "metric_type": "pct",
+          "module": "research",
+          "n_floor": 30,
+          "n_samples": 592,
+          "name": "scanner",
+          "permanent_na": false,
+          "permanent_na_reason": null,
+          "red_line": -0.02,
+          "reliability": null,
+          "source_path": "s3://alpha-engine-research/backtest/2026-08-14/e2e_lift.json",
+          "status": "WATCH",
+          "status_reason": "[21d] scanner edge = +3.0% (precision 50.5% \u2212 base-rate 47.5%; Wilson CI [-0.01, +0.07], N=592 selected) vs target +5% / red-line -2%; 21d-alpha-lift +0.66% [arm: tech_score_baseline (retired from live feed 2026-06-29)].",
+          "target": 0.05,
+          "trend_4w": [
+            0.019371329814911187,
+            0.019371329814911187,
+            0.02992902170680939,
+            0.02992902170680939
+          ],
+          "trend_decoration": "\u2192",
+          "value": 0.02992902170680939
+        },
+        {
+          "arm": "six_team_cio (retired 2026-07-12)",
+          "bh_fdr_adjusted_p": null,
+          "ci_high": null,
+          "ci_low": null,
+          "ci_method": null,
+          "criticality": "diagnostic",
+          "derived_letter": "N/A",
+          "estimator": null,
+          "last_updated_utc": "2026-08-15T16:33:22.874722Z",
+          "measurement_horizon": null,
+          "metric_type": "pct",
+          "module": "research",
+          "n_floor": 1,
+          "n_samples": null,
+          "name": "sector_teams_avg",
+          "permanent_na": true,
+          "permanent_na_reason": "retired 2026-07-12: six-team+CIO research orchestration removed (config#1580 / config-I2993) \u2014 measured a graph that no longer produces. Superseded by the live-arm scanner attractiveness IC (attractiveness_ic, config-I2994) + the thinktank_coverage challenger arm.",
+          "red_line": null,
+          "reliability": null,
+          "source_path": "s3://alpha-engine-research/backtest/2026-08-14/e2e_lift.json",
+          "status": "N/A-NOT-IMPL",
+          "status_reason": "Accepted permanent N/A \u2014 retired 2026-07-12: six-team+CIO research orchestration removed (config#1580 / config-I2993) \u2014 measured a graph that no longer produces. Superseded by the live-arm scanner attractiveness IC (attractiveness_ic, config-I2994) + the thinktank_coverage challenger arm.",
+          "target": null,
+          "trend_4w": [
+            0.025794442228427028,
+            0.01974137931034481,
+            0.019414377929951154,
+            0.019414377929951154
+          ],
+          "trend_decoration": "\u2192",
+          "value": null
+        }
+      ],
+      "letter": "F",
+      "module": "research",
+      "n_components": 19,
+      "numeric_grade": 61.782417180966945,
+      "source_artifact_dates": [
+        "2026-08-14"
+      ],
+      "status": "RED"
+    },
+    "substrate": {
+      "as_of": "2026-08-15T16:33:40.386194Z",
+      "components": [
+        {
+          "arm": null,
+          "bh_fdr_adjusted_p": null,
+          "ci_high": null,
+          "ci_low": null,
+          "ci_method": null,
+          "criticality": "critical",
+          "derived_letter": "A",
+          "estimator": "freshness_age",
+          "last_updated_utc": "2026-08-15T16:33:24.227659Z",
+          "measurement_horizon": null,
+          "metric_type": "duration",
+          "module": "substrate",
+          "n_floor": 1,
+          "n_samples": 1,
+          "name": "price_cache_freshness",
+          "permanent_na": false,
+          "permanent_na_reason": null,
+          "red_line": 14.0,
+          "reliability": "high",
+          "source_path": "s3://alpha-engine-research/reference/price_cache/_freshness.json",
+          "status": "GREEN",
+          "status_reason": "price_cache_freshness = 0.3d since the price cache last refreshed vs target 7d / red-line 14d.",
+          "target": 7.0,
+          "trend_4w": null,
+          "trend_decoration": "\u2192",
+          "value": 0.2881960303703704
+        },
+        {
+          "arm": null,
+          "bh_fdr_adjusted_p": null,
+          "ci_high": null,
+          "ci_low": null,
+          "ci_method": null,
+          "criticality": "critical",
+          "derived_letter": "F",
+          "estimator": "distinct_cycle_success_4w",
+          "last_updated_utc": "2026-08-15T16:33:40.199006Z",
+          "measurement_horizon": "trailing_4w",
+          "metric_type": "pct",
+          "module": "substrate",
+          "n_floor": 3,
+          "n_samples": 52,
+          "name": "sf_success_rate_4w",
+          "permanent_na": false,
+          "permanent_na_reason": null,
+          "red_line": 0.8,
+          "reliability": "high",
+          "source_path": "stepfunctions:alpha-engine-{saturday,weekday,eod}-pipeline",
+          "status": "RED",
+          "status_reason": "sf_success_rate_4w = 79% (41/52 DISTINCT production-role cycles completed clean \u2014 recovery counts as clean \u2014 in 28d: {'ne-postclose-trading-pipeline': '17/18', 'ne-preopen-trading-pipeline': '16/20', 'ne-weekly-freshness-pipeline': '8/14'}) vs target 95% / red-line 80%. Re-keyed off per-execution (config#1059): a recovered cycle still produced its artifacts, so downstream tiles are NOT measured on a starved system.",
+          "target": 0.95,
+          "trend_4w": null,
+          "trend_decoration": "\u2192",
+          "value": 0.7884615384615384
+        }
+      ],
+      "letter": "F",
+      "module": "substrate",
+      "n_components": 10,
+      "numeric_grade": 70.06662126886846,
+      "source_artifact_dates": [
+        "2026-08-14"
+      ],
+      "status": "RED"
+    }
+  },
+  "tiles_overall_status": "RED"
+}
