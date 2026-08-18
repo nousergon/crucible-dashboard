@@ -38,8 +38,9 @@ fi
 # loads env, hits IMDS and reads the manifest, none of which belongs here.
 eval "$(awk '/^human_age\(\) \{/,/^\}/' "$TARGET_SCRIPT")"
 eval "$(awk '/^classify_timer_staleness\(\) \{/,/^\}/' "$TARGET_SCRIPT")"
+eval "$(awk '/^timer_failure_dedup_key\(\) \{/,/^\}/' "$TARGET_SCRIPT")"
 
-for fn in human_age classify_timer_staleness; do
+for fn in human_age classify_timer_staleness timer_failure_dedup_key; do
     if ! declare -F "$fn" >/dev/null; then
         echo "FAIL - $fn() not found in box_health.sh (extraction failed)"
         exit 1
@@ -200,6 +201,64 @@ for pair in "45:45s" "300:5m" "5400:1h" "93600:26h" "111600:31h" "172800:2d" "69
         FAILURES=$((FAILURES + 1))
     fi
 done
+
+echo "== the message carries the failing run's OWN timestamp and next elapse (alpha-engine-config-I7677) =="
+assert_problem "failing run carries its own timestamp, not a relative age" \
+    "failing run started Tue 2026-08-18 10:30:52 UTC" \
+    "$((NOW - 60))" 1800 failed "Tue 2026-08-18 10:30:52 UTC" "Tue 2026-08-25 10:30:00 UTC"
+assert_problem "failing run carries the timer's next scheduled attempt" \
+    "next attempt Tue 2026-08-25 10:30:00 UTC" \
+    "$((NOW - 60))" 1800 failed "Tue 2026-08-18 10:30:52 UTC" "Tue 2026-08-25 10:30:00 UTC"
+
+echo "== the message is IDENTICAL across ticks for the SAME failing run =="
+# This is what makes a repeat page recognisable as the same run, not a new
+# one -- the text must not depend on 'now' (a computed relative age would
+# change every 10-min tick and defeat identity-keyed dedup downstream).
+out1=$(classify_timer_staleness "unit.timer" "$NOW" "$((NOW - 60))" 1800 failed \
+    "Tue 2026-08-18 10:30:52 UTC" "Tue 2026-08-25 10:30:00 UTC")
+out2=$(classify_timer_staleness "unit.timer" "$((NOW + 21600))" "$((NOW - 60))" 1800 failed \
+    "Tue 2026-08-18 10:30:52 UTC" "Tue 2026-08-25 10:30:00 UTC")
+# Compare the FAILING line only. Advancing 'now' by 6h legitimately adds a
+# separate "has not run in ..." staleness line -- a different finding, whose
+# whole job is to depend on now. The invariant under test is that the
+# job-failing line itself does not.
+fail1=$(printf '%s\n' "$out1" | grep '^timer job failing: ')
+fail2=$(printf '%s\n' "$out2" | grep '^timer job failing: ')
+if [ -n "$fail1" ] && [ "$fail1" = "$fail2" ]; then
+    echo "ok   - message text is stable across ticks (now advanced 6h)"
+else
+    echo "FAIL - message changed with 'now' alone: [$fail1] vs [$fail2]"
+    FAILURES=$((FAILURES + 1))
+fi
+
+echo "== missing failing-run detail degrades gracefully (backward-compatible 5-arg call) =="
+assert_problem "5-arg call (no timestamp detail) still reports the failure" \
+    "timer job failing: unit.timer (last run result=failed)" \
+    "$((NOW - 60))" 1800 failed
+
+echo "== timer_failure_dedup_key is stable per run and changes when the run changes =="
+k1=$(timer_failure_dedup_key "router-degraded-mode-drill.timer" "exit-code" "Tue 2026-08-18 10:30:52 UTC")
+k2=$(timer_failure_dedup_key "router-degraded-mode-drill.timer" "exit-code" "Tue 2026-08-18 10:30:52 UTC")
+if [ "$k1" = "$k2" ]; then
+    echo "ok   - same (unit, result, timestamp) produces the same key"
+else
+    echo "FAIL - key is not stable for identical inputs: [$k1] vs [$k2]"
+    FAILURES=$((FAILURES + 1))
+fi
+k3=$(timer_failure_dedup_key "router-degraded-mode-drill.timer" "success" "Tue 2026-08-25 10:30:04 UTC")
+if [ "$k1" != "$k3" ]; then
+    echo "ok   - a new run (new Result, new timestamp) produces a DIFFERENT key"
+else
+    echo "FAIL - key did not change when the run changed: [$k1]"
+    FAILURES=$((FAILURES + 1))
+fi
+k4=$(timer_failure_dedup_key "other-unit.timer" "exit-code" "Tue 2026-08-18 10:30:52 UTC")
+if [ "$k1" != "$k4" ]; then
+    echo "ok   - different units never share a key"
+else
+    echo "FAIL - two different units produced the same key: [$k1]"
+    FAILURES=$((FAILURES + 1))
+fi
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
