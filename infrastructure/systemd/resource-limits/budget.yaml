@@ -137,7 +137,12 @@ headroom_warn_fraction: 0.90
 # egress-proxy units from an uncensored `memory.peak` read. max_steady_state_
 # fraction (0.50) is untouched — the new process is one more Python
 # interpreter against a live sum that sits well under its bound.
-max_overcommit_ratio: 1.42      # sum(memory_max) / ceiling. 1.42 with anthropic tenant at 300M.
+max_overcommit_ratio: 1.57      # sum(memory_max) / ceiling. Re-derived 2026-08-19
+# (alpha-engine-config-I7786) when litellm-proxy's cap moved 500M -> 1000M for
+# the Prisma-backed key store (see that unit's note). 4618M -> 5118M against a
+# 3263.15M ceiling = 1.569, rounded up. Re-derived per this file's own rule —
+# not shaved to fit — because the underlying steady-state need is measured,
+# not guessed. Was 1.42 with anthropic tenant at 300M.
 # 2026-08-16: this bound now measures the WORKING SET (sum of anon + swap),
 # not sum(memory.current), and the constant was re-derived rather than carried
 # across (Brian ruling, alpha-engine-config-I7449, option (c)).
@@ -586,16 +591,30 @@ services:
   # ── dev infrastructure ──────────────────────────────────────────────────
   - unit: litellm-proxy.service
     port: 8980
-    memory_high: 350M
-    memory_max: 500M
+    memory_high: 750M
+    memory_max: 1000M
     note: >
       DO NOT LOWER without re-testing a cold start. Calibrated 2026-07-27
       (alpha-engine-config-I4441/I4451): at 150M/300M this unit could never
       cold-start — importing litellm's dependency tree exceeded the cap, the
       cgroup throttled continuously, and the service reported active while
-      never binding :8980. Steady state 308M; the gap between that and 500M is
-      startup headroom, not slack. Separately has known memory growth (I4441);
+      never binding :8980. Separately has known memory growth (I4441);
       Restart=always now recycles it on an OOM kill instead of letting it die.
+
+      RE-CALIBRATED 2026-08-19 (alpha-engine-config-I7786): the I7063
+      deliverable-3 companion (DATABASE_URL Prisma-backed virtual-key store)
+      merged and made litellm spawn a persistent `prisma` query-engine
+      subprocess plus do DB init at every start. Measured live with a
+      temporary 900M/1200M override: steady state settled at 606 MiB
+      (`MemoryCurrent=635420672`), stable across 3+ minutes — roughly double
+      the pre-Prisma 308 MiB this note previously cited. Under the old
+      350M/500M budget the unit throttled continuously for 7+ minutes,
+      never bound :8980, and drove the box's swap to 0B free while doing it.
+      750M/1000M keeps the same ~1.65x(steady) ratio the original 500M/308M
+      calibration used. Re-verify with `check_memory_budget.py --installed`
+      after deploy — this cap was NOT re-measured against
+      `max_steady_state_fraction`, only against its own startup/steady
+      behavior.
 
   - unit: llm-egress-proxy.service
     port: 8990
