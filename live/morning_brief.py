@@ -6,7 +6,8 @@ This is the impure shell around the pure cadence core in
   * reads the producer's daily news (``live/loaders/daily_news.py``),
   * captures the broad-market snapshot (``live/loaders/market_snapshot.py``),
   * runs the four-gate cadence to decide GENERATE / REUSE / CLOSED,
-  * on GENERATE, builds the brief via OpenRouter (DeepSeek V4 Flash),
+  * on GENERATE, builds the brief through the krepis model router (``low``
+    group),
   * persists ``{brief text + snapshot + generated_at + call_count}`` keyed by
     ``trading_day`` in ``st.session_state`` so the next rerun can evaluate the
     throttle + materiality gates,
@@ -23,15 +24,24 @@ migration that NO ``secrets.toml`` exists anywhere on the dashboard EC2 box
 (``i-09b539c844515d549``), so this call site was silently dead in production
 (``_anthropic_api_key()`` always returned ``None``, and the fail-soft path
 swallowed it into an "unavailable" notice with no operator-visible signal).
-Now uses the fleet-SOTA ``krepis.llm.LLMClient`` OpenRouter transport (the
-Think-Tank-ratified multi-provider adapter — see
-``crucible-research/thinktank/client.py`` / ``krepis.llm``), with the API key
-resolved via ``nousergon_lib.secrets.get_secret("OPENROUTER_API_KEY")`` —
-SSM-first (``/alpha-engine/OPENROUTER_API_KEY``, readable by the dashboard
-box's existing ``alpha-engine-ssm-read`` instance-role policy, no new IAM),
-env fallback. This is also the module's own test file's documented preferred
-pattern (see ``tests/test_no_secret_environ_reads.py``) over the previously
-used, and here non-functional, ``st.secrets`` path.
+
+**alpha-engine-config-I6367 / alpha-engine-config-I7879 (2026-08-20): migrated
+off direct OpenRouter linkage onto the krepis model router.** The intermediate
+state (2026-07-19 → 2026-08-20) built a raw ``ModelSpec(provider="openrouter",
+model="deepseek/deepseek-v4-flash", ...)`` here and resolved
+``OPENROUTER_API_KEY`` directly via ``nousergon_lib.secrets.get_secret`` — the
+exact direct-linkage shape Brian's 2026-08-03 ruling (I6367) forbids (no agent
+may be directly linked to OpenRouter) and that sibling call sites
+(``crucible-evaluator/director/agent.py``,
+``crucible-research/producers/single_agent.py``) had already migrated off of.
+This call site was the one holdout, tracked by I7879 and pre-cleared in
+``.openrouter-allowlist.yaml`` pending this fix. Now calls
+``krepis.router.resolve_group_spec("low", exec_context="ec2", wire="openai")``
+— model, endpoint, credential and the ``reasoning`` param are all registry
+decisions (model-router-policy §2 layer 5); this module states only its
+capability tier (``low`` — cheap, high-volume, short output) and where it
+runs (the dashboard box, ``ec2``). No model id, base URL, provider name or API
+key is held here.
 """
 
 from __future__ import annotations
@@ -57,17 +67,17 @@ from morning_brief_cadence import (
 logger = logging.getLogger(__name__)
 
 ET = ZoneInfo("America/New_York")
-# OpenRouter/DeepSeek V4 Flash (alpha-engine-config-I2997, 2026-07-19).
-# ID verified two ways: (1) live against the OpenRouter models API
-# (`GET https://openrouter.ai/api/v1/models` lists `deepseek/deepseek-v4-flash`
-# — "DeepSeek: DeepSeek V4 Flash"); (2) cross-checked against two independent
-# live fleet configs already running this exact ID: morning-signal's SSM
-# `/morning-signal/config-yaml` `fallback_llm`, and crucible-research's
-# `evals/judge_models.py::OPENROUTER_SHADOW` (live-verified 2026-07-18). A
-# hand-typed/wrong OpenRouter model ID silently killed morning-signal on
-# 2026-07-15 (`deepseek/deepseek-chat-v4` is not a real model) — never
-# hand-write one.
-OPENROUTER_MODEL = "deepseek/deepseek-v4-flash"
+
+# Router group addressing (alpha-engine-config-I6367 / I7879). `low` is the
+# correct tier: this call is cheap and high-volume (one short brief per
+# throttle window) and its output is "a few short paragraphs" (_MAX_TOKENS
+# below) — the shape `low`'s members (deepseek-v4-flash-low primary,
+# gpt-oss-120b fallback) exist for. Both declare `reachable_from: [laptop,
+# ec2]` in LLM_MODEL_REGISTRY.yaml, and the dashboard box IS `ec2`
+# (model-router-policy R28/R29) — this module declares only where it runs,
+# never which routes it can reach.
+ROUTER_GROUP = "low"
+ROUTER_EXEC_CONTEXT = "ec2"
 _SESSION_KEY = "morning_brief_state"        # st.session_state cache key
 _MAX_TOKENS = 900                           # brief is a few short paragraphs
 
@@ -134,30 +144,7 @@ def _save_state(state: BriefState) -> None:
     st.session_state[_SESSION_KEY] = state.to_dict()
 
 
-# ── OpenRouter key resolution (nousergon_lib.secrets: SSM-first, env
-#    fallback — no os.environ.get/getenv direct read; see
-#    tests/test_no_secret_environ_reads.py) ──────────────────────────────────
-
-def _openrouter_api_key() -> Optional[str]:
-    """Resolve the OpenRouter key via ``nousergon_lib.secrets.get_secret``.
-
-    SSM-first (``/alpha-engine/OPENROUTER_API_KEY``, readable by the
-    dashboard box's instance role — the same ``alpha-engine-ssm-read``
-    inline policy every other SSM-backed fleet secret on this box uses, no
-    new IAM needed), env fallback. Predates this call site: verified live
-    (alpha-engine-config-I2997 migration, 2026-07-19) that NO
-    ``.streamlit/secrets.toml`` exists anywhere on the box — the prior
-    ``st.secrets``-based Anthropic key resolution this replaced was always
-    returning ``None`` in production. Returns None when unavailable — the
-    card then shows a friendly "AI brief unavailable" notice instead of
-    erroring (fail-soft; this is a UI convenience, not a producer).
-    """
-    from nousergon_lib.secrets import get_secret
-
-    return get_secret("OPENROUTER_API_KEY", required=False, default=None) or None
-
-
-# ── The LLM call (OpenRouter / DeepSeek V4 Flash) ──────────────────────────
+# ── The LLM call (krepis model router, `low` group) ─────────────────────────
 
 def _build_prompt(snapshot: MarketSnapshot, holdings_news: list[dict]) -> str:
     """Assemble the user prompt: macro snapshot first, then holdings news."""
@@ -210,41 +197,72 @@ def generate_morning_brief(
     api_key: Optional[str] = None,
     client_factory=None,
 ) -> Optional[str]:
-    """Build the brief via OpenRouter (DeepSeek V4 Flash, see ``OPENROUTER_MODEL``).
-    Returns the brief text, or None on any failure (no key, SDK/transport error)
-    so the caller degrades gracefully — this is a UI convenience, not a
-    producer; the fail-soft contract predates the alpha-engine-config-I2997
-    transport migration and is unchanged by it.
+    """Build the brief through the krepis model router (``low`` group).
+    Returns the brief text, or None on any failure (router resolution,
+    SDK/transport error) so the caller degrades gracefully.
+
+    FAIL-SOFT, DELIBERATELY (model-router-policy §3.4 R20 governs the
+    resolver itself, which already fails closed — no direct-provider
+    fallback, no ambient key, no default endpoint on a resolution failure;
+    this function's own None-return is a layer above that, and is the
+    documented deviation from the fleet's fail-loud default):
+      (a) failure mode swallowed — the router is unreachable, the `low`
+          group has no reachable entry, or the resolved endpoint's
+          completion call raises;
+      (b) why the primary deliverable survives — this is a UI convenience
+          card on a read-only dashboard, not a producer; `get_or_generate_brief`
+          falls through to the last persisted brief (or a disabled-style
+          notice) on any None here, so no pipeline artifact and no trade
+          decision depends on this call succeeding;
+      (c) recording surface — every failure path below logs at WARNING
+          naming the router (or the transport) as the failed dependency, so
+          the degradation is operator-visible in the box's own logs even
+          though nothing downstream breaks.
 
     ``client_factory`` is the krepis.llm.LLMClient test seam (mirrors the
-    Think Tank pattern): a callable ``(spec, api_key) -> transport_client``.
-    Production leaves it unset — ``LLMClient`` lazily builds the real
-    ``openai.OpenAI`` client pointed at OpenRouter's ``base_url``.
-
-    ``reasoning={"exclude": True}`` mirrors the two other live fleet DeepSeek
-    V4 consumers (morning-signal's ``fallback_llm``, crucible-research's
-    ``evals/judge_models.py::OPENROUTER_SHADOW``) — without it, a reasoning-
-    capable OpenRouter model can burn its entire output budget on chain-of-
-    thought and return empty content even at a generous ``max_tokens``
-    (live-reproduced fleet-wide, config#1659 / config#2575).
+    Think Tank / single_agent.py pattern): a callable
+    ``(spec, api_key) -> transport_client``. ``api_key`` is likewise a test
+    seam only — in production the registry decides the credential
+    (``spec.api_key_env``), resolved by krepis at call time; this module
+    never reads or holds one.
     """
     from krepis.llm import LLMClient
-    from krepis.llm_config import ModelSpec
+    from krepis.router import resolve_group_spec, route_is_degraded
 
-    key = api_key or _openrouter_api_key()
-    if not key:
-        logger.warning("[morning_brief] no OpenRouter API key — skipping generation")
-        return None
     try:
-        spec = ModelSpec(
-            provider="openrouter",
-            model=OPENROUTER_MODEL,
+        spec, route = resolve_group_spec(
+            ROUTER_GROUP,
+            exec_context=ROUTER_EXEC_CONTEXT,
+            wire="openai",
             max_tokens=_MAX_TOKENS,
-            reasoning={"exclude": True},
         )
+    except Exception as e:  # noqa: BLE001 — fail-soft (a)/(b)/(c) above
+        logger.warning(
+            "[morning_brief] router resolution failed for group=%s "
+            "exec_context=%s (%s: %s) — skipping generation",
+            ROUTER_GROUP, ROUTER_EXEC_CONTEXT, type(e).__name__, e,
+        )
+        return None
+
+    degraded = route_is_degraded(route)
+    logger.info(
+        "[morning_brief] route: group=%s model=%s provider=%s route=%s "
+        "degraded=%s", ROUTER_GROUP, route.get("deployment_id"), spec.provider,
+        route.get("route"), degraded,
+    )
+    if degraded:
+        logger.warning(
+            "[morning_brief] route DEGRADED: group=%s primary=%s served=%s "
+            "route=%s", ROUTER_GROUP,
+            route.get("primary_registry_id") or route.get("primary_model"),
+            route.get("registry_id") or route.get("deployment_id"),
+            route.get("route"),
+        )
+
+    try:
         client = LLMClient(
             spec,
-            api_key=key,
+            api_key=api_key,
             client_factory=client_factory,
             callsite_id=CALLSITE_ID,
         )
@@ -255,9 +273,10 @@ def generate_morning_brief(
         )
         text = (result.text or "").strip()
         return text or None
-    except Exception as e:  # noqa: BLE001 — fail-soft; card shows last brief / notice
+    except Exception as e:  # noqa: BLE001 — fail-soft (a)/(b)/(c) above
         logger.warning(
-            "[morning_brief] OpenRouter call failed (%s: %s)", type(e).__name__, e
+            "[morning_brief] router-resolved call failed (%s: %s)",
+            type(e).__name__, e,
         )
         return None
 
