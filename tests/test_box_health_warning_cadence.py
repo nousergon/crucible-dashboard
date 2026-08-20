@@ -7,9 +7,18 @@ standing `memory budget: BREACH` — a condition with an open decision on it
 action urgent)"* — therefore produced **24 notifications in 24 hours** for one
 unchanged condition, measured from `journalctl -u box-health.service`.
 
-The tier below it, `info`, carries the same "(no action urgent)" label and was
-already daily. Two tiers making the same promise at different cadences is the
+The tier below it, `info`, carried the same "(no action urgent)" label and was
+already daily. Two tiers making the same promise at different cadences was the
 inconsistency; the noisier one was wrong.
+
+**Superseded in part the same day.** Lowering the window was necessary and not
+sufficient: `info`/`warning` are "silent" only in the sense of
+`disable_notification=True`, which suppresses the phone push and not the
+message, so a daily info line still arrived in the chat every day. The `info`
+tier no longer publishes to the channel at all — its findings go to the
+console's fleet-check surface (`emit_box_health_hygiene.py`). `warning` keeps
+its channel publish and its 1440 window, because that tier is the Overseer
+intake bus's declared source.
 
 **What makes lowering the cadence safe is the dedup KEY, not the window.**
 `publish_problems` derives the key from the problem SET, so a warning
@@ -45,14 +54,32 @@ class TestTierCadence:
             "one standing memory-budget breach (alpha-engine-config-I7822)."
         )
 
-    def test_warning_and_info_agree(self):
-        """Both prefixes end in '(no action urgent)'. Two tiers making the same
-        promise at different cadences is what produced the noise."""
+    def test_info_has_no_cadence_because_it_has_no_channel_publish(self):
+        """Superseded 2026-08-20 by the routing change, not relaxed.
+
+        This assertion used to require `warning` and `info` to share a window,
+        on the reasoning that two tiers carrying the same "(no action urgent)"
+        label should not repeat at different rates. The premise was that both
+        tiers were quiet in the channel. They were not: krepis.alerts'
+        `SEVERITY_PUSH` is {error, critical} and everything else is published
+        with `disable_notification=True`, which suppresses the phone push and
+        NOT the message — so the info tier still landed in Brian's chat daily.
+
+        `info` now has no `publish_problems` call at all; its findings go to the
+        console's fleet-check surface. There is therefore no window to agree
+        with, and asserting one would silently pass again the moment the
+        channel publish came back.
+        """
         calls = _publish_calls()
-        assert calls.get("warning") == calls.get("info"), (
-            "warning and info both label themselves '(no action urgent)' and "
-            f"must repeat at the same cadence — warning={calls.get('warning')} "
-            f"info={calls.get('info')}"
+        assert "info" not in calls, (
+            f"the info tier publishes to krepis.alerts again (window "
+            f"{calls.get('info')}). A window is not the fix — the tier is "
+            "visible in the channel at every severity below `error`."
+        )
+        src = BOX_HEALTH.read_text()
+        assert "emit_hygiene_envelope" in src, (
+            "the info tier has no channel publish AND no console emitter — "
+            "that is suppression, not routing."
         )
 
     def test_critical_stays_hourly(self):
