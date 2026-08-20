@@ -1,0 +1,15 @@
+[Unit]
+Description=Publish per-service memory every 5 minutes (alpha-engine-config-I7804)
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+# Persistent so a missed window after a reboot still runs. Offset from
+# emit-oom-metric.timer's OnBootSec=2min so the two AWS CLI invocations -- each
+# ~150M peak on a box whose whole argument is memory headroom -- do not land in
+# the same second at boot, which is the moment the box is tightest.
+Persistent=true
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
