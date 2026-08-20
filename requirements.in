@@ -76,7 +76,30 @@ yfinance>=1.5.1
 # `krepis.spot_bootstrap` itself (the whole module) does not exist before
 # 0.59.x's EC2-spot/SSM resilience surface, per this file's own package
 # summary line.
-krepis[openai]>=0.59.6
+# Floor raised again to 0.59.14 (2026-08-19, alpha-engine-config-I7609/I7675):
+# `krepis.spot_evidence` — the spot-teardown chokepoint that copies a FAILED
+# run's S3 staging to `_spot_evidence/` BEFORE deleting it — first ships in
+# 0.59.13. THIS venv is the interpreter every weekly-SF spot launcher resolves
+# as `LIB_PYTHON` (`nousergon-data/infrastructure/_spot_common.sh:62`), so a pin
+# below 0.59.13 means the module is absent on the launcher and the launcher
+# takes its fallback branch. Measured live 2026-08-19 on `i-08d7e8358772b280c`
+# (DataPhase1 of `watch-rerun-2026-08-18-3`):
+# `No module named krepis.spot_evidence` → staging RETAINED, un-lifecycled.
+# The same absence on 2026-08-15 let `PredictorBacktest`'s teardown delete the
+# only uncapped copy of its own failure output; that cause is permanently
+# unrecoverable.
+#
+# UPPER BOUND `<0.59.15` IS LOAD-BEARING, NOT TIDINESS (alpha-engine-config-I7634).
+# 0.59.15 makes `krepis.session_dlp` shell out to a `gitleaks` binary and FAIL
+# CLOSED when it is absent. This box has no gitleaks and `deploy-on-merge.sh`
+# installs straight from this lockfile, so a bump past 0.59.14 puts the DLP hook
+# on a box that cannot satisfy it — and it surfaces as an LLM failure naming a
+# scanner, not as a pin problem. Verified by file, not by changelog:
+# `git grep -l gitleaks v0.59.14 -- src/krepis/` is empty; the same command at
+# v0.59.15 returns `src/krepis/session_dlp.py`.
+# REMOVE THIS CAP when I7634 deliverable 1 provisions gitleaks 8.30.1 on this
+# box AND adds it to the provisioning the box is rebuilt from. Not before.
+krepis[openai]>=0.59.14,<0.59.15
 # nousergon-lib (renamed from alpha-engine-lib at v0.60.0) provides
 # setup_logging used by app.py + health_checker.py
 # to attach the FlowDoctorHandler when FLOW_DOCTOR_ENABLED=1, the
