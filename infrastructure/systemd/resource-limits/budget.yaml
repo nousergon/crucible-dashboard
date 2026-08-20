@@ -898,6 +898,19 @@ timers:
   - unit: emit-oom-metric.timer
     max_staleness: 20m
     note: every 5min; the OOM counter feeding the T0-3 saturation alarms
+  - unit: emit-service-memory.timer
+    max_staleness: 20m
+    note: >-
+      Every 5 min (OnBootSec=3min, OnUnitActiveSec=5min, Persistent=true). 4x the
+      cadence, matching emit-oom-metric above. This is the producer of the
+      per-service `AlphaEngine/Host ServiceMemoryMiB{Unit}` series that T1-8
+      depends on to name WHICH service is responsible for a working-set breach —
+      so a stop here is not a lost metric, it is the loss of the only thing that
+      makes a T1-8 finding actionable. Installed 2026-08-20 by
+      install-cloudwatch-agent-config.sh with no row here, which is why
+      box_health.sh raised the missing-threshold notice; see
+      tests/test_every_installed_timer_has_a_deadman_row.py for the guard that
+      now blocks that state in CI.
   - unit: boot-pull.timer
     max_staleness: 26h
     note: daily 12:00 UTC + up to 5min randomized delay
