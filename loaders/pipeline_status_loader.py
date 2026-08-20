@@ -665,7 +665,10 @@ RELIABILITY_STAGE_ORDER: dict[str, tuple[str, ...]] = {
         "CodeFreshnessGate",
         "LaunchMorningEnrichSpot",
         "LaunchMorningArcticAppendSpot",
-        "Scanner",
+        # Scanner removed from this SF by nousergon-data-PR1464 (merged
+        # 2026-08-20T18:25:51Z): per Brian's 2026-08-20 ruling the scanner
+        # forms its cuts weekly rather than every weekday. The weekly SF's
+        # Scanner stage (above, ne-weekly-freshness-pipeline) is unaffected.
         "PredictorInference",
         "CheckPredictorCoverage",
         "RunMorningPlanner",
