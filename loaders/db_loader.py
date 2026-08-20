@@ -133,6 +133,75 @@ def get_macro_snapshots() -> pd.DataFrame:
     return query_research_db(sql)
 
 
+# ---------------------------------------------------------------------------
+# Last-write dates (config-I2638 staleness chokepoint)
+# ---------------------------------------------------------------------------
+#
+# The date column each research.db table stamps on write. Source: producer
+# schemas in crucible-research/archive/schema.py (investment_thesis,
+# score_performance, predictor_outcomes, scanner_appearances,
+# macro_snapshots, candidate_tenures, population_history, stock_archive,
+# thesis_history, scanner_evaluations, team_candidates, cio_evaluations,
+# team_inputs), crucible-backtester/analysis/attestation.py
+# (universe_returns), and crucible-executor/executor/trade_logger.py
+# (executor_shadow_book). stock_archive has no per-row write date — its
+# closest proxy is `last_analyzed` (updated on the row's most recent touch).
+TABLE_DATE_COLUMNS: dict[str, str] = {
+    "investment_thesis": "date",
+    "score_performance": "score_date",
+    "predictor_outcomes": "prediction_date",
+    "scanner_appearances": "date",
+    "macro_snapshots": "date",
+    "candidate_tenures": "entry_date",
+    "population_history": "date",
+    "stock_archive": "last_analyzed",
+    "thesis_history": "run_date",
+    "universe_returns": "eval_date",
+    "scanner_evaluations": "eval_date",
+    "team_candidates": "eval_date",
+    "cio_evaluations": "eval_date",
+    "team_inputs": "eval_date",
+    "executor_shadow_book": "date",
+}
+
+
+def get_table_max_dates(tables: list[str] | None = None) -> dict[str, str | None]:
+    """Return ``{table: MAX(date_col)}`` — the measured last-write date for
+    each research.db table in ``tables`` (defaults to every table in
+    ``TABLE_DATE_COLUMNS``).
+
+    This is the staleness chokepoint for every console surface that renders
+    a research.db row/record COUNT (config-I2638): a table whose producer
+    stopped writing renders identically to a healthy one when only its
+    count is shown, and "frozen" only becomes visible next to a measured
+    last-write date. Any future caller of ``_table_counts``-style row
+    counts should pull the matching entry from here rather than rendering
+    the count alone.
+
+    None per table when the connection failed, the table has zero rows, or
+    the table isn't in ``TABLE_DATE_COLUMNS`` — the caller renders "—",
+    never a manufactured date (feedback_no_silent_fails)."""
+    names = tables if tables is not None else list(TABLE_DATE_COLUMNS)
+    conn = load_research_db()
+    if conn is None:
+        return dict.fromkeys(names, None)
+    out: dict[str, str | None] = {}
+    for table in names:
+        date_col = TABLE_DATE_COLUMNS.get(table)
+        if not date_col:
+            out[table] = None
+            continue
+        try:
+            row = conn.execute(
+                f"SELECT MAX({date_col}) FROM {table}"  # noqa: S608 — table/col from TABLE_DATE_COLUMNS, not user input
+            ).fetchone()
+            out[table] = row[0] if row and row[0] else None
+        except Exception as e:
+            logger.warning("get_table_max_dates(%s): %s", table, e)
+            out[table] = None
+    return out
+
+
 def get_distinct_symbols() -> list[str]:
     """
     Return sorted list of distinct symbols from investment_thesis.

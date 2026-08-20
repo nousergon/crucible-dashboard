@@ -24,6 +24,8 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
+from datetime import date as _date
+
 from loaders.s3_loader import (
     load_company_names,
     load_latest_signals,
@@ -31,7 +33,26 @@ from loaders.s3_loader import (
     load_order_book_rationale,
     load_predictions_json,
     load_universe_archive,
+    load_universe_archive_last_modified,
 )
+
+# The research thesis archive is written on the weekly research cycle.
+# Two missed cycles (14d) is a real gap, not calendar noise — flag it loud.
+# (config-I2638: the multi-agent research graph that wrote this archive
+# retired 2026-07-12 with zero replacement producer, so this banner is
+# expected to fire permanently until a producer exists again.)
+_ARCHIVE_STALE_DAYS = 14
+
+
+def _archive_age_days(last_modified: str | None) -> int | None:
+    """Whole days between ``last_modified`` (YYYY-MM-DD) and today, or None
+    if unparseable/missing."""
+    if not last_modified:
+        return None
+    try:
+        return (_date.today() - _date.fromisoformat(last_modified)).days
+    except ValueError:
+        return None
 
 
 def _signals_entry(ticker: str) -> dict:
@@ -102,6 +123,8 @@ def _render(ticker: str, positions_snapshot, trades_df: "pd.DataFrame | None") -
     pos = _position_info(ticker, positions_snapshot)
     sig = _signals_entry(ticker)
     archive = load_universe_archive(ticker) or {}
+    archive_last_modified = load_universe_archive_last_modified(ticker) if archive else None
+    archive_age_days = _archive_age_days(archive_last_modified)
     pred = (load_predictions_json() or {}).get(ticker) or {}
 
     # ── Header ───────────────────────────────────────────────────────────
@@ -156,7 +179,21 @@ def _render(ticker: str, positions_snapshot, trades_df: "pd.DataFrame | None") -
         st.write(summary)
     if archive:
         when = archive.get("date") or archive.get("last_material_change_date")
-        if when:
+        if archive_age_days is not None and archive_age_days >= _ARCHIVE_STALE_DAYS:
+            st.warning(
+                f"⚠️ **Stale thesis — last written {archive_last_modified} "
+                f"({archive_age_days}d ago).** No newer archive has been "
+                "persisted since; treat catalyst/risk below as historical, "
+                "not current.",
+                icon="⚠️",
+            )
+        elif archive_last_modified:
+            st.caption(f"Archive last written: {archive_last_modified}")
+        elif when:
+            # Fallback: no measured S3 last-modified available (e.g. a
+            # transient head_object failure) — show the payload's
+            # self-reported date rather than nothing, but never as a
+            # substitute for the staleness check above.
             st.caption(f"Latest persisted thesis: {when}")
         cat = archive.get("key_catalyst")
         risk = archive.get("key_risk")

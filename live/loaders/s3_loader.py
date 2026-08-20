@@ -400,10 +400,57 @@ def load_universe_archive(ticker: str) -> dict | None:
     feedback_no_silent_fails — the modal renders a "no archive yet" fallback
     rather than an empty panel). TTL-cached (research TTL ~1 hr) — the
     archive/universe/ prefix is one of the larger per-ticker stores.
+
+    NOTE: the payload's own ``date`` / ``last_material_change_date`` fields
+    are producer-asserted, not measured — a producer that stopped running
+    (as the multi-agent research graph did on 2026-07-10, config-I2638)
+    leaves that field frozen at its last write and says nothing about how
+    old the artifact actually is. Callers that need to know whether this
+    thesis is still current MUST pair this with
+    ``load_universe_archive_last_modified(ticker)`` below, which reads the
+    S3 object's actual ``LastModified`` — the measured recency this class of
+    defect requires (config-I2638: rendering a payload without its recency
+    reads a five-month-stale thesis as a current one).
     """
     if not ticker:
         return None
     return download_s3_json(
+        _research_bucket(), f"archive/universe/{ticker}/thesis.json"
+    )
+
+
+@cached(ttl_key="research")
+def get_s3_object_last_modified(bucket: str, key: str) -> str | None:
+    """Return an S3 object's ``LastModified`` date (``YYYY-MM-DD``, UTC), or
+    None if the object doesn't exist or the request fails.
+
+    The staleness chokepoint for this loader (config-I2638): any artifact
+    whose payload may outlive its producer should be paired with this call
+    rather than trusting a self-reported date field inside the JSON, which
+    freezes silently when the writer stops. Uses ``head_object`` — a
+    metadata-only call, no body transfer, safe to call alongside the full
+    GET the caller already issues for the payload itself.
+    """
+    try:
+        client = get_s3_client()
+        resp = client.head_object(Bucket=bucket, Key=key)
+        lm = resp.get("LastModified")
+        return lm.date().isoformat() if lm else None
+    except Exception as e:
+        code = getattr(getattr(e, "response", {}), "get", lambda *a: {})("Error", {}).get("Code", "")
+        if code not in ("404", "NoSuchKey"):
+            logger.warning("head_object failed for %s/%s: %s", bucket, key, e)
+        return None
+
+
+def load_universe_archive_last_modified(ticker: str) -> str | None:
+    """S3 ``LastModified`` date of ``archive/universe/{TICKER}/thesis.json`` —
+    the measured write date of the artifact, independent of whatever the
+    payload's own ``date`` field claims. Pairs with ``load_universe_archive``;
+    None if the ticker has no persisted archive or ``ticker`` is empty."""
+    if not ticker:
+        return None
+    return get_s3_object_last_modified(
         _research_bucket(), f"archive/universe/{ticker}/thesis.json"
     )
 
