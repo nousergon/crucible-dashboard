@@ -136,6 +136,16 @@ _BLOCKED_BY_LABELS = {
         "leaderboard primary horizon ≠ the horizon this gate decides on",
     "frozen": "frozen (--freeze)",
     "unclassified_error": "error",
+    # Shadow-only hold (alpha-engine-config-I2515, Brian's 2026-08-20 ruling;
+    # config-I7836). NOT a gate failure and NOT an outage — the gate ran,
+    # scored the arms, and policy forbids the promotion because Think Tank is
+    # measured-but-not-promotable. See the explicit `outcome ==
+    # "held_shadow_only"` branch in _gate_state_label below, which is what
+    # actually renders this case (the `blocked_by` label here exists so
+    # TestBlockedBySlugContractParity's schema-enum sweep and any raw
+    # `blocked_by` read stay covered even though the outcome branch takes
+    # precedence in the normal render path).
+    "shadow_only_arm": "held — Think Tank is shadow-only, not eligible to win (ruling 2026-08-20)",
     # RETIRED pre-I2518 HAC/hysteresis/cooldown engine — read-tolerated for
     # historical audit records only; no live code path emits these anymore.
     "insufficient_matured_cohorts": "insufficient data (retired engine)",
@@ -198,6 +208,18 @@ def _history_frame(lb_prefix: str, dates: list[str], limit: int = 30) -> pd.Data
     return pd.DataFrame(rows)
 
 
+def _counterfactual_winner_label(audit: dict) -> str:
+    """Human label for the arm that WOULD have been promoted this run, read
+    from the audit record's ``counterfactual_winner`` (alpha-engine-config
+    -I2515 / crucible-backtester-PR712). Absent-safe: "" when the field is
+    missing, which is the normal case outside a held_shadow_only week — this
+    field only has a value when a hold is what makes it worth stating."""
+    winner = audit.get("counterfactual_winner")
+    if not winner:
+        return ""
+    return _CHAMPION_ARM_LABELS.get(winner, winner)
+
+
 def _gate_state_label(audit: dict) -> str:
     """Human label for one weekly audit record's outcome, per contracts/
     producer_champion_audit.schema.json's ``outcome``/``blocked_by`` enums."""
@@ -206,6 +228,17 @@ def _gate_state_label(audit: dict) -> str:
         return f"{outcome} this run"
     if outcome == "error":
         return f"error: {audit.get('detail', 'unclassified')}"
+    if outcome == "held_shadow_only":
+        # Distinct from a no_contest (evidence didn't support a comparison)
+        # and from a defended incumbency (the champion won on the merits):
+        # here the gate ran, scored both arms, and POLICY — not the
+        # evidence — is what kept the pointer still. Wording deliberately
+        # avoids "failed"/"blocked"/"error": the gate worked as designed.
+        label = "held — shadow-only, policy forbids promotion (ruling 2026-08-20)"
+        winner = _counterfactual_winner_label(audit)
+        if winner:
+            label += f"; would have promoted {winner}"
+        return label
     blocked = audit.get("blocked_by") or []
     if not blocked:
         return outcome or "unknown"
@@ -265,6 +298,7 @@ def _champion_history_frame(dates: list[str], limit: int = 30) -> pd.DataFrame:
             "Consecutive wins": audit.get("consecutive_wins"),
             "Cooldown until": audit.get("cooldown_until"),
             "Gate state": _gate_state_label(audit),
+            "Would have promoted": _counterfactual_winner_label(audit),
             "Evidence": _evidence_label(audit),
         })
     return pd.DataFrame(rows)
