@@ -1,0 +1,35 @@
+# .openrouter-allowlist.yaml — pre-cleared OpenRouter-literal matches
+# (alpha-engine-config-I7864, wiring the fleet-wide guard). Schema:
+# nousergon-lib scripts/openrouter_guard.py::load_allowlist.
+schema_version: 1
+entries:
+  - path: live/morning_brief.py
+    pattern: base_url
+    reason: >-
+      Same violation as above (env_key entry) — module docstring + a comment describe calling OpenRouter directly.
+    expires: "2026-09-19"
+    tracking: alpha-engine-config-I7879
+  - path: live/morning_brief.py
+    pattern: env_key
+    reason: >-
+      The dashboard morning-brief LLM call still resolves OPENROUTER_API_KEY directly and constructs ModelSpec(provider="openrouter", ...) — never migrated under I6367/I6559 the way sibling call sites were. Genuine unmigrated violation; the fix looks mechanical (mirrors crucible-research/producers/single_agent.py) but needs verifying against this box registry group + this repo test suite before merge.
+    expires: "2026-09-19"
+    tracking: alpha-engine-config-I7879
+  - path: live/morning_brief.py
+    pattern: provider_literal
+    reason: >-
+      Same violation as above — ModelSpec(provider="openrouter", ...) constructed directly in generate_morning_brief().
+    expires: "2026-09-19"
+    tracking: alpha-engine-config-I7879
+  - path: tests/test_morning_signal_schedule_page.py
+    pattern: provider_literal
+    reason: >-
+      Historical/test prose describing the direct-OpenRouter class this guard exists to catch (comment, docstring, or a test asserting the literal's ABSENCE) — not a live call site. Baseline sweep for alpha-engine-config-I7864.
+    expires: "2026-11-18"
+    tracking: alpha-engine-config-I7864
+  - path: tests/test_no_secret_environ_reads.py
+    pattern: env_key
+    reason: >-
+      Historical/test prose describing the direct-OpenRouter class this guard exists to catch (comment, docstring, or a test asserting the literal's ABSENCE) — not a live call site. Baseline sweep for alpha-engine-config-I7864.
+    expires: "2026-11-18"
+    tracking: alpha-engine-config-I7864
