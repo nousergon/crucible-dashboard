@@ -773,7 +773,7 @@ ROUTED_INSTALLERS=(
   # path that never persists, so a files-mode gate on it reads stale forever
   # and would restart the CloudWatch agent on every single deploy. Caught by
   # running the gate against the live box before merge, not by inspection.
-  "install-cloudwatch-agent-config.sh|stamp|cloudwatch-agent.json,emit_oom_metric.sh,systemd/emit-oom-metric.service,systemd/emit-oom-metric.timer,install-cloudwatch-agent-config.sh"
+  "install-cloudwatch-agent-config.sh|stamp|cloudwatch-agent.json,emit_oom_metric.sh,systemd/emit-oom-metric.service,systemd/emit-oom-metric.timer,emit_service_memory.sh,systemd/emit-service-memory.service,systemd/emit-service-memory.timer,systemd/resource-limits/budget.yaml,install-cloudwatch-agent-config.sh"
   "install-auto-patching.sh|files|dnf-automatic.conf:/etc/dnf/automatic.conf,systemd/dnf-automatic-alert.conf:/etc/systemd/system/dnf-automatic.service.d/10-alert.conf,reboot_if_needed.sh:/usr/local/bin/reboot_if_needed.sh,alert_py.sh:/usr/local/bin/alert_py.sh,systemd/reboot-if-needed.service:/etc/systemd/system/reboot-if-needed.service,systemd/reboot-if-needed.timer:/etc/systemd/system/reboot-if-needed.timer"
   # Drop-ins are rendered per-unit into /etc/systemd/system/<unit>.d/, so there
   # is no single dst pair; budget.yaml plus the renderer fully determine them.

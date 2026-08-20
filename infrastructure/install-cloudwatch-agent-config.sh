@@ -40,12 +40,32 @@ systemctl start emit-oom-metric.service || {
     echo "trusting the OOMKills metric" >&2
     exit 1; }
 
+echo "==> installing per-service memory collector (alpha-engine-config-I7804)"
+install -m 0755 "$HERE/emit_service_memory.sh" /usr/local/bin/emit_service_memory.sh
+install -m 0644 "$HERE/systemd/emit-service-memory.service" /etc/systemd/system/
+install -m 0644 "$HERE/systemd/emit-service-memory.timer"   /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now emit-service-memory.timer
+
+# Same fail-loud first run as the OOM collector above, and for a sharper
+# reason: this one reads its unit list out of budget.yaml, so a change to that
+# file's shape breaks the collector while leaving the timer green-looking.
+# The first run is the only place that failure is cheap to see.
+echo "==> priming the per-service memory series (first run proves it can read budget.yaml)"
+systemctl start emit-service-memory.service || {
+    echo "emit-service-memory.service failed on first run -- investigate before" >&2
+    echo "trusting the ServiceMemoryMiB metric; check that budget.yaml is" >&2
+    echo "readable at the path the script defaults to" >&2
+    exit 1; }
+
 echo
 echo "Done. Verify:"
 echo "  $CTL -a status"
-echo "  systemctl list-timers emit-oom-metric.timer"
+echo "  systemctl list-timers emit-oom-metric.timer emit-service-memory.timer"
 echo "  journalctl -u emit-oom-metric.service -n 5 --no-pager"
+echo "  journalctl -u emit-service-memory.service -n 5 --no-pager"
 echo
 echo "Metrics appear in namespace AlphaEngine/Host within ~5 min:"
 echo "  mem_available_percent, mem_used_percent, mem_available,"
-echo "  swap_used_percent, disk used_percent, OOMKills, OOMKillsTotal"
+echo "  swap_used_percent, disk used_percent, OOMKills, OOMKillsTotal,"
+echo "  ServiceMemoryMiB (per Unit), ServiceMemoryTotalMiB"

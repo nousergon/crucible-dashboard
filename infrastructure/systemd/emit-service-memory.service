@@ -1,0 +1,18 @@
+[Unit]
+Description=Publish per-service anon+swap to CloudWatch (alpha-engine-config-I7804)
+Documentation=https://github.com/nousergon/nous-ergon-ops/blob/main/policies/shared-application-host-policy.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/emit_service_memory.sh
+User=root
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=AWS_REGION=us-east-1
+TimeoutStartSec=60
+
+# Same reasoning as emit-oom-metric.service: a publisher whose own failure is
+# unnoticed is the defect it exists to detect elsewhere on this box (I4509).
+StandardOutput=journal
+StandardError=journal
