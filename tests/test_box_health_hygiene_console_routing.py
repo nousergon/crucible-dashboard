@@ -93,12 +93,7 @@ def test_the_helper_is_defined_before_its_first_call_site():
     partition where the helper would most naturally have been written.
     """
     definition = BOX_HEALTH.index("emit_hygiene_envelope() {")
-    first_call = min(
-        i for i in (
-            BOX_HEALTH.index('emit_hygiene_envelope ""'),
-            BOX_HEALTH.index('emit_hygiene_envelope "$notices"'),
-        )
-    )
+    first_call = BOX_HEALTH.index('emit_hygiene_envelope ""')
     assert definition < first_call, (
         "emit_hygiene_envelope is called before it is defined; every early-exit "
         "run would die on `command not found`."
@@ -155,8 +150,8 @@ def test_every_notice_produces_exactly_one_finding():
     findings = emitter.build_findings(notices, first_seen, now=NOW)
     assert len(findings) == 2
     assert {f["key"] for f in findings} == {
-        "timer-deadman:emit-service-memory.timer",
-        "memory-observation",
+        "notice/timer-deadman:emit-service-memory.timer",
+        "notice/memory-observation",
     }
 
 
@@ -171,7 +166,7 @@ def test_an_unrecognised_notice_still_reaches_the_console_under_its_own_key():
     findings = emitter.build_findings([novel], first_seen, now=NOW)
     assert len(findings) == 1
     assert findings[0]["key"]
-    assert findings[0]["key"] != "memory-observation"
+    assert findings[0]["key"] != "notice/memory-observation"
     assert novel in findings[0]["detail"]
 
 
@@ -191,7 +186,7 @@ def test_the_detail_carries_how_long_the_finding_has_stood():
 # ── summary and status ──────────────────────────────────────────────────────
 
 def test_a_clean_run_says_so_rather_than_saying_nothing():
-    assert emitter.build_summary([], {}, now=NOW) == "no monitoring-hygiene notices"
+    assert emitter.build_summary([], {}, now=NOW) == "no standing findings"
 
 
 def test_the_summary_names_the_oldest_finding():
@@ -201,7 +196,7 @@ def test_the_summary_names_the_oldest_finding():
         MEMORY_NOTICE: (NOW - timedelta(days=19)).isoformat(),
     }
     summary = emitter.build_summary(notices, first_seen, now=NOW)
-    assert "2 monitoring-hygiene notices" in summary
+    assert "2 standing findings" in summary
     assert "standing 19d" in summary
 
 
@@ -293,3 +288,78 @@ def test_the_emitter_is_resolved_as_a_sibling_not_a_hardcoded_checkout():
     line = BOX_HEALTH[i : BOX_HEALTH.index("\n", i)]
     assert "BASH_SOURCE" in line, line
     assert "/home/ec2-user" not in line, line
+
+
+# ── the warning tier: console AND channel, and why the asymmetry is deliberate ──
+
+WARNING_LINE = "memory budget: BREACH (detail in journal)"
+
+
+def test_the_warning_tier_keeps_its_channel_publish():
+    """It may NOT simply follow `notice` off the channel.
+
+    `warning`'s claim to being quiet is that it is DELEGATED — it reaches the
+    Overseer intake bus as alert class `box-health` (`intake: bus` / `response:
+    drain-queue`), so a human is not the only reader. Measured live 2026-08-20:
+    all four `alpha-engine-alert-drain-{0400,1000,1600,2200}utc` EventBridge
+    schedules are DISABLED under the 2026-08-07 automation pause (I6984), and
+    the drain's own registry row states no cadence is auditable from what
+    remains.
+
+    So the delegated consumer is not running on a schedule. Removing this tier
+    from the channel today would leave it with NO reader — arriving dressed as
+    consistency with the notice change. Re-examine when the drain is unpaused
+    (alpha-engine-config-I7858).
+    """
+    assert "publish_problems warning " in BOX_HEALTH, (
+        "the warning tier lost its channel publish while the Overseer drain "
+        "schedules are disabled — the finding would reach nobody."
+    )
+
+
+def test_the_warning_tier_also_reaches_the_console():
+    """In addition, never instead. The console is what makes the long channel
+    window safe: the standing set is visible continuously with each finding's
+    age, rather than having to be remembered between repeats."""
+    i = BOX_HEALTH.index("emit_hygiene_envelope \"$(")
+    call = BOX_HEALTH[i : BOX_HEALTH.index("\n", i)]
+    assert "$notices" in call and "$warnings" in call, call
+
+
+def test_a_warning_and_a_notice_do_not_collide_on_one_console_key():
+    lines = [WARNING_LINE, TIMER_NOTICE]
+    first_seen = emitter.reconcile_first_seen(lines, {}, now=NOW)
+    findings = emitter.build_findings(lines, first_seen, now=NOW)
+    keys = [f["key"] for f in findings]
+    assert len(set(keys)) == 2
+    assert any(k.startswith("warning/") for k in keys)
+    assert any(k.startswith("notice/") for k in keys)
+
+
+def test_the_tier_is_on_the_console_key_so_the_row_can_be_filtered():
+    """A console row that cannot tell a declared-invariant breach from
+    monitoring hygiene has flattened the distinction the tiers exist to make."""
+    findings = emitter.build_findings(
+        [WARNING_LINE], emitter.reconcile_first_seen([WARNING_LINE], {}, now=NOW), now=NOW
+    )
+    assert findings[0]["key"].startswith("warning/")
+
+
+def test_the_summary_names_the_warning_count_separately():
+    """"4 standing findings" hides whether any is a breach or all four are
+    hygiene, and those warrant different attention."""
+    lines = [WARNING_LINE, TIMER_NOTICE, MEMORY_NOTICE]
+    first_seen = emitter.reconcile_first_seen(lines, {}, now=NOW)
+    summary = emitter.build_summary(lines, first_seen, warnings=[WARNING_LINE], now=NOW)
+    assert "3 standing findings" in summary
+    assert "(1 warning)" in summary
+
+
+def test_split_tiers_agrees_with_the_shell_classifier_on_what_a_notice_is():
+    notices, warnings = emitter.split_tiers([TIMER_NOTICE, WARNING_LINE, MEMORY_NOTICE])
+    assert notices == [TIMER_NOTICE, MEMORY_NOTICE]
+    assert warnings == [WARNING_LINE]
+    assert '"notice: "*) echo info ;;' in BOX_HEALTH, (
+        "the shell classifier no longer keys on the `notice: ` prefix that "
+        "split_tiers mirrors; the two have drifted."
+    )

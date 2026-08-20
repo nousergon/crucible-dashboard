@@ -1395,7 +1395,36 @@ publish_problems critical 60   "health alert" "$criticals"
 #
 # Criticals stay at 60. A degraded-now condition is worth repeating hourly
 # precisely because it is not standing.
-publish_problems warning  1440 "budget/coverage finding (no action urgent)" "$warnings"
+# 43200min = 30 days, reusing the backstop interval the timer-job-failing
+# publish above already uses. Was 1440 (alpha-engine-config-I7822), which was
+# itself down from 60.
+#
+# WHY DAILY WAS STILL WRONG. The tier is "silent", but silent here means
+# krepis.alerts passing disable_notification=True, which suppresses the phone
+# push and NOT the message — so a daily unchanged warning is a daily VISIBLE
+# message about a condition that has a ruling on it (#7804). Measured
+# 2026-08-20: the box oscillates tick-to-tick between rc=1 (T1-8 working-set
+# breach, this tier) and rc=2 (hygiene, the tier below), so this fires most
+# days for one already-decided fact.
+#
+# NOT SUPPRESSION, and the mechanism is the KEY not the window: publish_problems
+# derives the dedup key from the problem SET, so a warning appearing, clearing
+# or changing its text yields a different key and pages immediately whatever
+# this number is. The window governs exactly one thing — how often an UNCHANGED
+# set repeats. The console row (emit_hygiene_envelope below) is what makes that
+# safe: the standing set is visible there continuously with each finding's age,
+# rather than having to be remembered between repeats.
+#
+# WHY THIS TIER IS NOT SIMPLY MOVED OFF THE CHANNEL like the info tier was. Its
+# whole claim to being quiet is that it is DELEGATED, reaching the Overseer
+# intake bus as alert class box-health (intake: bus, response: drain-queue).
+# Measured live 2026-08-20: all four alpha-engine-alert-drain-{0400,1000,1600,
+# 2200}utc schedules are DISABLED under the 2026-08-07 automation pause
+# (alpha-engine-config-I6984). The delegated consumer is not running on a
+# schedule, so removing this tier from the channel would leave it with no reader
+# at all — dressed as consistency with the notice change. Re-examine when the
+# drain is unpaused: alpha-engine-config-I7858.
+publish_problems warning  43200 "budget/coverage finding (no action urgent)" "$warnings"
 
 # The info tier does NOT publish to krepis.alerts. It goes to the console.
 #
@@ -1419,4 +1448,6 @@ publish_problems warning  1440 "budget/coverage finding (no action urgent)" "$wa
 # envelope publishes on EVERY run including clean ones, carries ran_at +
 # cadence_minutes so the console marks it STALE if the emitter dies, and renders
 # as `unreadable` -- never `ok` -- when the artifact is missing.
-emit_hygiene_envelope "$notices"
+# Both lower tiers, one surface. `warning` appears here IN ADDITION to its
+# channel publish above, never instead of it; `notice` appears here only.
+emit_hygiene_envelope "$(printf '%s\n%s' "$notices" "$warnings" | grep -v '^$' || true)"

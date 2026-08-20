@@ -47,12 +47,45 @@ that true here:
     check writes is almost always "ok".
   * A missing artifact renders as `unreadable`, never `ok`.
 
+`warning` IS HERE TOO, AND KEEPS ITS CHANNEL PUBLISH
+---------------------------------------------------
+The two tiers are treated differently on purpose, and the asymmetry is the
+whole design:
+
+  notice   console ONLY.
+  warning  console AND channel, with channel REPETITION slowed to 30 days.
+  critical channel, hourly, untouched.
+
+**Why `warning` may not simply follow `notice` off the channel.** Its
+justification for being quiet is that it is DELEGATED — it reaches the Overseer
+intake bus as alert class `box-health` (`intake: bus` / `response:
+drain-queue`), so a human is not the only reader. Measured 2026-08-20 against
+the live account: all four `alpha-engine-alert-drain-{0400,1000,1600,2200}utc`
+EventBridge schedules are **DISABLED** under the 2026-08-07 automation pause
+(alpha-engine-config-I6984), and the drain's registry row states plainly that
+no cadence is auditable from what remains. The delegated consumer is not
+running on a schedule. Removing `warning` from the channel today would leave it
+with no reader at all — the exact inversion this file exists to prevent, and it
+would arrive dressed as consistency with the `notice` change.
+
+So `warning` keeps its channel publish. What changes is its REPETITION window:
+1440 -> 43200 (30 days), reusing the backstop interval `publish_problems`
+already applies to timer-job failures in this same file. That is not
+suppression, and the mechanism is the dedup KEY rather than the window: the key
+derives from the problem SET, so a warning appearing, clearing, or changing its
+text produces a different key and pages IMMEDIATELY whatever the window is. The
+window governs exactly one thing — how often an UNCHANGED set is repeated. A
+condition that has been true for days, with a ruling already on it, stops being
+announced daily; a new one is as loud as it ever was.
+
+The console row is what makes that safe: the standing set is visible there
+continuously, with each finding's age, rather than being remembered between
+monthly repeats.
+
 WHAT DOES NOT CHANGE
 --------------------
-`critical` still pushes. `warning` still publishes to the channel, to SNS and
-onto the Overseer intake bus, where box-health is a declared alert class with
-`intake: bus` / `response: drain-queue`. Only the tier whose contract is
-already "no action urgent" leaves the notification path.
+`critical` still pushes, hourly. A degraded-now condition is worth repeating
+precisely because it is not standing.
 
 FIRST-SEEN
 ----------
@@ -77,7 +110,7 @@ import sys
 from datetime import datetime, timezone
 
 CHECK_ID = "box_health_hygiene"
-LABEL = "Box health — monitoring hygiene"
+LABEL = "Box health — standing findings"
 
 # box-health.timer runs every 10 minutes. Declared honestly: understating makes
 # the console call this check stale early, overstating lets a dead emitter read
@@ -187,45 +220,83 @@ def finding_key(notice: str) -> str:
 
 
 def build_findings(
-    notices: list[str], first_seen: dict[str, str], *, now: datetime | None = None
+    lines: list[str], first_seen: dict[str, str], *, now: datetime | None = None
 ) -> list[dict]:
+    """One entry per finding, tier-tagged, carrying how long it has stood.
+
+    The tier is on the KEY rather than only in the detail so the console can
+    sort and filter by it. `warning` findings appear here IN ADDITION to their
+    channel publish, never instead of it -- see the module docstring for why
+    that asymmetry with `notice` is deliberate and load-bearing.
+    """
     out = []
-    for n in notices:
+    for n in lines:
         days = standing_days(first_seen.get(n, ""), now=now) if n in first_seen else None
-        out.append({"key": finding_key(n), "detail": f"{n} — {_age_phrase(days)}"})
+        tier = "notice" if n.startswith("notice: ") else "warning"
+        out.append({
+            "key": f"{tier}/{finding_key(n)}",
+            "detail": f"{n} — {_age_phrase(days)}",
+        })
     return out
 
 
 def build_summary(
-    notices: list[str], first_seen: dict[str, str], *, now: datetime | None = None
+    lines: list[str],
+    first_seen: dict[str, str],
+    *,
+    warnings: list[str] | None = None,
+    now: datetime | None = None,
 ) -> str:
-    if not notices:
-        return "no monitoring-hygiene notices"
+    """The one line an operator reads on the console row.
+
+    Names the WARNING count separately from the total. A summary reading "4
+    standing findings" hides whether any of them is a declared-invariant breach
+    or all four are monitoring hygiene, and those warrant different attention —
+    the same reason check_memory_budget's summary names the tightest unit rather
+    than an average.
+    """
+    if not lines:
+        return "no standing findings"
+    warnings = warnings or []
     ages = [
         d
-        for d in (standing_days(first_seen.get(n, ""), now=now) for n in notices)
+        for d in (standing_days(first_seen.get(n, ""), now=now) for n in lines)
         if d is not None
     ]
-    plural = "" if len(notices) == 1 else "s"
+    plural = "" if len(lines) == 1 else "s"
+    head = f"{len(lines)} standing finding{plural}"
+    if warnings:
+        head += f" ({len(warnings)} warning)"
     if not ages:
-        return f"{len(notices)} monitoring-hygiene notice{plural}"
-    return (
-        f"{len(notices)} monitoring-hygiene notice{plural}, "
-        f"oldest {_age_phrase(max(ages))}"
-    )
+        return head
+    return f"{head}, oldest {_age_phrase(max(ages))}"
+
+
+def split_tiers(lines: list[str]) -> tuple[list[str], list[str]]:
+    """`notice: ` lines are the info tier; everything else on stdin is warning.
+
+    The classification is box_health.sh's, already applied -- this only has to
+    tell the two accumulators apart after they arrive on one stream. Matching
+    the SAME prefix the shell classifier keys on, so the two cannot drift into
+    disagreeing about what a notice is.
+    """
+    notices = [ln for ln in lines if ln.startswith("notice: ")]
+    warnings = [ln for ln in lines if not ln.startswith("notice: ")]
+    return notices, warnings
 
 
 def main(argv: list[str]) -> int:
     dry_run = "--dry-run" in argv
 
-    # Notices arrive on stdin, one per line -- the same shape box_health.sh
+    # Findings arrive on stdin, one per line -- the same shape box_health.sh
     # already accumulates them in. Blank lines are dropped: `<<<` on a value
     # ending in a newline yields a phantom empty element, which is the exact
     # defect that once rendered a bare " - " bullet into an alert body.
-    notices = [ln.strip() for ln in sys.stdin.read().splitlines() if ln.strip()]
+    lines = [ln.strip() for ln in sys.stdin.read().splitlines() if ln.strip()]
+    notices, warnings = split_tiers(lines)
 
     previous = load_first_seen()
-    current = reconcile_first_seen(notices, previous)
+    current = reconcile_first_seen(lines, previous)
     state_ok = write_first_seen(current) if not dry_run else True
     if not state_ok:
         print(
@@ -248,15 +319,15 @@ def main(argv: list[str]) -> int:
     # currently degraded. A hygiene finding that could turn the console row red
     # would have re-created, on a second surface, exactly the miscalibration
     # this change removes from the first.
-    status = fcr.STATUS_ATTENTION if notices else fcr.STATUS_OK
+    status = fcr.STATUS_ATTENTION if lines else fcr.STATUS_OK
 
     uri = fcr.emit_result(
         check_id=CHECK_ID,
         label=LABEL,
         status=status,
-        summary=build_summary(notices, current),
+        summary=build_summary(lines, current, warnings=warnings),
         cadence_minutes=CADENCE_MINUTES,
-        findings=build_findings(notices, current),
+        findings=build_findings(lines, current),
         dry_run=dry_run,
     )
     if uri is None and not dry_run:

@@ -46,12 +46,18 @@ def _publish_calls() -> dict[str, int]:
 
 
 class TestTierCadence:
-    def test_warning_is_daily_not_hourly(self):
+    def test_warning_repeats_monthly_not_daily(self):
+        """60 -> 1440 -> 43200, and the second step for the same reason as the
+        first: the tier is "silent" only in the sense of no phone push, so a
+        daily unchanged warning is a daily VISIBLE message about a condition
+        that already has a ruling on it (#7804). 43200 reuses the backstop
+        interval publish_problems already applies to timer-job failures."""
         calls = _publish_calls()
-        assert calls.get("warning") == 1440, (
-            "the warning tier must repeat an unchanged set daily, not hourly — "
-            f"got {calls.get('warning')}. 60 produced 24 pages in 24 hours for "
-            "one standing memory-budget breach (alpha-engine-config-I7822)."
+        assert calls.get("warning") == 43200, (
+            "the warning tier must repeat an unchanged set monthly — got "
+            f"{calls.get('warning')}. 60 produced 24 pages in 24 hours; 1440 "
+            "still produced a visible message most days for one standing "
+            "memory-budget breach (alpha-engine-config-I7822, I7858)."
         )
 
     def test_info_has_no_cadence_because_it_has_no_channel_publish(self):
