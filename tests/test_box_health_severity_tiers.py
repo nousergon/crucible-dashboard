@@ -2,9 +2,15 @@
 
 WHY
 ---
-krepis.alerts pushes a phone notification for `error`/`critical` only;
-`warning` and `info` are delivered silently in-channel, and every tier is still
-published to SNS and still emitted onto the Overseer intake bus.
+krepis.alerts pushes a phone notification for `error`/`critical` only.
+`warning` is delivered silently in-channel and still reaches SNS and the
+Overseer intake bus.
+
+`info` no longer goes to krepis.alerts at all (2026-08-20). "Silently" there
+means `disable_notification=True`, which suppresses the phone push and NOT the
+message -- so every info line still landed in Brian's chat. The tier's findings
+now publish to the console's fleet-check surface instead; see
+`emit_box_health_hygiene.py` and test_box_health_hygiene_console_routing.py.
 
 Two tiers could not express the box's actual states. Before 2026-07-29
 everything published at `warning`, so a service being DOWN was as quiet as a
@@ -93,7 +99,7 @@ def test_declared_invariant_findings_do_not_push(line: str) -> None:
         "Nothing is degraded when this fires; it belongs to the Overseer."
     )
     assert tier == "warning", (
-        f"{line!r} classified {tier!r}; `info` is the once-a-day hygiene tier "
+        f"{line!r} classified {tier!r}; `info` is the console hygiene tier "
         "and would delay a real invariant breach by up to 24h"
     )
 
@@ -160,17 +166,35 @@ def test_default_arm_pages_rather_than_silencing() -> None:
     )
 
 
-def test_all_three_tiers_are_published() -> None:
-    """Silent in-channel is not the same as unrecorded.
+def test_all_three_tiers_still_reach_a_surface() -> None:
+    """Not delivered to the channel is not the same as unrecorded.
 
-    The whole argument for silencing the warning tier is that it still reaches
-    SNS and the Overseer intake bus. If the publish call goes away, the argument
-    goes with it and the finding reaches nobody.
+    `critical` and `warning` publish through krepis.alerts -- the argument for
+    the warning tier's silence is that it still reaches SNS and the Overseer
+    intake bus, so if that publish call goes away the argument goes with it.
+
+    `info` deliberately does NOT publish there. It reaches the console's
+    fleet-check surface instead, because `disable_notification` was never
+    invisibility: krepis.alerts' SEVERITY_PUSH is {error, critical} and every
+    other severity still LANDS IN THE CHAT, just without a phone buzz. Two
+    previous fixes tuned this tier's cadence and severity; neither controlled
+    its visibility, which was the actual complaint. What this test pins is that
+    the tier still has exactly one delivery path and has not simply been
+    dropped -- see test_box_health_hygiene_console_routing.py for the other half.
     """
-    for severity in ("critical", "warning", "info"):
+    for severity in ("critical", "warning"):
         assert f"publish_problems {severity} " in BOX_HEALTH, (
             f"the {severity} tier is classified but never published"
         )
+    assert "publish_problems info " not in BOX_HEALTH, (
+        "the info tier publishes to krepis.alerts again. `info` is delivered "
+        "silently but VISIBLY into Brian's channel; that is the defect this "
+        "routing removed."
+    )
+    assert "emit_hygiene_envelope" in BOX_HEALTH, (
+        "the info tier is classified and partitioned but reaches no surface at "
+        "all -- that is suppression, not routing."
+    )
 
 
 def test_partition_routes_a_mixed_set_and_renders_no_phantom_bullet() -> None:

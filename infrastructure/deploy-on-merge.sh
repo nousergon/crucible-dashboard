@@ -713,6 +713,7 @@ if manifest_stale || any_file_state_stale \
     "$BOX_HEALTH_INFRA/box_health.sh:/usr/local/bin/box_health.sh" \
     "$BOX_HEALTH_INFRA/box_hygiene.sh:/usr/local/bin/box_hygiene.sh" \
     "$BOX_HEALTH_INFRA/alert_py.sh:/usr/local/bin/alert_py.sh" \
+    "$BOX_HEALTH_INFRA/emit_box_health_hygiene.py:/usr/local/bin/emit_box_health_hygiene.py" \
     "$BOX_HEALTH_INFRA/systemd/box-health.service:/etc/systemd/system/box-health.service" \
     "$BOX_HEALTH_INFRA/systemd/box-health.timer:/etc/systemd/system/box-health.timer" \
     "$BOX_HEALTH_INFRA/systemd/box-hygiene.service:/etc/systemd/system/box-hygiene.service" \

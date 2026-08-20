@@ -75,6 +75,9 @@ unset _ap
 ENV_FILE="/home/ec2-user/.alpha-engine.env"
 VENV_PY="/home/ec2-user/alpha-engine-dashboard/.venv/bin/python"
 BUDGET_CHECK="/home/ec2-user/alpha-engine-dashboard/infrastructure/check_memory_budget.py"
+# The info tier's console emitter. Sibling of this script, resolved the same way
+# BUDGET_CHECK is, so a relocated checkout moves both together.
+HYGIENE_EMITTER="${HYGIENE_EMITTER:-$(dirname "${BASH_SOURCE[0]}")/emit_box_health_hygiene.py}"
 
 # Load Telegram creds etc. (SNS auth comes from the instance role).
 if [ -f "$ENV_FILE" ]; then set -a; . "$ENV_FILE"; set +a; fi
@@ -556,6 +559,25 @@ classify_throttle_delta() {
     else
         echo "cgroup throttle: $name is throttling against its MemoryHigh cap with measurable reclaim stall"
     fi
+}
+
+# emit_hygiene_envelope LINES — the info tier's delivery path.
+#
+# Called on EVERY exit path, including the all-healthy early exits, with an
+# empty argument when there is nothing to report. principles.md §7: a component
+# emitting nothing is not healthy, it is unobserved, and a surface that
+# publishes only when something is wrong cannot be distinguished from one that
+# has died.
+#
+# rc=3 (the emitter could not publish) goes to the journal and no further. This
+# is a RENDERING path: a rendering failure must not manufacture a box-health
+# problem, and the console already shows a missing artifact as `unreadable`
+# rather than `ok`, so the gap stays visible where it belongs. Same contract as
+# the --emit-check call above, deliberately.
+emit_hygiene_envelope() {
+    [ -x "$VENV_PY" ] || { echo "box_health: hygiene envelope skipped, no venv python ($VENV_PY)" >&2; return 0; }
+    [ -r "$HYGIENE_EMITTER" ] || { echo "box_health: hygiene emitter missing ($HYGIENE_EMITTER)" >&2; return 0; }
+    printf '%s\n' "${1:-}" | "$VENV_PY" "$HYGIENE_EMITTER" >/dev/null || true
 }
 
 # publish_verdict COUNT — put the watchdog's OWN conclusion on the metrics path.
@@ -1114,6 +1136,7 @@ trap throttle_baseline_write EXIT
 confirmed=$(snapshot_problems)
 if [ -z "$confirmed" ]; then
     publish_verdict 0
+    emit_hygiene_envelope ""
     exit 0
 fi
 attempt=1
@@ -1128,6 +1151,7 @@ done
 # all flagged problems self-healed within the confirmation window → no page
 if [ -z "$confirmed" ]; then
     publish_verdict 0
+    emit_hygiene_envelope ""
     exit 0
 fi
 
@@ -1371,5 +1395,59 @@ publish_problems critical 60   "health alert" "$criticals"
 #
 # Criticals stay at 60. A degraded-now condition is worth repeating hourly
 # precisely because it is not standing.
-publish_problems warning  1440 "budget/coverage finding (no action urgent)" "$warnings"
-publish_problems info     1440 "monitoring hygiene (no action urgent)" "$notices"
+# 43200min = 30 days, reusing the backstop interval the timer-job-failing
+# publish above already uses. Was 1440 (alpha-engine-config-I7822), which was
+# itself down from 60.
+#
+# WHY DAILY WAS STILL WRONG. The tier is "silent", but silent here means
+# krepis.alerts passing disable_notification=True, which suppresses the phone
+# push and NOT the message — so a daily unchanged warning is a daily VISIBLE
+# message about a condition that has a ruling on it (#7804). Measured
+# 2026-08-20: the box oscillates tick-to-tick between rc=1 (T1-8 working-set
+# breach, this tier) and rc=2 (hygiene, the tier below), so this fires most
+# days for one already-decided fact.
+#
+# NOT SUPPRESSION, and the mechanism is the KEY not the window: publish_problems
+# derives the dedup key from the problem SET, so a warning appearing, clearing
+# or changing its text yields a different key and pages immediately whatever
+# this number is. The window governs exactly one thing — how often an UNCHANGED
+# set repeats. The console row (emit_hygiene_envelope below) is what makes that
+# safe: the standing set is visible there continuously with each finding's age,
+# rather than having to be remembered between repeats.
+#
+# WHY THIS TIER IS NOT SIMPLY MOVED OFF THE CHANNEL like the info tier was. Its
+# whole claim to being quiet is that it is DELEGATED, reaching the Overseer
+# intake bus as alert class box-health (intake: bus, response: drain-queue).
+# Measured live 2026-08-20: all four alpha-engine-alert-drain-{0400,1000,1600,
+# 2200}utc schedules are DISABLED under the 2026-08-07 automation pause
+# (alpha-engine-config-I6984). The delegated consumer is not running on a
+# schedule, so removing this tier from the channel would leave it with no reader
+# at all — dressed as consistency with the notice change. Re-examine when the
+# drain is unpaused: alpha-engine-config-I7858.
+publish_problems warning  43200 "budget/coverage finding (no action urgent)" "$warnings"
+
+# The info tier does NOT publish to krepis.alerts. It goes to the console.
+#
+# WHY, and why the two previous fixes did not work. The whole three-tier design
+# rested on `info` being invisible to the operator. It is not.
+# krepis/alerts.py sets SEVERITY_PUSH = {error, critical} and passes
+# disable_notification=True for everything else -- and Telegram's
+# disable_notification suppresses the PHONE PUSH, not the message. The message
+# still lands in the chat, and SNS delivery is identical at every severity. So
+# there was never a tier that kept a finding out of Brian's channel, only one
+# that arrived without a buzz.
+#
+# That is why this has been "fixed" twice without the alerts stopping:
+# 2026-07-29 split the tiers, 2026-08-20 (#7822) lowered the warning window
+# 60 -> 1440. Both tuned CADENCE and SEVERITY. Neither controls VISIBILITY,
+# which was the actual complaint -- "why do I have to keep raising box health".
+#
+# Hygiene about the monitoring belongs on a board that shows how long it has
+# been true, not in a stream that re-announces it (#7822 deliverable 3). See
+# emit_box_health_hygiene.py for why this is routing and not suppression: the
+# envelope publishes on EVERY run including clean ones, carries ran_at +
+# cadence_minutes so the console marks it STALE if the emitter dies, and renders
+# as `unreadable` -- never `ok` -- when the artifact is missing.
+# Both lower tiers, one surface. `warning` appears here IN ADDITION to its
+# channel publish above, never instead of it; `notice` appears here only.
+emit_hygiene_envelope "$(printf '%s\n%s' "$notices" "$warnings" | grep -v '^$' || true)"

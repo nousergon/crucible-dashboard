@@ -49,6 +49,16 @@ echo "Installed /usr/local/bin/box_hygiene.sh"
 install -m 0755 "$REPO_INFRA/alert_py.sh" /usr/local/bin/alert_py.sh
 echo "Installed /usr/local/bin/alert_py.sh"
 
+# The hygiene emitter travels WITH the publisher, for the same reason and by
+# the same rule (alpha-engine-config-I7168). box_health.sh resolves it as
+# `$(dirname "$BASH_SOURCE")/emit_box_health_hygiene.py`, so an installed
+# box_health.sh with no sibling here silently loses the ENTIRE info tier: the
+# helper's guard returns 0, the run stays green, and the console row goes
+# stale — which is exactly the shape of failure the routing change was made to
+# avoid, arriving through the installer instead of the classifier.
+install -m 0755 "$REPO_INFRA/emit_box_health_hygiene.py" /usr/local/bin/emit_box_health_hygiene.py
+echo "Installed /usr/local/bin/emit_box_health_hygiene.py"
+
 # box-state-backup runs the script from the REPO path (like substrate-health
 # and daily-news) rather than a /usr/local/bin copy: it reads budget.yaml from
 # a path relative to itself, so splitting the two would need a second copy of
