@@ -31,7 +31,6 @@ series to something that looks alive while answering the wrong question:
 import os
 import re
 import subprocess
-import tempfile
 from pathlib import Path
 
 import pytest
