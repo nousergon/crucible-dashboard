@@ -1351,7 +1351,7 @@ publish_problems critical 60   "health alert" "$criticals"
 # Silent in-channel, and deliberately so. Still SNS, still on the Overseer intake
 # bus as alert class `box-health` (intake: bus, response: drain-queue).
 #
-# DAILY, NOT HOURLY (alpha-engine-config-I7816). This window was 60 minutes,
+# DAILY, NOT HOURLY (alpha-engine-config-I7822). This window was 60 minutes,
 # matching critical, on the reasoning that "the tier changes who is woken, never
 # how often the finding is recorded". Measured 2026-08-20: the standing
 # `memory budget: BREACH` produced 24 notifications in 24 hours for one

@@ -1,6 +1,6 @@
 """A "no action urgent" finding must not page hourly.
 
-WHY (alpha-engine-config-I7816, 2026-08-20). `box_health.sh` published the
+WHY (alpha-engine-config-I7822, 2026-08-20). `box_health.sh` published the
 `warning` tier with a 60-minute dedup window, the same as `critical`. The
 standing `memory budget: BREACH` — a condition with an open decision on it
 (#7804), explicitly labelled by its own prefix as *"budget/coverage finding (no
@@ -42,7 +42,7 @@ class TestTierCadence:
         assert calls.get("warning") == 1440, (
             "the warning tier must repeat an unchanged set daily, not hourly — "
             f"got {calls.get('warning')}. 60 produced 24 pages in 24 hours for "
-            "one standing memory-budget breach (alpha-engine-config-I7816)."
+            "one standing memory-budget breach (alpha-engine-config-I7822)."
         )
 
     def test_warning_and_info_agree(self):
