@@ -374,6 +374,93 @@ class TestEvidenceRendering:
         ) == ""
 
 
+class TestShadowOnlyHoldRendering(TestEvidenceRendering):
+    """alpha-engine-config-I2515 (Brian's 2026-08-20 shadow-only ruling) /
+    I7836 — a week held because policy forbids promoting a shadow-only arm
+    must read as neither a gate failure nor an ordinary defended incumbency,
+    and the counterfactual winner (the entire point of shadow mode) must be
+    visible on the same row.
+
+    Fixture note: no live `held_shadow_only` audit record exists in S3 yet
+    (crucible-backtester-PR712 merged 2026-08-20T19:34:11Z; the gate next
+    fires the coming Saturday). The synthetic record below matches the
+    Closes-when in alpha-engine-config-I7836 and the v2 contract shape added
+    by nousergon-lib-PR336 (`outcome`, `blocked_by`, `counterfactual_winner`).
+    Inherits ``_view`` from TestEvidenceRendering rather than duplicating it.
+    """
+
+    _HELD_SHADOW_ONLY_AUDIT = {
+        "outcome": "held_shadow_only",
+        "blocked_by": ["shadow_only_arm"],
+        "champion_before": "scanner_predictor_direct",
+        "champion_after": "scanner_predictor_direct",
+        "counterfactual_winner": "thinktank_coverage",
+    }
+
+    def test_held_shadow_only_label_names_the_hold_not_a_failure(self):
+        mod = self._view()
+        label = mod._gate_state_label(self._HELD_SHADOW_ONLY_AUDIT)
+        assert "held" in label.lower()
+        assert "shadow" in label.lower()
+        for word in ("fail", "block", "error", "degrad", "outage"):
+            assert word not in label.lower(), (
+                f"'{word}' in held_shadow_only label reads as a defect; "
+                "the gate worked and policy forbade the promotion"
+            )
+
+    def test_held_shadow_only_label_distinguishes_from_no_contest_and_defended(self):
+        mod = self._view()
+        held = mod._gate_state_label(self._HELD_SHADOW_ONLY_AUDIT)
+        no_contest = mod._gate_state_label({
+            "outcome": "no_contest",
+            "blocked_by": ["thinktank_coverage_no_resolved_outcomes"],
+        })
+        defended = mod._gate_state_label({
+            "outcome": "no_contest",
+            "blocked_by": ["arm_score_unavailable"],
+        })
+        assert held != no_contest
+        assert held != defended
+
+    def test_held_shadow_only_label_surfaces_counterfactual_winner(self):
+        mod = self._view()
+        label = mod._gate_state_label(self._HELD_SHADOW_ONLY_AUDIT)
+        assert "Think Tank" in label
+
+    def test_shadow_only_arm_blocked_by_label_present(self):
+        """Deliverable 1 of I7836: the raw blocked_by slug also gets a label,
+        independent of the outcome branch — covers any raw blocked_by read
+        and keeps TestBlockedBySlugContractParity's schema-enum sweep green."""
+        src = (REPO_ROOT / "views" / "46_Experiments.py").read_text()
+        labels = _extract_literal(src, "_BLOCKED_BY_LABELS")
+        assert "shadow_only_arm" in labels
+        assert "shadow" in labels["shadow_only_arm"].lower()
+
+    def test_counterfactual_winner_helper_renders_when_present(self):
+        mod = self._view()
+        assert mod._counterfactual_winner_label(
+            self._HELD_SHADOW_ONLY_AUDIT,
+        ) == "Think Tank coverage (per-ticker theses)"
+
+    def test_counterfactual_winner_helper_absent_safe(self):
+        """No claim is made when the field is missing (e.g. every
+        non-held_shadow_only outcome, and pre-I2515 historical records)."""
+        mod = self._view()
+        assert mod._counterfactual_winner_label({"outcome": "no_contest"}) == ""
+        assert mod._counterfactual_winner_label(
+            {"outcome": "promoted", "counterfactual_winner": None},
+        ) == ""
+
+    def test_champion_history_frame_includes_would_have_promoted_column(self):
+        """The counterfactual is surfaced on the SAME ROW as the hold in the
+        Promotion history table, not only inside the combined label string."""
+        mod = self._view()
+        with patch.object(mod, "load_champion_audit", return_value=self._HELD_SHADOW_ONLY_AUDIT):
+            frame = mod._champion_history_frame(["2026-08-22"])
+        assert "Would have promoted" in frame.columns
+        assert frame.iloc[0]["Would have promoted"] == "Think Tank coverage (per-ticker theses)"
+
+
 contracts = pytest.importorskip(
     "nousergon_lib.contracts",
     reason="needs nousergon-lib[contracts] (jsonschema) installed",
