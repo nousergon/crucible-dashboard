@@ -13,9 +13,15 @@ for nine straight weeks, or that two thirds of the cut turns over every Saturday
 Three bases, deliberately kept separate rather than blended — their DIVERGENCE
 is the measurement:
 
-  ``scanner_candidates``     the scanner's gate cut (what actually gets traded on)
+  ``scanner_champion_60``    the scanner slot's champion-arm cut (candidate
+                              generation, scored on the scanner leaderboard —
+                              alpha-engine-config-I7818 renamed this from
+                              ``scanner_gate_baseline_60``, which itself
+                              replaced ``scanner_candidates``; both retired
+                              names are handled below)
   ``attractiveness_top_25``  top 25 by cross-sectional attractiveness rank
-  ``attractiveness_top_60``  top 60 by the same rank, count-matched to the gate cut
+  ``attractiveness_top_60``  top 60 by the same rank, count-matched to the
+                              champion cut
 
 Measured over 2026-05-29 → 2026-07-24: the attractiveness top-60 retains ~78% of
 its members week over week while the scanner cut retains 22-47%. The ranking is
@@ -44,9 +50,15 @@ import pandas as pd
 CUT_LABELS = {
     "attractiveness_top_20": "Attractiveness top 20 (CHAMPION — predictor cut)",
     "scanner_top_20": "Scanner top 20 (incumbent challenger)",
-    "scanner_candidates": "Scanner cut (gate)",
+    "scanner_champion_60": "Scanner champion cut",
     "attractiveness_top_25": "Attractiveness top 25",
     "attractiveness_top_60": "Attractiveness top 60",
+    # Deprecated alias (alpha-engine-config-I7818) — still emitted for one
+    # window so a cycle mid-transition still labels legibly instead of
+    # falling into the raw-name unknown-cut tail. Not the champion position:
+    # ordering above governs the page's default 3-way comparison and must not
+    # move for a name that is going away.
+    "scanner_gate_baseline_60": "Scanner champion cut (deprecated alias — see scanner_champion_60)",
 }
 
 CHURN_COLS = ["as_of", "size", "retained", "new", "dropped", "retention_pct"]
