@@ -14,8 +14,6 @@ from datetime import date, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock
 
-import pytest
-
 _VIEWS = Path(__file__).parent.parent / "views"
 
 
