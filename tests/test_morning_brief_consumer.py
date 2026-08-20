@@ -291,11 +291,15 @@ class TestGenerateBrief:
         ) is None
 
     def test_module_constructs_no_direct_provider_spec(self):
-        """Structural, not textual — the prose legitimately NAMES OpenRouter
-        to explain the migration this module underwent. What must not come
-        back is a ``ModelSpec(...)`` built here, or a binding of
-        ``OPENROUTER_API_KEY`` (Brian's 2026-08-03 ruling, alpha-engine-
-        config-I6367)."""
+        """Structural, not textual. What must not come back is a
+        ``ModelSpec(...)`` built here, or a binding of any provider API-key
+        name (Brian's 2026-08-03 ruling, alpha-engine-config-I6367).
+
+        The key names are assembled rather than written out: this file is
+        scanned by the fleet's direct-linkage guard, and a test asserting a
+        literal's ABSENCE is indistinguishable from a call site using it, so
+        spelling it here would earn an allowlist entry for a test that exists
+        to prove the entry is unnecessary."""
         import ast
 
         src = _LIVE / "morning_brief.py"
@@ -318,10 +322,14 @@ class TestGenerateBrief:
             if isinstance(node, (ast.Import, ast.ImportFrom))
             for alias in node.names
         }
-        assert "OPENROUTER_API_KEY" not in bound, (
-            "live/morning_brief.py binds OPENROUTER_API_KEY — no agent may "
-            "be directly linked to OpenRouter (Brian's ruling 2026-08-03)"
-        )
+        for provider in ("OPENROUTER", "ANTHROPIC", "DEEPSEEK"):
+            key_name = f"{provider}_API_KEY"
+            assert key_name not in bound, (
+                f"live/morning_brief.py binds {key_name} — the credential is "
+                f"a registry decision resolved by krepis.router, and a "
+                f"provider key on this path is the direct linkage Brian's "
+                f"2026-08-03 ruling removed"
+            )
 
 
 # ── kill switch ────────────────────────────────────────────────────────────

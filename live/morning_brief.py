@@ -26,12 +26,11 @@ migration that NO ``secrets.toml`` exists anywhere on the dashboard EC2 box
 swallowed it into an "unavailable" notice with no operator-visible signal).
 
 **alpha-engine-config-I6367 / alpha-engine-config-I7879 (2026-08-20): migrated
-off direct OpenRouter linkage onto the krepis model router.** The intermediate
-state (2026-07-19 → 2026-08-20) built a raw ``ModelSpec(provider="openrouter",
-model="deepseek/deepseek-v4-flash", ...)`` here and resolved
-``OPENROUTER_API_KEY`` directly via ``nousergon_lib.secrets.get_secret`` — the
-exact direct-linkage shape Brian's 2026-08-03 ruling (I6367) forbids (no agent
-may be directly linked to OpenRouter) and that sibling call sites
+off direct provider linkage onto the krepis model router.** The intermediate
+state (2026-07-19 → 2026-08-20) built a raw provider-pinned ``ModelSpec`` here
+and resolved that provider's API key directly via
+``nousergon_lib.secrets.get_secret`` — the exact direct-linkage shape Brian's
+2026-08-03 ruling (I6367) forbids, and that sibling call sites
 (``crucible-evaluator/director/agent.py``,
 ``crucible-research/producers/single_agent.py``) had already migrated off of.
 This call site was the one holdout, tracked by I7879 and pre-cleared in
@@ -79,7 +78,18 @@ ET = ZoneInfo("America/New_York")
 ROUTER_GROUP = "low"
 ROUTER_EXEC_CONTEXT = "ec2"
 _SESSION_KEY = "morning_brief_state"        # st.session_state cache key
-_MAX_TOKENS = 900                           # brief is a few short paragraphs
+# Output budget, NOT brief length. The brief is bounded by the prompt ("under
+# 200 words"), which is what actually keeps it short. This number has to cover
+# reasoning tokens too: the call site used to hand-set `reasoning={"exclude":
+# True}`, and that is a registry decision now — `low`'s primary
+# (`deepseek-v4-flash-low`) declares `reasoning: {effort: low}`, so unlike the
+# pre-migration call this one DOES spend tokens thinking. 900 was sized for a
+# non-reasoning model and is the budget shape config#1659 / config#2575
+# describe: a reasoning-capable model spends the whole allowance on
+# chain-of-thought and returns empty content. Raised to leave that headroom
+# while the prompt keeps the visible brief the same length
+# (alpha-engine-config-I7879).
+_MAX_TOKENS = 2400
 
 # Cost-attribution join key for this call site (krepis >= 0.23 requires it).
 # Every LLM call from here emits a cost row stamped with this literal; the
