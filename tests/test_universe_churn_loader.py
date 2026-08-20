@@ -22,6 +22,7 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from loaders.universe_churn import (  # noqa: E402
+    CUT_LABELS,
     backfilled_dates,
     churn_table,
     cut_comparison,
@@ -34,7 +35,7 @@ from loaders.universe_churn import (  # noqa: E402
     tenure_table,
 )
 
-_CUT = "scanner_candidates"
+_CUT = "scanner_champion_60"
 
 
 def _m(run_date: str, tickers: list[str], *, cut: str = _CUT, **extra) -> dict:
@@ -43,7 +44,7 @@ def _m(run_date: str, tickers: list[str], *, cut: str = _CUT, **extra) -> dict:
         "run_date": run_date,
         "predictor_universe_cut": _CUT,
         "cuts": {cut: {
-            "basis": "scanner_gate",
+            "basis": "scanner_champion_rank",
             "size": len(tickers),
             "tickers": sorted(tickers),
             "source": f"candidates/{run_date}/candidates.json::scanner_tickers",
@@ -82,7 +83,7 @@ def test_cut_names_are_discovered_from_the_artifacts():
     history = [_m("2026-07-10", ["A"]), _m("2026-07-17", ["B"], cut="attractiveness_top_25")]
     names = cut_names(history)
     # Known cuts come first in CUT_LABELS order, unknown ones after.
-    assert names == ["scanner_candidates", "attractiveness_top_25"]
+    assert names == ["scanner_champion_60", "attractiveness_top_25"]
 
 
 def test_the_champion_cut_is_first_and_labelled_as_such():
@@ -103,6 +104,23 @@ def test_the_champion_cut_is_first_and_labelled_as_such():
 
 def test_unknown_cut_still_renders_under_its_raw_name():
     assert cut_label("a_new_cut_the_producer_added") == "a_new_cut_the_producer_added"
+
+
+def test_champion_cut_and_its_deprecated_alias_both_have_friendly_labels():
+    """alpha-engine-config-I7818: the champion cut is `scanner_champion_60`;
+    `scanner_gate_baseline_60` is still emitted for one deprecation window and
+    must not fall into the raw-name unknown-cut tail mid-transition."""
+    assert cut_label("scanner_champion_60") != "scanner_champion_60"
+    assert cut_label("scanner_gate_baseline_60") != "scanner_gate_baseline_60"
+
+
+def test_scanner_candidates_is_retired_and_reads_as_an_unknown_cut():
+    """The I7578 alias is retired outright (I7818) — no longer emitted by the
+    producer, and no longer a known label here. A cycle's ARCHIVED artifact
+    that still carries it under the old key degrades to the raw-name tail
+    rather than crashing (`cut_names`' documented unknown-cut behavior)."""
+    assert "scanner_candidates" not in CUT_LABELS
+    assert cut_label("scanner_candidates") == "scanner_candidates"
 
 
 # ── 2. Churn arithmetic ──────────────────────────────────────────────────────
