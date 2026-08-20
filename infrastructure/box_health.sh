@@ -1349,8 +1349,27 @@ criticals="$other_criticals"
 # silently disarm this line.
 publish_problems critical 60   "health alert" "$criticals"
 # Silent in-channel, and deliberately so. Still SNS, still on the Overseer intake
-# bus as alert class `box-health` (intake: bus, response: drain-queue). Same
-# 60-minute dedup as critical: the tier changes who is woken, never how often the
-# finding is recorded.
-publish_problems warning  60   "budget/coverage finding (no action urgent)" "$warnings"
+# bus as alert class `box-health` (intake: bus, response: drain-queue).
+#
+# DAILY, NOT HOURLY (alpha-engine-config-I7816). This window was 60 minutes,
+# matching critical, on the reasoning that "the tier changes who is woken, never
+# how often the finding is recorded". Measured 2026-08-20: the standing
+# `memory budget: BREACH` produced 24 notifications in 24 hours for one
+# unchanged condition with an open decision on it (#7804), and Brian asked why
+# he was still being dinged. A finding this tier itself labels "(no action
+# urgent)" has no reader at an hourly cadence -- re-notification is only
+# informative if something CHANGED.
+#
+# This suppresses repetition, never a new finding, and the mechanism is the
+# dedup KEY rather than the window: `publish_problems` derives it from the
+# problem SET, so a warning appearing, clearing, or changing text yields a
+# different key and pages immediately regardless of this number. What the
+# window governs is exactly one thing -- how often an UNCHANGED set is
+# repeated. 1440 matches the `info` tier below, which already carries the
+# identical "(no action urgent)" label and was already daily; the two tiers
+# making the same promise at different cadences was the inconsistency.
+#
+# Criticals stay at 60. A degraded-now condition is worth repeating hourly
+# precisely because it is not standing.
+publish_problems warning  1440 "budget/coverage finding (no action urgent)" "$warnings"
 publish_problems info     1440 "monitoring hygiene (no action urgent)" "$notices"
