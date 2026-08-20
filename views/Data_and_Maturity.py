@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import sys
+from datetime import date as _date
 
 import pandas as pd
 import plotly.express as px
@@ -26,7 +27,7 @@ from loaders.cache import cached
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from loaders.db_loader import load_research_db
+from loaders.db_loader import get_table_max_dates, load_research_db
 from loaders.outcome_store import load_outcomes
 from loaders.s3_loader import (
     _fetch_s3_json,
@@ -92,6 +93,7 @@ def _table_counts() -> dict[str, int]:
         "scanner_evaluations",
         "team_candidates",
         "cio_evaluations",
+        "team_inputs",
         "executor_shadow_book",
     ]
     counts = {}
@@ -102,6 +104,36 @@ def _table_counts() -> dict[str, int]:
         except Exception:
             counts[t] = 0
     return counts
+
+
+# Frozen ≥ two weekly cycles (14d) with no producer write is a real gap, not
+# calendar noise (config-I2638). A table with rows but no measured last-write
+# date (unparseable / non-ISO date column) is treated as unknown, not fresh —
+# `_age_days` returns None and the caller renders "—", never "OK".
+_TABLE_STALE_DAYS = 14
+
+
+def _age_days(last_write: str | None) -> int | None:
+    """Whole days between ``last_write`` (an ISO-ish date/datetime string,
+    first 10 chars used) and today, or None if missing/unparseable."""
+    if not last_write:
+        return None
+    try:
+        return (_date.today() - _date.fromisoformat(last_write[:10])).days
+    except ValueError:
+        return None
+
+
+def _format_age(last_write: str | None) -> str:
+    """'{date} ({N}d ago)' / 'FROZEN {N}d — {date}' past the staleness
+    threshold, or '—' when there's no measured write date at all — never a
+    bare row count standing in for recency (config-I2638)."""
+    age = _age_days(last_write)
+    if age is None:
+        return "—"
+    if age >= _TABLE_STALE_DAYS:
+        return f"⚠️ FROZEN {age}d — {last_write}"
+    return f"{last_write} ({age}d ago)"
 
 
 st.title("Data & Maturity")
@@ -116,6 +148,7 @@ st.subheader("Data Volume Growth")
 
 with st.spinner("Loading data counts..."):
     table_counts = _table_counts()
+    table_max_dates = get_table_max_dates()
     trades_df = load_trades_full()
     eod_df = load_eod_pnl()
     n_signals_dates = len(list_s3_prefixes(_research_bucket(), "signals/"))
@@ -129,44 +162,47 @@ with st.spinner("Loading data counts..."):
 n_trades = len(trades_df) if trades_df is not None else 0
 n_eod = len(eod_df) if eod_df is not None else 0
 
+# (Dataset label, research.db table name or None) — None for the five S3-
+# count rows (trades/EOD/signal-dates/prediction-dates/daily-closes), which
+# aren't research.db tables and carry their own freshness surfaces (Fleet
+# Status, Artifact Freshness per the module docstring above).
+_VOLUME_ROWS: list[tuple[str, str | None]] = [
+    ("Signals (investment_thesis)", "investment_thesis"),
+    ("Score Performance (21d)", "score_performance"),
+    ("Predictor Outcomes", "predictor_outcomes"),
+    ("Trades (executed)", None),
+    ("EOD P&L (days)", None),
+    ("Macro Snapshots", "macro_snapshots"),
+    ("Scanner Appearances", "scanner_appearances"),
+    ("Candidate Tenures", "candidate_tenures"),
+    ("Population History", "population_history"),
+    ("Signal Dates (S3)", None),
+    ("Prediction Dates (S3)", None),
+    ("Daily Closes (S3)", None),
+    ("Universe Returns (eval)", "universe_returns"),
+    ("Scanner Evaluations (eval)", "scanner_evaluations"),
+    ("Team Candidates (eval)", "team_candidates"),
+    ("CIO Evaluations (eval)", "cio_evaluations"),
+    ("Team Inputs (eval)", "team_inputs"),
+    ("Executor Shadow Book (eval)", "executor_shadow_book"),
+]
+_S3_COUNT_ROWS = {
+    "Trades (executed)": n_trades,
+    "EOD P&L (days)": n_eod,
+    "Signal Dates (S3)": n_signals_dates,
+    "Prediction Dates (S3)": n_predictions_dates,
+    "Daily Closes (S3)": n_daily_closes,
+}
+
 volume_data = {
-    "Dataset": [
-        "Signals (investment_thesis)",
-        "Score Performance (21d)",
-        "Predictor Outcomes",
-        "Trades (executed)",
-        "EOD P&L (days)",
-        "Macro Snapshots",
-        "Scanner Appearances",
-        "Candidate Tenures",
-        "Population History",
-        "Signal Dates (S3)",
-        "Prediction Dates (S3)",
-        "Daily Closes (S3)",
-        "Universe Returns (eval)",
-        "Scanner Evaluations (eval)",
-        "Team Candidates (eval)",
-        "CIO Evaluations (eval)",
-        "Executor Shadow Book (eval)",
-    ],
+    "Dataset": [label for label, _ in _VOLUME_ROWS],
     "Records": [
-        table_counts.get("investment_thesis", "—"),
-        table_counts.get("score_performance", "—"),
-        table_counts.get("predictor_outcomes", "—"),
-        n_trades,
-        n_eod,
-        table_counts.get("macro_snapshots", "—"),
-        table_counts.get("scanner_appearances", "—"),
-        table_counts.get("candidate_tenures", "—"),
-        table_counts.get("population_history", "—"),
-        n_signals_dates,
-        n_predictions_dates,
-        n_daily_closes,
-        table_counts.get("universe_returns", "—"),
-        table_counts.get("scanner_evaluations", "—"),
-        table_counts.get("team_candidates", "—"),
-        table_counts.get("cio_evaluations", "—"),
-        table_counts.get("executor_shadow_book", "—"),
+        _S3_COUNT_ROWS[label] if table is None else table_counts.get(table, "—")
+        for label, table in _VOLUME_ROWS
+    ],
+    "Last Write": [
+        "—" if table is None else _format_age(table_max_dates.get(table))
+        for _, table in _VOLUME_ROWS
     ],
 }
 

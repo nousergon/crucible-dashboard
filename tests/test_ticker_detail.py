@@ -13,6 +13,7 @@ of the suite. streamlit is mocked globally by conftest.py.
 
 import importlib.util
 import sys
+from datetime import date, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -154,6 +155,42 @@ def test_load_live_day_return_failsoft_on_exception():
         assert loader.load_live_day_return("AMD") is None
 
 
+def test_get_s3_object_last_modified_parses_head_object():
+    loader = _load_live_loader()
+    fake_client = MagicMock()
+    fake_lm = MagicMock()
+    fake_lm.date.return_value.isoformat.return_value = "2026-03-16"
+    fake_client.head_object.return_value = {"LastModified": fake_lm}
+    with patch.object(loader, "get_s3_client", return_value=fake_client):
+        assert loader.get_s3_object_last_modified("b", "k") == "2026-03-16"
+    fake_client.head_object.assert_called_once_with(Bucket="b", Key="k")
+
+
+def test_get_s3_object_last_modified_none_on_missing():
+    loader = _load_live_loader()
+    fake_client = MagicMock()
+    err = type("ClientError", (Exception,), {})()
+    err.response = {"Error": {"Code": "404"}}
+    fake_client.head_object.side_effect = err
+    with patch.object(loader, "get_s3_client", return_value=fake_client):
+        assert loader.get_s3_object_last_modified("b", "k") is None
+
+
+def test_load_universe_archive_last_modified_key_and_empty_ticker():
+    loader = _load_live_loader()
+    captured = {}
+
+    def fake_head(bucket, key):
+        captured["bucket"], captured["key"] = bucket, key
+        return "2026-08-01"
+
+    with patch.object(loader, "get_s3_object_last_modified", side_effect=fake_head), \
+         patch.object(loader, "_research_bucket", return_value="b"):
+        assert loader.load_universe_archive_last_modified("AAPL") == "2026-08-01"
+        assert captured["key"] == "archive/universe/AAPL/thesis.json"
+        assert loader.load_universe_archive_last_modified("") is None
+
+
 def test_load_order_book_rationale_key():
     loader = _load_live_loader()
     captured = {}
@@ -232,3 +269,64 @@ def test_signals_entry_lookup(td):
 def test_obr_block_lookup(td):
     assert td._obr_block("AAPL") == {"ticker": "AAPL", "decision": "HOLD"}
     assert td._obr_block("MSFT") is None
+
+
+# ── Archive staleness (config-I2638) ──────────────────────────────────────
+
+
+def test_archive_age_days(td):
+    today_str = date.today().isoformat()
+    assert td._archive_age_days(today_str) == 0
+    old_str = (date.today() - timedelta(days=40)).isoformat()
+    assert td._archive_age_days(old_str) == 40
+    assert td._archive_age_days(None) is None
+    assert td._archive_age_days("not-a-date") is None
+
+
+def _make_td_with_archive(last_modified: str | None):
+    """Build a ticker_detail module whose stub loader has a persisted
+    archive with the given measured S3 last-modified date."""
+    stub = MagicMock()
+    stub.load_latest_signals.return_value = {"universe": []}
+    stub.load_order_book_rationale.return_value = {"considered": []}
+    stub.load_predictions_json.return_value = {}
+    stub.load_universe_archive.return_value = {
+        "key_catalyst": "earnings", "date": "2026-01-01",
+    }
+    stub.load_universe_archive_last_modified.return_value = last_modified
+    stub.load_company_names.return_value = {}
+    return _load_ticker_detail(stub)
+
+
+def test_render_stale_archive_shows_warning_banner():
+    stale_date = (date.today() - timedelta(days=41)).isoformat()
+    td = _make_td_with_archive(stale_date)
+    mock_st = sys.modules["streamlit"]
+    mock_st.reset_mock()
+    td._render("AAPL", {}, None)
+    warned = [c for c in mock_st.warning.call_args_list if "Stale thesis" in c.args[0]]
+    assert warned, "expected a stale-thesis st.warning() call"
+    assert stale_date in warned[0].args[0]
+
+
+def test_render_fresh_archive_no_warning_banner():
+    fresh_date = date.today().isoformat()
+    td = _make_td_with_archive(fresh_date)
+    mock_st = sys.modules["streamlit"]
+    mock_st.reset_mock()
+    td._render("AAPL", {}, None)
+    warned = [c for c in mock_st.warning.call_args_list if "Stale thesis" in c.args[0]]
+    assert not warned, "fresh archive must not trigger the stale-thesis banner"
+    captions = [c.args[0] for c in mock_st.caption.call_args_list if c.args]
+    assert any("Archive last written" in c for c in captions)
+
+
+def test_render_boundary_at_threshold_is_stale():
+    # Exactly _ARCHIVE_STALE_DAYS old is >= threshold — inclusive boundary.
+    boundary_date = (date.today() - timedelta(days=14)).isoformat()
+    td = _make_td_with_archive(boundary_date)
+    mock_st = sys.modules["streamlit"]
+    mock_st.reset_mock()
+    td._render("AAPL", {}, None)
+    warned = [c for c in mock_st.warning.call_args_list if "Stale thesis" in c.args[0]]
+    assert warned
