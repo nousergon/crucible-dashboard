@@ -1823,11 +1823,38 @@ def main() -> int:
               f"the ratio WITH a written rationale, or move a service off this "
               f"box (policy T1-1 / decision framework section 4).", file=sys.stderr)
     if ss_over:
+        # CITE T1-8, NOT E3 (alpha-engine-config-I7803).
+        #
+        # This line used to end "the box is genuinely too small for what it
+        # runs (policy T1-7 / exit trigger E3)". E3's predicate is sustained
+        # MemAvailable < 250 MB and its successor is a t3.large resize that
+        # T1-7 itself prices at ~$30/month of new, entirely uncovered spend.
+        # Measured 2026-08-20 at the moment this line printed: working set 56%
+        # (over the bound) with MemAvailable at 1219 MB -- 4.9x E3's threshold
+        # -- zero kernel OOM kills in 14 days and memory.pressure full totalling
+        # 1.97 s across 15.4 h. A headroom finding was announcing an exit
+        # condition. T1-8 now states this bound in
+        # shared-application-host-policy.md as a section 5 remediation, whose
+        # remedy is "bring the box back inside its budget", not "end the
+        # arrangement".
+        #
+        # The censoring disclosure is IN this line, not only in the HYGIENE
+        # line above it: a finding gets copied into an issue without the lines
+        # around it, and a floor quoted as a measurement is worse than no
+        # number.
+        censored_note = (
+            f" NOTE: {len(censored)} unit(s) are pinned at their MemoryHigh, so "
+            f"this sum is a FLOOR and the true figure is higher by an unknown "
+            f"amount -- see the HYGIENE line(s) above for which."
+            if censored else ""
+        )
         print(f"BREACH: steady-state working set {ws_mb} MB is "
-              f"{ws_mb / ram_mb:.0%} of RAM, above the {max_ss:.0%} limit. Anon + "
-              f"swap, so this is memory the kernel CANNOT reclaim -- the box is "
-              f"genuinely too small for what it runs (policy T1-7 / exit trigger "
-              f"E3).", file=sys.stderr)
+              f"{ws_mb / ram_mb:.0%} of RAM, above the {max_ss:.0%} limit (policy "
+              f"T1-8). Anon + swap, so this is memory the kernel cannot reclaim. "
+              f"Lower a cap, free memory, or move a service off this box."
+              f"{censored_note} This is a headroom invariant, NOT exit trigger "
+              f"E3 -- E3 is sustained MemAvailable < 250 MB and is evaluated "
+              f"separately.", file=sys.stderr)
 
     if tj_over:
         print(f"BREACH: timer-job caps total {tj_mb} MB against only "
