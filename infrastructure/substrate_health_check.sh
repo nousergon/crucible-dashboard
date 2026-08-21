@@ -144,8 +144,27 @@ run_check "transparency inventory (weekly)" \
   "$PYTHON_BIN" -m nousergon_lib.transparency --cadence weekly --alert
 
 cd /home/ec2-user/alpha-engine-data
+# --run-date is what makes this check SCOPE-AWARE (alpha-engine-config-I8094).
+#
+# The S&P population changes mid-week and the pipeline absorbs it without any
+# manual backfill: `collectors/prices.py` counts a ticker with no parquet as
+# stale and fetches its 10y history, then `builders/backfill.py` (Phase 1
+# step 8, passed the run_date so it reads THIS week's constituents rather
+# than the not-yet-advanced `latest_weekly.json` pointer) writes its ArcticDB
+# row. Measured 2026-08-16, the run after a reconstitution: 0 missing, 0
+# only_in_arctic.
+#
+# A run that does not COLLECT cannot do that. The Friday shell run's
+# DataPhase1 invokes `spot_data_phase1.sh --preflight-only`: it enters the
+# stage and produces nothing, so entered-stage membership cannot tell the two
+# apart — the check keys on the dated artifact Phase 1 writes only when it
+# collects. Without the flag it gates unconditionally, which on 2026-08-21
+# (execution friday-shell-2026-08-21-eod-2026-08-21-1787342451) failed the
+# gate on SUI/VMRK — index adds made after the 2026-08-18 collection — took
+# the whole weekly pipeline to DEGRADED, and asked a human to hand-run a
+# backfill the next scheduled run does by itself.
 run_check "constituents drift check" \
-  "$DATA_PYTHON_BIN" -m validators.constituents_drift_check
+  "$DATA_PYTHON_BIN" -m validators.constituents_drift_check --run-date "$RUN_DATE"
 
 export RUN_DATE
 # NO `--alert` flag: phase_marker_sweep alerts by DEFAULT (`alert=not
