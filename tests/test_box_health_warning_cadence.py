@@ -121,10 +121,27 @@ class TestSuppressionIsRepetitionOnly:
 
 
 class TestTheFindingThatPrompted:
-    def test_memory_budget_breach_is_still_a_warning(self):
-        """This change makes the page quieter. It must not also make it
-        disappear, or reclassify the finding to a tier nobody reads."""
+    def test_memory_budget_breach_is_console_only(self):
+        """SUPERSEDED 2026-08-21: this used to assert the finding stayed a
+        `warning`, on the reasoning that a quieter page must not become a
+        vanished one.
+
+        Brian ruled otherwise (alpha-engine-config-I7858) once the numbers were
+        in: "if i'm 4x away from the wall then i certainly no longer want to be
+        alerted of it." T1-8 is a HEADROOM bound; the wall is E3
+        (`MemAvailable < 250 MB`), and MemAvailable measured 1128 MB while the
+        breach stood.
+
+        The original test's concern — "a tier nobody reads" — is answered
+        rather than dismissed: the info tier does not publish to krepis.alerts,
+        but `emit_hygiene_envelope` renders it on the console on every run with
+        the finding's age. That is a tier someone reads on purpose instead of
+        one that interrupts.
+        """
         src = BOX_HEALTH.read_text()
         i = src.index("classify_problem_severity()")
         body = src[i : src.index("\n}\n", i)]
-        assert '"memory budget: BREACH"*) echo warning ;;' in body
+        assert '"memory budget: BREACH"*) echo info ;;' in body
+        assert '"low memory: "*) echo critical ;;' in body, (
+            "the actual out-of-memory condition must stay critical"
+        )
