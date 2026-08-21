@@ -19,8 +19,40 @@ presented as green.
 
 One list. Adding a service to the budget adds it to the watchdog.
 
+WHY THE INSTALLED .timer FILES ARE A SECOND SOURCE (alpha-engine-config-I8034)
+------------------------------------------------------------------------------
+budget.yaml lives in THIS repo, and this repo installs only some of the box's
+timers. `nous-ergon-ops`, `metron` and `the-cyphering` install others, and a
+timer arriving from one of those repos could not carry its dead-man threshold
+with it -- the row had to be hand-added here afterwards, by someone who noticed
+the box's `notice: timer has no dead-man threshold` line.
+
+Nobody reliably did. The finding has been raised, fixed by hand, and raised
+again for a DIFFERENT timer six times: 2026-07-29 metron-intraday.timer,
+2026-08-08 three dashboard timers at once (config-I6657), 2026-08-20
+emit-service-memory.timer, and 2026-08-21 litellm-config-reconcile.timer and
+llm-capability-probe.timer together, hours after nous-ergon-ops-PR809 armed
+them. `tests/test_every_installed_timer_has_a_deadman_row.py` blocks the
+in-repo case in CI and says in its own SCOPE paragraph that it cannot see the
+others.
+
+So a timer may now declare its own threshold, in its own unit file, as an
+`X-DeadManStaleness=` key under `[Unit]`. systemd accepts and ignores `X-`
+keys, so this is inert to the scheduler and travels with the file into
+whatever repo installs it. The registration stops being a second edit in a
+second repo that someone has to remember.
+
+PRECEDENCE, and why this direction: **budget.yaml wins.** A row here is a
+curated fleet-level decision carrying its rationale in prose; the unit key is
+the unit's own claim about itself. Where both exist and DISAGREE, the manifest
+takes the row and records the conflict as a comment, because a threshold that
+silently changed when a sibling repo edited its unit is the drift this file
+exists to prevent. Where only the key exists, it is used -- which is the whole
+point.
+
 Usage: generate-box-manifest.py [--output /etc/alpha-engine/box-services.conf]
-Policy: nous-ergon-ops/policies/shared-application-host-policy.md T1-6.
+       [--unit-dir /etc/systemd/system]
+Policy: nous-ergon-ops/policies/shared-application-host-policy.md T0-4, T1-6.
 """
 from __future__ import annotations
 
@@ -62,10 +94,57 @@ def parse_duration(unit: str, raw) -> int:
     return seconds
 
 
+DEFAULT_UNIT_DIR = "/etc/systemd/system"
+
+#: The `[Unit]` key a timer uses to declare its own dead-man threshold.
+#: `X-` prefixed, so systemd parses and ignores it rather than warning.
+DEADMAN_KEY = "X-DeadManStaleness"
+
+
+def unit_declared_staleness(unit_dir: pathlib.Path) -> dict[str, int]:
+    """Read `X-DeadManStaleness=` out of every installed *.timer.
+
+    Deliberately a plain line scan rather than `systemctl show`: this runs at
+    install time from a script that must work on a degraded box, and
+    `systemctl show` does not surface unknown `X-` keys at all -- it drops them
+    after parsing. The file is the only place the value exists.
+
+    A missing directory is not an error. This generator is run from CI and from
+    tests on machines with no /etc/systemd/system worth reading, and returning
+    an empty mapping there is correct: budget.yaml alone is exactly the
+    behaviour that existed before this key.
+
+    A MALFORMED VALUE RAISES, matching parse_duration's contract. A threshold
+    that silently became a wrong number reports as covered, which is worse than
+    reporting as uncovered.
+    """
+    found: dict[str, int] = {}
+    if not unit_dir.is_dir():
+        return found
+    for path in sorted(unit_dir.glob("*.timer")):
+        try:
+            text = path.read_text(errors="ignore")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            line = line.strip()
+            if not line.startswith(DEADMAN_KEY):
+                continue
+            key, _, raw = line.partition("=")
+            if key.strip() != DEADMAN_KEY:
+                continue
+            found[path.name] = parse_duration(path.name, raw.strip())
+            break
+    return found
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--output", default=DEFAULT_OUT)
     ap.add_argument("--stdout", action="store_true", help="print instead of writing")
+    ap.add_argument("--unit-dir", default=DEFAULT_UNIT_DIR,
+                    help="where installed *.timer files live; scanned for "
+                         f"{DEADMAN_KEY}= (alpha-engine-config-I8034)")
     args = ap.parse_args()
 
     spec = yaml.safe_load(BUDGET.read_text())
@@ -90,8 +169,16 @@ def main() -> int:
             service_port.append((svc["unit"], str(port)))
 
     excluded = [e["unit"] for e in spec.get("manifest_exclude", [])]
-    timers = [(t["unit"], parse_duration(t["unit"], t["max_staleness"]))
-              for t in spec.get("timers", [])]
+    # budget.yaml rows first, then any installed unit that declares its own and
+    # has no row here. See the module docstring for why budget.yaml wins a
+    # disagreement rather than the unit file.
+    declared = {t["unit"]: parse_duration(t["unit"], t["max_staleness"])
+                for t in spec.get("timers", [])}
+    from_units = unit_declared_staleness(pathlib.Path(args.unit_dir))
+    conflicts = sorted(u for u, secs in from_units.items()
+                       if u in declared and declared[u] != secs)
+    adopted = sorted(u for u in from_units if u not in declared)
+    timers = sorted({**from_units, **declared}.items())
     state_paths = [e["path"] for e in spec.get("state", [])]
 
     body = [
@@ -131,6 +218,14 @@ def main() -> int:
         "# and did it succeed? A timer failing on every fire is `active`,",
         "# `waiting`, with a valid next elapse — indistinguishable from healthy",
         "# without this. box_health.sh names any enabled timer missing a row.",
+        "#",
+        "# Merged from TWO sources (alpha-engine-config-I8034): budget.yaml::timers,",
+        "# and `X-DeadManStaleness=` declared in an installed *.timer's own [Unit]",
+        "# section — so a timer installed by nous-ergon-ops, metron or the-cyphering",
+        "# carries its threshold with it instead of needing a second edit in this",
+        "# repo that nobody remembers to make. budget.yaml wins a disagreement.",
+        f"#   adopted from unit files: {' '.join(adopted) if adopted else '(none)'}",
+        *([f"#   CONFLICT (budget.yaml won): {' '.join(conflicts)}"] if conflicts else []),
         "declare -A TIMER_MAX_STALENESS=(",
         *[f'    ["{unit}"]={secs}' for unit, secs in timers],
         ")",
