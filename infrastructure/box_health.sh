@@ -391,8 +391,21 @@ classify_timer_staleness() {
     # narrow case of a timer that is active, has a valid next elapse, and whose
     # last trigger is nonetheless ancient — a mis-edited OnCalendar. Real, worth
     # fixing, and not a reason to push a phone notification.
+    #
+    # THE REMEDY NAMES BOTH PATHS (alpha-engine-config-I8034). A timer this repo
+    # installs takes a `timers:` row in budget.yaml, which CI already enforces
+    # (tests/test_every_installed_timer_has_a_deadman_row.py). A timer installed
+    # by nous-ergon-ops, metron or the-cyphering cannot be enforced from here and
+    # used to need a second, hand-made edit in this repo that six separate
+    # findings show nobody reliably makes -- so it declares
+    # `X-DeadManStaleness=` in its own [Unit] section and travels with it.
+    # generate-box-manifest.py merges both into TIMER_MAX_STALENESS.
+    #
+    # Naming only the budget.yaml half sent every reader of this line to the
+    # wrong repo, which is most of why the finding kept recurring with a new
+    # timer name in it.
     if [ -z "$budget" ]; then
-        echo "notice: timer has no dead-man threshold: $name — add a timers: row to budget.yaml"
+        echo "notice: timer has no dead-man threshold: $name — add X-DeadManStaleness= to its [Unit] section (any repo), or a timers: row to budget.yaml"
         return
     fi
 

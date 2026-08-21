@@ -40,10 +40,26 @@ meaningful. What is pinned here is the CONTRACT between two files in this repo.
 
 SCOPE, stated because it bounds the guarantee: this covers timers whose unit
 file or `systemctl enable` lives in THIS repo. Timers installed onto the shared
-box by metron, nous-ergon-ops or the-cyphering are declared in `budget.yaml` by
-hand and cannot be checked from here - for those the on-box notice remains the
-only detector, which is why that notice is routed to the console rather than
-deleted.
+box by metron, nous-ergon-ops or the-cyphering cannot be checked from here.
+
+THAT SCOPE IS NO LONGER THE END OF THE STORY (alpha-engine-config-I8034). It
+held right up until 2026-08-21, when nous-ergon-ops-PR809 armed
+`litellm-config-reconcile.timer` and `llm-capability-probe.timer` and the box
+raised the finding for the fifth and sixth time, hours later, exactly as this
+docstring predicted it would. A guard that correctly documents the case it
+cannot catch is still a guard that does not catch it.
+
+The structural half now lives in the unit file: a timer may declare
+`X-DeadManStaleness=` under its own `[Unit]` section, and
+`generate-box-manifest.py` merges those with `budget.yaml::timers` when it
+renders `TIMER_MAX_STALENESS`. So a foreign repo's timer carries its own
+threshold instead of requiring a second edit here, and each installer repo can
+enforce the key against its OWN unit files - a check each of them CAN run.
+`nous-ergon-ops/tests/test_every_timer_declares_a_deadman.py` is the first.
+
+This test is unchanged and stays: budget.yaml is still the curated surface, it
+still wins a disagreement, and a timer THIS repo installs still takes a row
+here rather than relying on the key.
 """
 
 from __future__ import annotations
