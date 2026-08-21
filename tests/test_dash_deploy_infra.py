@@ -808,26 +808,37 @@ class TestOffBoxHealthVerdict:
         alert = sh.index("-m krepis.alerts publish")
         assert verdict < alert, "verdict must be published before the alert attempt"
 
-    def test_alarm_exists_and_does_not_double_page_on_silence(self):
-        wf = (REPO_ROOT / ".github" / "workflows" / "deploy.yml").read_text()
-        block = wf[wf.index("alpha-engine-dashboard-health-problems"):]
-        block = block[: block.index("--ok-actions")]
-        assert "--metric-name health_problems" in block
-        # notBreaching, deliberately: absent data means the box or watchdog is
-        # down, already covered by box-disk-critical's missing-data breach.
-        assert "--treat-missing-data notBreaching" in block, (
-            "missing data must NOT breach here — box-disk-critical already "
-            "breaches on the same silence, and two alarms for one cause "
-            "double-pages"
-        )
+    def test_deploy_workflow_does_not_author_the_alarms(self):
+        """The two alarm-shape assertions that used to live here MOVED REPOS.
 
-    def test_box_liveness_alarm_still_breaches_on_missing(self):
-        # The complement of the above. If this ever flips to notBreaching,
-        # nothing detects a dead box at all.
+        They asserted `--treat-missing-data notBreaching` on
+        alpha-engine-dashboard-health-problems and `breaching` on
+        alpha-engine-dashboard-box-disk-critical, read out of the
+        `put-metric-alarm` calls in deploy.yml. Both calls are gone
+        (alpha-engine-config-I8035): this repo is PUBLIC, the alarm definitions
+        are PRIVATE, and two appliers for one alarm meant the live value was
+        whichever ran last.
+
+        The PROPERTIES are still pinned — in
+        nous-ergon-ops/tests/test_cloudwatch_alarm_tree.py, against
+        infrastructure/cloudwatch/alarms/*.json, which is now the only writer.
+        They are not assertable from here: this repo cannot read that private
+        tree, and a test that shells out to `describe-alarms` would need AWS
+        credentials in CI on a public repo. Asserting the ABSENCE of a second
+        writer is the half that is checkable here, and it is the half that was
+        never checked at all.
+        """
         wf = (REPO_ROOT / ".github" / "workflows" / "deploy.yml").read_text()
-        block = wf[wf.index("alpha-engine-dashboard-box-disk-critical"):]
-        block = block[: block.index("--ok-actions")]
-        assert "--treat-missing-data breaching" in block
+        for n, line in enumerate(wf.splitlines(), 1):
+            if line.lstrip().startswith("#"):
+                continue
+            assert "put-metric-alarm" not in line, (
+                f"deploy.yml:{n} authors a CloudWatch alarm: {line.strip()}\n"
+                "Alarms are codified in nous-ergon-ops/infrastructure/"
+                "cloudwatch/alarms/*.json and applied by that repo's "
+                "cloudwatch-alarm-apply-on-merge.yml. See "
+                "tests/test_no_imperative_alarm_authorship.py."
+            )
 
 
 class TestDeployWorkflowSelfConsistency:
