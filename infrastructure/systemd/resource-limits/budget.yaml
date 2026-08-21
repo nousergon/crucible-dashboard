@@ -993,6 +993,28 @@ timers:
       zero overnight is on the console 45 minutes BEFORE the preopen SF calls
       it, so a run that silently stops firing restores exactly the blindness
       the probe was built to end (config-I6613, I6561, I7448).
+  - unit: litellm-config-reconcile.timer
+    max_staleness: 30m
+    note: >-
+      Every 10 min (OnCalendar=*:0/10, RandomizedDelaySec=30, Persistent=true);
+      30m is the same 3x-the-cadence shape as box-health.timer above. This is
+      the R10 propagation SLO: a silent stop means a registry change stops
+      reaching the running router's config, and the router keeps serving the
+      previous generation with nothing saying so. Installed on the box
+      2026-08-21 by nous-ergon-ops-PR809, the first time it had been armed
+      since 2026-07-28, and box_health named the missing row on its next
+      snapshot — the coverage notice working, not a second gap.
+  - unit: llm-capability-probe.timer
+    max_staleness: 8d
+    note: >-
+      Weekly Mon 07:00 UTC + up to 120s randomized delay, Persistent=true — 8d
+      is one full missed week plus 24h, the same shape as
+      router-degraded-mode-drill above. Arrived with the same
+      nous-ergon-ops-PR809 wave as litellm-config-reconcile; both are ops-owned
+      units this repo cannot see from CI (see
+      tests/test_every_installed_timer_has_a_deadman_row.py, SCOPE), so the row
+      is hand-added here and the on-box notice is the only detector that could
+      have found it.
 
   # ── metron ──────────────────────────────────────────────────────────────
   - unit: metron-refresh.timer
