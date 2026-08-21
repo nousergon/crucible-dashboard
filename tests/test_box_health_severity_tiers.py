@@ -57,7 +57,6 @@ CRITICAL = [
 # A declared invariant is breached, or our ability to observe one is impaired,
 # while nothing is degraded. These must NOT push, and must still be published.
 WARNING = [
-    "memory budget: BREACH (detail in journal)",
     "cgroup throttle: dashboard.service hit MemoryHigh 137x since the last check",
     "disk high: root >=80% used",
     "timer has not run in 2d (budget 26h): metron-refresh.timer",
@@ -70,6 +69,13 @@ WARNING = [
 ]
 
 INFO = [
+    # T1-8 moved warning -> info on 2026-08-21 (alpha-engine-config-I7858,
+    # Brian ruling: "if i'm 4x away from the wall then i certainly no longer
+    # want to be alerted of it"). It is a HEADROOM invariant, not the exit
+    # trigger — E3 is `MemAvailable < 250 MB` and was 4.5x away while this
+    # fired for 90 of 274 runs. Note it has no `notice: ` prefix and is
+    # classified by its own arm, so the prefix is not what defines this tier.
+    "memory budget: BREACH (detail in journal)",
     "notice: memory budget observation hygiene (detail in journal)",
     "notice: timer has no dead-man threshold: foo.timer — add a timers: row to budget.yaml",
 ]
@@ -219,11 +225,18 @@ def test_partition_routes_a_mixed_set_and_renders_no_phantom_bullet() -> None:
     got = partition(confirmed)
 
     assert got["criticals"] == ["service down: vires.service", "port not listening: 8980"]
+    # `watchdog: ` is the only warning left in this fixture. The T1-8 breach
+    # moved to notices on 2026-08-21 (alpha-engine-config-I7858) — and its
+    # presence there, WITHOUT a `notice: ` prefix, is the property worth
+    # asserting: the info tier is defined by the classifier, not by a string
+    # prefix, so a reader cannot infer the tier from the text alone.
     assert got["warnings"] == [
-        "memory budget: BREACH (detail in journal)",
         "watchdog: ss probe returned no output (cannot verify ports)",
     ]
-    assert got["notices"] == ["notice: memory budget observation hygiene (detail in journal)"]
+    assert got["notices"] == [
+        "memory budget: BREACH (detail in journal)",
+        "notice: memory budget observation hygiene (detail in journal)",
+    ]
 
     for tier, entries in got.items():
         assert all(e.strip() for e in entries), (
