@@ -52,6 +52,7 @@ _VERDICT_EMOJI = {
     "COMPLETE": "✅",
     "PARTIAL": "⚠️",
     "FAILED": "🔴",
+    "SKIPPED": "⏭️",
     "RUNNING": "🚀",
     "NOT_RUN": "·",
 }
@@ -59,6 +60,7 @@ _VERDICT_LABEL = {
     "COMPLETE": "Complete",
     "PARTIAL": "Partial",
     "FAILED": "Failed",
+    "SKIPPED": "Skipped",
     "RUNNING": "Running",
     "NOT_RUN": "Not run",
 }

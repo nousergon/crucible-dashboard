@@ -197,7 +197,10 @@ krepis[openai]>=0.59.14,<0.59.15
 # publish per-service memory headroom to the console; without this bump the
 # import fails and the check logs "console row NOT published" every 10 minutes
 # while rendering nothing.
-nousergon-lib[flow-doctor,github_app] @ git+https://github.com/nousergon/nousergon-lib@v0.124.78
+# v0.124.83 (alpha-engine-config-I8069): publishes nousergon_lib.pipeline_status.
+# classify_work() -> WorkOutcome, the three-way SUCCEEDED/SKIPPED/INCOMPLETE
+# predicate this repo's own status-blind call sites adopt in the same PR.
+nousergon-lib[flow-doctor,github_app] @ git+https://github.com/nousergon/nousergon-lib@v0.124.83
 
 # crucible-dash-api (config#1973 phase 9-B): read-only FastAPI over the
 # results view-model, consumed same-box by the /dash Next.js frontend.

@@ -185,9 +185,11 @@ class PipelineSnapshot:
     ``status`` is the lib RunStatus name ("RUNNING"/"SUCCEEDED"/"FAILED"/
     "NOT_RUN") or a loader-level outcome ("NO_EXECUTIONS"/"UNAVAILABLE").
     ``verdict`` is the artifact-completion CycleVerdict ("COMPLETE"/
-    "PARTIAL"/"FAILED"/"RUNNING"/"NOT_RUN") — the honest cycle judgment
-    (config#727: a run that wrote every artifact but tripped a terminal
-    Catch still reports SF FAILED). ``role`` is the resolved execution's
+    "PARTIAL"/"FAILED"/"SKIPPED"/"RUNNING"/"NOT_RUN") — the honest cycle
+    judgment (config#727: a run that wrote every artifact but tripped a
+    terminal Catch still reports SF FAILED; SKIPPED is a declared no-op
+    terminal, e.g. a THU/FRI WeeklyRunDaySkip — alpha-engine-config-I8069).
+    ``role`` is the resolved execution's
     ``pipeline_role`` (e.g. "weekly" for a first-try cadence run, or a
     ``RECOVERY_PIPELINE_ROLES`` member when the dot reflects a recovery
     overlay that completed/is completing the cycle — config#3085).
@@ -693,6 +695,16 @@ def _resolve_pipeline(key: str, inp: FleetInputs) -> ComponentStatus:
 
     verdict = snap.verdict or ("COMPLETE" if snap.status == "SUCCEEDED" else "FAILED")
     when = _ago(inp.now, snap.stopped_at or snap.started_at)
+    if verdict == "SKIPPED":
+        # Reached a declared no-op terminal (e.g. a THU/FRI
+        # WeeklyRunDaySkip) — correct behaviour, never a cycle, never an
+        # alert. Rendered as its own distinct GRAY state, never folded into
+        # COMPLETE or FAILED (alpha-engine-config-I8069).
+        return ComponentStatus(
+            cid, label, GROUP_PIPELINES, GRAY,
+            f"skipped — reached a declared no-op terminal ({when}); {cadence}",
+            snap.stopped_at or snap.started_at, deep_link="pipeline-status",
+        )
     if verdict == "COMPLETE":
         if _is_recovery_execution(snap):
             return ComponentStatus(

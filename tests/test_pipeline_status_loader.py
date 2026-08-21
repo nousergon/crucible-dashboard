@@ -33,6 +33,8 @@ from nousergon_lib.pipeline_status import (
     SFNNoExecutions,
     SFNThrottled,
     TaskStatus,
+    WorkVerdict,
+    classify_work,
 )
 from nousergon_lib.pipeline_status.read import PipelineStatusError, TaskRow
 from nousergon_lib.pipeline_status.registry import ArchivePageRef, ArtifactReason
@@ -424,3 +426,99 @@ class TestDeriveCycleVerdict:
     def test_running_and_not_run_pass_through(self):
         assert derive_cycle_verdict(_run_with(RunStatus.RUNNING, [])).verdict == "RUNNING"
         assert derive_cycle_verdict(_run_with(RunStatus.NOT_RUN, [])).verdict == "NOT_RUN"
+
+
+# ── Zero-artifact-telemetry fallback: SKIPPED vs INCOMPLETE (I8069) ────────
+#
+# Real fixtures captured live from ne-weekly-freshness-pipeline on
+# 2026-08-21 (alpha-engine-config-I8045), copied verbatim from
+# nousergon-lib/tests/fixtures/pipeline_status/ — same shapes
+# nousergon_lib's own test_pipeline_status_work.py proves classify_work
+# against. Not re-derived synthetic data.
+
+import json as _json
+
+_FIXTURES_DIR = Path(__file__).parent / "fixtures" / "pipeline_status"
+
+
+def _load_fixture(name: str) -> dict:
+    return _json.loads((_FIXTURES_DIR / f"{name}.json").read_text())
+
+
+def _zero_artifact_run(fixture_name: str) -> PipelineRun:
+    """A SUCCEEDED PipelineRun with NO artifact-bearing tasks (total == 0),
+    carrying the fixture's real execution_arn so ``_cached_work_outcome``
+    (patched below) can be keyed on it."""
+    rec = _load_fixture(fixture_name)
+    return PipelineRun(
+        state_machine_arn=SAT_ARN,
+        pretty_label="Weekly Freshness",
+        execution_arn=rec["execution_arn"],
+        execution_name=rec["name"],
+        status=RunStatus(rec["status"]),
+        tasks=[],
+    )
+
+
+class TestZeroArtifactVerdict:
+    """A SUCCEEDED run with total==0 artifact telemetry must never default
+    to COMPLETE — it defers to nousergon_lib.pipeline_status.classify_work
+    via the module's _cached_work_outcome (alpha-engine-config-I8069)."""
+
+    def test_weekly_run_day_skip_renders_skipped_not_complete_not_failed(self):
+        """The WeeklyRunDaySkip gate-out shape: SUCCEEDED, 0/16 stages,
+        declared skip terminal. Must render SKIPPED — neither the old
+        COMPLETE (a false green) nor a FAILED (paging through correct
+        behaviour)."""
+        run = _zero_artifact_run("weekly_gateout_2026_08_20")
+        outcome = classify_work(
+            state_machine_name="ne-weekly-freshness-pipeline",
+            status=RunStatus.SUCCEEDED,
+            entered_states=_load_fixture("weekly_gateout_2026_08_20")["entered_states"],
+        )
+        with patch(
+            "loaders.pipeline_status_loader._cached_work_outcome",
+            return_value=outcome.to_dict(),
+        ):
+            cv = derive_cycle_verdict(run)
+        assert cv.verdict == "SKIPPED"
+        assert cv.verdict != "COMPLETE"
+        assert cv.verdict != "FAILED"
+
+    def test_watch_rerun_vacuous_success_renders_incomplete_as_failed(self):
+        """watch-rerun-2026-08-16-4: SUCCEEDED, 8m40s, wrote a completion
+        marker, entered ZERO of the sixteen declared substantive stages, and
+        reached no declared skip terminal — classify_work's INCOMPLETE
+        (reason=vacuous_success). This dashboard's verdict vocabulary has no
+        separate INCOMPLETE bucket (COMPLETE/PARTIAL/FAILED/SKIPPED/RUNNING/
+        NOT_RUN), so INCOMPLETE maps onto FAILED — never COMPLETE, and
+        distinctly from SKIPPED."""
+        run = _zero_artifact_run("weekly_vacuous_success_watch_rerun_2026_08_16_4")
+        outcome = classify_work(
+            state_machine_name="ne-weekly-freshness-pipeline",
+            status=RunStatus.SUCCEEDED,
+            entered_states=_load_fixture(
+                "weekly_vacuous_success_watch_rerun_2026_08_16_4"
+            )["entered_states"],
+        )
+        assert outcome.verdict is WorkVerdict.INCOMPLETE
+        assert outcome.reason == "vacuous_success"
+        with patch(
+            "loaders.pipeline_status_loader._cached_work_outcome",
+            return_value=outcome.to_dict(),
+        ):
+            cv = derive_cycle_verdict(run)
+        assert cv.verdict == "FAILED"
+        assert cv.verdict != "COMPLETE"
+        assert cv.verdict != "SKIPPED"
+
+    def test_work_outcome_read_failure_falls_back_to_failed_not_complete(self):
+        """A read failure must never manufacture COMPLETE from a lookup that
+        didn't succeed (feedback_no_silent_fails)."""
+        run = _zero_artifact_run("weekly_gateout_2026_08_20")
+        with patch(
+            "loaders.pipeline_status_loader._cached_work_outcome",
+            side_effect=RuntimeError("boto3 throttled"),
+        ):
+            cv = derive_cycle_verdict(run)
+        assert cv.verdict == "FAILED"

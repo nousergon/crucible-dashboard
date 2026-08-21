@@ -35,7 +35,9 @@ import boto3
 from loaders.cache import cached
 
 from nousergon_lib.pipeline_status import (
+    PIPELINE_STAGE_ORDER,
     read_reliability_window,
+    read_work_outcome,
     PipelineExecutionSummary,
     PipelineRun,
     RunStatus,
@@ -43,6 +45,7 @@ from nousergon_lib.pipeline_status import (
     SFNNoExecutions,
     SFNThrottled,
     TaskStatus,
+    WorkVerdict,
     list_recent_pipeline_runs,
     read_pipeline_state,
 )
@@ -89,7 +92,7 @@ _ARTIFACT_KIND = "archive_page_ref"
 class CycleVerdict:
     """Artifact-completion verdict for a PipelineRun (see derive_cycle_verdict)."""
 
-    verdict: str  # COMPLETE | PARTIAL | FAILED | RUNNING | NOT_RUN
+    verdict: str  # COMPLETE | PARTIAL | FAILED | SKIPPED | RUNNING | NOT_RUN
     artifacts_produced: int
     artifacts_total: int
 
@@ -99,14 +102,65 @@ class CycleVerdict:
         return self.verdict == "COMPLETE"
 
 
+@cached(ttl=_CACHE_TTL_SECONDS)
+def _cached_work_outcome(execution_arn: str) -> dict:
+    """Streamlit-cached ``nousergon_lib`` three-way work verdict for one execution.
+
+    Used only by ``_zero_artifact_verdict`` below: a SUCCEEDED run with no
+    artifact-bearing telemetry (``total == 0``) must be told apart from a
+    declared no-op (e.g. ``WeeklyRunDaySkip``) rather than defaulted to
+    COMPLETE — alpha-engine-config-I8069, the defect
+    ``nousergon_lib.pipeline_status.classify_work`` exists to close. A
+    separate DescribeExecution + GetExecutionHistory read from the one
+    ``read_pipeline_state`` already makes (same shape as
+    ``_cached_gate_verdict_output`` above): the lib's ``PipelineRun`` does
+    not carry the raw entered-state sequence ``classify_work`` needs.
+    """
+    return read_work_outcome(execution_arn).to_dict()
+
+
+def _zero_artifact_verdict(run: PipelineRun) -> str:
+    """COMPLETE / SKIPPED / FAILED for a run with no artifact-bearing telemetry.
+
+    Never collapses a declared skip terminal into COMPLETE, and never pages
+    through one either — it renders as its own state. Any read failure
+    falls back to FAILED-if-not-SUCCEEDED (the pre-fix behaviour) rather
+    than manufacturing a verdict from a failed lookup.
+    """
+    if run.status != RunStatus.SUCCEEDED or run.execution_arn is None:
+        return "FAILED"
+    try:
+        outcome = _cached_work_outcome(run.execution_arn)
+    except Exception as exc:  # noqa: BLE001 — never silently render COMPLETE on a read failure
+        logger.warning(
+            "work-outcome read failed for %s: %s", run.execution_arn, exc
+        )
+        return "FAILED"
+    verdict = outcome.get("verdict")
+    if verdict == WorkVerdict.SKIPPED.value:
+        return "SKIPPED"
+    if verdict == WorkVerdict.COMPLETED.value:
+        return "COMPLETE"
+    # INCOMPLETE (execution_failed / vacuous_success / partial_success) or
+    # IN_FLIGHT (shouldn't occur — run.status is already SUCCEEDED here).
+    return "FAILED"
+
+
 def derive_cycle_verdict(run: PipelineRun) -> CycleVerdict:
     """Project a PipelineRun onto an artifact-completion verdict.
 
     ``COMPLETE`` (every artifact-bearing state SUCCEEDED, regardless of the
-    DAG terminal status), ``PARTIAL`` (some), ``FAILED`` (none), or
-    ``RUNNING`` / ``NOT_RUN`` passed through. Falls back to the raw DAG
-    status when the run carries no artifact-bearing telemetry, so we never
-    manufacture a green from absent evidence.
+    DAG terminal status), ``PARTIAL`` (some), ``FAILED`` (none), ``SKIPPED``
+    (reached a declared no-op terminal — correct, never a cycle, never an
+    alert), or ``RUNNING`` / ``NOT_RUN`` passed through. When the run
+    carries no artifact-bearing telemetry, defers to
+    ``nousergon_lib.pipeline_status.classify_work`` via
+    ``_zero_artifact_verdict`` rather than reading the raw DAG status —
+    a bare SUCCEEDED with zero artifacts is exactly the
+    ``ne-weekly-freshness-pipeline`` gate-out shape
+    (alpha-engine-config-I8069), and a vacuous success (SUCCEEDED, zero
+    substantive stages entered, no declared skip terminal) must render
+    FAILED, not COMPLETE.
 
     NOTE: mirrors ``live/loaders/system_pulse_loader.derive_cycle_verdict``
     (the public surface). Both should be lifted into
@@ -128,7 +182,7 @@ def derive_cycle_verdict(run: PipelineRun) -> CycleVerdict:
     elif dag == RunStatus.NOT_RUN:
         verdict = "NOT_RUN"
     elif total == 0:
-        verdict = "COMPLETE" if dag == RunStatus.SUCCEEDED else "FAILED"
+        verdict = _zero_artifact_verdict(run)
     elif produced == total:
         verdict = "COMPLETE"
     elif produced > 0:
@@ -635,53 +689,17 @@ def refresh_and_write_cache(
 # Declared stage spine per SF, used to rank how DEEP a cycle got before it
 # failed. Order matters and membership matters: only substantive stages
 # appear, so a poll or gate state entering is not mistaken for the run
-# getting further. Names verified against the live definitions 2026-08-11.
-RELIABILITY_STAGE_ORDER: dict[str, tuple[str, ...]] = {
-    "ne-weekly-freshness-pipeline": (
-        "MorningEnrich",
-        "DataPhase1",
-        "RAGIngestion",
-        "Scanner",
-        "SignalsEnvelope",
-        "PredictorTraining",
-        "DataPhase2",
-        "Backtester",
-        "ParityParallel",
-        "PitParityCompare",
-        "ModelZooSelect",
-        "ModelZooTrainMap",
-        # Split from a single `Evaluator` stage by alpha-engine-config-I3112 on
-        # 2026-08-11. The old name survived here and ranked nothing, which is
-        # the I6857 defect this module's test guards — a rename blinds every
-        # reader matching on the old name, and the blindness reports as the
-        # benign "that stage did not run".
-        "EvaluatorDiagnostics",
-        "EvaluatorOptimize",
-        "ReportCard",
-        "Director",
-    ),
-    "ne-preopen-trading-pipeline": (
-        "StartExecutorEC2",
-        "CodeFreshnessGate",
-        "LaunchMorningEnrichSpot",
-        "LaunchMorningArcticAppendSpot",
-        # Scanner removed from this SF by nousergon-data-PR1464 (merged
-        # 2026-08-20T18:25:51Z): per Brian's 2026-08-20 ruling the scanner
-        # forms its cuts weekly rather than every weekday. The weekly SF's
-        # Scanner stage (above, ne-weekly-freshness-pipeline) is unaffected.
-        "PredictorInference",
-        "CheckPredictorCoverage",
-        "RunMorningPlanner",
-        "RunDaemon",
-    ),
-    "ne-postclose-trading-pipeline": (
-        "LaunchPostMarketDataSpot",
-        "LaunchPostMarketArcticAppendSpot",
-        "CaptureSnapshot",
-        "EODReconcile",
-        "StopTradingInstance",
-    ),
-}
+# getting further.
+#
+# Lifted to the lib's own declaration (alpha-engine-config-I8069) rather
+# than maintaining a local copy: keeping this a straight alias means a
+# stage rename (the I6857 class — I3112 split the old single-name
+# `Evaluator` stage into `EvaluatorDiagnostics`/`EvaluatorOptimize` on
+# 2026-08-11 and a stale local copy would have kept ranking nothing under
+# the dead name while the lib and every other consumer moved on) blinds
+# every reader at once instead of blinding only the one that forgot to
+# update its own copy.
+RELIABILITY_STAGE_ORDER: dict[str, tuple[str, ...]] = PIPELINE_STAGE_ORDER
 
 # Reliability is O(scan_limit) SF API calls — one DescribeExecution and one
 # GetExecutionHistory per execution scanned. A 60s TTL like the rest of this
@@ -714,6 +732,7 @@ def _cached_reliability(arn: str, max_cycles: int, scan_limit: int) -> list[dict
             "attempts_to_success": c.attempts_to_success,
             "settled": c.settled,
             "recovered": c.recovered,
+            "skip_only": c.skip_only,
             "depth_index": c.depth_index,
             "depth_stage": c.depth_stage,
             "wall_clock_sec": c.wall_clock_sec,
@@ -734,9 +753,24 @@ class ReliabilityResult:
 
     @property
     def clean_streak(self) -> int:
+        """Trailing settled cycles that succeeded on the first attempt.
+
+        Mirrors ``nousergon_lib.pipeline_status.cycles.ReliabilityWindow.
+        clean_streak`` exactly (alpha-engine-config-I8069): a ``skip_only``
+        cycle (every attempt reached a declared no-op terminal, e.g. a THU
+        ``WeeklyRunDaySkip``) neither breaks nor extends the streak — it
+        says nothing about whether the next real run will be clean. Rebuilt
+        here from the flattened cache rows rather than read off the lib's
+        ``ReliabilityWindow`` object directly because ``_cached_reliability``
+        flattens to primitives for ``st.cache_data`` hashability (see its
+        docstring); ``row["skip_only"]`` carries the same
+        ``CycleReliability.skip_only`` value through that flattening.
+        """
         streak = 0
         for row in reversed(self.cycles):
             if not row["settled"]:
+                continue
+            if row.get("skip_only"):
                 continue
             if row["first_attempt_succeeded"]:
                 streak += 1
@@ -746,13 +780,19 @@ class ReliabilityResult:
 
     @property
     def looping(self) -> Optional[bool]:
-        """The most-recent settled cycle repeated an earlier cause.
+        """The most-recent settled, non-skip-only cycle repeated an earlier cause.
 
-        None when no cycle has settled — NOT False. The page renders the
-        three states distinctly; collapsing "unknown" into "not looping" is
-        the same error as rendering absence as green.
+        None when no such cycle has settled — NOT False. The page renders
+        the three states distinctly; collapsing "unknown" into "not
+        looping" is the same error as rendering absence as green. A
+        ``skip_only`` cycle is excluded for the same reason it is excluded
+        from ``clean_streak`` — it is not a cycle to judge looping against
+        (alpha-engine-config-I8069, mirroring
+        ``ReliabilityWindow.looping``).
         """
         for row in reversed(self.cycles):
+            if row.get("skip_only"):
+                continue
             if row["settled"] and row["attempts"]:
                 return bool(row["repeat_causes"])
         return None
