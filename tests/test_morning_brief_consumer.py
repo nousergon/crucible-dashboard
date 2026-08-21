@@ -201,14 +201,81 @@ def _patch_router(monkeypatch, *, route=None, captured=None):
 
     the_route = route or _fake_route()
 
-    def fake_resolve_structured(group, *, exec_context=None, wire="openai"):
+    # THE DOUBLE'S SIGNATURE MUST TRACK THE REAL ONE (alpha-engine-config-I8036
+    # tail). `requires` was added to krepis.router.resolve_group_structured and
+    # this fake did not have it, so against any krepis newer than this repo's
+    # ==0.59.14 pin the call raised
+    #
+    #   TypeError: fake_resolve_structured() got an unexpected keyword
+    #              argument 'requires'
+    #
+    # which morning_brief.py catches, logs as a WARNING, and turns into
+    # `return None` — so the assertion failure downstream said only
+    # `assert None == 'Macro lead.\n- AAPL: news'` and named nothing.
+    # Measured 2026-08-21 against krepis 0.59.24 (the box runs 0.59.24; this
+    # repo pins 0.59.14), so this was a red waiting for whoever bumped the pin.
+    #
+    # `test_the_double_matches_the_real_signature` below is the part that
+    # matters: a double that silently stops matching what it doubles converts
+    # every future kwarg into the same unattributable None.
+    def fake_resolve_structured(group, *, exec_context=None, wire="openai",
+                                requires=()):
         if captured is not None:
             captured.append(
-                {"group": group, "exec_context": exec_context, "wire": wire}
+                {"group": group, "exec_context": exec_context, "wire": wire,
+                 "requires": requires}
             )
         return the_route
 
     monkeypatch.setattr(_kr, "resolve_group_structured", fake_resolve_structured)
+
+
+def test_the_double_matches_the_real_signature():
+    """The fake accepts everything the real `resolve_group_structured` does.
+
+    Compared by KEYWORD NAME, not by full signature equality: krepis may add a
+    parameter with a default and remain compatible with this call site, and the
+    double only has to tolerate it. What must never happen again is the double
+    rejecting a kwarg the real function accepts — that raises inside a `try`
+    whose `except` returns None, so the failure surfaces as a missing brief with
+    no name attached to it.
+
+    Skipped rather than failed if krepis is absent: this is a signature-drift
+    guard, not a krepis-is-installed guard, and conflating them makes a missing
+    dependency read as a drift finding.
+    """
+    import inspect
+
+    import pytest
+
+    _kr = pytest.importorskip("krepis.router")
+
+    real = set(inspect.signature(_kr.resolve_group_structured).parameters)
+    fake = set(inspect.signature(_fake_double_for_signature_check()).parameters)
+    missing = real - fake
+    assert not missing, (
+        f"krepis.router.resolve_group_structured accepts {sorted(missing)}, "
+        f"which _patch_router's double does not. The call in "
+        f"live/morning_brief.py raises TypeError, morning_brief catches it, "
+        f"logs a WARNING and returns None — so the test fails with "
+        f"`assert None == ...` and names nothing. Add the parameter to the "
+        f"double."
+    )
+
+
+def _fake_double_for_signature_check():
+    """The double, extracted so the signature guard can inspect it.
+
+    Defined by re-declaring the same parameter list rather than reaching into
+    `_patch_router`'s closure: the closure is only built inside a fixture that
+    needs `monkeypatch`. Keeping the two lists identical is the one thing this
+    file has to get right by hand, and the guard fails loudly if it is not.
+    """
+    def fake_resolve_structured(group, *, exec_context=None, wire="openai",
+                                requires=()):
+        raise AssertionError("signature-inspection stub, never called")
+
+    return fake_resolve_structured
 
 
 class TestGenerateBrief:
