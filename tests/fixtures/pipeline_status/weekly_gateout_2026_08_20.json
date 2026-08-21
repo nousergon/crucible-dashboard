@@ -1,0 +1,19 @@
+{
+  "_provenance": "captured live via AWS_PROFILE=ne-admin aws stepfunctions describe-execution + get-execution-history on 2026-08-21; alpha-engine-config-I8045",
+  "execution_arn": "arn:aws:states:us-east-1:711398986525:execution:ne-weekly-freshness-pipeline:339782fc-53ce-f730-3822-9472543a0a9d_ec27e03f-1ac7-4f1d-ef46-7903631fa20a",
+  "name": "339782fc-53ce-f730-3822-9472543a0a9d_ec27e03f-1ac7-4f1d-ef46-7903631fa20a",
+  "status": "SUCCEEDED",
+  "start_date": "2026-08-20T02:00:49.173000-07:00",
+  "stop_date": "2026-08-20T02:00:52.638000-07:00",
+  "duration_sec": 3.465,
+  "history_event_count": 15,
+  "entered_states": [
+    "InitializeInput",
+    "CheckWeeklyRunDayGate",
+    "WeeklyRunDayGate",
+    "WeeklyRunDayGateChoice",
+    "WeeklyRunDaySkip"
+  ],
+  "terminal_state": "WeeklyRunDaySkip",
+  "last_event_type": "ExecutionSucceeded"
+}

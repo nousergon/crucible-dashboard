@@ -78,6 +78,53 @@ def test_a_recovered_cycle_breaks_the_streak():
     assert rel.clean_streak == 0
 
 
+def test_skip_only_cycle_neither_extends_nor_breaks_the_streak():
+    """alpha-engine-config-I8069: mirrors nousergon_lib.pipeline_status.
+    cycles.ReliabilityWindow.clean_streak exactly. A skip_only cycle (every
+    attempt reached a declared no-op terminal, e.g. a THU WeeklyRunDaySkip)
+    is neither clean nor dirty — the pipeline was correct to do nothing, and
+    it says nothing about whether the next real run will be clean. Before
+    this fix the local rebuild read row["first_attempt_succeeded"] (None
+    for a skip_only cycle, since it never truly "succeeded" a real attempt)
+    as falsy and BROKE the streak — bypassing the lib fix entirely."""
+    rel = ReliabilityResult(
+        cycles=[
+            _cycle("c1"),
+            _cycle("c2"),
+            _cycle(
+                "c3",
+                skip_only=True,
+                first_attempt_succeeded=None,
+                attempts_to_success=None,
+                depth_index=None,
+                depth_stage=None,
+            ),
+        ]
+    )
+    # The skip_only cycle is skipped over entirely — the streak still counts
+    # the two real clean cycles beneath it, not reset to 0.
+    assert rel.clean_streak == 2
+
+
+def test_skip_only_cycle_is_excluded_from_looping_judgment():
+    """Mirrors ReliabilityWindow.looping: a skip_only cycle is not a cycle
+    to judge looping against, so the most-recent NON-skip settled cycle
+    decides — alpha-engine-config-I8069."""
+    rel = ReliabilityResult(
+        cycles=[
+            _cycle("c1", repeat_causes=["MorningEnrich:Timeout"]),
+            _cycle(
+                "c2",
+                skip_only=True,
+                first_attempt_succeeded=None,
+                attempts_to_success=None,
+                repeat_causes=[],
+            ),
+        ]
+    )
+    assert rel.looping is True
+
+
 def test_looping_is_none_when_no_cycle_has_settled():
     """Not False. Rendering 'unknown' as 'not looping' asserts a verdict the
     data does not support — the same error as rendering absence as green."""

@@ -68,6 +68,50 @@ def _status_str(status: Any) -> str:
     return str(getattr(status, "value", status) or "").upper()
 
 
+@cached(ttl=300)
+def _cached_work_outcome(execution_arn: str) -> dict:
+    """Streamlit-cached ``nousergon_lib`` three-way work verdict for one execution.
+
+    Mirrors ``loaders.pipeline_status_loader._cached_work_outcome`` (the
+    gated console's twin of this module — see that function's docstring for
+    the full rationale). Used only by ``_zero_artifact_verdict`` below.
+    """
+    from nousergon_lib.pipeline_status import read_work_outcome
+
+    return read_work_outcome(execution_arn).to_dict()
+
+
+def _zero_artifact_verdict(run: Any, dag: str) -> str:
+    """COMPLETE / SKIPPED / FAILED for a run with no artifact-bearing telemetry.
+
+    Never collapses a declared skip terminal (e.g. ``WeeklyRunDaySkip``)
+    into COMPLETE — alpha-engine-config-I8069, the byte-identical defect
+    fixed in the gated console's ``loaders.pipeline_status_loader.
+    derive_cycle_verdict``. Consumer-side graceful degrade on any read
+    failure, per this module's own failure posture (docstring, top of
+    file): falls back to FAILED-if-not-SUCCEEDED rather than manufacturing
+    a verdict from a failed lookup.
+    """
+    execution_arn = getattr(run, "execution_arn", None)
+    if dag != "SUCCEEDED" or not execution_arn:
+        return "FAILED"
+    try:
+        outcome = _cached_work_outcome(execution_arn)
+    except Exception as exc:  # noqa: BLE001 — consumer-side degrade; WARN is the recording surface (module docstring)
+        logger.warning(
+            "system-pulse: work-outcome read failed for %s: %s", execution_arn, exc
+        )
+        return "FAILED"
+    verdict = outcome.get("verdict")
+    if verdict == "skipped":
+        return "SKIPPED"
+    if verdict == "completed":
+        return "COMPLETE"
+    # incomplete (execution_failed / vacuous_success / partial_success) or
+    # in_flight (shouldn't occur — dag is already SUCCEEDED here).
+    return "FAILED"
+
+
 def derive_cycle_verdict(run: Any) -> dict:
     """Artifact-completion verdict for a pipeline run.
 
@@ -79,11 +123,20 @@ def derive_cycle_verdict(run: Any) -> dict:
       the DAG terminal status — this is the fix for the false-FAIL headline).
     - ``PARTIAL`` — some but not all artifact-bearing states SUCCEEDED.
     - ``FAILED`` — no artifact-bearing state SUCCEEDED.
+    - ``SKIPPED`` — reached a declared no-op terminal (e.g. a THU/FRI
+      ``WeeklyRunDaySkip``). Correct behaviour, never a cycle, never an
+      alert.
 
     When the run carries no artifact-bearing telemetry (``artifacts_total``
     == 0 — e.g. a run that died before any substantive state, or a curated
-    fixture without ``archive`` tags) the verdict falls back to the raw DAG
-    status so we never manufacture a green from absent evidence.
+    fixture without ``archive`` tags), defers to
+    ``nousergon_lib.pipeline_status.classify_work`` via
+    ``_zero_artifact_verdict`` rather than reading the raw DAG status: a
+    bare SUCCEEDED with zero artifacts is exactly the
+    ``ne-weekly-freshness-pipeline`` gate-out shape
+    (alpha-engine-config-I8069), and a vacuous success (SUCCEEDED, zero
+    substantive stages entered, no declared skip terminal) must render
+    FAILED, not COMPLETE.
     """
     dag = _status_str(getattr(run, "status", None))
     produced = total = 0
@@ -99,7 +152,7 @@ def derive_cycle_verdict(run: Any) -> dict:
     elif dag in ("NOT-RUN", "NOT_RUN"):
         verdict = "NOT_RUN"
     elif total == 0:
-        verdict = "COMPLETE" if dag == "SUCCEEDED" else "FAILED"
+        verdict = _zero_artifact_verdict(run, dag)
     elif produced == total:
         verdict = "COMPLETE"
     elif produced > 0:

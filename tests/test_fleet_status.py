@@ -218,6 +218,20 @@ class TestPipelines:
         assert s.dot == GRAY
         assert "runs weekdays" in s.reason
 
+    def test_gray_skipped_is_neither_green_nor_red(self):
+        """alpha-engine-config-I8069: a run that reached a declared no-op
+        terminal (e.g. a THU/FRI WeeklyRunDaySkip) renders its own distinct
+        state — never COMPLETE (a false green) and never FAILED (paging
+        through working-as-designed behaviour)."""
+        s = _pipe("weekly", PipelineSnapshot(
+            status="SUCCEEDED", verdict="SKIPPED",
+            started_at=SATURDAY - timedelta(hours=2),
+            stopped_at=SATURDAY - timedelta(hours=1)),
+            now=SATURDAY, trading=False)
+        assert s.dot == GRAY
+        assert s.dot != RED
+        assert "skipped" in s.reason.lower()
+
     def test_yellow_partial(self):
         s = _pipe("preopen", PipelineSnapshot(
             status="FAILED", verdict="PARTIAL",

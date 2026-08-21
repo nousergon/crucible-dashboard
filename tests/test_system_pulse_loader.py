@@ -17,6 +17,7 @@ by conftest.py.
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -197,18 +198,94 @@ class TestCycleVerdict:
         assert out["artifacts_total"] == 0
         assert out["verdict"] == "FAILED"  # no evidence → trust DAG status
 
-    def test_no_archive_telemetry_falls_back_to_dag_status(self, pulse):
-        # Curated fixtures / older runs without archive tags must not
-        # manufacture a verdict from absent evidence.
+    def test_no_archive_telemetry_and_no_execution_arn_is_failed_not_complete(self, pulse):
+        # Curated fixtures / older runs without archive tags AND without an
+        # execution_arn to re-read (classify_work has nothing to key on)
+        # must not manufacture a verdict from absent evidence — corrected
+        # under alpha-engine-config-I8069 from the prior "dag SUCCEEDED ->
+        # COMPLETE" default, which is the exact false-green this issue
+        # closes (a SUCCEEDED WeeklyRunDaySkip gate-out has this same
+        # zero-artifact-telemetry shape). No execution_arn means no lookup
+        # is possible, so this falls conservatively to FAILED rather than
+        # asserting a pass with no evidence.
         out = pulse.curate_pipeline_run(_run())  # default tasks have no archive
         assert out["artifacts_total"] == 0
-        assert out["verdict"] == "COMPLETE"  # dag SUCCEEDED → COMPLETE
+        assert out["verdict"] == "FAILED"
         out_failed = pulse.curate_pipeline_run(_run(status=SimpleNamespace(value="FAILED")))
         assert out_failed["verdict"] == "FAILED"
 
     def test_not_run_passes_through(self, pulse):
         out = pulse.curate_pipeline_run(_run(status=SimpleNamespace(value="NOT-RUN"), tasks=[]))
         assert out["verdict"] == "NOT_RUN"
+
+
+# ── Zero-artifact-telemetry fallback: SKIPPED vs INCOMPLETE (I8069) ────────
+#
+# Real fixtures captured live from ne-weekly-freshness-pipeline on
+# 2026-08-21 (alpha-engine-config-I8045), copied verbatim into
+# tests/fixtures/pipeline_status/ from
+# nousergon-lib/tests/fixtures/pipeline_status/ — the same shapes
+# nousergon_lib's own test_pipeline_status_work.py proves classify_work
+# against. Not re-derived synthetic data.
+
+_FIXTURES_DIR = Path(__file__).parent / "fixtures" / "pipeline_status"
+
+
+def _load_fixture(name: str) -> dict:
+    return json.loads((_FIXTURES_DIR / f"{name}.json").read_text())
+
+
+class TestZeroArtifactVerdictSkippedVsIncomplete:
+    """derive_cycle_verdict's zero-artifact-telemetry fallback must defer to
+    nousergon_lib.pipeline_status.classify_work rather than defaulting a
+    bare SUCCEEDED to COMPLETE (alpha-engine-config-I8069) — this module's
+    twin of loaders.pipeline_status_loader.derive_cycle_verdict, on the
+    PUBLIC surface."""
+
+    def test_weekly_run_day_skip_renders_skipped_not_complete_not_failed(self, pulse):
+        from nousergon_lib.pipeline_status import RunStatus, classify_work
+
+        rec = _load_fixture("weekly_gateout_2026_08_20")
+        outcome = classify_work(
+            state_machine_name="ne-weekly-freshness-pipeline",
+            status=RunStatus(rec["status"]),
+            entered_states=rec["entered_states"],
+        )
+        run = _run(
+            status=SimpleNamespace(value="SUCCEEDED"),
+            tasks=[],
+            execution_arn=rec["execution_arn"],
+        )
+        with patch.object(pulse, "_cached_work_outcome", return_value=outcome.to_dict()):
+            out = pulse.curate_pipeline_run(run)
+        assert out["verdict"] == "SKIPPED"
+        assert out["verdict"] != "COMPLETE"
+        assert out["verdict"] != "FAILED"
+
+    def test_watch_rerun_vacuous_success_renders_incomplete_as_failed(self, pulse):
+        from nousergon_lib.pipeline_status import RunStatus, WorkVerdict, classify_work
+
+        rec = _load_fixture("weekly_vacuous_success_watch_rerun_2026_08_16_4")
+        outcome = classify_work(
+            state_machine_name="ne-weekly-freshness-pipeline",
+            status=RunStatus(rec["status"]),
+            entered_states=rec["entered_states"],
+        )
+        assert outcome.verdict is WorkVerdict.INCOMPLETE
+        assert outcome.reason == "vacuous_success"
+        run = _run(
+            status=SimpleNamespace(value="SUCCEEDED"),
+            tasks=[],
+            execution_arn=rec["execution_arn"],
+        )
+        with patch.object(pulse, "_cached_work_outcome", return_value=outcome.to_dict()):
+            out = pulse.curate_pipeline_run(run)
+        # This surface's verdict vocabulary has no separate INCOMPLETE
+        # bucket (COMPLETE/PARTIAL/FAILED/SKIPPED/RUNNING/NOT_RUN); INCOMPLETE
+        # maps onto FAILED — never COMPLETE, and distinctly from SKIPPED.
+        assert out["verdict"] == "FAILED"
+        assert out["verdict"] != "COMPLETE"
+        assert out["verdict"] != "SKIPPED"
 
 
 class TestSummarizeFreshness:
