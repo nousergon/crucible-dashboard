@@ -63,11 +63,3 @@ entries:
     rationale: >-
       The same metron compute cache seen through metron-api's PrivateTmp
       namespace.
-  - path: /tmp/systemd-private-*-metron-api.service-*/tmp/flow_doctor.db
-    rpo: total
-    rationale: >-
-      DEFECT, allowlisted so the daily page does not repeat while it is fixed:
-      metron-api writes flow_doctor.db into PrivateTmp, which is destroyed on
-      every service restart — while REBUILD_RUNBOOK.md still lists the file as
-      durable snapshot-carried state. Tracked as metron-ops-I273; remove this
-      entry when the DB moves to a durable, backup-registered path.
