@@ -73,26 +73,58 @@ def test_budget_exit_codes_are_tiered_by_severity():
     assert "memory budget check failed to run" in BOX_HEALTH
 
 
-def test_budget_breach_is_delegated_not_paged():
-    """A budget breach must NOT push, and must still be published.
+def test_budget_breach_is_console_only_not_channelled():
+    """A T1-8 breach reaches the CONSOLE and no longer reaches the channel.
 
-    The bound that governs real safety is steady state, not the sum of the caps.
-    A cap-sum breach while the box sits at 39% of RAM is a statement about a
-    declared number, and paging it is how the channel gets tuned out -- which is
-    what happened: box-health was ~70% of all fleet alert publishes over
-    2026-07-27..08-03.
+    SUPERSEDES the 2026-07-29 "delegated, not discarded" shape this test used to
+    assert, on Brian's 2026-08-21 ruling (alpha-engine-config-I7858): "if i'm 4x
+    away from the wall then i certainly no longer want to be alerted of it."
 
-    Both halves are asserted. Silencing it without keeping the publish would be
-    the 2026-07-29 defect in reverse: a real finding reaching nobody.
+    The old shape rested on two claims that did not survive measurement.
+
+    ONE: that `warning` was quiet. It is not — krepis.alerts passes
+    `disable_notification=True`, which suppresses the phone push and NOT the
+    message, so every breach still landed in the chat. 90 of 274 watchdog runs
+    over fourteen days, for one standing condition with an open ruling on it
+    (alpha-engine-config-I7804).
+
+    TWO: that the publish was a DELEGATION to the Overseer intake bus. Measured
+    2026-08-20: all four `alpha-engine-alert-drain-*` schedules are DISABLED
+    under the 2026-08-07 automation pause (alpha-engine-config-I6984). The
+    delegated consumer has not been running. A publish to a paused drain is not
+    delegation, it is a message to Brian with an extra step.
+
+    THE FINDING IS NOT SILENCED, and this is the assertion that matters:
+    `emit_hygiene_envelope` renders the info tier on the console on EVERY run
+    including clean ones, with each finding's age. principles.md §7 — a
+    component emitting nothing is unobserved, not healthy. A standing condition
+    belongs on a board that shows how long it has been true, not in a stream
+    that re-announces it.
+
+    WHAT IS STILL LOUD is asserted in test_the_real_wall_is_still_critical
+    below. Nothing indicating the box is actually running out of memory moved.
     """
-    assert classify("memory budget: BREACH (detail in journal)") == "warning", (
-        "a budget breach must be delegated to the Overseer, not pushed"
+    assert classify("memory budget: BREACH (detail in journal)") == "info", (
+        "a T1-8 headroom breach is a console finding, not a channel message"
     )
-    assert re.search(r"publish_problems warning\s+\d+", BOX_HEALTH), (
-        "the warning tier must still be PUBLISHED -- silent in-channel is not "
-        "the same as unrecorded, and it is the bus emission that makes the "
-        "silence legitimate (alert class box-health, intake: bus)"
+    assert "emit_hygiene_envelope" in BOX_HEALTH, (
+        "the info tier must still reach the console — silencing without the "
+        "console publish would be the 2026-07-29 defect in reverse: a real "
+        "finding reaching nobody"
     )
+
+
+def test_the_real_wall_is_still_critical():
+    """The conditions that mean the box IS running out of memory still page.
+
+    Written as its own test because the change above is the one a future reader
+    will summarise as "memory alerts were turned off". T1-8 is a declared
+    headroom bound; these are the box actually failing.
+    """
+    assert classify("low memory: <250MB available") == "critical"
+    assert classify(
+        "memory pressure: vires.service is stalled on reclaim against its memory cap"
+    ) == "critical"
 
 
 def test_missing_check_is_reported_not_skipped():
