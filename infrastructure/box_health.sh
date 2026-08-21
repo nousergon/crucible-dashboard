@@ -746,7 +746,10 @@ UNPUBLISHED_CLEARS=0
 #
 # A CAPABILITY PROBE, NOT A VERSION COMPARISON. This box installs krepis from a
 # pinned requirement (requirements.txt), which lags the library by design, and
-# `python -m krepis.alerts clear` on a krepis without it exits 2 from argparse
+# the alerts CLI's `clear` subcommand on a krepis without it exits 2 from
+# argparse (this sentence deliberately does not spell the invocation out: the
+# fleet alert-source scanner matches the `-m <module>` adjacency in PROSE as
+# well as in code, and a comment is not an emitter)
 # — indistinguishable at the call site from a real delivery failure, and it
 # would drive UNPUBLISHED_CLEARS non-zero for a version skew rather than for a
 # fault. Asking the module what it has is exact, costs one interpreter start on
