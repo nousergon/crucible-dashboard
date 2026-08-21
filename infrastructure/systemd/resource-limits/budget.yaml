@@ -137,7 +137,18 @@ headroom_warn_fraction: 0.90
 # egress-proxy units from an uncensored `memory.peak` read. max_steady_state_
 # fraction (0.50) is untouched — the new process is one more Python
 # interpreter against a live sum that sits well under its bound.
-max_overcommit_ratio: 1.57      # sum(memory_max) / ceiling. Re-derived 2026-08-19
+# Raised again 1.57 -> 1.63 on 2026-08-21, SIXTH application of the same rule:
+# litellm-proxy needed a MEASURED cap (1000M -> 1200M, see its note — a 30-hour
+# CloudWatch series showing a 874 MB weekday plateau against a 750M soft cap)
+# and 1.57 left 4 MB. Measured: sum(memory_max) = 5118 MB over 16 services;
+# ceiling = 3839 * 0.85 = 3263.15 MB; +200 MB = 5318 MB -> 5318 / 3263.15 =
+# 1.6297, rounded up to 1.63. Re-derived per this file's own rule — not shaved
+# to fit — because the need is measured over thirty hours rather than the three
+# minutes the 2026-08-19 number came from. max_steady_state_fraction (0.50) is
+# UNTOUCHED and remains breached at the weekday morning peak (58-61%); a cap
+# cannot move anon+swap, only where those pages live, so nothing here fixes or
+# worsens that bound. It is a separate decision on alpha-engine-config-I7804.
+max_overcommit_ratio: 1.63      # sum(memory_max) / ceiling. Re-derived 2026-08-19
 # (alpha-engine-config-I7786) when litellm-proxy's cap moved 500M -> 1000M for
 # the Prisma-backed key store (see that unit's note). 4618M -> 5118M against a
 # 3263.15M ceiling = 1.569, rounded up. Re-derived per this file's own rule —
@@ -591,8 +602,8 @@ services:
   # ── dev infrastructure ──────────────────────────────────────────────────
   - unit: litellm-proxy.service
     port: 8980
-    memory_high: 750M
-    memory_max: 1000M
+    memory_high: 950M
+    memory_max: 1200M
     note: >
       DO NOT LOWER without re-testing a cold start. Calibrated 2026-07-27
       (alpha-engine-config-I4441/I4451): at 150M/300M this unit could never
@@ -615,6 +626,65 @@ services:
       after deploy — this cap was NOT re-measured against
       `max_steady_state_fraction`, only against its own startup/steady
       behavior.
+
+      RE-CALIBRATED AGAIN 2026-08-21 (alpha-engine-config-I7804): 750M/1000M ->
+      950M/1200M. THE 2026-08-19 NUMBER WAS MEASURED OVER THREE MINUTES, AT AN
+      IDLE MOMENT, AND THIS SERVICE HAS A WORKING-HOURS PLATEAU.
+
+      `AlphaEngine/Host ServiceMemoryMiB{Unit=litellm-proxy.service}` — the
+      per-service anon+swap series that emit_service_memory.sh began publishing
+      on 2026-08-20 for exactly this question — over 2026-08-20 09:30 to
+      2026-08-21 13:30 PT, 30-minute averages:
+
+        08-20 18:00 -> 08-21 04:00 PT   728 MB, flat to the megabyte for 10h
+        08-21 05:00                     833 MB   (preopen SF window opens)
+        08-21 05:30 -> 09:30 PT         874 MB, flat for 4h (trading hours)
+        08-21 10:30 (restart) -> 13:30  695 -> 736 MB, +7 MB over 2.5h
+
+      So: a ~730 MB overnight baseline and a ~875 MB weekday plateau, with the
+      step tracking the hours in which routed LLM calls actually happen. It is
+      NOT a leak — 10-hour stretches are flat to the megabyte, and the
+      post-restart slope is 7 MB over 2.5 hours, which is noise. That
+      distinction is the one the emitter was built to make: "a resize bought on
+      an unattributed number buys nothing if the cause is a leak, because the
+      leak refills the larger box." It is not a leak, so a cap is the right
+      instrument.
+
+      **memory_high was set 125 MB BELOW the service's normal weekday working
+      set.** That is why the cgroup logged 1437 `memory.events::high` throttle
+      events and held ~157 MB in swap: not a runaway, a soft cap under the
+      demand. Measured at the same time: `memory.events::max 0` and
+      `oom_kill 0` — the hard cap has never been touched — and
+      `memory.pressure full avg300=0.00` with 657 ms of total stall over 3h20m,
+      so the throttling cost nothing measurable. This raise removes daily
+      reclaim churn; it does not fix an outage, and it is not urgent.
+
+      950M sits 76 MB above the 874 MB plateau. 1200M keeps a 250 MB reclaim
+      window — DELIBERATELY 79% rather than this file's ~70% high/max rule of
+      thumb. The rule exists to guarantee a reclaim window before the wall, and
+      what governs reclaim is the window's ABSOLUTE size: 250 MB here is the
+      same window 750M/1000M had, and larger than most units' entire cap.
+      Honouring 70% would have meant either a soft cap of 840M — below the
+      measured plateau, i.e. still throttling — or a hard cap of 1350M, +150 MB
+      of declared claim on an overcommitted box to buy nothing real.
+
+      THE PRISMA ATTRIBUTION IN alpha-engine-config-I7804 IS WRONG, and it is
+      recorded here because it is the kind of plausible cause that survives by
+      not being re-measured. That issue attributes the growth to I7063's
+      Prisma-backed virtual-key store putting "a second resident process in that
+      cgroup". Measured 2026-08-21 by reading the cgroup's own `cgroup.procs`:
+
+        2112354  605156 KB  litellm        (python3.11)
+        2112776   21368 KB  query-engine-rhel-openssl-3.0.x
+
+      The query engine is **21 MB**. The 605 MB is LiteLLM's own Python process.
+      The virtual-key store did not cost this box a few hundred megabytes.
+
+      NOT re-measured against `max_steady_state_fraction`, deliberately: a cap
+      change cannot move anon+swap, only where those pages live. T1-8 stands at
+      51% of RAM on the mean and 58-61% at the weekday morning peak, over its
+      50% bound, and that is a separate decision on alpha-engine-config-I7804 —
+      not something this raise addresses or worsens.
 
   - unit: llm-egress-proxy.service
     port: 8990
