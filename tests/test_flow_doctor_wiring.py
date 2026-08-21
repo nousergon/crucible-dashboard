@@ -310,8 +310,20 @@ class TestLibVersionPin:
             "nousergon_lib import alias still works via the shim)"
         )
         assert "@main" not in text, "nousergon-lib must be pinned to a tag, not @main"
-        assert "@v0.124.74" in text, (
-            "nousergon-lib should pin to v0.124.74 -- the first published "
+        assert "@v0.124.78" in text, (
+            "nousergon-lib should pin to v0.124.78 -- the first published "
+            "release registering the Saturday SF's ScannerLeaderboard Task state and "
+            "its PublishScannerLeaderboardDegraded / NotifyCompleteScannerLeaderboardDegraded "
+            "companions (alpha-engine-config-I7813). "
+            "NOTE the failure mode this pin has now produced TWICE, in opposite "
+            "directions: crucible-dashboard#739 bumped requirements.txt to v0.124.78 "
+            "and left requirements.in on v0.124.74, so check_package_drift FAILED "
+            "every deploy from 2026-08-20 22:45 onward -- three merges landed on main "
+            "and NONE of them reached the box, while CI stayed green because CI "
+            "installs the lockfile and never compares it to requirements.in. "
+            "requirements.in, requirements.txt and this assertion move TOGETHER or "
+            "the repo is merged-but-not-live. "
+            "Prior: v0.124.74 -- the first published "
             "release registering the Saturday SF's PitParityLookaheadResourceKillCheck "
             "/ PitParityWalkforwardResourceKillCheck Task states + their WaitFor* "
             "companions in nousergon_lib.pipeline_status.registry (nousergon-lib#333, "
