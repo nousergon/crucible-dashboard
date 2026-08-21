@@ -603,6 +603,63 @@ publish_verdict() {
         2>&1 | head -1 | sed 's/^/box_health: verdict publish failed: /' >&2 || true
 }
 
+# UNALERTED_CRITICALS — how many critical problem LINES this run found and then
+# could not deliver through krepis.alerts. Incremented by publish_problems.
+UNALERTED_CRITICALS=0
+
+# publish_unalerted COUNT — the metric the CloudWatch backstop actually alarms
+# on (alpha-engine-config-I8035).
+#
+# WHY THIS EXISTS, AND WHY health_problems COULD NOT BE IT. publish_verdict
+# above is a LEVEL: it republishes the current critical count every tick. Two
+# of its inputs are themselves levels — `timer job failing:` is derived from
+# `systemctl show -p Result`, which stays `exit-code` until the unit's NEXT
+# run. So ONE failing daily timer holds the level for ~144 consecutive ticks.
+#
+# Measured on i-09b539c844515d549 over 274 runs, 2026-08-07..21:
+#   `timer job failing: ops-config-drift.timer`  175 ticks  <-  3 actual failures
+# and `alpha-engine-dashboard-health-problems` transitioned ALARM<->OK 15 times
+# in 13 days. Both AlarmActions and OKActions point at the alpha-engine-alerts
+# SNS topic, so that is 30 emails for 3 failures — on top of the krepis.alerts
+# page that had already been delivered for each one.
+#
+# THE ALERT PATH ALREADY SOLVED THIS. timer_failure_dedup_key (config-I7677)
+# keys each timer finding on (unit, Result, InactiveExitTimestamp) precisely so
+# that one failing RUN pages once rather than once per cooldown window. That fix
+# was never inherited here, because this path deliberately does not look at the
+# alert path at all.
+#
+# The resolution keeps both properties instead of trading one for the other.
+# `health_problems` stays exactly what it was — an independent level, published
+# every run, carrying no alarm action, readable on the console and in history.
+# `health_problems_unalerted` counts only criticals whose `krepis.alerts publish`
+# FAILED, and the alarm moves onto it. That is the condition the alarm's own
+# description has always named:
+#
+#   "box_health.sh confirmed >=1 problem it may not have been able to alert
+#    about (config-I5211)"
+#
+# I5211's argument survives intact: this is still a second, independent code
+# path, and the case it was built for — a silently no-op alerts module, the
+# config#1646 class — makes every publish fail, so this metric goes non-zero and
+# the alarm fires. What stops is the duplication of pages that DID land.
+#
+# Published on EVERY exit path including the all-healthy ones (principles.md
+# §7): a series that stops must stay distinguishable from a healthy zero, which
+# is the same contract publish_verdict already keeps.
+#
+# KNOWN LIMIT, stated rather than implied: if box_health.sh dies before reaching
+# a publish, neither metric updates and the alarm sees missing data, which is
+# `notBreaching` by design. That silence is covered by box-health.timer's
+# dead-man row in budget.yaml, not here — two alarms breaching on one silence is
+# the double-page this file already refuses elsewhere.
+publish_unalerted() {
+    aws cloudwatch put-metric-data --namespace "AlphaEngine/Box" \
+        --metric-data \
+        "MetricName=health_problems_unalerted,Dimensions=[{Name=InstanceId,Value=${INSTANCE_ID}}],Value=${1:-0},Unit=Count" \
+        2>&1 | head -1 | sed 's/^/box_health: unalerted publish failed: /' >&2 || true
+}
+
 # snapshot_problems — run the full check ONCE, printing one problem per line.
 # No shared state; the caller samples it repeatedly and keeps the intersection.
 # http_liveness_problems — emit a problem line per service that is listening
@@ -1136,6 +1193,7 @@ trap throttle_baseline_write EXIT
 confirmed=$(snapshot_problems)
 if [ -z "$confirmed" ]; then
     publish_verdict 0
+    publish_unalerted 0
     emit_hygiene_envelope ""
     exit 0
 fi
@@ -1151,6 +1209,7 @@ done
 # all flagged problems self-healed within the confirmation window → no page
 if [ -z "$confirmed" ]; then
     publish_verdict 0
+    publish_unalerted 0
     emit_hygiene_envelope ""
     exit 0
 fi
@@ -1302,13 +1361,24 @@ publish_problems() {
     # krepis.alerts is the canonical CLI (config#1649): nousergon_lib.alerts is a
     # re-export shim since lib v0.66.0 — guard-less under `python -m` on 0.81.0
     # (silent exit-0 no-op, the config#1646 class). Invoke the real module.
-    "$ALERT_PY" -m krepis.alerts publish \
+    # A FAILED CRITICAL PUBLISH IS THE ONE THING THE CLOUDWATCH BACKSTOP EXISTS
+    # FOR (alpha-engine-config-I8035), so it is counted here rather than only
+    # written to the journal. Counted in LINES, not in calls: one failed call
+    # can carry several findings, and the metric answers "how many confirmed
+    # criticals did nobody get told about", not "how many publishes failed".
+    # Lower tiers are journal-only as before — a warning that fails to publish
+    # is still on the console via emit_hygiene_envelope.
+    if ! "$ALERT_PY" -m krepis.alerts publish \
         --message "$msg" \
         --severity "$severity" \
         --source box-health \
         --dedup-key "$dkey" \
-        --dedup-window-min "$dedup_min" \
-        || echo "box_health: $severity publish failed" >&2
+        --dedup-window-min "$dedup_min"; then
+        echo "box_health: $severity publish failed" >&2
+        if [ "$severity" = "critical" ]; then
+            UNALERTED_CRITICALS=$((UNALERTED_CRITICALS + ${#_problems[@]}))
+        fi
+    fi
 }
 
 # timer-job-failing findings get their OWN identity-keyed publish, one per
@@ -1451,3 +1521,10 @@ publish_problems warning  43200 "budget/coverage finding (no action urgent)" "$w
 # Both lower tiers, one surface. `warning` appears here IN ADDITION to its
 # channel publish above, never instead of it; `notice` appears here only.
 emit_hygiene_envelope "$(printf '%s\n%s' "$notices" "$warnings" | grep -v '^$' || true)"
+
+# LAST, deliberately: every critical publish above has now either landed or
+# failed, so this is the only point at which UNALERTED_CRITICALS is final.
+# Publishing it earlier would emit a count of failures that had not been
+# attempted yet, which is the shape publish_verdict has and the reason this is
+# a separate series rather than a second argument to it.
+publish_unalerted "$UNALERTED_CRITICALS"

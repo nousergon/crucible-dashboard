@@ -37,24 +37,26 @@ jobs:
       # so the box identifier lives in one place. Set via: gh variable set
       # DASHBOARD_INSTANCE_ID. Non-secret identifier — a variable, not a secret.
       DASHBOARD_INSTANCE_ID: ${{ vars.DASHBOARD_INSTANCE_ID }}
-      # Bounded AWS SDK retry for throttling resilience across all alarm puts
-      # (config#5518 — a throttled alarm step was skipping the other two).
+      # Bounded AWS SDK retry for throttling resilience. Added for the alarm
+      # steps (config#5518 — a throttled alarm put was skipping the other two);
+      # those steps are gone (alpha-engine-config-I8035) but the remaining SSM
+      # send-command / get-command-invocation calls throttle the same way, so
+      # this stays.
       AWS_MAX_ATTEMPTS: 5
       AWS_RETRY_MODE: adaptive
 
     steps:
       # The deploy job historically needed no checkout — it only sends SSM
-      # commands, and the box runs scripts from its OWN checkout. It does need
-      # one now: the host-alarms step runs infrastructure/install-host-alarms.sh
-      # from the runner, because that script cannot run on the box (the instance
-      # role deliberately lacks cloudwatch:PutMetricAlarm). Without this the step
-      # dies with "No such file or directory" (exit 127), which is exactly how
-      # it failed on the config-I5211 merge.
+      # commands, and the box runs scripts from its OWN checkout. It still needs
+      # one: the Cloudflare cache-purge step below runs
+      # infrastructure/purge_streamlit_static_cache.sh from the runner. Without
+      # this the step dies with "No such file or directory" (exit 127), which is
+      # how the config-I5211 alarm step failed when it was first added.
       #
-      # Checking out and running the script beats inlining seven put-metric-alarm
-      # calls here: the script stays the single definition of those alarms.
-      # Duplicating them into the workflow would create precisely the two-copies
-      # drift this repo has spent the day removing.
+      # The alarm steps that used to be the reason for this checkout are gone
+      # (alpha-engine-config-I8035) — see the block further down. Do not delete
+      # the checkout on that basis: test_repo_scripts_in_deploy_require_a_checkout
+      # asserts the remaining consumer still has it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
 
       - name: Configure AWS credentials via OIDC
@@ -176,62 +178,31 @@ jobs:
             --command-id "${{ steps.send.outputs.command_id }}" \
             --query 'StandardErrorContent' --output text
 
-      - name: Ensure box disk alarm exists (alarm-as-code, config#2227)
-        if: always()
-        run: |
-          # Idempotent: put-metric-alarm creates or updates in place. Pages the
-          # alpha-engine-alerts SNS (Telegram) when the box's root disk crosses
-          # 90% — or when the metric GOES MISSING for 3 periods, which catches
-          # the box/agent/watchdog being too broken to publish at all (the
-          # 2026-07-11 disk-full-killed-SSM class). Metric is published every
-          # 10 min by box_health.sh (AlphaEngine/Box namespace).
-          aws cloudwatch put-metric-alarm \
-            --alarm-name alpha-engine-dashboard-box-disk-critical \
-            --alarm-description "Dashboard EC2 root disk >=90% or box health metric missing (config#2227)" \
-            --namespace AlphaEngine/Box --metric-name disk_used_percent \
-            --dimensions Name=InstanceId,Value=${DASHBOARD_INSTANCE_ID} \
-            --statistic Maximum --period 600 \
-            --evaluation-periods 3 --datapoints-to-alarm 2 \
-            --threshold 90 --comparison-operator GreaterThanOrEqualToThreshold \
-            --treat-missing-data breaching \
-            --alarm-actions arn:aws:sns:us-east-1:711398986525:alpha-engine-alerts \
-            --ok-actions arn:aws:sns:us-east-1:711398986525:alpha-engine-alerts
-
-      - name: Host alarms (alarm-as-code, config-I5211)
-        if: always()
-        run: |
-          # install-host-alarms.sh CANNOT run on the box: the instance role
-          # deliberately lacks cloudwatch:PutMetricAlarm, because a host that can
-          # rewrite its own alarms can disable its own detection. It ran nowhere
-          # at all until now (config-I5215). Here it runs with the OIDC role,
-          # whose `alpha-engine-box-alarm-as-code` inline policy is scoped to
-          # alarm:alpha-engine-* — the least privilege that makes this possible.
-          bash infrastructure/install-host-alarms.sh
-
-      - name: Watchdog-verdict alarm (alarm-as-code, config-I5211)
-        if: always()
-        run: |
-          # The off-box half of the dead-man. box_health.sh publishes its own
-          # confirmed-problem COUNT every run, on the metrics path — which is a
-          # different code path from the SNS/Telegram alert path, with different
-          # failure modes. So a broken alert path (the config#1646 silent-no-op
-          # class) still surfaces here.
-          #
-          # treat-missing-data is notBreaching ON PURPOSE: absent data means the
-          # box or the watchdog is down, and that is already covered by
-          # box-disk-critical's own missing-data breach above. Two alarms
-          # breaching on the same silence would double-page for one cause.
-          aws cloudwatch put-metric-alarm \
-            --alarm-name alpha-engine-dashboard-health-problems \
-            --alarm-description "box_health.sh confirmed >=1 problem it may not have been able to alert about (config-I5211)" \
-            --namespace AlphaEngine/Box --metric-name health_problems \
-            --dimensions Name=InstanceId,Value=${DASHBOARD_INSTANCE_ID} \
-            --statistic Maximum --period 600 \
-            --evaluation-periods 2 --datapoints-to-alarm 2 \
-            --threshold 1 --comparison-operator GreaterThanOrEqualToThreshold \
-            --treat-missing-data notBreaching \
-            --alarm-actions arn:aws:sns:us-east-1:711398986525:alpha-engine-alerts \
-            --ok-actions arn:aws:sns:us-east-1:711398986525:alpha-engine-alerts
+      # ALARM AUTHORSHIP LIVES IN nous-ergon-ops, NOT HERE
+      # (alpha-engine-config-I8035, completing the config-I7339 ownership ruling).
+      #
+      # Three steps used to sit here: two inline `put-metric-alarm` calls and a
+      # `bash infrastructure/install-host-alarms.sh`, together authoring all
+      # EIGHT alpha-engine-dashboard-* alarms on every merge to main. All eight
+      # are ALSO codified in nous-ergon-ops/infrastructure/cloudwatch/alarms/
+      # and applied by that repo's cloudwatch-alarm-apply-on-merge.yml, so the
+      # live alarm was whichever of the two paths ran last.
+      #
+      # That is not a tidiness problem. Verified live 2026-08-21: all eight
+      # matched their codified JSON exactly — which is what makes it dangerous.
+      # An intentional edit to a JSON in nous-ergon-ops is silently reverted by
+      # the next merge to this repo, with both repos green and the daily drift
+      # checker reporting a match right up until the moment someone changes
+      # something.
+      #
+      # This repo is PUBLIC and the alarm definitions are PRIVATE, so the
+      # inversion taken here is the one nousergon-data took on 2026-08-14
+      # (config-I7359): stop creating alarms, rather than shallow-clone the
+      # private repo for the definitions. nous-ergon-ops/infrastructure/
+      # cloudwatch/README.md named install-host-alarms.sh as one of the last
+      # imperative appliers still firing on merge; this removes it.
+      #
+      # tests/test_no_imperative_alarm_authorship.py keeps it that way.
 
       - name: Append to system-wide deploy changelog
         if: always()
