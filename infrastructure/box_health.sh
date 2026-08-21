@@ -91,6 +91,16 @@ INSTANCE_ID=$(curl -s --max-time 2 -H "X-aws-ec2-metadata-token: ${_imds_tok}" h
 MEM_MIN_MB=150                       # alert if MemAvailable drops below this
 DISK_WARN_PCT=80                     # root-disk warn band (page, deduped)
 DISK_CRIT_PCT=90                     # root-disk critical band (page, deduped)
+
+# The Overseer alert-drain's own artifacts, read to detect a drain that is
+# SCHEDULED-OFF or hung rather than one that merely died (alpha-engine-
+# config-I7858). See check_alert_drain_liveness() below for why this reads
+# _control/completed/ rather than SQS depth directly.
+OVERSEER_RESEARCH_BUCKET="alpha-engine-research"
+# EventBridge fires 4x/day, every 6h (cron(0 4|10|16|22 * * ? *)). Two missed
+# cycles plus a generous margin for a long-running drain (charter caps it at
+# a 3h watchdog) without false-paging on ONE slow run.
+ALERT_DRAIN_MAX_STALENESS_H=14
 # Service/port coverage comes from the GENERATED manifest, which is rendered
 # from infrastructure/systemd/resource-limits/budget.yaml — the box's single
 # service registry. Do not hand-edit the arrays here.
@@ -750,6 +760,76 @@ http_liveness_problems() {
     fi
 }
 
+# check_alert_drain_liveness — emit a problem line if the Overseer alert-drain
+# is SCHEDULED-OFF or hung, rather than merely dead. Its own function, not an
+# inline block, for the same reason http_liveness_problems is: extractable and
+# directly runnable by tests/test_box_health_alert_drain_liveness.py.
+#
+# WHY THIS EXISTS (alpha-engine-config-I7858). The existing
+# alpha-engine-alert-drain-liveness-probe (nousergon-data) relaunches a DEAD
+# spot box on EC2 instance-terminated / spot-interruption events. It has no
+# opinion on a drain that never launches at all (the four
+# alpha-engine-alert-drain-*utc EventBridge schedules were DISABLED under the
+# 2026-08-07 pause, #6984, for 14 days with nothing paging on it — re-enabled
+# 2026-08-21) or one that launches, runs, and exits `success` without doing
+# anything (a silent consumption bug). This check is that missing backstop,
+# independent of how the I7858 `warning`-tier routing question itself was
+# resolved (#758 answered it by reclassifying the dominant offender to `info`
+# rather than moving the whole tier off channel — this check stands on its
+# own regardless: the alert-drain's liveness was never covered either way).
+#
+# WHY THIS READS _control/completed/, NOT SQS QUEUE DEPTH DIRECTLY. This
+# box's IAM role (alpha-engine-dashboard-role) has broad read access to
+# s3://alpha-engine-research (the `alpha-engine-research-access` policy) and
+# no SQS or EventBridge Scheduler permissions at all — granting those is an
+# IAM change, which belongs to nous-ergon-ops, not this repo (repository-
+# tiering-policy). The drain already writes a completion marker to
+# `overseer/_control/completed/alert-drain-<run_id>.json` on every run
+# (`{"state":"success","rc":0,"run_id":...,"at":...}`) using credentials this
+# box does not need to duplicate. A schedule that is disabled, or a run that
+# hangs past its own 3h watchdog, both manifest identically here: no fresh
+# completed marker. That does not distinguish "scheduled-off" from "hung"
+# from "crashed", but the remedy for a human is the same investigation either
+# way, and the existing spot-liveness probe already owns the death case.
+#
+# KNOWN GAP, STATED RATHER THAN SILENT: a run that completes `state:success`
+# after reading zero messages from a genuinely non-empty queue (a live
+# consumption bug, not a scheduling one) is invisible to this check — the
+# per-run ledger at overseer/drain_ledger/<date>/<run_id>.json DOES carry an
+# `ingested.queue` count, but ingested=0 is also the correct, common reading
+# for a quiet period, so alerting on it directly would page on every calm
+# 6-hour window. Closing that gap needs a queue-depth comparison this box's
+# IAM cannot make; tracked as alpha-engine-config-I8108, not solved here.
+check_alert_drain_liveness() {
+    local latest
+    latest=$(aws s3api list-objects-v2 \
+                 --bucket "$OVERSEER_RESEARCH_BUCKET" \
+                 --prefix "overseer/_control/completed/alert-drain-drain-" \
+                 --query "reverse(sort_by(Contents,&LastModified))[0].[Key,LastModified]" \
+                 --output text 2>/dev/null)
+    if [ -z "$latest" ] || [ "$latest" = "None" ]; then
+        # A listing failure (network, throttle, IAM drift) is indistinguishable
+        # from "no runs ever completed" at this call site. Both are watchdog
+        # malfunctions worth a human looking at, same class as the df/timer
+        # probes above — reported distinctly, not silently skipped and not
+        # escalated to the drain's own critical (that would blame the drain
+        # for this box's S3 access, not the drain's own health).
+        echo "watchdog: cannot read alert-drain completion markers (S3 list failed or empty)"
+        return 0
+    fi
+    local last_epoch now_epoch age_h
+    last_epoch=$(date -d "$(printf '%s' "$latest" | awk '{print $2}')" +%s 2>/dev/null)
+    if [ -z "$last_epoch" ]; then
+        echo "watchdog: cannot parse alert-drain completion timestamp: $latest"
+        return 0
+    fi
+    now_epoch=$(date +%s)
+    age_h=$(( (now_epoch - last_epoch) / 3600 ))
+    if [ "$age_h" -ge "$ALERT_DRAIN_MAX_STALENESS_H" ]; then
+        echo "alert-drain not consuming: no completed run in ${age_h}h (last: $(printf '%s' "$latest" | awk '{print $1}')) — scheduled-off or hung, see alpha-engine-config-I7858"
+    fi
+}
+
 snapshot_problems() {
     # memory headroom
     local mem_avail_mb
@@ -1156,6 +1236,7 @@ snapshot_problems() {
     done
 
     http_liveness_problems
+    check_alert_drain_liveness
 }
 
 # Gauges flow on every tick regardless of health outcome (see emit_metrics).
@@ -1279,7 +1360,44 @@ classify_problem_severity() {
         "notice: "*) echo info ;;
 
         # ── warning: a declared invariant drifted; nothing is degraded now ────
-        "memory budget: BREACH"*) echo warning ;;
+        # T1-8 IS CONSOLE-ONLY (alpha-engine-config-I7858, Brian ruling
+        # 2026-08-21: "if i'm 4x away from the wall then i certainly no longer
+        # want to be alerted of it").
+        #
+        # THE TIER WAS TRACKING THE WRONG INVARIANT. shared-application-host-
+        # policy draws a distinction this classifier never did: T1-8
+        # (sum(anon+swap) <= 50% of RAM) is a §5 HEADROOM invariant whose remedy
+        # is "lower a cap, free memory, or move a service"; E3 (sustained
+        # MemAvailable < 250 MB) is the §6 EXIT TRIGGER whose remedy is a resize
+        # or a split. The policy says in as many words that the two "can
+        # disagree in both directions and routinely will". This line put the
+        # first one on the same channel as the second.
+        #
+        # Measured 2026-08-21 while the breach stood: MemAvailable 1128 MB
+        # against E3's 250 MB threshold -- 4.5x away -- with zero kernel OOM
+        # kills and `memory.pressure full avg300=0.00`. The finding was true,
+        # standing, already ruled on (alpha-engine-config-I7804), and arrived in
+        # the channel for 90 of 274 watchdog runs over fourteen days. That is
+        # the single largest source of box-health traffic Brian sees.
+        #
+        # `info`, NOT deleted, and the difference is the whole design: the info
+        # tier does not publish to krepis.alerts, but emit_hygiene_envelope
+        # renders it on the console on EVERY run including clean ones, with the
+        # finding's age. principles.md §7 -- a component emitting nothing is
+        # unobserved, not healthy -- so the breach stays continuously visible
+        # where a standing condition belongs, and stops arriving where a
+        # changing one does.
+        #
+        # WHAT STAYS LOUD, deliberately, because this is the line someone will
+        # later read as "memory alerts were turned off":
+        #   "low memory: "*        -> critical (that IS E3's condition)
+        #   "memory pressure: "*   -> critical (stalled on reclaim)
+        #   OOMKills               -> its own CloudWatch alarm, untouched
+        #   mem-available-crit/warn -> their own CloudWatch alarms, untouched
+        # Nothing that indicates the box is actually running out of memory was
+        # moved. What moved is the declared bound about how much headroom we
+        # said we wanted.
+        "memory budget: BREACH"*) echo info ;;
         "cgroup throttle: "*) echo warning ;;
         "disk high: "*) echo warning ;;
         "timer has not run in "*) echo warning ;;
@@ -1305,6 +1423,10 @@ classify_problem_severity() {
         # Latent, not current — but the unit cannot start again, and
         # reboot-if-needed.timer makes that an unattended, all-at-once event.
         "unit cannot restart: "*) echo critical ;;
+        # alpha-engine-config-I7858: this check's whole purpose is to be an
+        # independent backstop on the Overseer alert-drain — it must page,
+        # not join a tier whose delivery depends on the same drain.
+        "alert-drain not consuming: "*) echo critical ;;
 
         *) echo critical ;;
     esac
