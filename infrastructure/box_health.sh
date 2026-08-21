@@ -1279,7 +1279,44 @@ classify_problem_severity() {
         "notice: "*) echo info ;;
 
         # ── warning: a declared invariant drifted; nothing is degraded now ────
-        "memory budget: BREACH"*) echo warning ;;
+        # T1-8 IS CONSOLE-ONLY (alpha-engine-config-I7858, Brian ruling
+        # 2026-08-21: "if i'm 4x away from the wall then i certainly no longer
+        # want to be alerted of it").
+        #
+        # THE TIER WAS TRACKING THE WRONG INVARIANT. shared-application-host-
+        # policy draws a distinction this classifier never did: T1-8
+        # (sum(anon+swap) <= 50% of RAM) is a §5 HEADROOM invariant whose remedy
+        # is "lower a cap, free memory, or move a service"; E3 (sustained
+        # MemAvailable < 250 MB) is the §6 EXIT TRIGGER whose remedy is a resize
+        # or a split. The policy says in as many words that the two "can
+        # disagree in both directions and routinely will". This line put the
+        # first one on the same channel as the second.
+        #
+        # Measured 2026-08-21 while the breach stood: MemAvailable 1128 MB
+        # against E3's 250 MB threshold -- 4.5x away -- with zero kernel OOM
+        # kills and `memory.pressure full avg300=0.00`. The finding was true,
+        # standing, already ruled on (alpha-engine-config-I7804), and arrived in
+        # the channel for 90 of 274 watchdog runs over fourteen days. That is
+        # the single largest source of box-health traffic Brian sees.
+        #
+        # `info`, NOT deleted, and the difference is the whole design: the info
+        # tier does not publish to krepis.alerts, but emit_hygiene_envelope
+        # renders it on the console on EVERY run including clean ones, with the
+        # finding's age. principles.md §7 -- a component emitting nothing is
+        # unobserved, not healthy -- so the breach stays continuously visible
+        # where a standing condition belongs, and stops arriving where a
+        # changing one does.
+        #
+        # WHAT STAYS LOUD, deliberately, because this is the line someone will
+        # later read as "memory alerts were turned off":
+        #   "low memory: "*        -> critical (that IS E3's condition)
+        #   "memory pressure: "*   -> critical (stalled on reclaim)
+        #   OOMKills               -> its own CloudWatch alarm, untouched
+        #   mem-available-crit/warn -> their own CloudWatch alarms, untouched
+        # Nothing that indicates the box is actually running out of memory was
+        # moved. What moved is the declared bound about how much headroom we
+        # said we wanted.
+        "memory budget: BREACH"*) echo info ;;
         "cgroup throttle: "*) echo warning ;;
         "disk high: "*) echo warning ;;
         "timer has not run in "*) echo warning ;;
