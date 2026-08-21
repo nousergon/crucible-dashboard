@@ -316,8 +316,16 @@ class TestGenerateBrief:
         assert text == "Macro lead.\n- AAPL: news"
 
         # The call site declares only group + exec_context + wire.
+        # `requires: ()` is asserted, not tolerated. The kwarg exists so a
+        # caller can demand a capability of the resolved route (krepis
+        # router.py:1931), and this call site demands none — a macro paragraph
+        # off a `low` group is exactly the work that must stay routable to the
+        # cheapest arm the registry offers. Pinning the empty tuple means a
+        # future edit that narrows this call's eligible routes has to change a
+        # test that says so, rather than quietly shrinking the pool.
         assert captured_resolves == [
-            {"group": "low", "exec_context": "ec2", "wire": "openai"}
+            {"group": "low", "exec_context": "ec2", "wire": "openai",
+             "requires": ()}
         ]
         # The registry's route decided model, provider and reasoning — none
         # of it is held in this module.
