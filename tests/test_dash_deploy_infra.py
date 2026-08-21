@@ -399,6 +399,14 @@ class TestInfraShellTests:
         # rule could never clear and survived its own remedy (config-I5216).
         self._run("test_box_health_throttle_rate.sh")
 
+    def test_box_health_alert_lifecycle(self):
+        # Guards the open/clear pair (alpha-engine-config-I8105): every alert
+        # this box emitted was write-once, so a page and a live outage were
+        # indistinguishable. Asserts both directions of the set difference —
+        # a clear for a condition that ended, and NO clear for one still
+        # standing, which is the worse failure of the two.
+        self._run("test_box_health_alert_lifecycle.sh")
+
     def test_deploy_auto_revert(self):
         # T1-3: health checks existed but nothing rolled the box back, so a bad
         # merge left it broken until a human noticed (config-I5250 gap 3).
