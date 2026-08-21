@@ -103,3 +103,44 @@ def test_lockfile_pin_satisfies_the_declared_bounds() -> None:
     floor, ceiling = _declared_bounds()
     pinned = _pinned_lockfile_version()
     assert floor <= pinned < ceiling
+
+
+# ── the ceiling must also be enforced UPSTREAM of the lockfile ──────────────
+#
+# Every assertion above fires only once Dependabot has already opened the PR.
+# That is a detector, not a guard: `requirements.in` carries the constraint,
+# but Dependabot resolves against `requirements.txt` and never reads the
+# `.in`, so it proposed krepis 0.59.25 in the weekly minor-and-patch group on
+# 2026-08-21 (#722) and reddened the five safe bumps riding along with it.
+# Left alone it re-proposes the same unsafe bump every week forever.
+#
+# `.github/dependabot.yml` now carries the ceiling as an `ignore`. These tests
+# keep that entry in LOCKSTEP with `GITLEAKS_CEILING` above, so the ignore
+# cannot be the kind of rule that is enforced only by its own comment: raising
+# the ceiling in one place and not the other fails here rather than silently
+# re-arming the weekly proposal.
+
+
+def _dependabot_pip_ignore() -> list[dict]:
+    import yaml
+
+    cfg = yaml.safe_load((_ROOT / ".github/dependabot.yml").read_text())
+    pip = [u for u in cfg["updates"]
+           if u["package-ecosystem"] == "pip" and u["directory"] == "/"]
+    assert len(pip) == 1, "expected exactly one root pip update config"
+    return pip[0].get("ignore", [])
+
+
+def test_dependabot_ignores_krepis_at_and_above_the_ceiling() -> None:
+    entries = [e for e in _dependabot_pip_ignore()
+               if e.get("dependency-name") == "krepis"]
+    assert entries, (
+        "dependabot.yml must ignore krepis at/above the gitleaks ceiling — "
+        "requirements.in's bound does not reach Dependabot, so without this "
+        "the unsafe bump is re-proposed every week (I7634)"
+    )
+    assert len(entries) == 1, "one krepis ignore entry, not several to reconcile"
+    assert entries[0].get("versions") == [f">={'.'.join(map(str, GITLEAKS_CEILING))}"], (
+        "the dependabot ignore bound must equal GITLEAKS_CEILING exactly — a "
+        "ceiling raised in one place and not the other re-arms the proposal"
+    )

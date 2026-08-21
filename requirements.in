@@ -99,7 +99,7 @@ yfinance>=1.6.0
 # v0.59.15 returns `src/krepis/session_dlp.py`.
 # REMOVE THIS CAP when I7634 deliverable 1 provisions gitleaks 8.30.1 on this
 # box AND adds it to the provisioning the box is rebuilt from. Not before.
-krepis[openai]>=0.59.25,<0.59.26
+krepis[openai]>=0.59.14,<0.59.15
 # nousergon-lib (renamed from alpha-engine-lib at v0.60.0) provides
 # setup_logging used by app.py + health_checker.py
 # to attach the FlowDoctorHandler when FLOW_DOCTOR_ENABLED=1, the
