@@ -19,7 +19,7 @@
 | Secrets | SSM SecureString under `/alpha-engine/`, `/symposion/`, `/metron/`, etc. | authoritative upstream |
 | Data artifacts | S3 (`alpha-engine-research`), Neon (Metron), Mnemon vault sync | authoritative upstream |
 
-**The snapshot is the only copy of:** the two Cloudflare Origin private keys (`/etc/ssl/certs/*-origin.pem` + keys), `~/.netrc` (GitHub deploy PAT), `flow_doctor.db`, the built venvs and `node_modules` trees, and any local config not yet in a repo.
+**The snapshot is the only copy of:** the two Cloudflare Origin private keys (`/etc/ssl/certs/*-origin.pem` + keys), `~/.netrc` (GitHub deploy PAT), `metron/cache/flow_doctor.db`, the built venvs and `node_modules` trees, and any local config not yet in a repo.
 
 ---
 
@@ -53,7 +53,7 @@ Because `DeleteOnTermination=false`, a terminated instance leaves `vol-0b11efe28
 3. Launch a new t3.medium in us-east-1f, stop it, detach+delete its root volume, attach the restored volume as `/dev/xvda`, start.
 4. Jump to **Common post-restore steps**.
 
-**Data loss window:** everything written since the last nightly snapshot (up to 24h). For this box that is: `flow_doctor.db` rows, uncommitted local edits, and any log history. No product data — every product's authoritative store is off-box.
+**Data loss window:** everything written since the last nightly snapshot (up to 24h). For this box that is: `metron/cache/flow_doctor.db` rows, uncommitted local edits, and any log history. No product data — every product's authoritative store is off-box.
 
 ---
 

@@ -801,6 +801,18 @@ state:
     disposition: external
     source: s3://mnemon-memory/mnemon/vaults/default.sqlite
     note: mnemon-sync.timer PULLS this from S3 every 15 min; S3 is authoritative
+  - path: /home/ec2-user/metron/cache/flow_doctor.db
+    owner: metron-api.service
+    disposition: accepted-loss
+    rpo: 24h
+    note: >-
+      flow-doctor dedupe + rate-limit bookkeeping (last-seen per failure
+      signature, running daily alert count). Lived in metron-api's PrivateTmp
+      namespace until metron-PR413 and was therefore destroyed on every restart,
+      which silently re-armed the 60-minute dedupe window and the 10-alerts-per-day
+      budget on each deploy (metron-ops-I273). Now durable across restarts and
+      carried by the nightly snapshot; not worth replicating, since it regenerates
+      on the next alert — the same call as the morning-signal row below.
   - path: /home/ec2-user/morning-signal/episodes/flow-doctor.db
     owner: morning-signal.timer
     disposition: accepted-loss
