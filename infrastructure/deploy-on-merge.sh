@@ -1093,5 +1093,41 @@ mkdir -p "$(dirname "$LAST_GOOD_SHA_FILE")" 2>/dev/null || true
 printf '%s\n' "$CURRENT_SHA" > "$LAST_GOOD_SHA_FILE" 2>/dev/null \
     || log "WARN could not record last-good sha at $LAST_GOOD_SHA_FILE — auto-revert will not arm"
 
+# ── Prune stale rollback venvs (alpha-engine-config-I8036) ───────────────────
+#
+# The python-parity self-heal above preserves the outgoing venv at
+# $REPO_DIR/.venv-prev-<epoch> so _rollback_venv can restore it, and NOTHING
+# ever deleted it. Each self-heal therefore left a permanent ~700 MB copy, with
+# the total bounded only by how often that path runs.
+#
+# Measured 2026-08-21: one such directory, 711 MB, mtime 2026-03-10 — five
+# months of rollback window for a swap whose health gate passed the same
+# minute. It also carries krepis 0.14.0, which is why
+# nous-ergon-ops/.../krepis-venv/co-tenants.yaml declares `.venv-prev-*` as a
+# GLOB with `posture: retired`, deliberately counting it rather than filtering
+# it out: "a 0.14.0 venv sitting on a shared host is exactly the thing a filter
+# makes permanently invisible."
+#
+# WHY HERE AND NOT IN box_hygiene.sh. box_hygiene.sh states in its own header
+# that it deliberately does not touch venvs, and it is right to: it cannot know
+# which venv a deploy is mid-swap on. The creating site can — this runs AFTER
+# every health gate above has passed, so the venv these back up is not merely
+# installed, it is serving traffic.
+#
+# WHY A WINDOW RATHER THAN DELETING IMMEDIATELY. _rollback_venv only covers
+# failures inside the self-heal block. A Python-level regression that passes an
+# HTTP health check and surfaces hours later has no automatic path back, and
+# rebuilding from requirements.txt is minutes of downtime against seconds for a
+# `mv`. Seven days is the manual window; the copy is not a backup and its
+# absence after that is not a gap — requirements.txt plus the pin is.
+VENV_PREV_RETENTION_DAYS=7
+if [ -d "$REPO_DIR" ]; then
+    while IFS= read -r stale_venv; do
+        [ -n "$stale_venv" ] || continue
+        log "pruning rollback venv older than ${VENV_PREV_RETENTION_DAYS}d: $stale_venv ($(du -sh "$stale_venv" 2>/dev/null | cut -f1))"
+        rm -rf "$stale_venv" || log "WARN could not remove $stale_venv"
+    done < <(find "$REPO_DIR" -maxdepth 1 -type d -name '.venv-prev-*' -mtime "+${VENV_PREV_RETENTION_DAYS}" 2>/dev/null)
+fi
+
 log "=== deploy-on-merge completed successfully — sha=$CURRENT_SHA ==="
 exit 0
