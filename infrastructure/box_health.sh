@@ -792,14 +792,28 @@ http_liveness_problems() {
 # from "crashed", but the remedy for a human is the same investigation either
 # way, and the existing spot-liveness probe already owns the death case.
 #
-# KNOWN GAP, STATED RATHER THAN SILENT: a run that completes `state:success`
-# after reading zero messages from a genuinely non-empty queue (a live
-# consumption bug, not a scheduling one) is invisible to this check — the
-# per-run ledger at overseer/drain_ledger/<date>/<run_id>.json DOES carry an
-# `ingested.queue` count, but ingested=0 is also the correct, common reading
-# for a quiet period, so alerting on it directly would page on every calm
-# 6-hour window. Closing that gap needs a queue-depth comparison this box's
-# IAM cannot make; tracked as alpha-engine-config-I8108, not solved here.
+# THE SECOND FAILURE MODE, AND HOW IT IS COVERED (alpha-engine-config-I8108).
+# A run that fires on schedule, runs, and exits `{"state":"success","rc":0}`
+# after reading ZERO messages from a genuinely non-empty queue is a consumption
+# bug, not a scheduling one, and the staleness check above cannot see it — the
+# marker lands on time. Alerting on `ingested == 0` alone is not the answer
+# either: zero is also the correct, common reading for a quiet 6-hour window,
+# and paging on every calm cycle is how a check gets ignored.
+#
+# Separating the two needs the queue's depth at run start, which this box's
+# role cannot read (S3 on alpha-engine-research, no SQS, no Scheduler). So the
+# PRODUCER publishes both halves into the completion marker: `queue_depth_before`
+# (read from SQS by alert_drain_run.sh BEFORE the agent starts) and `ingested`
+# (counted by the deterministic ingest wrapper's working-state file, not taken
+# from the ledger the agent wrote). Neither passes through the agent's
+# judgement, so this is not the drain grading its own homework — and it needs no
+# IAM grant, which overseer-policy section 8 makes a never-autonomous change.
+#
+# UNMEASURED IS NOT HEALTHY. A marker with no `queue_depth_before`, no
+# `ingested`, or an unparseable one reports as a `watchdog:` finding (warning) —
+# never silence, and never folded into the critical the drain owns. "Could not
+# check" and "checked and fine" are different answers and this check never
+# collapses them; principles.md section 7 — no data is never rendered as green.
 check_alert_drain_liveness() {
     local latest
     latest=$(aws s3api list-objects-v2 \
@@ -825,8 +839,49 @@ check_alert_drain_liveness() {
     fi
     now_epoch=$(date +%s)
     age_h=$(( (now_epoch - last_epoch) / 3600 ))
+    local key
+    key=$(printf '%s' "$latest" | awk '{print $1}')
     if [ "$age_h" -ge "$ALERT_DRAIN_MAX_STALENESS_H" ]; then
-        echo "alert-drain not consuming: no completed run in ${age_h}h (last: $(printf '%s' "$latest" | awk '{print $1}')) — scheduled-off or hung, see alpha-engine-config-I7858"
+        echo "alert-drain not consuming: no completed run in ${age_h}h (last: ${key}) — scheduled-off or hung, see alpha-engine-config-I7858"
+        # A stale marker already says everything; asserting on its stale
+        # contents too would double-report one condition.
+        return 0
+    fi
+
+    # ── consumption assertion (alpha-engine-config-I8108) ────────────────────
+    local marker
+    marker=$(aws s3 cp "s3://${OVERSEER_RESEARCH_BUCKET}/${key}" - 2>/dev/null)
+    if [ -z "$marker" ]; then
+        echo "watchdog: cannot read the alert-drain completion marker body (consumption unverified)"
+        return 0
+    fi
+    # A canary drill deliberately never touches the queue — asserting on its
+    # counts would page on every successful drill.
+    case "$marker" in
+        *'"state":"drill'*) return 0 ;;
+    esac
+
+    # Parsed with grep rather than a JSON reader on purpose: this function's
+    # only dependencies today are aws/awk/date, and adding an interpreter adds
+    # a "the check could not run" path to a check whose entire job is to be the
+    # backstop. Safe because ANY parse miss falls through to the UNMEASURED
+    # branch below — the failure direction is loud, never green.
+    local depth ingested
+    depth=$(printf '%s' "$marker" | grep -Eo '"queue_depth_before":[0-9]+' | head -1 | cut -d: -f2)
+    ingested=$(printf '%s' "$marker" | grep -Eo '"ingested":\{"queue":[0-9]+' | head -1 | grep -Eo '[0-9]+$')
+    if [ -z "$depth" ] || [ -z "$ingested" ]; then
+        # Covers all three: the producer has not deployed the fields yet, the
+        # run could not measure one of them (emitted as JSON null, which is
+        # deliberately NOT 0), or the marker shape changed.
+        echo "watchdog: alert-drain completion marker carries no queue-depth/ingested measurement (consumption unverified)"
+        printf 'box_health: alert-drain marker without I8108 measurement: %s\n' "$key" >&2
+        return 0
+    fi
+    if [ "$depth" -gt 0 ] && [ "$ingested" -eq 0 ]; then
+        # STATIC string: the confirm-on-retry intersection matches lines
+        # exactly, and depth moves between samples. Numbers go to the journal.
+        echo "alert-drain not consuming: last run ingested 0 from a NON-EMPTY intake queue — silent consumption failure, see alpha-engine-config-I8108"
+        printf 'box_health: alert-drain %s ingested %s of %s queued\n' "$key" "$ingested" "$depth" >&2
     fi
 }
 
