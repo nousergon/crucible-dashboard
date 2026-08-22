@@ -200,7 +200,16 @@ krepis[openai]>=0.59.14,<0.59.15
 # v0.124.83 (alpha-engine-config-I8069): publishes nousergon_lib.pipeline_status.
 # classify_work() -> WorkOutcome, the three-way SUCCEEDED/SKIPPED/INCOMPLETE
 # predicate this repo's own status-blind call sites adopt in the same PR.
-nousergon-lib[flow-doctor,github_app] @ git+https://github.com/nousergon/nousergon-lib@v0.124.83
+# v0.124.86 (alpha-engine-config-I8214/I8216, nousergon-lib#350): adds the
+# WeeklyCoverageSweep / WeeklyCoverageSweepUnavailable rows to
+# pipeline_status.registry.STATE_TO_ARCHIVE_PAGE, which
+# tests/test_pipeline_status_registry_drift.py requires before the matching SF
+# states may merge in nousergon-data (nousergon-data-PR1516) — this repo's pin
+# is what that cross-repo check installs, so the pin bump is the gate, not a
+# follow-up. The same release also carries _extract_run_date's third source, so
+# derive_cycle_verdict and the pulse loader now see the SCHEDULED weekly
+# executions that previously resolved to no cycle key and were dropped.
+nousergon-lib[flow-doctor,github_app] @ git+https://github.com/nousergon/nousergon-lib@v0.124.86
 
 # crucible-dash-api (config#1973 phase 9-B): read-only FastAPI over the
 # results view-model, consumed same-box by the /dash Next.js frontend.
