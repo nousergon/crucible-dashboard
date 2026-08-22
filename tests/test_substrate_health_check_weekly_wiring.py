@@ -93,6 +93,31 @@ class TestCommandCoverage:
         assert "--run-date" in src
         assert "--run-date is required" in src
 
+    def test_drift_check_is_scoped_to_the_run_date(self):
+        """alpha-engine-config-I8094.
+
+        Without `--run-date` the drift check gates unconditionally, and on a
+        preflight-only run (the Friday shell run's `spot_data_phase1.sh
+        --preflight-only`) it fails on index adds the run had no mechanism to
+        collect — taking a four-hour pipeline to DEGRADED and asking a human
+        to hand-run a backfill the next scheduled run does by itself. Pinned
+        because dropping the flag re-arms exactly that, silently: the check
+        still runs, still exits 0 on a clean week, and only misbehaves on the
+        weeks the index reconstitutes.
+        """
+        for lineno, line in _executable_lines():
+            if "validators.constituents_drift_check" in line:
+                assert '--run-date "$RUN_DATE"' in line, (
+                    f"{_SCRIPT.name}:{lineno} invokes the drift check without "
+                    f"--run-date, so it gates on runs that did not collect: "
+                    f"{line.strip()!r}"
+                )
+                break
+        else:
+            raise AssertionError(
+                "no executable line invokes validators.constituents_drift_check"
+            )
+
     def test_drift_check_does_not_swallow_its_exit_code(self):
         # config#2276 (carried from nousergon-data
         # test_sf_health_check_honesty_wiring.py, which pinned this
