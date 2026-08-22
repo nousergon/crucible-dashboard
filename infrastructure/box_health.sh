@@ -211,6 +211,34 @@ HTTP_PROBE_TIMEOUT=3
 THROTTLE_STATE_DIR="${STATE_DIRECTORY:-/var/lib/box-health}"
 THROTTLE_STATE="${THROTTLE_STATE_DIR}/cgroup-high-counts"
 
+# Which conditions this box has ALREADY ALERTED ON, carried across ticks so a
+# condition that ends can emit its terminator (alpha-engine-config-I8105).
+#
+# WHY A NEW FILE AND NOT THE CONFIRM-ON-RETRY SET. The issue's premise was that
+# "the script already keeps the confirmed-problems set across ticks"; measured
+# while implementing this, it does not. `confirmed` is intersected across the
+# RETRY_ATTEMPTS samples of ONE run and then discarded at exit — there has
+# never been any cross-tick memory of what was alerted. Without one, the set
+# difference the clear needs has nothing on its left-hand side: every tick
+# starts from an empty prior and every condition looks new. So the memory is
+# what actually had to be built; the diff is the easy half.
+#
+# Same /var/lib rationale as THROTTLE_STATE above: a tmpfiles sweep of /tmp
+# mid-window would erase the prior, and an erased prior is silently
+# indistinguishable from "nothing was alerted", which suppresses every clear
+# that was due.
+#
+# Format: one TAB-separated row per problem LINE —
+#   <identity_key>\t<severity>\t<problem line>
+# Rows sharing an identity_key were carried by ONE page (the set-derived
+# publishes group several findings into one message). The identity key is the
+# unit of clearing, not the line: a page's key is derived from the SET it
+# carried, so the key surviving means that same page is still standing, and
+# the key disappearing means that page's condition is over. That is the same
+# identity krepis dedups on, deliberately — a clear keyed on anything else
+# would pair to a page nobody sent.
+ALERTED_STATE="${THROTTLE_STATE_DIR}/alerted-problems"
+
 RETRY_ATTEMPTS=4                     # samples before a problem is confirmed
 RETRY_DELAY=4                        # seconds between confirmation samples (4x4s ~12s window > metron-api ~5s cold-start)
 
@@ -681,6 +709,166 @@ publish_unalerted() {
         --metric-data \
         "MetricName=health_problems_unalerted,Dimensions=[{Name=InstanceId,Value=${INSTANCE_ID}}],Value=${1:-0},Unit=Count" \
         2>&1 | head -1 | sed 's/^/box_health: unalerted publish failed: /' >&2 || true
+}
+
+# ── Condition lifecycle: emit the terminator (alpha-engine-config-I8105) ────
+#
+# THE DEFECT THIS CLOSES. Every alert this script emitted was write-once: a
+# CRITICAL on detection and NOTHING when the condition ended. Measured
+# 2026-08-21 on i-09b539c844515d549 — litellm-config-reconcile.timer failed
+# 18:40:28 and 18:50:28 UTC and recovered 18:53:12 (14 green runs since);
+# ops-config-drift.timer failed 20:02:30 and 20:09:49 and recovered 20:23:47.
+# Three CRITICAL pages, zero all-clears. Every page was CORRECT when sent —
+# each failure survived its own next scheduled attempt, so confirm-on-retry
+# behaved exactly as designed, and nothing about detection is changed here.
+# What was missing is the other end of the record, and without it a human
+# triaging a digest has to re-measure every condition by hand, the alert-drain
+# can never learn a condition ended, and the console's last known state is
+# permanently the failure.
+#
+# NOT A SECOND PROSE EMAIL. The clear rides krepis.alerts' open/clear
+# primitive: state=cleared plus the ORIGINATING PAGE'S identity key on the
+# nousergon.alert.v1 event, so alert_drain_ingest.py pairs page to clear on a
+# field rather than by string-matching prose. It is published at `info` and
+# silently (delivered, no phone push): a clear that buzzes at 8pm is a second
+# alert, not a resolution.
+
+# Rows for the conditions published THIS run, accumulated by publish_problems.
+# Initialised (not merely declared) — `set -u` turns an unset accumulator into
+# a dead watchdog, the same way it did for undeclared_state above.
+ALERTED_NOW=""
+# Count of clears that were DUE and could not be published. Its own series:
+# a missing terminator is invisible by construction, so the only way it is not
+# a silent regression is a number whose non-zero is the finding.
+UNPUBLISHED_CLEARS=0
+
+# krepis_supports_clear — does the INSTALLED krepis carry the open/clear pair?
+#
+# A CAPABILITY PROBE, NOT A VERSION COMPARISON. This box installs krepis from a
+# pinned requirement (requirements.txt), which lags the library by design, and
+# the alerts CLI's `clear` subcommand on a krepis without it exits 2 from
+# argparse (this sentence deliberately does not spell the invocation out: the
+# fleet alert-source scanner matches the `-m <module>` adjacency in PROSE as
+# well as in code, and a comment is not an emitter)
+# — indistinguishable at the call site from a real delivery failure, and it
+# would drive UNPUBLISHED_CLEARS non-zero for a version skew rather than for a
+# fault. Asking the module what it has is exact, costs one interpreter start on
+# the non-clean path only, and self-heals the moment the pin moves: no clear is
+# lost, because a condition still standing is still in the state file.
+krepis_supports_clear() {
+    "$ALERT_PY" -c 'import krepis.alerts as a; raise SystemExit(0 if hasattr(a, "publish_clear") else 1)' \
+        </dev/null >/dev/null 2>&1
+}
+
+# alerted_state_prior — rows written by the previous run, or empty.
+# Empty is a valid, expected state (first run after a deploy, reboot, or a
+# recreated state dir) and means exactly "nothing was alerted": everything
+# found this run is `opened`, and no clear is due. It never means "clear
+# everything".
+alerted_state_prior() {
+    [ -r "$ALERTED_STATE" ] || return 0
+    cat "$ALERTED_STATE" 2>/dev/null
+}
+
+# alerted_state_lifecycle KEY — `still_open` if the previous run alerted on
+# this exact identity key, `opened` otherwise. Pure function of the state file
+# plus its argument, so it is testable without systemd or S3.
+alerted_state_lifecycle() {
+    local key="$1"
+    if alerted_state_prior | cut -f1 | grep -qxF "$key"; then
+        echo still_open
+    else
+        echo opened
+    fi
+}
+
+# alerted_state_write ROWS — atomic swap, same reason throttle_baseline_write
+# uses one: a half-written prior produces a garbage diff on the next run, and a
+# garbage diff here means either a clear for a live condition or no clear at
+# all for one that ended.
+alerted_state_write() {
+    local tmp
+    mkdir -p "$THROTTLE_STATE_DIR" 2>/dev/null || return 0
+    tmp="${ALERTED_STATE}.$$"
+    printf '%s' "$1" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
+    mv -f "$tmp" "$ALERTED_STATE" 2>/dev/null || rm -f "$tmp"
+}
+
+# publish_clears — emit one terminator per identity key that was alerted on
+# last run and is NOT alerted on this run.
+#
+# THE DIFF IS TAKEN ON THE KEY, NOT ON THE MESSAGE TEXT. The key already IS the
+# condition's identity: for the set-derived tiers publish_problems derives it
+# from the problem set, so a set that changed at all is a different page; for
+# timer findings it is (unit, Result, InactiveExitTimestamp) per
+# alpha-engine-config-I7677, deliberately not a computed relative age. A key
+# present then and absent now is therefore exactly "that page's condition is
+# over", which is the only claim a clear is allowed to make.
+publish_clears() {
+    local prior_rows="$1" current_rows="$2"
+    [ -n "$prior_rows" ] || return 0
+
+    local gone_keys
+    gone_keys=$(comm -23 \
+        <(printf '%s\n' "$prior_rows" | cut -f1 | grep -v '^$' | sort -u) \
+        <(printf '%s\n' "$current_rows" | cut -f1 | grep -v '^$' | sort -u))
+    [ -n "$gone_keys" ] || return 0
+
+    local supported=1
+    krepis_supports_clear || supported=0
+
+    local key lines msg _cl
+    while IFS= read -r key; do
+        [ -n "$key" ] || continue
+        # Every line that page carried, so the clear names what ended rather
+        # than only that something did.
+        lines=$(printf '%s\n' "$prior_rows" | awk -F'\t' -v k="$key" '$1==k {print $3}')
+        msg="dashboard EC2 (${INSTANCE_ID}) health alert resolved:"
+        while IFS= read -r _cl; do
+            [ -n "$_cl" ] || continue
+            msg="$msg"$'\n'" - $_cl"
+        done <<< "$lines"
+        if [ "$supported" -eq 0 ]; then
+            echo "box_health: clear DUE but installed krepis has no publish_clear (bump the krepis pin) — key=$key" >&2
+            UNPUBLISHED_CLEARS=$((UNPUBLISHED_CLEARS + 1))
+            continue
+        fi
+        # </dev/null: this loop is fed by a here-string, and a child that
+        # reads stdin would eat the remaining keys — every clear after the
+        # first would silently never be attempted.
+        if ! "$ALERT_PY" -m krepis.alerts clear \
+            --message "$msg" \
+            --identity-key "$key" \
+            --source box-health </dev/null; then
+            echo "box_health: clear publish failed for key=$key" >&2
+            UNPUBLISHED_CLEARS=$((UNPUBLISHED_CLEARS + 1))
+        fi
+    done <<< "$gone_keys"
+}
+
+# publish_unpublished_clears COUNT — the series that makes a missing
+# terminator visible. Zero is published too, on every run: a gauge that only
+# appears when it is non-zero cannot be distinguished from a dead emitter, and
+# this file already refuses that shape for publish_verdict.
+publish_unpublished_clears() {
+    aws cloudwatch put-metric-data --namespace "AlphaEngine/Box" \
+        --metric-data \
+        "MetricName=health_clears_unpublished,Dimensions=[{Name=InstanceId,Value=${INSTANCE_ID}}],Value=${1:-0},Unit=Count" \
+        2>&1 | head -1 | sed 's/^/box_health: clears-unpublished publish failed: /' >&2 || true
+}
+
+# finalize_alert_lifecycle — diff, emit the clears, persist the new prior.
+#
+# CALLED ON EVERY EXIT PATH INCLUDING THE CLEAN ONE, and the clean one is the
+# whole point: an all-healthy tick is precisely when yesterday's page ended.
+# Wiring this only into the problems path would leave the most common recovery
+# — the box going green — the one case that still emits nothing.
+finalize_alert_lifecycle() {
+    local prior
+    prior=$(alerted_state_prior)
+    publish_clears "$prior" "$ALERTED_NOW"
+    alerted_state_write "$ALERTED_NOW"
+    publish_unpublished_clears "$UNPUBLISHED_CLEARS"
 }
 
 # snapshot_problems — run the full check ONCE, printing one problem per line.
@@ -1343,6 +1531,10 @@ confirmed=$(snapshot_problems)
 if [ -z "$confirmed" ]; then
     publish_verdict 0
     publish_unalerted 0
+    # ALERTED_NOW is empty here, so this clears EVERY standing page. That is
+    # the clean-tick recovery path and the most common one there is
+    # (alpha-engine-config-I8105).
+    finalize_alert_lifecycle
     emit_hygiene_envelope ""
     exit 0
 fi
@@ -1359,6 +1551,7 @@ done
 if [ -z "$confirmed" ]; then
     publish_verdict 0
     publish_unalerted 0
+    finalize_alert_lifecycle
     emit_hygiene_envelope ""
     exit 0
 fi
@@ -1558,17 +1751,37 @@ publish_problems() {
     # criticals did nobody get told about", not "how many publishes failed".
     # Lower tiers are journal-only as before — a warning that fails to publish
     # is still on the console via emit_hygiene_envelope.
+    #
+    # LIFECYCLE (alpha-engine-config-I8105). `--state` says whether this page
+    # opens the condition or repeats one the previous tick already carried;
+    # `--identity-key` is what the later clear will reference. The identity is
+    # the dedup key deliberately: krepis treats identity_key as correlation
+    # ONLY and never feeds it back into the dedup check, so the clear can name
+    # a page whose dedup marker is still live without suppressing itself.
+    local _state
+    _state=$(alerted_state_lifecycle "$dkey")
     if ! "$ALERT_PY" -m krepis.alerts publish \
         --message "$msg" \
         --severity "$severity" \
         --source box-health \
         --dedup-key "$dkey" \
-        --dedup-window-min "$dedup_min"; then
+        --dedup-window-min "$dedup_min" \
+        --state "$_state" \
+        --identity-key "$dkey"; then
         echo "box_health: $severity publish failed" >&2
         if [ "$severity" = "critical" ]; then
             UNALERTED_CRITICALS=$((UNALERTED_CRITICALS + ${#_problems[@]}))
         fi
     fi
+    # Recorded whatever the publish outcome was: this file remembers which
+    # CONDITIONS are standing, not which messages were delivered. Recording
+    # only on success would mean a condition whose page failed could never
+    # emit a clear either — one dropped signal turned into two. Delivery
+    # failure has its own series (health_problems_unalerted).
+    for p in "${_problems[@]}"; do
+        [ -n "$p" ] || continue
+        ALERTED_NOW="${ALERTED_NOW}${dkey}"$'\t'"${severity}"$'\t'"${p}"$'\n'
+    done
 }
 
 # timer-job-failing findings get their OWN identity-keyed publish, one per
@@ -1685,6 +1898,13 @@ publish_problems critical 60   "health alert" "$criticals"
 # at all — dressed as consistency with the notice change. Re-examine when the
 # drain is unpaused: alpha-engine-config-I7858.
 publish_problems warning  43200 "budget/coverage finding (no action urgent)" "$warnings"
+
+# LAST publish_problems above, so ALERTED_NOW is final here: every page this
+# run carried is recorded, and every key that was carried last run and is not
+# carried now gets its terminator. Before publish_unalerted below only because
+# a failed clear is its own series, not a failed critical.
+ALERTED_NOW="${ALERTED_NOW%$'\n'}"
+finalize_alert_lifecycle
 
 # The info tier does NOT publish to krepis.alerts. It goes to the console.
 #
