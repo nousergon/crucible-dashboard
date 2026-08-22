@@ -80,29 +80,41 @@ from loaders.cache import cached
 
 logger = logging.getLogger(__name__)
 
+# ── declared roster mirrors (alpha-engine-config-I8197) ──────────────────────
+# Roles come from alpha-engine-config/private-docs/REPO_ROSTER.yaml, the single
+# declaration of which org repos hold a groomed backlog and which the agent opens
+# PRs against. This repo is public and deploys separately, so it cannot import
+# `repo_roster`. Both lists below are therefore DECLARED MIRRORS: registered in
+# the roster's `mirrors:` block, and `check_repo_roster_drift.py --live` fails
+# whenever either stops matching the role it mirrors.
+#
+# "Kept in sync by inspection" — what the comment here used to say — is what let
+# these drift by four repos. Do not hand-edit: change the roster, then mirror it
+# here in the same change.
 BACKLOG_REPOS = [
-    "nousergon/alpha-engine-config",
-    "nousergon/metron-ops",
-    "nousergon/vires-ops",
-    "nousergon/telos-ops",
+    "nousergon/alpha-engine-config", "nousergon/metron-ops",
+    "nousergon/vires-ops", "nousergon/telos-ops", "nousergon/symposion",
+    "nousergon/claude-code-config", "nousergon/nousergon-console",
+    "nousergon/oiax"
 ]
-# Hardcoded fallback used ONLY when live org enumeration (GET /orgs/nousergon/
-# repos) fails — never the primary path. Mirrors alpha-engine-config/scripts/
-# gate_pr_actions.CODE_REPOS; kept in sync by inspection. Every new fleet repo
-# MUST be added here until _code_repos()'s live enumeration fully replaces it.
+# Fallback used ONLY when live org enumeration (GET /orgs/nousergon/repos) fails
+# — never the primary path. Still a declared mirror of the roster's `code` role:
+# when it IS the operative list it must not be a stale one, which is precisely
+# when a drifted fallback does its damage (the moment enumeration is unavailable
+# is the moment nothing else is checking).
 # config#2838: gh_repo_enum.list_org_repos() is the SSoT in alpha-engine-config;
 # the dashboard (separate repo/deploy surface) has its own _list_org_repos().
 _CODE_REPOS_FALLBACK = [
     "nousergon/alpha-engine-config", "nousergon/metron-ops",
-    "nousergon/crucible-executor", "nousergon/nousergon-data",
+    "nousergon/vires-ops", "nousergon/telos-ops", "nousergon/symposion",
+    "nousergon/claude-code-config", "nousergon/nous-ergon-ops",
+    "nousergon/nousergon-console", "nousergon/oiax",
+    "nousergon/nousergon-groomer", "nousergon/crucible-executor",
     "nousergon/crucible-predictor", "nousergon/crucible-research",
     "nousergon/crucible-backtester", "nousergon/crucible-dashboard",
-    "nousergon/crucible-evaluator", "nousergon/nousergon-lib",
-    "nousergon/nousergon-docs", "nousergon/metron",
-    "nousergon/vires", "nousergon/vires-ops",
-    "nousergon/telos", "nousergon/telos-ops",
-    "nousergon/symposion",
-    "nousergon/nous-ergon-ops",
+    "nousergon/crucible-evaluator", "nousergon/nousergon-data",
+    "nousergon/nousergon-lib", "nousergon/nousergon-docs",
+    "nousergon/metron", "nousergon/vires", "nousergon/telos"
 ]
 # Exported as CODE_REPOS for backward compatibility with tests importing the
 # name — it is now a function, not a list. Tests that asserted set equality
