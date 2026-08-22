@@ -226,7 +226,14 @@ fi
 # for genuine non-shim modules like `transparency` — see
 # tests/test_no_runpy_alias_invocation.py's `_REAL_NL_MODULE_EXEMPTIONS`).
 # `stage_coverage` lands in krepis, so no exemption is needed here.
-"$PYTHON_BIN" -m krepis.stage_coverage assert --stage WeeklySubstrateHealthCheck --window-start "$_STAGE_WINDOW_START" || echo "WARNING: stage-coverage assertion did not run for WeeklySubstrateHealthCheck (rc=$?) — observe mode, stage NOT failed (config-I7214)" >&2
+#
+# alpha-engine-config-I8155: `--run-date` passed EXPLICITLY rather than
+# relying on the CLI's implicit `$RUN_DATE` argparse default. That implicit
+# default is the fragile mechanism this arc removes — it only worked here
+# because `export RUN_DATE` (above) happens to precede this line; the same
+# implicit-default pattern produced eight empty and eight wrong-dated
+# verdicts elsewhere in the fleet on the 2026-08-22 weekly run.
+"$PYTHON_BIN" -m krepis.stage_coverage assert --stage WeeklySubstrateHealthCheck --run-date "$RUN_DATE" --window-start "$_STAGE_WINDOW_START" || echo "WARNING: stage-coverage assertion did not run for WeeklySubstrateHealthCheck (rc=$?) — observe mode, stage NOT failed (config-I7214)" >&2
 
 # ── terminal verdict (alpha-engine-config-I7415) ────────────────────────────
 #
