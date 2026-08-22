@@ -53,6 +53,17 @@ class TestSubstrateHealthCheckStageCoverage:
         assert "krepis.stage_coverage assert" in src
         assert "--stage WeeklySubstrateHealthCheck" in src
 
+    def test_run_date_is_passed_explicitly(self):
+        # alpha-engine-config-I8155: relying on the CLI's implicit $RUN_DATE
+        # argparse default is exactly the fragile mechanism this arc
+        # removes — assert the assert-line names --run-date explicitly.
+        lines = list(_executable_lines(_SUBSTRATE_SCRIPT))
+        assert_line = next(
+            line for _, line in lines if "krepis.stage_coverage assert" in line
+        )
+        assert "--run-date" in assert_line
+        assert '"$RUN_DATE"' in assert_line
+
     def test_uses_krepis_not_nousergon_lib_namespace(self):
         # config#1646/#1649: `-m nousergon_lib.<module>` is a guard-less
         # re-export shim under runpy on lib >=0.81.0 — silent no-op, not an
@@ -191,7 +202,9 @@ class TestHealthCheckerStageCoverageBehavior:
 
         with patch("health_checker.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
-            health_checker._assert_stage_coverage("SaturdayHealthCheck", "2026-08-15T09:00:00Z")
+            health_checker._assert_stage_coverage(
+                "SaturdayHealthCheck", "2026-08-15T09:00:00Z", "2026-08-15",
+            )
 
         args, kwargs = mock_run.call_args
         cmd = args[0]
@@ -199,6 +212,8 @@ class TestHealthCheckerStageCoverageBehavior:
         assert "SaturdayHealthCheck" in cmd
         assert "--window-start" in cmd
         assert "2026-08-15T09:00:00Z" in cmd
+        assert "--run-date" in cmd
+        assert "2026-08-15" in cmd
         assert kwargs.get("check") is False
 
     def test_nonzero_return_code_does_not_raise(self):
@@ -208,7 +223,9 @@ class TestHealthCheckerStageCoverageBehavior:
             mock_run.return_value = MagicMock(returncode=3)
             # Must not raise — observe mode, the caller's exit code is
             # untouched by this call.
-            health_checker._assert_stage_coverage("SaturdayHealthCheck", "2026-08-15T09:00:00Z")
+            health_checker._assert_stage_coverage(
+                "SaturdayHealthCheck", "2026-08-15T09:00:00Z", "2026-08-15",
+            )
 
     def test_module_not_found_does_not_raise(self):
         # Simulates the module not existing yet (the shared krepis
@@ -217,7 +234,51 @@ class TestHealthCheckerStageCoverageBehavior:
         import health_checker
 
         with patch("health_checker.subprocess.run", side_effect=FileNotFoundError("no such file")):
-            health_checker._assert_stage_coverage("SaturdayHealthCheck", "2026-08-15T09:00:00Z")
+            health_checker._assert_stage_coverage(
+                "SaturdayHealthCheck", "2026-08-15T09:00:00Z", "2026-08-15",
+            )
+
+    def test_absent_run_date_skips_the_assertion_without_fabricating(self, capsys):
+        # alpha-engine-config-I8155: never fabricate a date to satisfy the
+        # (now-required) run_date argument — an absent EXECUTION_RUN_DATE
+        # must skip the subprocess call entirely, loudly, never substitute
+        # datetime.now().
+        import health_checker
+
+        with patch("health_checker.subprocess.run") as mock_run:
+            health_checker._assert_stage_coverage(
+                "SaturdayHealthCheck", "2026-08-15T09:00:00Z", "",
+            )
+        mock_run.assert_not_called()
+        captured = capsys.readouterr()
+        assert "ERROR" in captured.err
+        assert "SaturdayHealthCheck" in captured.err
+
+    def test_main_threads_execution_run_date_env_into_the_assertion(self, monkeypatch):
+        # alpha-engine-config-I8155: the SaturdayHealthCheck SF Task state
+        # does not (yet) pass a run_date in its Payload — the execution
+        # identity is read from $EXECUTION_RUN_DATE (exported by the SF
+        # definition; nousergon-data's peer PR for this arc). --run-date's
+        # argparse default reads it, and main() threads that through to
+        # _assert_stage_coverage.
+        monkeypatch.setenv("EXECUTION_RUN_DATE", "2026-08-22")
+        import importlib
+
+        import health_checker
+
+        importlib.reload(health_checker)
+        try:
+            with patch("health_checker.check_all", return_value=[]), \
+                 patch("health_checker._emit_cloudwatch_metrics"), \
+                 patch("health_checker._assert_stage_coverage") as mock_assert, \
+                 patch("health_checker.sys.exit"), \
+                 patch("sys.argv", ["health_checker.py"]):
+                health_checker.main()
+            mock_assert.assert_called_once()
+            assert mock_assert.call_args[0][2] == "2026-08-22"
+        finally:
+            monkeypatch.delenv("EXECUTION_RUN_DATE", raising=False)
+            importlib.reload(health_checker)
 
     def test_main_invokes_assert_stage_coverage_with_saturday_health_check(self, capsys):
         import health_checker

@@ -491,7 +491,7 @@ def _emit_cloudwatch_metrics(results: list[dict]) -> None:
         logger.warning("CloudWatch metric emission failed (non-fatal): %s", e)
 
 
-def _assert_stage_coverage(stage: str, window_start: str) -> None:
+def _assert_stage_coverage(stage: str, window_start: str, run_date: str | None) -> None:
     """Per-stage output assertion (config-I7214, sf-pipeline-policy.md §2.1):
     assert THIS stage wrote what it declared, at the boundary where the fact
     becomes knowable. OBSERVE MODE — it can never fail the stage.
@@ -508,7 +508,24 @@ def _assert_stage_coverage(stage: str, window_start: str) -> None:
     `/home/ec2-user/alpha-engine-dashboard/.venv/bin/python health_checker.py`,
     so the running interpreter already resolves to that same absolute path —
     no separate LIB_PYTHON variable exists in this script.
+
+    ``run_date`` (alpha-engine-config-I8155): the SF execution's own
+    ``EXECUTION_RUN_DATE`` — passed explicitly rather than relying on the
+    CLI's implicit ``$RUN_DATE`` argparse default, which is the fragile
+    mechanism this arc removes (that implicit default is what produced
+    eight empty and eight wrong-dated verdicts elsewhere in the fleet on
+    the 2026-08-22 weekly run). When absent, this never fabricates a
+    ``datetime.now()`` substitute: the assertion is skipped entirely and
+    the absence is logged loudly.
     """
+    if not run_date:
+        print(
+            f"ERROR: stage-coverage assertion SKIPPED for {stage}: no "
+            f"EXECUTION_RUN_DATE available (execution identity absent) "
+            f"— observe mode, stage NOT failed (alpha-engine-config-I8155)",
+            file=sys.stderr,
+        )
+        return
     try:
         result = subprocess.run(
             [
@@ -518,6 +535,8 @@ def _assert_stage_coverage(stage: str, window_start: str) -> None:
                 "assert",
                 "--stage",
                 stage,
+                "--run-date",
+                run_date,
                 "--window-start",
                 window_start,
             ],
@@ -539,6 +558,17 @@ def main():
     parser.add_argument("--json", action="store_true", help="JSON output")
     parser.add_argument("--bucket", default=DEFAULT_BUCKET)
     parser.add_argument("--alert", action="store_true", help="Send SNS alert on failures")
+    # alpha-engine-config-I8155: the SaturdayHealthCheck SF Task state does
+    # not (yet) pass a run_date in its Payload, so the execution identity is
+    # read from the environment — EXECUTION_RUN_DATE is exported by the SF
+    # definition into every SSM command (nousergon-data's peer PR for this
+    # arc). No datetime.now() fallback: an absent value is logged loudly by
+    # _assert_stage_coverage and the assertion is skipped, never fabricated.
+    parser.add_argument(
+        "--run-date",
+        default=os.environ.get("EXECUTION_RUN_DATE", ""),
+        help="SF execution's own run_date (defaults to $EXECUTION_RUN_DATE)",
+    )
     args = parser.parse_args()
 
     # setup_logging already ran at module-top (see comment near the
@@ -570,7 +600,7 @@ def main():
     # Per-stage output assertion (config-I7214, sf-pipeline-policy.md §2.1):
     # assert THIS stage wrote what it declared, at the boundary where the fact
     # becomes knowable. OBSERVE MODE — it can never fail the stage.
-    _assert_stage_coverage("SaturdayHealthCheck", _STAGE_WINDOW_START)
+    _assert_stage_coverage("SaturdayHealthCheck", _STAGE_WINDOW_START, args.run_date)
 
     sys.exit(1 if failures else 0)
 
