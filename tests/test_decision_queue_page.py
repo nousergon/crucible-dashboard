@@ -63,13 +63,40 @@ class TestSlugContract:
 
 
 class TestScopeContract:
-    def test_all_four_backlog_repos_enumerated(self):
-        assert BACKLOG_REPOS == [
+    def test_backlog_repos_is_a_wellformed_roster_mirror(self):
+        """BACKLOG_REPOS mirrors REPO_ROSTER.yaml's `backlog` role.
+
+        This test used to assert equality with a hardcoded list of exactly four
+        repos — which made it a SECOND copy of the same drifting literal, and one
+        that would have failed anyone who correctly widened the loader. The
+        authoritative equality check is cross-repo and lives where the roster
+        does: `check_repo_roster_drift.py --live` (alpha-engine-config-I8197)
+        fails whenever this list stops matching the role it mirrors. What is
+        checkable HERE is the shape, plus the specific repos whose absence caused
+        a measured outage.
+        """
+        assert BACKLOG_REPOS, "the backlog role can never be empty"
+        assert len(BACKLOG_REPOS) == len(set(BACKLOG_REPOS)), "duplicate entries"
+        assert all(r.startswith("nousergon/") for r in BACKLOG_REPOS)
+        # The four original backlog repos must still be present and first —
+        # order is semantic (groom_driver builds a priority index from it).
+        assert BACKLOG_REPOS[:4] == [
             "nousergon/alpha-engine-config",
             "nousergon/metron-ops",
             "nousergon/vires-ops",
             "nousergon/telos-ops",
         ]
+        # symposion#39 carried triage:session for 33 days partly because this
+        # list omitted it.
+        assert "nousergon/symposion" in BACKLOG_REPOS
+
+    def test_code_repos_fallback_is_a_wellformed_roster_mirror(self):
+        """The fallback is the operative list exactly when nothing else is
+        checking — so a stale one does its damage unobserved."""
+        fallback = dq_module._CODE_REPOS_FALLBACK
+        assert fallback and len(fallback) == len(set(fallback))
+        assert all(r.startswith("nousergon/") for r in fallback)
+        assert "nousergon/symposion" in fallback
 
     def test_only_human_gates(self):
         # config#2431: widened to include gate:device — equally human-only
