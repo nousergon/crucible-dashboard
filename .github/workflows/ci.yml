@@ -106,6 +106,7 @@ jobs:
       - name: Run tests
         env:
           SF_DEFS_DIR: ${{ github.workspace }}/.sf-defs
+          KREPIS_GITLEAKS_DIR: ${{ github.workspace }}/.ci/gitleaks
         run: pytest tests/ -v
 
       - name: Security audit

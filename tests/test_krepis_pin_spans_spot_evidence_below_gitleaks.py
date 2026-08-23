@@ -108,5 +108,7 @@ def test_ci_installs_verified_gitleaks_and_runs_a_no_provider_dlp_preflight() ->
         "KREPIS_GITLEAKS_DIR",
         "from krepis.session_dlp import DLP_OK, scan_request",
         "assert verdict == DLP_OK",
+        "Run tests\n        env:\n          SF_DEFS_DIR:",
+        "KREPIS_GITLEAKS_DIR: ${{ github.workspace }}/.ci/gitleaks",
     ):
         assert required in ci, f"CI DLP preflight is missing {required!r}"
