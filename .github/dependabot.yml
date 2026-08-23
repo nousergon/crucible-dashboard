@@ -21,38 +21,6 @@ updates:
       majors:
         update-types:
           - major
-    ignore:
-      # krepis 0.59.15+ makes `krepis.session_dlp` shell out to a `gitleaks`
-      # binary and FAIL CLOSED without it (alpha-engine-config-I7634). The
-      # shared application box has no gitleaks and `deploy-on-merge.sh`
-      # installs straight from this repo's lockfile, so a bump past the
-      # ceiling arms a DLP hook the box cannot satisfy -- surfacing as an LLM
-      # failure naming a scanner, never as a pin problem.
-      #
-      # `requirements.in` already carries the constraint
-      # (`krepis[openai]>=0.59.14,<0.59.15`), but Dependabot resolves against
-      # `requirements.txt` and does not read the `.in`, so it proposed
-      # 0.59.25 in the minor-and-patch group on 2026-08-21 (#722). That PR
-      # went red on BOTH sides of the ceiling at once:
-      # `test_krepis_pin_spans_spot_evidence_below_gitleaks` caught the pin,
-      # and `test_morning_brief_consumer` failed with "DLP scan blocked
-      # outbound request: gitleaks binary not found on PATH -- failing
-      # closed", which is the outage the ceiling exists to prevent, observed
-      # in CI. Without this ignore, Dependabot re-proposes the same unsafe
-      # bump every week and reddens the whole grouped PR with it, blocking
-      # the five safe bumps riding along.
-      #
-      # LIFT THIS TOGETHER WITH THE CEILING, NOT BEFORE: when I7634 provisions
-      # gitleaks on the box AND adds it to the provisioning the box is rebuilt
-      # from, delete this entry, the `<0.59.15` bound in requirements.in, and
-      # the ceiling assertion in
-      # tests/test_krepis_pin_spans_spot_evidence_below_gitleaks.py in one PR.
-      # The floor (0.59.13, `krepis.spot_evidence`) is NOT removable and this
-      # ignore deliberately does not touch it -- versions between the floor
-      # and the ceiling are still proposed normally.
-      - dependency-name: "krepis"
-        versions: [">=0.59.15"]
-
   - package-ecosystem: npm
     directories:
       - "/dash-web"
