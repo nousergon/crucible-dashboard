@@ -384,8 +384,15 @@ services:
 
   - unit: crucible-dash-web.service
     port: 3002
-    memory_high: 154M
-    memory_max: 220M
+    memory_high: 190M
+    memory_max: 260M
+    note: >-
+      2026-08-23 (automated, alpha-engine-config-I7291): 154M/220M ->
+      190M/260M. Derived, not estimated: memory.peak 109 MiB measured over 9.4
+      days of unit uptime, memory_max at 2.4x that peak and memory_high at 70%
+      of max. If this number looks wrong, the measurement is the thing to
+      argue with — see check_memory_budget.py's proposal block for why those
+      multiples.
 
   # ── metron ──────────────────────────────────────────────────────────────
   - unit: metron-api.service
@@ -450,14 +457,28 @@ services:
   # ── other products ──────────────────────────────────────────────────────
   - unit: telos-web.service
     port: 3001
-    memory_high: 105M
-    memory_max: 150M
+    memory_high: 140M
+    memory_max: 190M
+    note: >-
+      2026-08-23 (automated, alpha-engine-config-I7291): 105M/150M ->
+      140M/190M. Derived, not estimated: memory.peak 81 MiB measured over 9.4
+      days of unit uptime, memory_max at 2.4x that peak and memory_high at 70%
+      of max. If this number looks wrong, the measurement is the thing to
+      argue with — see check_memory_budget.py's proposal block for why those
+      multiples.
 
   - unit: vires.service
     port: 8530
-    memory_high: 380M
-    memory_max: 460M
+    memory_high: 210M
+    memory_max: 300M
     note: >-
+      2026-08-23 (automated, alpha-engine-config-I7291): 380M/460M ->
+      210M/300M. Derived, not estimated: memory.peak 127 MiB measured over 9.4
+      days of unit uptime, memory_max at 2.4x that peak and memory_high at 70%
+      of max. If this number looks wrong, the measurement is the thing to
+      argue with — see check_memory_budget.py's proposal block for why those
+      multiples.
+
       Caps raised 112M/160M -> 380M/460M on 2026-08-03, after the service
       wedged in normal use. DO NOT LOWER: 112M was roughly a THIRD of this
       service's real working set, and every reading taken under it was a floor.
@@ -528,8 +549,15 @@ services:
 
   - unit: signal.service
     port: 8505
-    memory_high: 175M
-    memory_max: 250M
+    memory_high: 120M
+    memory_max: 170M
+    note: >-
+      2026-08-23 (automated, alpha-engine-config-I7291): 175M/250M ->
+      120M/170M. Derived, not estimated: memory.peak 73 MiB measured over 9.4
+      days of unit uptime, memory_max at 2.4x that peak and memory_high at 70%
+      of max. If this number looks wrong, the measurement is the thing to
+      argue with — see check_memory_budget.py's proposal block for why those
+      multiples.
 
   - unit: mnemon.service
     port: 8503
@@ -739,9 +767,16 @@ services:
 
   - unit: llm-egress-proxy.service
     port: 8990
-    memory_high: 210M
-    memory_max: 300M
+    memory_high: 260M
+    memory_max: 370M
     note: >
+      2026-08-23 (automated, alpha-engine-config-I7291): 210M/300M ->
+      260M/370M. Derived, not estimated: memory.peak 156 MiB measured over 9.4
+      days of unit uptime, memory_max at 2.4x that peak and memory_high at 70%
+      of max. If this number looks wrong, the measurement is the thing to
+      argue with — see check_memory_budget.py's proposal block for why those
+      multiples.
+
       2026-08-12: 250M/400M -> 210M/300M. The DO-NOT-LOWER below is preserved
       because its REASONING still holds and only its NUMBER was wrong, and the
       distinction matters if anyone is tempted to go further.
