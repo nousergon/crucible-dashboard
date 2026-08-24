@@ -218,4 +218,4 @@ httpx>=0.27          # fastapi TestClient transport (tests/test_dash_api.py)
 # an already-satisfied floating dependency (transitively via krepis[flow_doctor]) as
 # permanent. The compiled lockfile `requirements.txt` pins the exact resolved version;
 # this floor ensures the next `uv pip compile` doesn't silently drop back below 0.8.7.
-flow-doctor>=0.9.0
+flow-doctor>=0.15.2
