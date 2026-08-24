@@ -1,4 +1,4 @@
-"""The krepis pin must carry `spot_evidence` and must stay below `gitleaks`.
+"""The Krepis pin must carry spot evidence and enabled DLP support.
 
 **Why this pin has two sides, and why neither is cosmetic.**
 
@@ -22,17 +22,11 @@ Measured live 2026-08-19 on ``i-08d7e8358772b280c`` (DataPhase1 of
 uncapped copy of its own failure output — that cause is permanently
 unrecoverable, and the run is the one the weekly pipeline failed on.
 
-**Ceiling — below 0.59.15, where ``krepis.session_dlp`` starts requiring a
-``gitleaks`` binary and FAILS CLOSED without it** (`alpha-engine-config-I7634`).
-The shared box has no gitleaks and ``deploy-on-merge.sh`` installs straight from
-this lockfile, so a bump past the ceiling arms a DLP hook the box cannot
-satisfy. It surfaces as an LLM failure naming a scanner, not as a pin problem,
-which is why a human reading the failure would not look here.
-
-**The ceiling is removable; the floor is not.** When I7634 provisions gitleaks
-8.30.1 on the box *and* adds it to the provisioning the box is rebuilt from,
-delete the ceiling assertion and the ``<`` bound together. Until then a bump is
-a live outage with a misleading error message.
+**DLP floor — 0.59.28, carrying strict execution-run-date stage coverage**
+(`alpha-engine-config-I7634`, `-I8155`).  Krepis 0.59.15+ enables a
+fail-closed gitleaks hook.  The shared-box installer is durable in
+``nous-ergon-ops-PR764`` and this repo's CI runs a hash-verified benign scanner
+preflight, so a ceiling would weaken rather than protect the system.
 """
 
 from __future__ import annotations
@@ -50,10 +44,8 @@ _ROOT = Path(__file__).resolve().parents[1]
 #: same command at v0.59.12 does not.
 SPOT_EVIDENCE_FLOOR = (0, 59, 13)
 
-#: First krepis release whose ``src/krepis/session_dlp.py`` references gitleaks.
-#: Verified by file: ``git grep -l gitleaks v0.59.14 -- src/krepis/`` is empty;
-#: at v0.59.15 it returns ``src/krepis/session_dlp.py``.
-GITLEAKS_CEILING = (0, 59, 15)
+#: First Krepis release carrying I8155's strict stage-coverage run-date contract.
+DLP_REQUIRED_FLOOR = (0, 59, 28)
 
 
 def _version(text: str) -> tuple[int, ...]:
@@ -62,22 +54,16 @@ def _version(text: str) -> tuple[int, ...]:
 
 def _pinned_lockfile_version() -> tuple[int, ...]:
     lock = (_ROOT / "requirements.txt").read_text()
-    m = re.search(r"^krepis\[[^\]]*\]==([0-9][0-9.]*)\s*$", lock, re.MULTILINE)
+    m = re.search(r"^krepis(?:\[[^\]]*\])?==([0-9][0-9.]*)\s*$", lock, re.MULTILINE)
     assert m, "no pinned krepis== line found in requirements.txt"
     return _version(m.group(1))
 
 
-def _declared_bounds() -> tuple[tuple[int, ...], tuple[int, ...]]:
+def _declared_floor() -> tuple[int, ...]:
     src = (_ROOT / "requirements.in").read_text()
-    m = re.search(
-        r"^krepis\[[^\]]*\]>=([0-9][0-9.]*),<([0-9][0-9.]*)\s*$", src, re.MULTILINE
-    )
-    assert m, (
-        "requirements.in must declare krepis with BOTH bounds — the floor "
-        "carries spot_evidence (I7609/I7675) and the ceiling keeps the "
-        "gitleaks-fail-closed DLP hook off a box without gitleaks (I7634)"
-    )
-    return _version(m.group(1)), _version(m.group(2))
+    m = re.search(r"^krepis\[[^\]]*\]>=([0-9][0-9.]*)\s*$", src, re.MULTILINE)
+    assert m, "requirements.in must declare a floor-only Krepis requirement"
+    return _version(m.group(1))
 
 
 def test_lockfile_pin_carries_spot_evidence() -> None:
@@ -85,75 +71,44 @@ def test_lockfile_pin_carries_spot_evidence() -> None:
     assert _pinned_lockfile_version() >= SPOT_EVIDENCE_FLOOR
 
 
-def test_lockfile_pin_stays_below_the_gitleaks_ceiling() -> None:
-    """A resolved krepis at or above the ceiling fails closed on this box."""
-    assert _pinned_lockfile_version() < GITLEAKS_CEILING
+def test_lockfile_pin_carries_the_dlp_stage_coverage_contract() -> None:
+    assert _pinned_lockfile_version() >= DLP_REQUIRED_FLOOR
 
 
 def test_declared_floor_is_at_or_above_the_spot_evidence_release() -> None:
-    floor, _ = _declared_bounds()
-    assert floor >= SPOT_EVIDENCE_FLOOR
+    assert _declared_floor() >= SPOT_EVIDENCE_FLOOR
 
 
-def test_declared_ceiling_is_at_or_below_the_gitleaks_release() -> None:
-    _, ceiling = _declared_bounds()
-    assert ceiling <= GITLEAKS_CEILING
+def test_declared_floor_carries_the_dlp_stage_coverage_contract() -> None:
+    assert _declared_floor() >= DLP_REQUIRED_FLOOR
 
 
-def test_lockfile_pin_satisfies_the_declared_bounds() -> None:
+def test_lockfile_pin_satisfies_the_declared_floor() -> None:
     """The lockfile is generated, so this catches a hand-edit of one side."""
-    floor, ceiling = _declared_bounds()
+    floor = _declared_floor()
     pinned = _pinned_lockfile_version()
-    assert floor <= pinned < ceiling
+    assert floor <= pinned
 
 
-# ── the ceiling must also be enforced UPSTREAM of the lockfile ──────────────
-#
-# Every assertion above fires only once Dependabot has already opened the PR.
-# That is a detector, not a guard: `requirements.in` carries the constraint,
-# but Dependabot resolves against `requirements.txt` and never reads the
-# `.in`, so it proposed krepis 0.59.25 in the weekly minor-and-patch group on
-# 2026-08-21 (#722) and reddened the five safe bumps riding along with it.
-# Left alone it re-proposes the same unsafe bump every week forever.
-#
-# `.github/dependabot.yml` now carries the ceiling as an `ignore`. These tests
-# keep that entry in LOCKSTEP with `GITLEAKS_CEILING` above, so the ignore
-# cannot be the kind of rule that is enforced only by its own comment: raising
-# the ceiling in one place and not the other fails here rather than silently
-# re-arming the weekly proposal.
-
-
-def _dependabot_pip_ignore() -> list[dict]:
+def test_dependabot_no_longer_blocks_krepis_dlp_releases() -> None:
     cfg = yaml.safe_load((_ROOT / ".github/dependabot.yml").read_text())
-    pip = [u for u in cfg["updates"]
-           if u["package-ecosystem"] == "pip" and u["directory"] == "/"]
+    pip = [u for u in cfg["updates"] if u["package-ecosystem"] == "pip" and u["directory"] == "/"]
     assert len(pip) == 1, "expected exactly one root pip update config"
-    return pip[0].get("ignore", [])
+    assert not any(entry.get("dependency-name") == "krepis" for entry in pip[0].get("ignore", []))
 
 
-def test_dependabot_ignores_krepis_at_and_above_the_ceiling() -> None:
-    entries = [e for e in _dependabot_pip_ignore()
-               if e.get("dependency-name") == "krepis"]
-    assert entries, (
-        "dependabot.yml must ignore krepis at/above the gitleaks ceiling — "
-        "requirements.in's bound does not reach Dependabot, so without this "
-        "the unsafe bump is re-proposed every week (I7634)"
-    )
-    assert len(entries) == 1, "one krepis ignore entry, not several to reconcile"
-    assert entries[0].get("versions") == [f">={'.'.join(map(str, GITLEAKS_CEILING))}"], (
-        "the dependabot ignore bound must equal GITLEAKS_CEILING exactly — a "
-        "ceiling raised in one place and not the other re-arms the proposal"
-    )
-
-
-def test_dependabot_ignore_does_not_reach_below_the_ceiling() -> None:
-    """The floor is not removable and the ignore must not block reaching it.
-
-    Versions between SPOT_EVIDENCE_FLOOR and GITLEAKS_CEILING must still be
-    proposed: an over-broad ignore would freeze this repo below the release
-    that carries `krepis.spot_evidence` (I7609/I7675) and nothing would say so.
-    """
-    entries = [e for e in _dependabot_pip_ignore()
-               if e.get("dependency-name") == "krepis"]
-    bound = _version(entries[0]["versions"][0].lstrip(">="))
-    assert bound > SPOT_EVIDENCE_FLOOR
+def test_ci_installs_verified_gitleaks_and_runs_a_no_provider_dlp_preflight() -> None:
+    """The guard must prove the enabled scanner works, not cap Krepis below it."""
+    ci = (_ROOT / ".github/workflows/ci.yml").read_text()
+    for required in (
+        'GITLEAKS_VERSION="8.30.1"',
+        "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb",
+        "sha256sum --check",
+        "gitleaks version",
+        "KREPIS_GITLEAKS_DIR",
+        "from krepis.session_dlp import DLP_OK, scan_request",
+        "assert verdict == DLP_OK",
+        "Run tests\n        env:\n          SF_DEFS_DIR:",
+        "KREPIS_GITLEAKS_DIR: ${{ github.workspace }}/.ci/gitleaks",
+    ):
+        assert required in ci, f"CI DLP preflight is missing {required!r}"

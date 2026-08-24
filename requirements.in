@@ -89,17 +89,12 @@ yfinance>=1.6.0
 # only uncapped copy of its own failure output; that cause is permanently
 # unrecoverable.
 #
-# UPPER BOUND `<0.59.15` IS LOAD-BEARING, NOT TIDINESS (alpha-engine-config-I7634).
-# 0.59.15 makes `krepis.session_dlp` shell out to a `gitleaks` binary and FAIL
-# CLOSED when it is absent. This box has no gitleaks and `deploy-on-merge.sh`
-# installs straight from this lockfile, so a bump past 0.59.14 puts the DLP hook
-# on a box that cannot satisfy it — and it surfaces as an LLM failure naming a
-# scanner, not as a pin problem. Verified by file, not by changelog:
-# `git grep -l gitleaks v0.59.14 -- src/krepis/` is empty; the same command at
-# v0.59.15 returns `src/krepis/session_dlp.py`.
-# REMOVE THIS CAP when I7634 deliverable 1 provisions gitleaks 8.30.1 on this
-# box AND adds it to the provisioning the box is rebuilt from. Not before.
-krepis[openai]>=0.59.14,<0.59.15
+# Floor raised to 0.59.28 (alpha-engine-config-I7634/I8155): this shared
+# interpreter now requires Krepis's strict execution-run-date stage coverage
+# contract.  Krepis 0.59.15+ also enables its fail-closed in-process DLP hook;
+# nous-ergon-ops-PR764 makes gitleaks durable on the shared box and CI proves a
+# verified scanner plus benign no-provider preflight before tests run.
+krepis[openai]>=0.59.28
 # nousergon-lib (renamed from alpha-engine-lib at v0.60.0) provides
 # setup_logging used by app.py + health_checker.py
 # to attach the FlowDoctorHandler when FLOW_DOCTOR_ENABLED=1, the
@@ -224,4 +219,3 @@ httpx>=0.27          # fastapi TestClient transport (tests/test_dash_api.py)
 # permanent. The compiled lockfile `requirements.txt` pins the exact resolved version;
 # this floor ensures the next `uv pip compile` doesn't silently drop back below 0.8.7.
 flow-doctor>=0.9.0
-

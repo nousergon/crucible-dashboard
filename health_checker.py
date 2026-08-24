@@ -361,17 +361,22 @@ def check_all(bucket: str = DEFAULT_BUCKET) -> list[dict]:
     # 7. Daily closes — staging/ prefix per 2026-04-29 migration
     # (alpha-engine-data PR #112). The parquet is intermediate state with
     # 7-day S3 lifecycle; canonical home is ArcticDB universe library.
-    # Walk back 10 CALENDAR days to find the latest written parquet — enough
-    # to clear any long weekend plus a holiday regardless of what day the
-    # check itself runs on. The earlier today+yesterday-only lookup
+    # Walk back 10 CALENDAR days from the latest closed trading session to
+    # find the latest written parquet — enough to clear any long weekend plus
+    # a holiday regardless of what day the check itself runs on. Anchoring to
+    # the same calendar primitive used for the trading-day age prevents a
+    # delayed/replayed check from looking only at the wall-clock date and
+    # reporting an existing historical artifact as missing. The earlier
+    # today+yesterday-only lookup
     # false-flagged Sat/Sun runs as "missing" because Friday's parquet was
     # always >1 calendar day back. Surfaced 2026-05-24 in the false-positives
     # audit. Staleness itself is judged in TRADING days (`_trading_day_age`),
     # not by how far back this scan had to walk (config-I7434) — weekday
     # cadence, same as `predictions` and `features` above.
     modified, artifact_date = None, None
+    latest_session = last_closed_trading_day()
     for back in range(10):
-        candidate = date.today() - timedelta(days=back)
+        candidate = latest_session - timedelta(days=back)
         modified, artifact_date = _last_modified_date(
             s3, bucket, f"staging/daily_closes/{candidate.isoformat()}.parquet"
         )
