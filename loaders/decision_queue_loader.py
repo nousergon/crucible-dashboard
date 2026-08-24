@@ -93,7 +93,7 @@ logger = logging.getLogger(__name__)
 # here in the same change.
 BACKLOG_REPOS = [
     "nousergon/alpha-engine-config", "nousergon/metron-ops",
-    "nousergon/vires-ops", "nousergon/telos-ops", "nousergon/symposion",
+    "nousergon/vires-ops", "nousergon/telos-ops",
     "nousergon/claude-code-config", "nousergon/nousergon-console",
     "nousergon/oiax", "nousergon/scannerctl"
 ]
@@ -106,7 +106,7 @@ BACKLOG_REPOS = [
 # the dashboard (separate repo/deploy surface) has its own _list_org_repos().
 _CODE_REPOS_FALLBACK = [
     "nousergon/alpha-engine-config", "nousergon/metron-ops",
-    "nousergon/vires-ops", "nousergon/telos-ops", "nousergon/symposion",
+    "nousergon/vires-ops", "nousergon/telos-ops",
     "nousergon/claude-code-config", "nousergon/nous-ergon-ops",
     "nousergon/nousergon-console", "nousergon/oiax",
     "nousergon/nousergon-groomer", "nousergon/crucible-executor",

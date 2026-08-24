@@ -87,8 +87,10 @@ class TestScopeContract:
             "nousergon/telos-ops",
         ]
         # symposion#39 carried triage:session for 33 days partly because this
-        # list omitted it.
-        assert "nousergon/symposion" in BACKLOG_REPOS
+        # list omitted it. Brian archived nousergon/symposion 2026-08-24
+        # (no near-term development, re-enablable later) — its roster roles
+        # dropped to [], so this mirror must not carry it either.
+        assert "nousergon/symposion" not in BACKLOG_REPOS
 
     def test_code_repos_fallback_is_a_wellformed_roster_mirror(self):
         """The fallback is the operative list exactly when nothing else is
@@ -96,7 +98,9 @@ class TestScopeContract:
         fallback = dq_module._CODE_REPOS_FALLBACK
         assert fallback and len(fallback) == len(set(fallback))
         assert all(r.startswith("nousergon/") for r in fallback)
-        assert "nousergon/symposion" in fallback
+        # Archived 2026-08-24 (Brian's ruling) — archived repos are read-only
+        # and can no longer accept PRs, so symposion is no longer mirrored.
+        assert "nousergon/symposion" not in fallback
 
     def test_only_human_gates(self):
         # config#2431: widened to include gate:device — equally human-only
@@ -469,7 +473,8 @@ class TestCodeReposContract:
 
     def test_fallback_covers_the_full_fleet(self, monkeypatch):
         # The hardcoded fallback must include every repo the old constant had,
-        # plus nous-ergon-ops and symposion which were missing.
+        # plus nous-ergon-ops which was missing. symposion was archived
+        # 2026-08-24 (Brian's ruling) and dropped from this mirror.
         monkeypatch.setattr(dq_module, "_code_repos",
                            lambda: list(dq_module._CODE_REPOS_FALLBACK))
         repos = set(dq_module._code_repos())
@@ -482,8 +487,9 @@ class TestCodeReposContract:
             "nousergon/nousergon-docs", "nousergon/metron",
             "nousergon/vires", "nousergon/vires-ops",
             "nousergon/telos", "nousergon/telos-ops",
-            "nousergon/symposion", "nousergon/nous-ergon-ops",
+            "nousergon/nous-ergon-ops",
         }
+        assert "nousergon/symposion" not in repos
 
     def test_card_component_shows_pr_vs_issue_badge(self):
         src = (REPO_ROOT / "components" / "gate_queue_card.py").read_text()
