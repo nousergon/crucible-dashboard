@@ -53,10 +53,20 @@ distro==1.9.0
     # via openai
 fastapi==0.141.1
     # via -r requirements.in
-flow-doctor==0.15.2
+flow-doctor==0.16.0
     # via
     #   -r requirements.in
     #   krepis
+    # PINNED FORWARD BY HAND, not by a recompile (alpha-engine-config-I8298).
+    # Below 0.16.0 a notifier preflight raises a transport failure as a config
+    # error ON THE IMPORT PATH: TimeoutError is not a URLError, so an
+    # unreachable api.telegram.org killed alpha-engine-predictor-inference at
+    # import and degraded two postclose safety gates on 2026-08-24.
+    # A full `uv pip compile` is NOT the way to reproduce this edit: run
+    # locally it drops the `nousergon-lib[flow-doctor,github-app]` and
+    # `krepis[flow-doctor,openai]` extras and rewrites the nousergon-lib tag
+    # pin to a bare SHA, which crucible-executor-PR489 exists to forbid.
+    # Tracked with the executor's lock drift in alpha-engine-config-I8309.
 h11==0.16.0
     # via
     #   httpcore
