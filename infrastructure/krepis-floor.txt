@@ -1,0 +1,68 @@
+# The lowest krepis this repo's box scripts will run correctly on.
+#
+# WHY A FLOOR HERE, IN THIS REPO
+# ------------------------------
+# The box's shared krepis venv (/opt/nousergon/krepis-venv) is pinned by
+# nous-ergon-ops/alpha-engine-dashboard/live/infrastructure/krepis-venv/pin.txt.
+# A merge in THIS repo cannot see that pin, and a merge THERE cannot see this
+# repo's call sites. check-krepis-venv-drift.sh already closes that gap for
+# three other consumers — the proxy config generator's
+# generator-runtime-requirements.txt, bin/lib-python for the spot launchers,
+# and the venv's own requirements.txt — each declaring its floor in its own
+# repo so that RAISING one turns the daily drift check red until the venv
+# converges. That is the ruled deploy signal (Brian 2026-08-09, config#6337):
+# detect here, apply with install-krepis-venv.sh.
+#
+# box_health.sh is the box's PRIMARY watchdog and it publishes through that
+# same venv, and it was the one consumer with no floor at all.
+#
+# WHAT THAT COST, MEASURED
+# ------------------------
+# crucible-dashboard#761 (alpha-engine-config-I8105) gave box_health.sh the
+# alert lifecycle -- the `--state`/`--identity-key` arguments on publish and
+# the `clear` subcommand -- which first ship in krepis 0.59.26 (krepis#178,
+# merged 2026-08-21 17:23 PT). The pin was at 0.59.22 and did not move. The
+# call site was installed to /usr/local/bin on 2026-08-22 01:41.
+#
+# From that moment until 2026-08-25, on every 10-minute tick on
+# i-09b539c844515d549:
+#
+#   python -m krepis.alerts: error: unrecognized arguments:
+#     --state still_open --identity-key boxhealth-critical-timerfail-...
+#   box_health: critical publish failed        (x2 criticals + 1 warning)
+#
+# health_problems_unalerted sat at 2-3 for three days, the CloudWatch backstop
+# alpha-engine-dashboard-health-problems stayed in ALARM -- correctly, that is
+# the exact condition it exists to catch -- and the two findings behind it
+# (llm-capability-probe.timer and ops-config-drift.timer failing) reached
+# nobody. Every check involved was green: crucible-dashboard#761's CI, the pin
+# declaration tests, and check-krepis-venv-drift.sh itself, whose install-vs-pin
+# comparison was satisfied because the INSTALL matched the pin. The pin was
+# what was wrong, and nothing compared it to a call site.
+#
+# HOW THIS IS ENFORCED
+# --------------------
+# - tests/test_krepis_floor_covers_call_sites.py (this repo) asserts that every
+#   krepis.alerts subcommand and flag box_health.sh actually uses is accounted
+#   for in the table below, so adding a flag without moving the floor is red at
+#   merge time rather than three days later on a box.
+# - check-krepis-venv-drift.sh (nous-ergon-ops) asserts the installed venv is
+#   at or above the version declared here, the same way it already does for the
+#   three other consumers.
+#
+# CALL-SITE TABLE — every krepis.alerts surface box_health.sh uses, and the
+# krepis version that first shipped it. The floor is the maximum.
+#
+#   publish  (subcommand)                          0.15.0   (long-standing)
+#   publish  --message/--severity/--source         0.15.0   (long-standing)
+#   publish  --dedup-key/--dedup-window-min        0.15.0   (long-standing)
+#   publish  --state/--identity-key                0.59.26  (krepis#178)
+#   clear    (subcommand)                          0.59.26  (krepis#178)
+#   clear    --message/--identity-key/--source     0.59.26  (krepis#178)
+#
+# Both 0.59.26 surfaces are capability-probed at the call site as well
+# (krepis_supports_clear, krepis_supports_publish_lifecycle), so a box running
+# below this floor degrades to a page without lifecycle metadata and says so,
+# rather than failing to page at all. The probe is the seatbelt; this floor is
+# the thing that stops the crash.
+krepis>=0.59.26

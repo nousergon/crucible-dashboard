@@ -760,6 +760,61 @@ krepis_supports_clear() {
         </dev/null >/dev/null 2>&1
 }
 
+# krepis_supports_publish_lifecycle — the SAME probe, for the OTHER half of the
+# lifecycle pair (alpha-engine-config-I8105 follow-up).
+#
+# WHY THIS WAS MISSING AND WHAT IT COST. `krepis_supports_clear` above reasons
+# correctly that a version skew must not be reported as a delivery failure —
+# and then guards only the `clear` call. The lifecycle arguments added to the
+# PUBLISH call in the same change got no such probe, so the two halves of one
+# feature degraded in opposite directions: a skewed clear said so and carried
+# on, a skewed publish exited 2 from argparse and was counted as a page nobody
+# received.
+#
+# Measured on i-09b539c844515d549 from 2026-08-22 01:41 to 2026-08-25, every
+# 10-minute tick:
+#
+#   python -m krepis.alerts: error: unrecognized arguments: [the two lifecycle
+#   flags]  ->  box_health: critical publish failed   (x2 criticals, 1 warning)
+#
+# health_problems_unalerted sat at 2-3 for three days and the CloudWatch
+# backstop stayed in ALARM. The backstop was RIGHT — the alert path really was
+# broken — but the break was a pin lagging a call site, and both real findings
+# behind it (llm-capability-probe.timer, ops-config-drift.timer) reached nobody
+# for three days. A degrade here would have delivered them, without the
+# lifecycle metadata, and said so.
+#
+# Probes the FUNCTION SIGNATURE rather than the CLI: argparse's flags are
+# derived from it, one interpreter start answers both, and a parser error is
+# exactly what this exists to avoid provoking.
+#
+# NOT A SILENT SWALLOW. (a) The failure mode is "the installed krepis predates
+# the lifecycle pair"; (b) the page itself — the primary deliverable — is
+# published without the lifecycle arguments, which is precisely how every page
+# was published before I8105; (c) it is recorded on stderr, captured by
+# journald, and the pin-lag condition is independently a FINDING from
+# check-krepis-venv-drift.sh once crucible-dashboard declares its floor.
+krepis_supports_publish_lifecycle() {
+    "$ALERT_PY" -c 'import inspect, krepis.alerts as a; raise SystemExit(0 if {"state", "identity_key"} <= set(inspect.signature(a.publish).parameters) else 1)' \
+        </dev/null >/dev/null 2>&1
+}
+
+# Resolved at most once per run, on the non-clean path only: the probe costs an
+# interpreter start and publish_problems can be called several times.
+#   1 = supported, 0 = not, empty = not yet asked.
+KREPIS_PUBLISH_LIFECYCLE=""
+krepis_publish_lifecycle_args() {
+    if [ -z "$KREPIS_PUBLISH_LIFECYCLE" ]; then
+        if krepis_supports_publish_lifecycle; then
+            KREPIS_PUBLISH_LIFECYCLE=1
+        else
+            KREPIS_PUBLISH_LIFECYCLE=0
+            echo "box_health: installed krepis predates the publish lifecycle pair — paging WITHOUT it (bump the krepis pin; see infrastructure/krepis-floor.txt)" >&2
+        fi
+    fi
+    [ "$KREPIS_PUBLISH_LIFECYCLE" = "1" ]
+}
+
 # alerted_state_prior — rows written by the previous run, or empty.
 # Empty is a valid, expected state (first run after a deploy, reboot, or a
 # recreated state dir) and means exactly "nothing was alerted": everything
@@ -1760,14 +1815,20 @@ publish_problems() {
     # a page whose dedup marker is still live without suppressing itself.
     local _state
     _state=$(alerted_state_lifecycle "$dkey")
+    # Empty-safe expansion: this script is asserted to run under macOS bash 3.2,
+    # where a bare "${arr[@]}" on an empty array is an unbound-variable error
+    # under `set -u`.
+    local _lifecycle=()
+    if krepis_publish_lifecycle_args; then
+        _lifecycle=(--state "$_state" --identity-key "$dkey")
+    fi
     if ! "$ALERT_PY" -m krepis.alerts publish \
         --message "$msg" \
         --severity "$severity" \
         --source box-health \
         --dedup-key "$dkey" \
         --dedup-window-min "$dedup_min" \
-        --state "$_state" \
-        --identity-key "$dkey"; then
+        ${_lifecycle[@]+"${_lifecycle[@]}"}; then
         echo "box_health: $severity publish failed" >&2
         if [ "$severity" = "critical" ]; then
             UNALERTED_CRITICALS=$((UNALERTED_CRITICALS + ${#_problems[@]}))
