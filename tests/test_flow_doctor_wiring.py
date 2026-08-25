@@ -310,8 +310,17 @@ class TestLibVersionPin:
             "nousergon_lib import alias still works via the shim)"
         )
         assert "@main" not in text, "nousergon-lib must be pinned to a tag, not @main"
-        assert "@v0.124.86" in text, (
-            "nousergon-lib should pin to v0.124.86 -- registers the weekly SF's "
+        assert "@v0.124.88" in text, (
+            "nousergon-lib should pin to v0.124.88 -- PublishAggregateCostsDegraded "
+            "(alpha-engine-config-I8336). THIRD RECURRENCE of the class this "
+            "docstring already names twice: crucible-dashboard#775 bumped "
+            "requirements.txt's SHA to the v0.124.88 release commit and left "
+            "requirements.in on v0.124.86, so check_package_drift FAILED every "
+            "deploy from #775's merge until 2026-08-25 -- crucible-dashboard#776 "
+            "and #777 merged green and NEITHER reached the box, which kept the "
+            "box_health.sh it had on 2026-08-22. CI stayed green throughout "
+            "because CI installs the LOCKFILE and never compares it to "
+            "requirements.in. Prior: v0.124.86 -- registers the weekly SF's "
             "WeeklyCoverageSweep / WeeklyCoverageSweepUnavailable Task states in "
             "nousergon_lib.pipeline_status.registry.STATE_TO_ARCHIVE_PAGE "
             "(nousergon-lib-PR350, alpha-engine-config-I8214). THIS REPO'S PIN IS "
