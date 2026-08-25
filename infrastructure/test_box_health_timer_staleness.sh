@@ -260,6 +260,98 @@ else
     FAILURES=$((FAILURES + 1))
 fi
 
+# ── A RUN IN FLIGHT MUST NOT READ AS RECOVERY (alpha-engine-config-I8359) ────
+#
+# systemd resets `Result` to `success` when a unit STARTS. Measured on
+# i-09b539c844515d549:
+#   BEFORE: Result=success ActiveState=inactive   SubState=dead
+#   DURING: Result=success ActiveState=activating SubState=start
+# so a timer failing for days reads healthy for the whole of its next attempt.
+# All four confirm-on-retry samples fall inside that run, so the retry window
+# confirms the finding's ABSENCE instead of catching the flap.
+#
+# Live consequence, 2026-08-25: health_problems_unalerted went
+# 2.0, 2.0, 0.0, 2.0, 2.0 and the CloudWatch backstop emailed OK at 18:23:27
+# UTC for a condition that never ended. With the krepis pin restored (I8105)
+# that flap becomes a delivered "resolved" page, which is why it is corrected.
+echo
+echo "== mid-run: Result is not yet meaningful =="
+
+PRIOR="timer job failing: unit.timer (last run result=exit-code, failing run started Mon 2026-08-24 07:01:39 UTC)"
+
+# args after the unit+now pair: last, budget, result, fail_since, next, active, prior
+out=$(classify_timer_staleness "unit.timer" "$NOW" "$((NOW - 60))" "" "success" "" "" "activating" "$PRIOR")
+if [ "$out" = "$PRIOR" ]; then
+    echo "ok   - a failing unit mid-run carries its PRIOR finding verbatim"
+else
+    echo "FAIL - mid-run did not carry the prior finding: [$out]"
+    FAILURES=$((FAILURES + 1))
+fi
+
+# Byte-identical matters: the identity key is derived from this line's finding,
+# and any drift would roll the key, which IS a clear plus a new page.
+k_prior=$(timer_failure_dedup_key "unit.timer" "exit-code" "Mon 2026-08-24 07:01:39 UTC")
+k_carry=$(timer_failure_dedup_key "unit.timer" "exit-code" "Mon 2026-08-24 07:01:39 UTC")
+if [ "$k_prior" = "$k_carry" ]; then
+    echo "ok   - the carried finding keeps the identity key stable"
+else
+    echo "FAIL - carried finding rolled the key"
+    FAILURES=$((FAILURES + 1))
+fi
+
+out=$(classify_timer_staleness "unit.timer" "$NOW" "$((NOW - 60))" "" "success" "" "" "active" "$PRIOR")
+if [ "$out" = "$PRIOR" ]; then
+    echo "ok   - ActiveState=active is treated as in-flight too"
+else
+    echo "FAIL - ActiveState=active did not carry: [$out]"
+    FAILURES=$((FAILURES + 1))
+fi
+
+# A unit with no standing finding must NOT acquire one just for running.
+out=$(classify_timer_staleness "unit.timer" "$NOW" "$((NOW - 60))" "" "success" "" "" "activating" "")
+if [ -z "$out" ]; then
+    echo "ok   - a healthy unit mid-run invents no finding"
+else
+    echo "FAIL - mid-run fabricated a finding: [$out]"
+    FAILURES=$((FAILURES + 1))
+fi
+
+# Self-correcting: once the run FINISHES successfully, the finding is gone even
+# though a prior line exists. This is the assertion that proves the carry is a
+# hold and not a latch.
+# Asserted on the FAILING line specifically, not on empty output: with no
+# budget row this call also emits the dead-man coverage notice, which is a
+# different finding and correct here.
+out=$(classify_timer_staleness "unit.timer" "$NOW" "$((NOW - 60))" "" "success" "" "" "inactive" "$PRIOR")
+if ! printf '%s' "$out" | grep -q "timer job failing"; then
+    echo "ok   - a completed successful run clears, prior finding notwithstanding"
+else
+    echo "FAIL - the carry latched past completion: [$out]"
+    FAILURES=$((FAILURES + 1))
+fi
+
+# And a completed FAILING run still reports, unchanged from before this fix.
+out=$(classify_timer_staleness "unit.timer" "$NOW" "$((NOW - 60))" "" "exit-code" "" "" "inactive" "")
+case "$out" in
+    "timer job failing: unit.timer"*)
+        echo "ok   - a completed failing run still reports" ;;
+    *)
+        echo "FAIL - completed failing run no longer reports: [$out]"
+        FAILURES=$((FAILURES + 1)) ;;
+esac
+
+# Back-compat: existing callers pass 7 args. Absent ActiveState must behave
+# exactly as before, or every other assertion in this file is testing a
+# different function than the one that ships.
+out=$(classify_timer_staleness "unit.timer" "$NOW" "$((NOW - 60))" "" "exit-code")
+case "$out" in
+    "timer job failing: unit.timer"*)
+        echo "ok   - omitting ActiveState preserves the pre-I8359 behaviour" ;;
+    *)
+        echo "FAIL - 7-arg call changed behaviour: [$out]"
+        FAILURES=$((FAILURES + 1)) ;;
+esac
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
     echo "PASS - all classify_timer_staleness assertions"
