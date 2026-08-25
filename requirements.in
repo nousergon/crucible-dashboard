@@ -94,7 +94,12 @@ yfinance>=1.6.0
 # contract.  Krepis 0.59.15+ also enables its fail-closed in-process DLP hook;
 # nous-ergon-ops-PR764 makes gitleaks durable on the shared box and CI proves a
 # verified scanner plus benign no-provider preflight before tests run.
-krepis[openai]>=0.59.28
+#
+# Floor raised to 0.59.33 (alpha-engine-config-I8298): 0.59.33 is the first
+# krepis release declaring flow-doctor>=0.16.0, which carries the verdict/
+# transport split for TelegramNotifier/GitHubNotifier.validate() that stops a
+# transient Telegram timeout from killing a strict Lambda import.
+krepis[openai]>=0.59.33
 # nousergon-lib (renamed from alpha-engine-lib at v0.60.0) provides
 # setup_logging used by app.py + health_checker.py
 # to attach the FlowDoctorHandler when FLOW_DOCTOR_ENABLED=1, the

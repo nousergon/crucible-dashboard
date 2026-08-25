@@ -100,10 +100,17 @@ jsonschema==4.26.0
     # via altair
 jsonschema-specifications==2025.9.1
     # via jsonschema
-krepis[flow-doctor,openai]==0.59.31
+krepis[flow-doctor,openai]==0.59.33
     # via
     #   -r requirements.in
     #   nousergon-lib
+    # PINNED FORWARD BY HAND, not by a recompile (alpha-engine-config-I8298).
+    # 0.59.33 is the first krepis release declaring flow-doctor>=0.16.0 — see
+    # the flow-doctor entry above for why that floor matters. A full `uv pip
+    # compile` here drops the `nousergon-lib[flow-doctor,github-app]` and
+    # `krepis[flow-doctor,openai]` extras and rewrites the nousergon-lib tag
+    # pin to a bare SHA, which crucible-executor-PR489 exists to forbid.
+    # Tracked with the executor's lock drift in alpha-engine-config-I8309.
 lxml==6.1.2
     # via yfinance
 markupsafe==3.0.3
