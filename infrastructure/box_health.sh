@@ -774,8 +774,13 @@ krepis_supports_clear() {
 # Measured on i-09b539c844515d549 from 2026-08-22 01:41 to 2026-08-25, every
 # 10-minute tick:
 #
-#   python -m krepis.alerts: error: unrecognized arguments: [the two lifecycle
+#   <the alerts CLI>: error: unrecognized arguments: [the two lifecycle
 #   flags]  ->  box_health: critical publish failed   (x2 criticals, 1 warning)
+#
+# (That transcript deliberately does not spell the module invocation out, for
+# the reason krepis_supports_clear states above: the fleet alert-source scanner
+# matches the `-m <module>` adjacency in PROSE as well as in code, and reads a
+# comment as a sourceless emitter.)
 #
 # health_problems_unalerted sat at 2-3 for three days and the CloudWatch
 # backstop stayed in ALARM. The backstop was RIGHT — the alert path really was

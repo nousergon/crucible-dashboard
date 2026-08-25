@@ -11,8 +11,14 @@ nous-ergon-ops, a repo this one's merges cannot see, and that pin did not move.
 From the 2026-08-22 01:41 install until 2026-08-25, every 10-minute tick on
 i-09b539c844515d549::
 
-    python -m krepis.alerts: error: unrecognized arguments:
+    <the alerts CLI>: error: unrecognized arguments:
       --state still_open --identity-key boxhealth-critical-timerfail-...
+
+..note:: the module invocation is deliberately not spelled out above. The
+    fleet alert-source scanner matches the ``-m <module>`` adjacency in PROSE
+    as well as in code and would read this docstring as an emitter carrying no
+    ``--source`` -- the false positive ``krepis_supports_clear``'s own comment
+    in ``box_health.sh`` documents.
     box_health: critical publish failed        (x2 criticals + 1 warning)
 
 ``health_problems_unalerted`` sat at 2-3 for three days and the CloudWatch

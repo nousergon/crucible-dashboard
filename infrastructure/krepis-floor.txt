@@ -27,8 +27,13 @@
 # From that moment until 2026-08-25, on every 10-minute tick on
 # i-09b539c844515d549:
 #
-#   python -m krepis.alerts: error: unrecognized arguments:
+#   <the alerts CLI>: error: unrecognized arguments:
 #     --state still_open --identity-key boxhealth-critical-timerfail-...
+#
+# (Spelled that way on purpose. The fleet alert-source scanner matches the
+# `-m <module>` adjacency in PROSE as well as in code and would read this
+# comment as an emitter with no --source -- the false positive box_health.sh's
+# own krepis_supports_clear comment already documents.)
 #   box_health: critical publish failed        (x2 criticals + 1 warning)
 #
 # health_problems_unalerted sat at 2-3 for three days, the CloudWatch backstop
