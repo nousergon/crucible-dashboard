@@ -330,15 +330,28 @@ class TestKrepisPinCarriesStageCoverage:
         import re
 
         src = _REQUIREMENTS.read_text()
+        # Extras are matched as a SET, not as a literal substring: uv emits
+        # `krepis[flow-doctor, openai]==` (a space after the comma) under
+        # --no-strip-extras, and PEP 508 permits whitespace there. Pinning the
+        # exact spelling made this test fail on a lock uv itself produced
+        # (alpha-engine-config-I8309), which is the version-literal failure
+        # mode this class's own docstring warns about.
         match = re.search(
-            r"^krepis\[flow-doctor,openai\]==(\d+)\.(\d+)\.(\d+)", src, re.MULTILINE
+            r"^krepis\[([^\]]*)\]==(\d+)\.(\d+)\.(\d+)", src, re.MULTILINE
         )
         assert match, (
-            "no pinned krepis[flow-doctor,openai]==X.Y.Z line found in "
+            "no pinned krepis[...]==X.Y.Z line found in "
             f"{_REQUIREMENTS.name} — the dashboard box's interpreter is the "
             "one every weekly-SF stage runs through; it must be pinned."
         )
-        pinned = tuple(int(g) for g in match.groups())
+        extras = {e.strip() for e in match.group(1).split(",")}
+        assert {"flow-doctor", "openai"} <= extras, (
+            f"the krepis lock line carries extras {sorted(extras)} — both "
+            "[flow-doctor] (the FlowDoctorHandler) and [openai] "
+            "(live/morning_brief.py's OpenRouter transport) must survive the "
+            "compile. A `uv pip compile` without --no-strip-extras drops them."
+        )
+        pinned = tuple(int(g) for g in match.groups()[1:])
         assert pinned >= self.MIN_STAGE_COVERAGE_VERSION, (
             f"krepis pinned at {'.'.join(map(str, pinned))}, below "
             f"{'.'.join(map(str, self.MIN_STAGE_COVERAGE_VERSION))} which is the "

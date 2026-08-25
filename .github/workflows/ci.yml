@@ -132,6 +132,12 @@ jobs:
   # lockfile compiled against the wrong Python fails PRE-merge instead of at
   # deploy (the actual defect: config#468's CI was green while the deploy
   # was doomed).
+  #
+  # SCOPE, so the name is not read as more than it claims: this job proves the
+  # lock RESOLVES AND INSTALLS. It says nothing about whether the lock still
+  # corresponds to requirements.in — a floor raised in the .in is invisible
+  # here. `lockfile-reproducible` below is the job that owns that claim
+  # (alpha-engine-config-I8309).
   lockfile-python-parity:
     runs-on: ubuntu-latest
     steps:
@@ -151,12 +157,43 @@ jobs:
           uv venv --python "$PYVER" /tmp/lockfile-parity-venv
           uv pip install --python /tmp/lockfile-parity-venv/bin/python -r requirements.txt
 
+  # Lockfile REPRODUCIBILITY guard (alpha-engine-config-I8309). Distinct from
+  # `lockfile-python-parity` above, and strictly stronger: that job proves the
+  # committed lock INSTALLS under the SSoT interpreter, which stays green
+  # forever while requirements.in drifts away from it. This job re-runs the
+  # compile and fails when the lock is not what requirements.in produces.
+  #
+  # The defect it exists to catch, measured in this repo: crucible-dashboard#739
+  # bumped requirements.txt and left requirements.in behind, failing
+  # check_package_drift on the box for every deploy from 2026-08-20 22:45 while
+  # CI stayed green; and `setuptools>=84.0.0` — declared in requirements.in for
+  # the PYSEC-2026-3447 pip-audit gate — was absent from the lock entirely.
+  # The sibling instance ran further in crucible-executor (PR493): a lock
+  # pinning krepis==0.54.0 against a .in flooring >=0.59.18, with the .in
+  # outright unsatisfiable.
+  #
+  # The compile flags live in the script, with the reasoning for each.
+  lockfile-reproducible:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version-file: .python-version
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: requirements.txt is reproducible from requirements.in
+        run: bash infrastructure/check_lock_reproducible.sh
+
   # Alert (Telegram) ONLY on genuine post-merge breakage of the default
   # branch. PR-branch reds (mid-fix commits, cross-repo lib-tag merge-order
   # races) stay silent. Reusable workflow + transport in nousergon-lib.
   # See alpha-engine-config#1128.
   notify-main-failure:
-    needs: [test, lockfile-python-parity]
+    needs: [test, lockfile-python-parity, lockfile-reproducible]
     if: ${{ failure() && github.ref == 'refs/heads/main' }}
     uses: nousergon/nousergon-lib/.github/workflows/notify-ci-failure.yml@62597e550c08c0b7a7fe0af490cb141e344061b3
     secrets: inherit
