@@ -387,9 +387,58 @@ human_age() {
 #   $3 last trigger (epoch seconds, EMPTY if never triggered)
 #   $4 max staleness (seconds, EMPTY if no budget.yaml row)
 #   $5 triggered service's Result
+#   $8 triggered service's ActiveState  $9 the finding this unit carried on the
+#      PREVIOUS run, verbatim, or empty
 classify_timer_staleness() {
     local name="$1" now="$2" last="$3" budget="$4" result="$5" age
     local fail_since="${6:-}" next_elapse="${7:-}"
+    local active_state="${8:-}" prior_finding="${9:-}"
+
+    # ── A RUN IN FLIGHT MAKES `Result` MEANINGLESS (alpha-engine-config-I8359) ──
+    #
+    # systemd RESETS `Result` to `success` when a unit starts and only sets the
+    # real outcome when it finishes. Measured on i-09b539c844515d549:
+    #
+    #   BEFORE:  Result=success  ActiveState=inactive    SubState=dead
+    #   DURING:  Result=success  ActiveState=activating  SubState=start
+    #
+    # So a timer that has been failing for days reads as HEALTHY for the whole
+    # duration of its next attempt. The finding leaves the confirmed set, and
+    # because all four confirm-on-retry samples fall inside that same run, the
+    # retry window confirms its ABSENCE rather than catching the flap.
+    #
+    # What that cost, measured 2026-08-25: `health_problems_unalerted` went
+    # 2.0, 2.0, **0.0**, 2.0, 2.0 across five consecutive ticks, and
+    # `alpha-engine-dashboard-health-problems` sent an OK email at 18:23:27 UTC
+    # for a condition that never ended, returning to ALARM 20 minutes later.
+    # The journal for that tick names both keys as `clear DUE`.
+    #
+    # Until 2026-08-25 the clears could not be delivered at all (the krepis pin
+    # lagged the call site, I8105), so the only symptom was the flapping alarm.
+    # With the pin restored those clears DO deliver, which turns a silent flap
+    # into an affirmative "condition resolved" page for a standing condition.
+    # That is why this is corrected rather than tolerated.
+    #
+    # CARRY, do not re-derive. A run in flight is not evidence of success and
+    # not evidence of failure -- it is an absence of evidence, and the honest
+    # response is to keep reporting what was last actually measured. Re-emitting
+    # the prior line VERBATIM keeps the identity key byte-identical, so nothing
+    # clears, the level holds, and the metric does not flap.
+    #
+    # Self-correcting in the safe direction: the moment the run finishes,
+    # `Result` is real again -- success clears the finding on the very next
+    # tick, another failure is correctly a NEW page for a NEW run. The only
+    # cost of being wrong here is holding a resolved finding for the length of
+    # one run; the cost of the opposite was an all-clear for a live condition.
+    case "$active_state" in
+        activating|active|reloading|deactivating)
+            [ -n "$prior_finding" ] && echo "$prior_finding"
+            # The staleness half is skipped too: a unit that is running right
+            # now is by definition not overdue, and evaluating it against a
+            # budget mid-run is the same absence-of-evidence error.
+            return 0
+            ;;
+    esac
 
     # Execution outcome. FIRST, and before any coverage guard, because it needs
     # NOTHING from budget.yaml: a job can fail promptly and on schedule forever,
@@ -828,6 +877,24 @@ krepis_publish_lifecycle_args() {
 alerted_state_prior() {
     [ -r "$ALERTED_STATE" ] || return 0
     cat "$ALERTED_STATE" 2>/dev/null
+}
+
+# alerted_timer_finding UNIT — the "timer job failing:" line this unit carried
+# on the PREVIOUS run, or empty.
+#
+# Reads the same state file the lifecycle diff uses, matching on the timerfail
+# key's unit segment rather than on message text: the message embeds a
+# timestamp and a next-attempt time, so a text match would be a moving target
+# while the key's unit segment is stable. Used only on the mid-run path in
+# classify_timer_staleness (alpha-engine-config-I8359).
+#
+# Stable within a run -- the file is not rewritten until alerted_state_write on
+# the way out -- so all four confirm-on-retry samples see the same answer,
+# which is what keeps the carried line confirmable.
+alerted_timer_finding() {
+    local unit="$1"
+    alerted_state_prior | awk -F'\t' -v k="boxhealth-critical-timerfail-${unit}-" \
+        'index($1, k) == 1 { print $3; exit }'
 }
 
 # alerted_state_lifecycle KEY — `still_open` if the previous run alerted on
@@ -1295,7 +1362,7 @@ snapshot_problems() {
     # A job that fires on time and fails every run is invisible to the first
     # and caught only by the second (config-I5209).
     local t props active sub next_real next_mono timer_units _k _v
-    local svc last_epoch now_epoch result budget staleness_ok inactive_exit_raw
+    local svc last_epoch now_epoch result budget staleness_ok inactive_exit_raw svc_active
     now_epoch=$(date +%s)
 
     # The thresholds live in the generated manifest, so they can be absent for
@@ -1385,8 +1452,13 @@ snapshot_problems() {
             last_epoch=$(date -d "$last_raw" +%s 2>/dev/null) || last_epoch="$last_raw"
             [ -n "$last_epoch" ] || last_epoch="$last_raw"
         fi
+        # ActiveState of the TRIGGERED SERVICE, for the mid-run guard in
+        # classify_timer_staleness (alpha-engine-config-I8359). Same guard as
+        # Result above: only meaningful when there is a triggered service.
+        svc_active=""
+        [ -n "$svc" ] && svc_active=$(systemctl show "$svc" -p ActiveState --value 2>/dev/null)
         classify_timer_staleness "$t" "$now_epoch" "$last_epoch" "$budget" "$result" \
-            "$inactive_exit_raw" "$next_real"
+            "$inactive_exit_raw" "$next_real" "$svc_active" "$(alerted_timer_finding "$t")"
     done
 
     # ── per-service cgroup memory pressure (alpha-engine-config-I4512) ─────
