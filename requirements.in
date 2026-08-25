@@ -209,7 +209,23 @@ krepis[openai]>=0.59.33
 # follow-up. The same release also carries _extract_run_date's third source, so
 # derive_cycle_verdict and the pulse loader now see the SCHEDULED weekly
 # executions that previously resolved to no cycle key and were dropped.
-nousergon-lib[flow-doctor,github_app] @ git+https://github.com/nousergon/nousergon-lib@v0.124.86
+# v0.124.88 (alpha-engine-config-I8336): PublishAggregateCostsDegraded. #775
+# bumped requirements.txt's SHA to this release and left THIS line at
+# v0.124.86, so the two halves of one pin disagreed.
+#
+# That is not cosmetic: check_package_drift compares the INSTALLED version
+# against the tag declared HERE, and deploy-on-merge.sh runs it as a gate. From
+# #775's merge until 2026-08-25 every crucible-dashboard deploy failed with
+#
+#   nousergon-lib: requirements.in pins tag v0.124.86 but the installed
+#   version is 0.124.88 — venv is on the WRONG commit/version of a VCS-pinned
+#   fleet-wide lib
+#
+# and the box therefore kept the box_health.sh it had on 2026-08-22 while two
+# merged fixes (#776, #777) sat undeployed. Verified: requirements.txt's
+# 68d643424ddef7f38648d3919842b1bbe7aa731a IS the `chore(release): v0.124.88`
+# commit, so the LOCK was right and this line was the stale half.
+nousergon-lib[flow-doctor,github_app] @ git+https://github.com/nousergon/nousergon-lib@v0.124.88
 
 # crucible-dash-api (config#1973 phase 9-B): read-only FastAPI over the
 # results view-model, consumed same-box by the /dash Next.js frontend.
