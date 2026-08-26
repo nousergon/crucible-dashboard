@@ -265,7 +265,8 @@ def test_a_stale_marker_reports_staleness_only_not_both(tmp_path):
     about consumption, and reporting both would double-count the incident."""
     out = _run(tmp_path, LISTING, now_epoch=_FRESH_EPOCH + 20 * 3600,
                marker_body=_marker("25", '{"queue":0,"fallback":0}'))
-    assert "no completed run in 20h" in out
+    # Static since alpha-engine-config-I8678 — the age lives in the journal.
+    assert "no completed run within the staleness bound" in out
     assert "I8108" not in out
 
 
@@ -283,3 +284,80 @@ def test_the_unmeasured_finding_classifies_as_warning_not_critical():
     (warning), per overseer-policy section 3 — recorded and swept, never paged.
     It must not join the critical the drain itself owns."""
     assert '"watchdog: "*) echo warning ;;' in BOX_HEALTH
+
+
+# ── identity stability (alpha-engine-config-I8678) ──────────────────────────
+#
+# `publish_clears` derives this tier's identity key from the problem SET, and
+# says so: "a set that changed at all is a different page". A problem string
+# carrying a live relative age therefore opens a NEW condition every hour and
+# ends the previous one — one CRITICAL plus one RESOLVED per hour, forever,
+# with the RESOLVED naming an age exactly one hour behind its CRITICAL. That
+# was the observed 2026-08-26 storm. Same reasoning that kept computed relative
+# age out of the timer identity key (alpha-engine-config-I7677) and out of the
+# I8108 sibling arm.
+
+def test_stale_marker_line_is_identical_across_ages(tmp_path):
+    """The SAME standing condition must produce a byte-identical line at 19h,
+    20h and 40h. This is the regression test for the hourly page/clear pair."""
+    stale_epoch = 1787270400  # 2026-08-21T00:00:00Z
+    listing = (
+        "overseer/_control/completed/alert-drain-drain-2026-08-21T0000Z.json"
+        "\t2026-08-21T00:00:00.000Z"
+    )
+    lines = set()
+    for age_h in (19, 20, 40):
+        out = _run(tmp_path, listing, now_epoch=stale_epoch + age_h * 3600)
+        stale = [ln for ln in out.splitlines() if ln.startswith("alert-drain not consuming: ")]
+        assert stale, f"no staleness line at {age_h}h: {out!r}"
+        lines.add(stale[0])
+    assert len(lines) == 1, f"staleness line moves with age, so every tick is a new page: {lines}"
+
+
+def test_stale_marker_line_carries_no_interpolation(tmp_path):
+    """The key moves too — a new completion marker while the drain is still
+    off would re-key the page just as an age does. Neither belongs in the
+    string; both belong in the journal."""
+    stale_epoch = 1787270400
+    now_epoch = stale_epoch + 20 * 3600
+    for key in ("alert-drain-drain-2026-08-21T0000Z.json", "alert-drain-drain-2026-08-25T1201Z.json"):
+        out = _run(
+            tmp_path,
+            f"overseer/_control/completed/{key}\t2026-08-21T00:00:00.000Z",
+            now_epoch=now_epoch,
+        )
+        stale = [ln for ln in out.splitlines() if ln.startswith("alert-drain not consuming: ")]
+        assert stale, out
+        assert key not in stale[0], f"marker key leaked into the problem string: {stale[0]}"
+        assert "20h" not in stale[0]
+
+
+# Moving quantities this file computes. A problem string that interpolates one
+# of these cannot hold a stable identity key across ticks. Stable
+# interpolations (a systemd unit name, a service name) are deliberately absent
+# from this list — I7677 established that identity may name WHAT, never HOW
+# LONG or HOW MUCH.
+MOVING_QUANTITIES = ("age_h", "now_epoch", "disk_pct", "mem_avail_mb", "depth", "ingested")
+
+
+def test_no_problem_string_interpolates_a_moving_quantity():
+    """Sweep, not instance (engagement-protocol-policy section 5): the defect
+    class is 'a live measurement inside a problem string', and fixing only the
+    alert-drain line would leave the next one to be found by a phone."""
+    offenders = []
+    for lineno, line in enumerate(BOX_HEALTH.splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped.startswith('echo "'):
+            continue
+        # Problem strings are the ones publish_problems/classify_problem_severity
+        # match on; journal lines go through printf ... >&2, never echo.
+        if stripped.endswith('>&2'):
+            continue
+        for var in MOVING_QUANTITIES:
+            if "${%s}" % var in stripped or "$%s" % var in stripped:
+                offenders.append(f"{lineno}: {stripped}")
+                break
+    assert not offenders, (
+        "problem strings carrying a live measurement — each one re-keys its page "
+        "on every tick (alpha-engine-config-I8678):\n" + "\n".join(offenders)
+    )

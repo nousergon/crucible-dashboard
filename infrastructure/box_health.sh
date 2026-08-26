@@ -1157,7 +1157,19 @@ check_alert_drain_liveness() {
     local key
     key=$(printf '%s' "$latest" | awk '{print $1}')
     if [ "$age_h" -ge "$ALERT_DRAIN_MAX_STALENESS_H" ]; then
-        echo "alert-drain not consuming: no completed run in ${age_h}h (last: ${key}) — scheduled-off or hung, see alpha-engine-config-I7858"
+        # STATIC string — no age, no key (alpha-engine-config-I8678). Both move
+        # between ticks, and publish_clears derives this tier's identity key
+        # from the problem SET, so "a set that changed at all is a different
+        # page": an interpolated age made every hour open a new condition and
+        # end the previous one, emitting one CRITICAL *and* one RESOLVED per
+        # hour for as long as the condition stood. Exactly the reasoning that
+        # kept computed relative age out of the timer identity key
+        # (alpha-engine-config-I7677) and out of the sibling I8108 arm below.
+        # The moving numbers go to the journal, which is where the operator
+        # reads them anyway.
+        echo "alert-drain not consuming: no completed run within the staleness bound — scheduled-off or hung, see alpha-engine-config-I7858"
+        printf 'box_health: alert-drain last completed %sh ago (bound %sh): %s\n' \
+               "$age_h" "$ALERT_DRAIN_MAX_STALENESS_H" "$key" >&2
         # A stale marker already says everything; asserting on its stale
         # contents too would double-report one condition.
         return 0
