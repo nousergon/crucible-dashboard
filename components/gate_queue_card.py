@@ -97,9 +97,36 @@ def render_card(item: dict, *, state_key: str, is_action: bool = False) -> None:
                       (datetime.now(timezone.utc).date() + timedelta(days=14)).isoformat(),
                       item["body"])
             st.rerun()
-        if action_cols[1].button("💬 Session", key=f"ses-{key}", help="Needs discussion — park for /backlog-triage"):
-            act_once(state_key, key, "sent to session", send_to_session, item["repo"], item["number"])
-            st.rerun()
+        if key not in st.session_state[state_key]:
+            # alpha-engine-config-I8717 / decision-queue-policy.md §5.3: a
+            # ruling is binding — send_to_session refuses a silent re-park
+            # of an item whose most recent human activity was a triage
+            # ruling. A stated reason overrides it explicitly (the same
+            # shape as "withdrawing an ask is as loud as making it"), so
+            # this bypasses act_once's single fixed-outcome shape to branch
+            # on send_to_session's return value instead.
+            if action_cols[1].button(
+                "💬 Session", key=f"ses-{key}",
+                help="Needs discussion — park for /backlog-triage. Already "
+                     "ruled? Fill in a reason below first to re-park explicitly."):
+                reason = (st.session_state.get(f"ses-reason-{key}", "") or "").strip()
+                try:
+                    outcome = send_to_session(item["repo"], item["number"], reason=reason)
+                except Exception as exc:  # surface the API error, never silent
+                    st.error(f"{key}: write failed — {exc}")
+                else:
+                    if outcome == "refused":
+                        st.warning(f"{key}: already ruled — re-parking requires "
+                                    "a stated reason.")
+                    else:
+                        done = "re-parked with reason" if outcome == "reparked" else "sent to session"
+                        st.session_state[state_key][key] = done
+                        st.toast(f"{key}: {done}")
+                st.rerun()
+            action_cols[1].text_input(
+                "Reason (only if re-parking an already-ruled item)",
+                key=f"ses-reason-{key}", label_visibility="collapsed",
+                placeholder="Reason (only if re-parking an already-ruled item)")
         if action_cols[2].button("🗑 Kill", key=f"kill-{key}"):
             act_once(state_key, key, "killed", kill_issue, item["repo"], item["number"])
             st.rerun()

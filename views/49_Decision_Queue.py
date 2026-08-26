@@ -39,6 +39,7 @@ from loaders.decision_queue_loader import (  # noqa: E402
     clear_queue_cache,
     github_token,
     load_decision_queue,
+    park_cycle_counts,
 )
 
 _STATE_KEY = "dq_done"
@@ -91,6 +92,21 @@ c4.metric("Deferred", len(snoozed), help="Hidden until their Re-exam date arrive
 if st.button("🔄 Refresh queue"):
     clear_queue_cache()
     st.rerun()
+
+# alpha-engine-config-I8717 / decision-queue-policy.md §9: the binding-ruling
+# guard's own signal — parks attempted, refused (silent re-park blocked),
+# and re-parked with a stated reason, since this process last restarted
+# (loaders.decision_queue_loader._PARK_COUNTS — a plain module-level
+# counter, not st.session_state; see that module for why). Shown even when
+# all three are zero: an absent row here would read as "no data", which §9
+# forbids.
+_pk = park_cycle_counts()
+p1, p2, p3 = st.columns(3)
+p1.metric("Parks attempted", _pk["attempted"], help="Since this process last restarted")
+p2.metric("Parks refused (guard)", _pk["refused"],
+          help="Blocked: item was ruled and only bot activity happened since — "
+               "already ruled, re-parking requires a stated reason")
+p3.metric("Re-parked with reason", _pk["reparked"])
 
 if snoozed:
     with st.expander(f"⏸ {len(snoozed)} deferred — re-enter the queue on their Re-exam date"):
