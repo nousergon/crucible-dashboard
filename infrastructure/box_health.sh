@@ -101,6 +101,18 @@ OVERSEER_RESEARCH_BUCKET="alpha-engine-research"
 # cycles plus a generous margin for a long-running drain (charter caps it at
 # a 3h watchdog) without false-paging on ONE slow run.
 ALERT_DRAIN_MAX_STALENESS_H=14
+# The four EventBridge Scheduler schedules whose State distinguishes a drain
+# that is DECLARED OFF from one that is hung (alpha-engine-config-I8679, Brian
+# ruling 2026-08-26: "i don't want to be paged with box health at all if there
+# is no issue"). Read with scheduler:GetSchedule, granted read-only on exactly
+# these four ARNs by nous-ergon-ops infrastructure/iam/
+# alpha-engine-dashboard-role/alpha-engine-dashboard-alert-drain-schedule-read.json.
+ALERT_DRAIN_SCHEDULE_NAMES="alpha-engine-alert-drain-0400utc alpha-engine-alert-drain-1000utc alpha-engine-alert-drain-1600utc alpha-engine-alert-drain-2200utc"
+# A pause is a state; a pause this long is a decision the operator owes. The
+# console row says so past this bound — it still does not page, because a
+# decision owed is Decision-Queue work, not a box-health incident. Mirrors
+# PRODUCER_SUPPRESSION_MAX_DAYS in the freshness monitor.
+ALERT_DRAIN_PAUSE_REVIEW_DAYS=14
 # Service/port coverage comes from the GENERATED manifest, which is rendered
 # from infrastructure/systemd/resource-limits/budget.yaml — the box's single
 # service registry. Do not hand-edit the arrays here.
@@ -1129,6 +1141,42 @@ http_liveness_problems() {
 # never silence, and never folded into the critical the drain owns. "Could not
 # check" and "checked and fine" are different answers and this check never
 # collapses them; principles.md section 7 — no data is never rendered as green.
+# alert_drain_declared_state — `disabled` / `enabled` / `mixed` / `unknown`.
+#
+# READS THE FACT, NOT THE DECLARATION. `automation_pause.json` in nousergon-data
+# is the declaration and this box cannot read it (private repo, no checkout
+# here); `automation_pause.py --check` already asserts declaration-vs-fact in
+# both directions and is the right owner of that comparison. What this box
+# needs is only the fact: are the schedules off. So there is no second copy of
+# the manifest here to drift.
+#
+# UNKNOWN IS NOT ENABLED AND NOT DISABLED. A GetSchedule that fails — IAM
+# drift, throttle, a renamed schedule — returns `unknown`, which reports as a
+# `watchdog:` finding rather than defaulting to either side. Defaulting to
+# `enabled` would page on every IAM hiccup; defaulting to `disabled` would
+# silence a genuinely hung drain the moment this call broke. principles.md
+# section 7: "could not check" and "checked and fine" are different answers.
+alert_drain_declared_state() {
+    local n st enabled=0 disabled=0 unknown=0
+    for n in $ALERT_DRAIN_SCHEDULE_NAMES; do
+        st=$(aws scheduler get-schedule --name "$n" --query State --output text 2>/dev/null)
+        case "$st" in
+            ENABLED)  enabled=$((enabled + 1)) ;;
+            DISABLED) disabled=$((disabled + 1)) ;;
+            *)        unknown=$((unknown + 1)) ;;
+        esac
+    done
+    if [ "$unknown" -gt 0 ]; then
+        echo unknown
+    elif [ "$enabled" -gt 0 ] && [ "$disabled" -gt 0 ]; then
+        echo mixed
+    elif [ "$disabled" -gt 0 ]; then
+        echo disabled
+    else
+        echo enabled
+    fi
+}
+
 check_alert_drain_liveness() {
     local latest
     latest=$(aws s3api list-objects-v2 \
@@ -1157,19 +1205,51 @@ check_alert_drain_liveness() {
     local key
     key=$(printf '%s' "$latest" | awk '{print $1}')
     if [ "$age_h" -ge "$ALERT_DRAIN_MAX_STALENESS_H" ]; then
-        # STATIC string — no age, no key (alpha-engine-config-I8678). Both move
-        # between ticks, and publish_clears derives this tier's identity key
-        # from the problem SET, so "a set that changed at all is a different
-        # page": an interpolated age made every hour open a new condition and
-        # end the previous one, emitting one CRITICAL *and* one RESOLVED per
-        # hour for as long as the condition stood. Exactly the reasoning that
-        # kept computed relative age out of the timer identity key
-        # (alpha-engine-config-I7677) and out of the sibling I8108 arm below.
-        # The moving numbers go to the journal, which is where the operator
-        # reads them anyway.
-        echo "alert-drain not consuming: no completed run within the staleness bound — scheduled-off or hung, see alpha-engine-config-I7858"
-        printf 'box_health: alert-drain last completed %sh ago (bound %sh): %s\n' \
-               "$age_h" "$ALERT_DRAIN_MAX_STALENESS_H" "$key" >&2
+        # EVERY string below is STATIC — no age, no key (alpha-engine-config-
+        # I8678). Both move between ticks, and publish_clears derives this
+        # tier's identity key from the problem SET, so "a set that changed at
+        # all is a different page": an interpolated age made every hour open a
+        # new condition and end the previous one, emitting one CRITICAL *and*
+        # one RESOLVED per hour for as long as the condition stood. Exactly the
+        # reasoning that kept computed relative age out of the timer identity
+        # key (alpha-engine-config-I7677) and out of the sibling I8108 arm
+        # below. The moving numbers go to the journal, which is where the
+        # operator reads them anyway.
+        local sched_state
+        sched_state=$(alert_drain_declared_state)
+        printf 'box_health: alert-drain last completed %sh ago (bound %sh, schedules %s): %s\n' \
+               "$age_h" "$ALERT_DRAIN_MAX_STALENESS_H" "$sched_state" "$key" >&2
+        # "scheduled-off or hung" is TWO answers and this used to page for
+        # both. Brian ruling 2026-08-26 (alpha-engine-config-I8679): "i don't
+        # want to be paged with box health at all if there is no issue." A
+        # drain that is off because he turned it off is not an issue; a drain
+        # that is on and not completing is.
+        case "$sched_state" in
+            disabled)
+                # `notice:` -> info -> emit_hygiene_envelope ONLY. It never
+                # reaches krepis.alerts, and it renders on the console on every
+                # run including clean ones, with the finding's own age. Not
+                # deleted, not silenced: principles.md section 7 — a paused
+                # producer renders as an aged, visibly-not-green row, never as
+                # nothing.
+                if [ "$age_h" -ge $(( ALERT_DRAIN_PAUSE_REVIEW_DAYS * 24 )) ]; then
+                    echo "notice: alert-drain declared off past its review bound — the pause is now a decision owed, see alpha-engine-config-I8679"
+                else
+                    echo "notice: alert-drain not consuming because it is DECLARED OFF — all four schedules DISABLED by ruling, see alpha-engine-config-I8679"
+                fi
+                ;;
+            enabled)
+                # The genuine finding this check was built for: the drain is
+                # SUPPOSED to be running and no completed marker has appeared.
+                echo "alert-drain not consuming: no completed run within the staleness bound while all four schedules are ENABLED — hung or crashed, see alpha-engine-config-I7858"
+                ;;
+            mixed)
+                echo "watchdog: alert-drain schedules disagree — some ENABLED, some DISABLED, so the drain is neither paused nor running (detail in journal), see alpha-engine-config-I8679"
+                ;;
+            *)
+                echo "watchdog: cannot read alert-drain schedule state (scheduler:GetSchedule failed or IAM drift) — paused-vs-hung is unmeasured, see alpha-engine-config-I8679"
+                ;;
+        esac
         # A stale marker already says everything; asserting on its stale
         # contents too would double-report one condition.
         return 0
