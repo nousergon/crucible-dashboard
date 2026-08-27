@@ -1274,8 +1274,20 @@ check_alert_drain_liveness() {
     # backstop. Safe because ANY parse miss falls through to the UNMEASURED
     # branch below — the failure direction is loud, never green.
     local depth ingested
-    depth=$(printf '%s' "$marker" | grep -Eo '"queue_depth_before":[0-9]+' | head -1 | cut -d: -f2)
-    ingested=$(printf '%s' "$marker" | grep -Eo '"ingested":\{"queue":[0-9]+' | head -1 | grep -Eo '[0-9]+$')
+    # [[:space:]]* after each colon: the PRODUCER's ingested-counts half comes
+    # straight out of Python's `json.dumps(...)` (alert_drain_ingest.py
+    # ingested-counts), whose DEFAULT separators are ", " and ": " — a space
+    # after the colon. Measured 2026-08-26 on a real marker:
+    # `"ingested":{"queue": 8, "fallback": 0}`. The original no-space pattern
+    # never matched that shape, so `ingested` silently extracted empty and
+    # every marker with real, non-null consumption read as UNMEASURED
+    # (alpha-engine-config-I8108 regression — the exact "checked and fine" vs
+    # "could not check" collapse this function exists to prevent, just
+    # inverted: real data misread as absent). `queue_depth_before` is written
+    # by this script's own printf with no space and would still match either
+    # way; the space tolerance costs nothing and guards the same drift there.
+    depth=$(printf '%s' "$marker" | grep -Eo '"queue_depth_before":[[:space:]]*[0-9]+' | head -1 | grep -Eo '[0-9]+$')
+    ingested=$(printf '%s' "$marker" | grep -Eo '"ingested":\{"queue":[[:space:]]*[0-9]+' | head -1 | grep -Eo '[0-9]+$')
     if [ -z "$depth" ] || [ -z "$ingested" ]; then
         # Covers all three: the producer has not deployed the fields yet, the
         # run could not measure one of them (emitted as JSON null, which is
