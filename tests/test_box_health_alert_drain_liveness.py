@@ -231,6 +231,44 @@ def _marker(depth: str, ingested: str) -> str:
     )
 
 
+def test_real_producer_serialization_with_spaces_is_measured_not_unmeasured(tmp_path):
+    """The exact 2026-08-26 defect: `alert_drain_ingest.py`'s `ingested-counts`
+    command prints `json.dumps(...)` with PYTHON'S DEFAULT separators — a space
+    after every colon and comma — so a real marker reads
+    `"ingested":{"queue": 8, "fallback": 0}`, never the no-space shape every
+    OTHER test in this file hand-writes. Measured live on
+    `overseer/_control/completed/alert-drain-drain-2026-08-26T1430Z.json`:
+    `{"state":"success","rc":0,...,"queue_depth_before":8,"ingested":{"queue":
+    8, "fallback": 0}}`. The pre-fix regex required a digit immediately after
+    `"queue":` and silently extracted nothing, so a run that ACTUALLY consumed
+    8 of 8 queued messages reported as `UNMEASURED (consumption unverified)` —
+    a real, healthy run misread as missing telemetry."""
+    real_marker = (
+        '{"state":"success","rc":0,"run_id":"drain-2026-08-26T1430Z",'
+        '"at":"2026-08-26T14:49:32Z","run_log_s3_uri":"",'
+        '"queue_depth_before":8,"ingested":{"queue": 8, "fallback": 0}}'
+    )
+    out = _run(tmp_path, LISTING, now_epoch=_NOW, marker_body=real_marker)
+    assert out.strip() == "", (
+        f"a fully-consumed, real-shaped marker must be SILENT (healthy), "
+        f"got: {out!r}"
+    )
+
+
+def test_real_producer_serialization_catches_a_genuine_non_consumption(tmp_path):
+    """Same space-separated shape, but a genuine silent-consumption failure —
+    the space tolerance must not swallow a real finding along with the false
+    one."""
+    real_marker = (
+        '{"state":"success","rc":0,"run_id":"drain-2026-08-26T1430Z",'
+        '"at":"2026-08-26T14:49:32Z","run_log_s3_uri":"",'
+        '"queue_depth_before":25,"ingested":{"queue": 0, "fallback": 0}}'
+    )
+    out = _run(tmp_path, LISTING, now_epoch=_NOW, marker_body=real_marker)
+    assert "alert-drain not consuming: " in out
+    assert "alpha-engine-config-I8108" in out
+
+
 def test_zero_ingested_from_a_non_empty_queue_pages(tmp_path):
     """The gap this closes: 25 messages waiting, 0 consumed, exit success."""
     out = _run(tmp_path, LISTING, now_epoch=_NOW,
