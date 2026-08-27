@@ -143,6 +143,15 @@ SESSION_LABEL = "triage:session"
 # after executing the ruling; the sweep re-escalates loudly if that hasn't
 # happened within 72h.
 RULING_PENDING_LABEL = "ruling:pending-exec"
+# alpha-engine-config-I8717 / decision-queue-policy.md §5.3: a ruling is
+# binding on automated actors — once Brian rules on an item, no automated
+# actor may re-escalate it on the same question. The `/backlog-triage`
+# skill's ruling shape (SKILL.md step 4) is a comment matching this pattern,
+# immediately followed by removing SESSION_LABEL. Bot logins — "[bot]" is
+# the GitHub-standard suffix (ne-groomer[bot], github-actions[bot], etc.) —
+# never count as the human activity that would make a re-park legitimate.
+_RULING_COMMENT_RE = re.compile(r"\*\*Operator decision (\d{4}-\d{2}-\d{2}):")
+_BOT_LOGIN_SUFFIX = "[bot]"
 _GROOM_PAT_SSM_PARAM = "/alpha-engine/groom/github_pat"
 _REGION = os.environ.get("AWS_REGION", "us-east-1")
 _API = "https://api.github.com"
@@ -378,12 +387,12 @@ def ruling_comment(option: str, detail: str, when: str) -> str:
 # ── read side ────────────────────────────────────────────────────────────────
 
 
-def _newest_gate_comment(repo: str, number: int) -> str:
+def _all_comments(repo: str, number: int) -> list[dict]:
     # The PER-ISSUE comments endpoint ignores sort/direction (those params
     # exist only on the repo-level endpoint) and always returns ASCENDING —
     # relying on them silently yields the OLDEST comments (bit 2026-07-07:
     # the page would have rendered stale June comments as the Ask). Fetch
-    # ascending pages to the end, then scan newest-first.
+    # ascending pages to the end; callers scan newest-first themselves.
     comments: list = []
     page = 1
     while True:
@@ -394,6 +403,11 @@ def _newest_gate_comment(repo: str, number: int) -> str:
         if len(batch) < 100:
             break
         page += 1
+    return comments
+
+
+def _newest_gate_comment(repo: str, number: int) -> str:
+    comments = _all_comments(repo, number)
     for c in reversed(comments[-_COMMENT_TAIL:]):  # newest-first; first Ask wins
         if _ASK_RE.search(c.get("body") or ""):
             return c["body"]
@@ -717,9 +731,94 @@ def defer_issue(repo: str, number: int, new_date: str, body: str = "") -> None:
              {"body": f"**Operator: deferred to {new_date}** — via console Decision Queue (config#1926). Gate stands; Re-exam line bumped; hidden from the queue until then."})
 
 
-def send_to_session(repo: str, number: int) -> None:
-    """Park for the interactive /backlog-triage session (config#1924)."""
+# §9 signal (decision-queue-policy.md, alpha-engine-config-I8717): the
+# binding-ruling guard's own observability — parks attempted, parks the
+# guard refused, and re-parks accepted with a stated reason. Deliberately a
+# plain module-level counter, not ``st.session_state``: the dashboard runs
+# as a single long-lived Streamlit process per box (one operator — Brian —
+# per deployment), the loader already avoids depending on a live Streamlit
+# ScriptRunContext anywhere else (only ``@st.cache_resource``/``@cached``
+# decorators, which degrade to identity in tests per ``tests/conftest.py``'s
+# global streamlit mock), and this module IS exercised directly by tests
+# with `streamlit` mocked out — ``st.session_state`` there is a MagicMock
+# that silently discards writes. "Per cycle" here means per process
+# lifetime (reset on each deploy); always exposes all three keys, including
+# zero — an absent key would render as "no data", which §9 forbids ("a
+# dashboard whose green state includes 'no data'").
+_PARK_COUNTS: dict[str, int] = {"attempted": 0, "refused": 0, "reparked": 0}
+
+
+def park_cycle_counts() -> dict[str, int]:
+    """Public getter for the console Decision Queue surface. Returns a copy —
+    callers must not mutate the live counter through it."""
+    return dict(_PARK_COUNTS)
+
+
+def _last_ruling_since_last_human_activity(repo: str, number: int) -> str | None:
+    """decision-queue-policy.md §5.3: once Brian rules, no automated actor
+    may re-escalate the same question. Returns the ISO date of the most
+    recent `/backlog-triage` ruling comment (SKILL.md step 4's
+    ``**Operator decision <date>: ...**`` shape) IF no non-bot activity has
+    happened on the item since — a login ending in ``[bot]`` (ne-groomer[bot]
+    and friends) never counts as that activity. Returns None when the item
+    was never ruled, or when a human has done something since the ruling
+    (making a fresh look legitimate, not a silent re-escalation).
+
+    Never raises: a failed comment fetch degrades to "not guarded" (fails
+    OPEN, i.e. the park proceeds) rather than blocking every park on a
+    transient API error — logged loudly so the degradation is visible."""
+    try:
+        comments = _all_comments(repo, number)
+    except Exception as exc:
+        logger.warning(
+            "decision_queue: ruling-guard comment fetch failed for %s#%d: "
+            "%s — guard fails open, park proceeds unguarded", repo, number, exc)
+        return None
+    for c in reversed(comments):  # newest first
+        login = ((c.get("user") or {}).get("login")) or ""
+        if login.endswith(_BOT_LOGIN_SUFFIX):
+            continue
+        m = _RULING_COMMENT_RE.search(c.get("body") or "")
+        return m.group(1) if m else None  # first non-bot comment decides it
+    return None  # no non-bot comment at all — never ruled
+
+
+def send_to_session(repo: str, number: int, reason: str = "") -> str:
+    """Park for the interactive /backlog-triage session (config#1924).
+
+    Guarded per decision-queue-policy.md §5.3 (alpha-engine-config-I8717):
+    if the item's most recent non-bot activity is a triage ruling that
+    removed SESSION_LABEL, a silent re-park is refused — nothing is written.
+    Passing ``reason`` performs an explicit, loud override instead (mirrors
+    the fleet rule that withdrawing an ask is as loud as making it): the
+    comment names the override reason rather than repeating the original
+    park text verbatim.
+
+    Returns one of:
+      "parked"   — no prior ruling, or a human acted on the item since it.
+      "refused"  — blocked: ruled, only bot activity since, no reason given.
+      "reparked" — override accepted: ruled, but a reason was supplied.
+    """
+    counts = _PARK_COUNTS
+    counts["attempted"] += 1
+
+    ruling_date = _last_ruling_since_last_human_activity(repo, number)
+    if ruling_date and not reason:
+        counts["refused"] += 1
+        logger.warning(
+            "decision_queue: refused silent re-park of %s#%d — ruled %s, "
+            "no non-bot activity since; pass reason= to override",
+            repo, number, ruling_date)
+        return "refused"
+
+    if ruling_date and reason:
+        body = f"**Operator: needs discussion (re-parked) — {reason}**"
+        counts["reparked"] += 1
+    else:
+        body = ("**Operator: needs discussion** — parked for the interactive "
+                 "`/backlog-triage` session (config#1924) via console Decision Queue.")
+
     _request("POST", f"{_API}/repos/{repo}/issues/{number}/labels",
              {"labels": [SESSION_LABEL]})
-    _request("POST", f"{_API}/repos/{repo}/issues/{number}/comments",
-             {"body": "**Operator: needs discussion** — parked for the interactive `/backlog-triage` session (config#1924) via console Decision Queue."})
+    _request("POST", f"{_API}/repos/{repo}/issues/{number}/comments", {"body": body})
+    return "reparked" if (ruling_date and reason) else "parked"

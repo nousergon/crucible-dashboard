@@ -256,7 +256,11 @@ class TestSubmitLatencyFix:
 
         def fake(method, url, payload=None):
             calls.append((method, url, payload))
-            return {"body": "existing body"} if method == "GET" else {}
+            if method != "GET":
+                return {}
+            if "/comments" in url:
+                return []  # ruling-guard's comment list — empty = never ruled
+            return {"body": "existing body"}
 
         monkeypatch.setattr(dq, "_request", fake)
         return calls
@@ -300,6 +304,117 @@ class TestSubmitLatencyFix:
         monkeypatch.setattr(dq, "clear_queue_cache", lambda: None)
         defer_issue("nousergon/alpha-engine-config", 1, "2026-08-01")
         assert any(m == "GET" for m, _u, _p in calls)
+
+
+class TestReEscalationGuard:
+    """alpha-engine-config-I8717 / decision-queue-policy.md §5.3: a ruling is
+    binding on automated actors — `send_to_session` must refuse to silently
+    re-park an item whose most recent human activity is a `/backlog-triage`
+    ruling that removed SESSION_LABEL. Bot comments (ne-groomer[bot] and
+    friends) never count as the human activity that would make a re-park
+    legitimate. The live 2026-08-26 instance (`alpha-engine-config-I8326`)
+    was a bulk pass parking four items in the same minute — the guard lives
+    inside `send_to_session` itself, so it applies identically whether the
+    caller invokes it once or in a tight loop over several items."""
+
+    RULING_COMMENT = {
+        "body": "**Operator decision 2026-08-25: KILL** — dependency-blocked, not decision-blocked.",
+        "user": {"login": "cipher813"},
+    }
+    BOT_COMMENT = {
+        "body": "flagged stale by the nightly sweep",
+        "user": {"login": "ne-groomer[bot]"},
+    }
+    HUMAN_FOLLOWUP = {
+        "body": "actually let's revisit this one",
+        "user": {"login": "cipher813"},
+    }
+
+    @staticmethod
+    def _patch(monkeypatch, comments: list[dict]):
+        import loaders.decision_queue_loader as dq
+        calls: list[tuple] = []
+
+        def fake(method, url, payload=None):
+            calls.append((method, url, payload))
+            if method == "GET":
+                return list(comments) if "/comments" in url else {}
+            return {}
+
+        monkeypatch.setattr(dq, "_request", fake)
+        # Isolate per-test counters — _PARK_COUNTS is a plain module-level
+        # dict shared process-wide otherwise.
+        monkeypatch.setattr(dq, "_PARK_COUNTS", {"attempted": 0, "refused": 0, "reparked": 0})
+        return calls
+
+    def test_refuses_silent_reparking_ruled_only_bot_activity_since(self, monkeypatch):
+        import loaders.decision_queue_loader as dq
+        calls = self._patch(monkeypatch, [self.RULING_COMMENT, self.BOT_COMMENT])
+        outcome = send_to_session("nousergon/alpha-engine-config", 8326)
+        assert outcome == "refused"
+        # Nothing written: no label POST, no comment POST.
+        assert not any(m == "POST" for m, _u, _p in calls)
+        assert dq.park_cycle_counts()["refused"] == 1
+        assert dq.park_cycle_counts()["attempted"] == 1
+
+    def test_accepts_reparking_with_a_stated_reason(self, monkeypatch):
+        import loaders.decision_queue_loader as dq
+        calls = self._patch(monkeypatch, [self.RULING_COMMENT, self.BOT_COMMENT])
+        outcome = send_to_session("nousergon/alpha-engine-config", 8326,
+                                   reason="new fact: I8355 landed, dependency clear")
+        assert outcome == "reparked"
+        posts = [p for m, _u, p in calls if m == "POST"]
+        label_posts = [p for m, u, p in calls if m == "POST" and u.endswith("/labels")]
+        comment_posts = [p for m, u, p in calls if m == "POST" and u.endswith("/comments")]
+        assert label_posts and label_posts[0]["labels"] == [dq.SESSION_LABEL]
+        assert comment_posts
+        assert "re-parked" in comment_posts[0]["body"]
+        assert "new fact: I8355 landed" in comment_posts[0]["body"]
+        assert dq.park_cycle_counts()["reparked"] == 1
+
+    def test_accepts_when_never_ruled(self, monkeypatch):
+        import loaders.decision_queue_loader as dq
+        calls = self._patch(monkeypatch, [])
+        outcome = send_to_session("nousergon/alpha-engine-config", 9999)
+        assert outcome == "parked"
+        label_posts = [p for m, u, p in calls if m == "POST" and u.endswith("/labels")]
+        assert label_posts and label_posts[0]["labels"] == [dq.SESSION_LABEL]
+        assert dq.park_cycle_counts()["refused"] == 0  # zero, not absent (§9)
+
+    def test_accepts_when_human_activity_followed_the_ruling(self, monkeypatch):
+        # A human commented AFTER the ruling — no longer a silent re-park.
+        self._patch(monkeypatch, [self.RULING_COMMENT, self.HUMAN_FOLLOWUP])
+        outcome = send_to_session("nousergon/alpha-engine-config", 7309)
+        assert outcome == "parked"
+
+    def test_bulk_path_guards_each_item_independently(self, monkeypatch):
+        """The 2026-08-26 20:54 incident parked I7309/I8326/I8423/I8708 in one
+        minute — a caller looping send_to_session over several items must get
+        an independent guard decision per item, not one decision for the
+        batch."""
+        ruled = [self.RULING_COMMENT, self.BOT_COMMENT]
+        never_ruled: list[dict] = []
+        results = {}
+        for number, comments in ((7309, ruled), (8326, ruled), (8423, never_ruled), (8708, never_ruled)):
+            self._patch(monkeypatch, comments)
+            results[number] = send_to_session("nousergon/alpha-engine-config", number)
+        assert results == {7309: "refused", 8326: "refused", 8423: "parked", 8708: "parked"}
+
+    def test_guard_fails_open_on_comment_fetch_error(self, monkeypatch):
+        """A transient API error degrades to unguarded (park proceeds) rather
+        than blocking every park — logged loudly per _mark_ruling_pending_exec
+        house style, never a silent swallow."""
+        import loaders.decision_queue_loader as dq
+
+        def raising(method, url, payload=None):
+            if method == "GET":
+                raise RuntimeError("boom")
+            return {}
+
+        monkeypatch.setattr(dq, "_request", raising)
+        monkeypatch.setattr(dq, "_PARK_COUNTS", {"attempted": 0, "refused": 0, "reparked": 0})
+        outcome = send_to_session("nousergon/alpha-engine-config", 1)
+        assert outcome == "parked"
 
 
 class TestLoadQueueFanout:
