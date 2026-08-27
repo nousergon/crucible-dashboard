@@ -11,7 +11,7 @@ setuptools>=84.0.0
 # (put_object IfMatch / IfNoneMatch) for lost-update protection; the loader
 # also carries a compare-then-put fallback if the installed botocore
 # predates them, but the pinned floor makes the conditional path the norm.
-boto3>=1.43.78
+boto3>=1.43.81
 pyyaml>=6.0
 # streamlit-calendar: FullCalendar component backing the Morning Signal
 # Content Schedule page (views/45_Morning_Signal_Schedule.py) — month
@@ -22,7 +22,7 @@ streamlit-calendar>=1.2
 # yfinance: 15-min delayed quote for the live Holdings modal's "Day return"
 # (live/loaders/s3_loader.py::load_live_day_return) so it shows TODAY's % change
 # rather than the last EOD snapshot. Fail-soft to the snapshot if unavailable.
-yfinance>=1.6.0
+yfinance>=1.7.0
 # krepis[openai] (config#1722, 2026-07-05; extended alpha-engine-config-I2997,
 # 2026-07-19): views/36_Claude_Code_Usage.py imports krepis.usage_pacing.reset_window
 # for the reset-aligned weekly window math, replacing the local
@@ -99,7 +99,7 @@ yfinance>=1.6.0
 # krepis release declaring flow-doctor>=0.16.0, which carries the verdict/
 # transport split for TelegramNotifier/GitHubNotifier.validate() that stops a
 # transient Telegram timeout from killing a strict Lambda import.
-krepis[openai]>=0.59.33
+krepis[openai]>=0.59.39
 # nousergon-lib (renamed from alpha-engine-lib at v0.60.0) provides
 # setup_logging used by app.py + health_checker.py
 # to attach the FlowDoctorHandler when FLOW_DOCTOR_ENABLED=1, the
@@ -239,4 +239,4 @@ httpx>=0.27          # fastapi TestClient transport (tests/test_dash_api.py)
 # an already-satisfied floating dependency (transitively via krepis[flow_doctor]) as
 # permanent. The compiled lockfile `requirements.txt` pins the exact resolved version;
 # this floor ensures the next `uv pip compile` doesn't silently drop back below 0.8.7.
-flow-doctor>=0.15.2
+flow-doctor>=0.16.1

@@ -70,4 +70,4 @@
 # below this floor degrades to a page without lifecycle metadata and says so,
 # rather than failing to page at all. The probe is the seatbelt; this floor is
 # the thing that stops the crash.
-krepis>=0.59.26
+krepis>=0.59.39
