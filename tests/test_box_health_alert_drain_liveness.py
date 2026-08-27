@@ -46,14 +46,24 @@ def _bash() -> str:
 
 
 def _fake_aws(
-    tmp_path: Path, list_objects_output: str, list_rc: int = 0, marker_body: str | None = None
+    tmp_path: Path,
+    list_objects_output: str,
+    list_rc: int = 0,
+    marker_body: str | None = None,
+    schedule_states: "list[str] | None" = None,
 ) -> Path:
-    """A stub `aws` covering `s3api list-objects-v2` and the `s3 cp <key> -`
-    that reads the completion marker's body (alpha-engine-config-I8108). Any
-    other invocation is a test bug.
+    """A stub `aws` covering `s3api list-objects-v2`, the `s3 cp <key> -` that
+    reads the completion marker's body (alpha-engine-config-I8108), and
+    `scheduler get-schedule` (alpha-engine-config-I8679). Any other invocation
+    is a test bug.
 
     `marker_body=None` makes the body read return EMPTY, which is the shape of
-    a marker this box cannot read."""
+    a marker this box cannot read.
+
+    `schedule_states` is consumed IN THE ORDER box_health.sh queries the four
+    schedule names, one line each. A state of `FAIL` makes that one call exit
+    non-zero with no output — the IAM-drift shape. `None` defaults to all four
+    DISABLED, which is the live state as of the 2026-08-23 pause."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     # The canned output is written to a sibling FILE and `cat` from there,
@@ -64,6 +74,13 @@ def _fake_aws(
     fixture.write_text(list_objects_output)
     marker_fixture = tmp_path / "marker.json"
     marker_fixture.write_text(marker_body or "")
+    # One line per schedule query, popped in order by a counter file. A
+    # positional counter rather than a name->state map on purpose: the ORDER
+    # the four names are queried in is part of what a mixed-state test asserts.
+    states = schedule_states if schedule_states is not None else ["DISABLED"] * 4
+    sched_fixture = tmp_path / "schedule_states.txt"
+    sched_fixture.write_text("\n".join(states) + "\n")
+    sched_counter = tmp_path / "schedule_calls.txt"
     script = bin_dir / "aws"
     script.write_text(
         textwrap.dedent(f"""\
@@ -74,6 +91,15 @@ def _fake_aws(
         fi
         if [ "$1" = "s3" ] && [ "$2" = "cp" ]; then
             cat "{marker_fixture}"
+            exit 0
+        fi
+        if [ "$1" = "scheduler" ] && [ "$2" = "get-schedule" ]; then
+            n=$(cat "{sched_counter}" 2>/dev/null || echo 0)
+            n=$((n + 1))
+            echo "$n" > "{sched_counter}"
+            state=$(sed -n "${{n}}p" "{sched_fixture}")
+            if [ "$state" = "FAIL" ]; then exit 254; fi
+            echo "$state"
             exit 0
         fi
         echo "unexpected aws invocation: $*" >&2
@@ -90,13 +116,18 @@ def _run(
     now_epoch: int,
     list_rc: int = 0,
     marker_body: str | None = None,
+    schedule_states: "list[str] | None" = None,
 ) -> str:
-    bin_dir = _fake_aws(tmp_path, list_objects_output, list_rc, marker_body)
+    bin_dir = _fake_aws(
+        tmp_path, list_objects_output, list_rc, marker_body, schedule_states
+    )
     script = (
         f'set -u\n'
         f'PATH="{bin_dir}:$PATH"\n'
         f'OVERSEER_RESEARCH_BUCKET=alpha-engine-research\n'
         f'ALERT_DRAIN_MAX_STALENESS_H=14\n'
+        f'ALERT_DRAIN_PAUSE_REVIEW_DAYS=14\n'
+        f'ALERT_DRAIN_SCHEDULE_NAMES="a b c d"\n'
         # A hand-written ISO-8601 parser, not `command date -d`: this suite
         # must pass on macOS (BSD date, no -d) as well as the box (GNU date,
         # where the shipped code runs unmodified) — python3's stdlib parser
@@ -108,6 +139,7 @@ def _run(
         f'print(int(d.datetime.strptime(ts, \\"%Y-%m-%dT%H:%M:%S\\").replace(tzinfo=d.timezone.utc).timestamp()))" "$2" 2>/dev/null\n'
         f'  else command date "$@"; fi\n'
         f'}}\n'
+        f'source <(sed -n "/^alert_drain_declared_state() {{/,/^}}/p" "{BOX_HEALTH_PATH}")\n'
         f'source <(sed -n "/^check_alert_drain_liveness() {{/,/^}}/p" "{BOX_HEALTH_PATH}")\n'
         f'check_alert_drain_liveness\n'
     )
@@ -125,8 +157,12 @@ def test_stale_completion_marker_pages_critical(tmp_path):
         tmp_path,
         "overseer/_control/completed/alert-drain-drain-2026-08-21T0000Z.json\t2026-08-21T00:00:00.000Z",
         now_epoch=now_epoch,
+        # ENABLED: the drain is SUPPOSED to be running. That is the only state
+        # in which a stale marker is an incident (alpha-engine-config-I8679).
+        schedule_states=["ENABLED"] * 4,
     )
     assert "alert-drain not consuming: " in out
+    assert "ENABLED" in out
     assert "alpha-engine-config-I7858" in out
 
 
@@ -264,8 +300,10 @@ def test_a_stale_marker_reports_staleness_only_not_both(tmp_path):
     """One condition, one line. A stale marker's contents say nothing useful
     about consumption, and reporting both would double-count the incident."""
     out = _run(tmp_path, LISTING, now_epoch=_FRESH_EPOCH + 20 * 3600,
-               marker_body=_marker("25", '{"queue":0,"fallback":0}'))
-    assert "no completed run in 20h" in out
+               marker_body=_marker("25", '{"queue":0,"fallback":0}'),
+               schedule_states=["ENABLED"] * 4)
+    # Static since alpha-engine-config-I8678 — the age lives in the journal.
+    assert "no completed run within the staleness bound while all four schedules are ENABLED" in out
     assert "I8108" not in out
 
 
@@ -283,3 +321,200 @@ def test_the_unmeasured_finding_classifies_as_warning_not_critical():
     (warning), per overseer-policy section 3 — recorded and swept, never paged.
     It must not join the critical the drain itself owns."""
     assert '"watchdog: "*) echo warning ;;' in BOX_HEALTH
+
+
+# ── identity stability (alpha-engine-config-I8678) ──────────────────────────
+#
+# `publish_clears` derives this tier's identity key from the problem SET, and
+# says so: "a set that changed at all is a different page". A problem string
+# carrying a live relative age therefore opens a NEW condition every hour and
+# ends the previous one — one CRITICAL plus one RESOLVED per hour, forever,
+# with the RESOLVED naming an age exactly one hour behind its CRITICAL. That
+# was the observed 2026-08-26 storm. Same reasoning that kept computed relative
+# age out of the timer identity key (alpha-engine-config-I7677) and out of the
+# I8108 sibling arm.
+
+def test_stale_marker_line_is_identical_across_ages(tmp_path):
+    """The SAME standing condition must produce a byte-identical line at 19h,
+    20h and 40h. This is the regression test for the hourly page/clear pair."""
+    stale_epoch = 1787270400  # 2026-08-21T00:00:00Z
+    listing = (
+        "overseer/_control/completed/alert-drain-drain-2026-08-21T0000Z.json"
+        "\t2026-08-21T00:00:00.000Z"
+    )
+    for states, prefix in ((["ENABLED"] * 4, "alert-drain not consuming: "),
+                           (["DISABLED"] * 4, "notice: alert-drain not consuming")):
+        lines = set()
+        for age_h in (19, 20, 40):
+            case_dir = tmp_path / f"{states[0]}-{age_h}"
+            case_dir.mkdir(parents=True, exist_ok=True)
+            out = _run(case_dir, listing,
+                       now_epoch=stale_epoch + age_h * 3600, schedule_states=states)
+            found = [ln for ln in out.splitlines() if ln.startswith(prefix)]
+            assert found, f"no {prefix!r} line at {age_h}h: {out!r}"
+            lines.add(found[0])
+        assert len(lines) == 1, (
+            f"line moves with age, so every tick is a new page/row: {lines}"
+        )
+
+
+def test_stale_marker_line_carries_no_interpolation(tmp_path):
+    """The key moves too — a new completion marker while the drain is still
+    off would re-key the page just as an age does. Neither belongs in the
+    string; both belong in the journal."""
+    stale_epoch = 1787270400
+    now_epoch = stale_epoch + 20 * 3600
+    for key in ("alert-drain-drain-2026-08-21T0000Z.json", "alert-drain-drain-2026-08-25T1201Z.json"):
+        case_dir = tmp_path / key.replace(".json", "")
+        case_dir.mkdir(parents=True, exist_ok=True)
+        out = _run(
+            case_dir,
+            f"overseer/_control/completed/{key}\t2026-08-21T00:00:00.000Z",
+            now_epoch=now_epoch,
+            schedule_states=["ENABLED"] * 4,
+        )
+        stale = [ln for ln in out.splitlines() if ln.startswith("alert-drain not consuming: ")]
+        assert stale, out
+        assert key not in stale[0], f"marker key leaked into the problem string: {stale[0]}"
+        assert "20h" not in stale[0]
+
+
+# Moving quantities this file computes. A problem string that interpolates one
+# of these cannot hold a stable identity key across ticks. Stable
+# interpolations (a systemd unit name, a service name) are deliberately absent
+# from this list — I7677 established that identity may name WHAT, never HOW
+# LONG or HOW MUCH.
+MOVING_QUANTITIES = ("age_h", "now_epoch", "disk_pct", "mem_avail_mb", "depth", "ingested")
+
+
+def test_no_problem_string_interpolates_a_moving_quantity():
+    """Sweep, not instance (engagement-protocol-policy section 5): the defect
+    class is 'a live measurement inside a problem string', and fixing only the
+    alert-drain line would leave the next one to be found by a phone."""
+    offenders = []
+    for lineno, line in enumerate(BOX_HEALTH.splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped.startswith('echo "'):
+            continue
+        # Problem strings are the ones publish_problems/classify_problem_severity
+        # match on; journal lines go through printf ... >&2, never echo.
+        if stripped.endswith('>&2'):
+            continue
+        for var in MOVING_QUANTITIES:
+            if "${%s}" % var in stripped or "$%s" % var in stripped:
+                offenders.append(f"{lineno}: {stripped}")
+                break
+    assert not offenders, (
+        "problem strings carrying a live measurement — each one re-keys its page "
+        "on every tick (alpha-engine-config-I8678):\n" + "\n".join(offenders)
+    )
+
+
+# ── paused is not an incident (alpha-engine-config-I8679) ───────────────────
+#
+# Brian ruling 2026-08-26: "i don't want to be paged with box health at all if
+# there is no issue." The four alert-drain schedules have been DISABLED since
+# 2026-08-23 22:37 UTC by his own ruling, recorded in nousergon-data
+# infrastructure/automation_pause.json. Until this split, a stale completion
+# marker paged `critical` whether the drain was hung or deliberately off — the
+# message even said "scheduled-off or hung", two answers collapsed in the
+# direction that pages.
+
+_STALE_EPOCH = 1787270400  # 2026-08-21T00:00:00Z
+_STALE_LISTING = (
+    "overseer/_control/completed/alert-drain-drain-2026-08-21T0000Z.json"
+    "\t2026-08-21T00:00:00.000Z"
+)
+
+
+def _run_stale(tmp_path, age_h, states, name="case"):
+    case_dir = tmp_path / f"{name}-{age_h}"
+    case_dir.mkdir(parents=True, exist_ok=True)
+    return _run(
+        case_dir,
+        _STALE_LISTING,
+        now_epoch=_STALE_EPOCH + age_h * 3600,
+        schedule_states=states,
+    )
+
+
+def test_declared_off_never_reaches_the_page_tier(tmp_path):
+    """All four DISABLED -> a `notice:` line, which classify_problem_severity
+    routes to `info` and emit_hygiene_envelope renders on the console. It must
+    NOT carry the `alert-drain not consuming: ` prefix, because that prefix is
+    what the classifier matches on to page `critical`."""
+    out = _run_stale(tmp_path, 20, ["DISABLED"] * 4)
+    assert out.startswith("notice: "), out
+    assert "DECLARED OFF" in out
+    assert not any(
+        ln.startswith("alert-drain not consuming: ") for ln in out.splitlines()
+    ), f"a declared-off drain reached the paging tier: {out!r}"
+
+
+def test_declared_off_is_reported_not_silenced(tmp_path):
+    """principles.md section 7 — a paused producer renders as a visibly-
+    not-green row, never as nothing. Suppressing the page must not suppress
+    the finding."""
+    out = _run_stale(tmp_path, 20, ["DISABLED"] * 4).strip()
+    assert out, "a declared-off drain produced NO finding at all — unobserved, not healthy"
+
+
+def test_declared_off_past_the_review_bound_says_a_decision_is_owed(tmp_path):
+    """A pause is a state; a 14-day pause is a decision the operator owes. The
+    row changes text at the bound. It still does not page: a decision owed is
+    Decision-Queue work, not a box-health incident."""
+    before = _run_stale(tmp_path, 13 * 24, ["DISABLED"] * 4, name="before")
+    after = _run_stale(tmp_path, 15 * 24, ["DISABLED"] * 4, name="after")
+    assert "decision owed" not in before, before
+    assert "decision owed" in after, after
+    assert after.startswith("notice: "), f"the lapse must not page: {after!r}"
+
+
+def test_enabled_and_stale_still_pages(tmp_path):
+    """The finding this check exists for is untouched. A drain that is
+    SUPPOSED to be running and has produced no completed marker is an
+    incident, and the split must not have quietly removed that."""
+    out = _run_stale(tmp_path, 20, ["ENABLED"] * 4)
+    assert out.startswith("alert-drain not consuming: "), out
+    assert "hung or crashed" in out
+
+
+def test_mixed_schedule_state_is_a_watchdog_finding(tmp_path):
+    """Neither paused nor running. Two of four disabled is config drift that
+    no other check on this box would see, and it is NOT the pause Brian
+    declared — so it must not inherit the pause's silence."""
+    out = _run_stale(tmp_path, 20, ["DISABLED", "ENABLED", "DISABLED", "DISABLED"])
+    assert out.startswith("watchdog: "), out
+    assert "disagree" in out
+
+
+def test_unreadable_schedule_state_is_a_watchdog_finding_not_a_default(tmp_path):
+    """UNKNOWN IS NOT DISABLED. If GetSchedule fails — IAM drift, throttle, a
+    renamed schedule — defaulting to `disabled` would silence a genuinely hung
+    drain the moment this call broke, which is the failure mode that makes a
+    monitor worse than none."""
+    out = _run_stale(tmp_path, 20, ["FAIL", "DISABLED", "DISABLED", "DISABLED"])
+    assert out.startswith("watchdog: "), out
+    assert "unmeasured" in out
+    assert "DECLARED OFF" not in out
+
+
+def test_all_four_schedules_are_queried():
+    """The state is derived from all four, not sampled from one — the mixed
+    case is only reachable if every name is asked."""
+    assert BOX_HEALTH.count("alpha-engine-alert-drain-") >= 4
+    for hhmm in ("0400", "1000", "1600", "2200"):
+        assert f"alpha-engine-alert-drain-{hhmm}utc" in BOX_HEALTH
+
+
+def test_notice_arm_precedes_the_drain_critical_arm_in_the_classifier():
+    """`notice: ` and `alert-drain not consuming: ` are both matched by
+    classify_problem_severity's case statement, and bash takes the FIRST
+    match. If the drain arm ever moves above the notice arm, every paused-drain
+    row silently becomes a page again — the exact regression this PR fixes,
+    reintroduced by an unrelated edit."""
+    notice_at = BOX_HEALTH.index('"notice: "*) echo info ;;')
+    drain_at = BOX_HEALTH.index('"alert-drain not consuming: "*) echo critical ;;')
+    assert notice_at < drain_at, (
+        "the drain arm now precedes the notice arm; a declared-off drain would page"
+    )
