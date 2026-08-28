@@ -395,6 +395,243 @@ classify_timer() {
     fi
 }
 
+# Cache for the once-per-run live start-dependency scan below. Initialised at
+# the top level because `set -u` turns an uninitialised accumulator into a dead
+# watchdog — the same reason every other accumulator in this file is.
+INSTALL_START_DEP_FINDINGS=""
+INSTALL_START_DEP_MEASURED=0
+
+# ── Live systemd start-dependency graph (alpha-engine-config-I9062) ─────────
+#
+# THE MECHANISM, established on 2026-08-28 and not hypothesised
+# (alpha-engine-config-I9000). `Requires=<x>.service` in **<x>.timer's**
+# `[Unit]` section is a START dependency OF THE TIMER, not a description of what
+# the timer triggers. `systemctl enable --now <timer>` in an installer therefore
+# enqueues a start job for `<x>.service` too — even when the timer is already
+# active and no calendar point has elapsed, because the transaction still
+# carries the dependency jobs. On 2026-08-28 an unrelated crucible-dashboard
+# deploy thereby ran morning-signal's daily generator, its git pull, and a
+# weekly OSS bakeoff that spends real LLM tokens, at 03:00 UTC. Those units
+# then failed a legitimate news-digest freshness guard purely because they were
+# out of phase, and box-health paged about a failure the system manufactured.
+#
+# WHY THIS LIVES ON THE BOX AND NOT ONLY IN CI. `crucible-dashboard-PR792`
+# fixed the ten timers in this repo and added
+# `tests/test_no_install_path_starts_a_scheduled_workload.py`, which models the
+# same chain from SOURCE TEXT. That guard names two cases it structurally
+# cannot reach, and this function is the half that reaches them:
+#
+#   * VARIABLE UNIT NAMES. `install-resource-limits.sh` renders its restart set
+#     from budget.yaml, so its `systemctl restart "$unit"` carries no literal a
+#     parser can follow. Tokens containing `$` are skipped there.
+#   * FOREIGN UNITS. Other repos install timers onto this same shared box, and
+#     a dependency chain that leaves this repo's unit set cannot be resolved
+#     from inside this repo. Measured live 2026-08-28: FOUR of the timers
+#     carrying the defect that day — `daily-news.timer`, `ops-config-drift.timer`,
+#     `box-timer-health.timer` and `systemd-unit-drift-check.timer` — are not
+#     installed by this repo at all, so no crucible-dashboard test can ever see
+#     them. That is the same scope limit that hid `litellm-config-reconcile.timer`
+#     and `llm-capability-probe.timer` from the dead-man guard on 2026-08-21
+#     (alpha-engine-config-I8034).
+#
+# Live systemd knows the answer for every unit on the box regardless of which
+# repo installed it, so the graph is read with `systemctl show` — drop-ins
+# already merged — rather than by parsing unit files off disk. Reading files
+# would re-create exactly the blindness this function exists to remove: a unit
+# that reached the box by a path no repo file describes is invisible to a file
+# walk and fully visible to `systemctl show`.
+#
+# TIER. `notice: `, which classify_problem_severity maps to `info` — the
+# console, never the channel. This is a LATENT footgun in a declared
+# configuration, not a degraded box: nothing is down, nothing is failing, and
+# the harm only materialises the next time an installer runs. Brian's ruling
+# 2026-08-26: "i don't want to be paged with box health at all if there is no
+# issue", and `warning` is not quiet either — krepis' `disable_notification`
+# suppresses the phone push, not the message. The console route is not
+# suppression: emit_box_health_hygiene.py publishes this surface on EVERY run
+# including clean ones, with each finding's age, and renders a missing artifact
+# as `unreadable` rather than `ok`.
+
+# install_may_start_declared — does UNIT declare the PR792 exemption?
+# Echoes exactly one of `yes`, `no`, `unknown`.
+#
+# `X-` keys are ignored by systemd and are NOT surfaced by `systemctl show`, so
+# the unit TEXT is what has to be read — `systemctl cat`, which prints the
+# fragment followed by every drop-in, i.e. the same merge order the manager
+# applied. Reading `/etc/systemd/system/<unit>` directly would miss a drop-in
+# and would miss a unit shipped from /usr/lib.
+#
+# Three properties this is careful about, each of which has a test:
+#   * The declaration must be an ASSIGNMENT in `[Unit]`. PR792's units carry a
+#     multi-line `# X-InstallMayStart: <reason>` COMMENT immediately above the
+#     real key, so a grep for the bare word matches the rationale as readily as
+#     the directive — the exact shape that put a scan on a YAML comment on
+#     2026-08-27. A key under `[Service]` is likewise not an exemption.
+#   * `unknown` is a THIRD answer, never folded into `no`. "This service is not
+#     exempt" and "I could not find out whether it is exempt" are different
+#     facts and the caller reports them differently.
+#   * The exemption is read from the unit, LIVE. The three service names PR792
+#     exempted are deliberately not restated anywhere in this file: a second
+#     allowlist is a second thing to keep in sync, and the one in the test would
+#     win the day they disagreed.
+install_may_start_declared() {
+    local unit="$1" text section="" line k v
+    # A non-zero exit (no such unit) and an empty body are the SAME
+    # answer here — "could not read it" — and both become `unknown`.
+    text=$(systemctl cat "$unit" 2>/dev/null) || text=""
+    if [ -z "$text" ]; then
+        echo unknown
+        return 0
+    fi
+    section=""
+    while IFS= read -r line; do
+        # `systemctl cat` prefixes each fragment with `# /path/to/unit`; those
+        # and every other comment are stripped before anything is matched.
+        case "$line" in
+            \#*|\;*) continue ;;
+        esac
+        case "$line" in
+            \[*\]) section="$line"; continue ;;
+        esac
+        [ "$section" = "[Unit]" ] || continue
+        k="${line%%=*}"
+        v="${line#*=}"
+        # Trim surrounding whitespace on both halves; systemd tolerates it.
+        k="${k#"${k%%[![:space:]]*}"}"; k="${k%"${k##*[![:space:]]}"}"
+        v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"
+        if [ "$k" = "X-InstallMayStart" ] && [ "$v" = "yes" ]; then
+            echo yes
+            return 0
+        fi
+    done <<< "$text"
+    echo no
+}
+
+# classify_install_start_dependency — decide whether ONE timer's live
+# dependency set is a footgun. Echoes a problem line, or nothing when healthy.
+#
+# Pure function of its arguments (no systemd calls), for the same reason
+# classify_timer is: the interesting cases are the ones that must NOT fire —
+# the `sysinit.target` and `-.mount` edges systemd adds to every timer by
+# default, and a service that carries the exemption. A version of this that
+# flagged those would be tuned down and end up excluding the class it exists
+# to catch.
+#
+#   $1 timer name   $2 the service the timer triggers (Unit=, or the
+#                      same-basename default)
+#   $3 the timer's resolved dependency units, space-separated, from
+#      `systemctl show -p Requires -p Requisite -p BindsTo -p Wants`
+#   $4 the directive those units came from, for the message
+#   $5 install_may_start_declared for $2: yes | no | unknown
+classify_install_start_dependency() {
+    local timer="$1" svc="$2" deps="$3" directive="$4" may_start="$5"
+    [ -z "$svc" ] && return 0
+    # Word-boundary match on the FULL unit name. A substring test would let
+    # `morning-signal.service` match inside `morning-signal-pull.service`.
+    case " $deps " in
+        *" $svc "*) ;;
+        *) return 0 ;;
+    esac
+    case "$may_start" in
+        yes) return 0 ;;
+        # Fail loud on the DETECTOR's own failure, and distinguishably: the
+        # edge is real but the exemption could not be read, so this run has not
+        # measured the finding. `watchdog: ` is the established prefix for the
+        # watchdog's own coverage gaps and classifies as `warning`.
+        unknown)
+            echo "watchdog: cannot read unit text for $svc (start-dependency exemption unverified)"
+            return 0
+            ;;
+    esac
+    # STATIC string. snapshot_problems is sampled RETRY_ATTEMPTS times and only
+    # lines present in EVERY sample confirm, so nothing that can move between
+    # samples may appear here. Unit names and the directive are stable by
+    # construction.
+    echo "notice: timer start-dependency: $timer declares $directive=$svc — an installer's \`enable --now\` starts it (alpha-engine-config-I9000)"
+}
+
+# install_start_dependency_scan — walk the live graph ONCE PER RUN and cache the
+# result in INSTALL_START_DEP_FINDINGS / INSTALL_START_DEP_MEASURED.
+#
+# Once per run, not once per confirmation sample. A systemd dependency graph
+# does not flicker inside a 40-second confirmation window, so re-reading it four
+# times would buy nothing and cost ~140 extra `systemctl` invocations per tick.
+# Caching it also makes the finding DETERMINISTIC across the intersection rather
+# than racing it.
+#
+# The two globals are the whole contract with the caller:
+#   INSTALL_START_DEP_MEASURED=1  the graph was read; the findings list — even
+#                                 an empty one — is a measurement.
+#   INSTALL_START_DEP_MEASURED=0  the graph could NOT be read. The findings list
+#                                 then holds a `watchdog: ` line and the count
+#                                 gauge is deliberately NOT published, so the
+#                                 series goes to missing-data instead of
+#                                 reporting a false zero. principles.md §7: a
+#                                 component emitting nothing is unobserved, not
+#                                 healthy, and `no data` is never green.
+install_start_dependency_scan() {
+    INSTALL_START_DEP_FINDINGS=""
+    INSTALL_START_DEP_MEASURED=0
+    local units t props _k _v svc line
+    local requires requisite bindsto wants
+    units=$(systemctl list-unit-files --type=timer --no-legend 2>/dev/null | awk '{print $1}')
+    if [ -z "$units" ]; then
+        # Same direction as the timer dead-man enumeration above: an empty
+        # enumeration is a watchdog malfunction, not a box with no timers.
+        INSTALL_START_DEP_FINDINGS="watchdog: cannot read the live systemd start-dependency graph (install-start check did not run)"
+        return 0
+    fi
+    for t in $units; do
+        # Bare templates are not schedulable; `systemctl show` returns nothing
+        # for them, which would otherwise trip the unreadable guard every run.
+        case "$t" in *@.timer) continue ;; esac
+        systemctl is-enabled --quiet "$t" 2>/dev/null || continue
+        props=$(systemctl show "$t" -p Unit -p Requires -p Requisite -p BindsTo -p Wants 2>/dev/null)
+        if [ -z "$props" ]; then
+            INSTALL_START_DEP_FINDINGS="${INSTALL_START_DEP_FINDINGS}watchdog: cannot read start-dependencies of $t"$'\n'
+            continue
+        fi
+        # Key-matched, not positional: `systemctl show` makes no ordering
+        # guarantee, and a missing key must stay EMPTY rather than silently
+        # inheriting its neighbour's value.
+        svc=""; requires=""; requisite=""; bindsto=""; wants=""
+        while IFS='=' read -r _k _v; do
+            case "$_k" in
+                Unit)      svc="$_v" ;;
+                Requires)  requires="$_v" ;;
+                Requisite) requisite="$_v" ;;
+                BindsTo)   bindsto="$_v" ;;
+                Wants)     wants="$_v" ;;
+            esac
+        done <<< "$props"
+        [ -n "$svc" ] || svc="${t%.timer}.service"
+        # One directive at a time so the finding names WHICH key to delete.
+        # Wants= is included even though the issue's three are the mandatory
+        # ones: a weak dependency enqueues the same start job, it just tolerates
+        # the job failing. Measured 2026-08-28 across all 35 enabled timers on
+        # this box, every `Wants=` on a timer was empty, so including it adds
+        # coverage and no noise.
+        for line in "Requires:$requires" "Requisite:$requisite" "BindsTo:$bindsto" "Wants:$wants"; do
+            _v="${line#*:}"
+            [ -n "$_v" ] || continue
+            case " $_v " in *" $svc "*) ;; *) continue ;; esac
+            _k=$(classify_install_start_dependency "$t" "$svc" "$_v" "${line%%:*}" \
+                    "$(install_may_start_declared "$svc")")
+            [ -n "$_k" ] && INSTALL_START_DEP_FINDINGS="${INSTALL_START_DEP_FINDINGS}${_k}"$'\n'
+        done
+    done
+    INSTALL_START_DEP_FINDINGS="${INSTALL_START_DEP_FINDINGS%$'\n'}"
+    INSTALL_START_DEP_MEASURED=1
+}
+
+# install_start_dependency_problems — replay the cached scan into the problem
+# stream. Called from snapshot_problems on every sample; identical every time,
+# by construction, so it always survives the confirmation intersection.
+install_start_dependency_problems() {
+    [ -n "$INSTALL_START_DEP_FINDINGS" ] && printf '%s\n' "$INSTALL_START_DEP_FINDINGS"
+    return 0
+}
+
 # human_age — seconds as a compact age ("45m", "31h", "9d") for alert text.
 # A raw second count is unreadable at a glance and the alert is read by a human
 # on a phone, not parsed.
@@ -2153,10 +2390,35 @@ snapshot_problems() {
     http_liveness_problems
     check_alert_drain_liveness
     check_morning_signal_sync_drift
+    install_start_dependency_problems
 }
 
 # Gauges flow on every tick regardless of health outcome (see emit_metrics).
 emit_metrics
+
+# The live systemd start-dependency graph, read ONCE per run — before
+# snapshot_problems, whose four confirmation samples then replay the same cached
+# result (alpha-engine-config-I9062).
+install_start_dependency_scan
+
+# ... and the count as a NUMBER, published HERE rather than beside the other
+# problem-derived gauges further down, because the all-healthy path `exit 0`s
+# long before those are reached. A gauge that only exists on unhealthy runs
+# cannot be told from a dead emitter — which is precisely what this check is
+# about, so it may not have that shape itself.
+#
+# Published ONLY when the graph was actually read. On a scan failure the series
+# goes MISSING rather than reporting 0: `no data` is never rendered as green
+# (principles.md §7), and the paired `watchdog: ` problem line says so in words
+# on the same run. Swallowed failure mode: a transient CloudWatch/credential
+# error on a metrics-only publish — recorded on the journal line below plus the
+# missing-data breach if it persists, exactly as emit_metrics does.
+if [ "$INSTALL_START_DEP_MEASURED" -eq 1 ]; then
+    aws cloudwatch put-metric-data --namespace "AlphaEngine/Box" \
+        --metric-data \
+        "MetricName=timers_with_install_start_dependency,Dimensions=[{Name=InstanceId,Value=${INSTANCE_ID}}],Value=$(printf '%s' "$INSTALL_START_DEP_FINDINGS" | grep -c 'timer start-dependency:' || true),Unit=Count" \
+        2>&1 | head -1 | sed 's/^/box_health: start-dependency publish failed: /' >&2 || true
+fi
 
 # Per-unit memory headroom onto the console surface (config-I5863).
 #
