@@ -563,6 +563,59 @@ timer_failure_dedup_key() {
         "$(printf '%s-%s-%s' "$unit" "${result:-unknown}" "${ts_epoch:-$ts_raw}" | tr ' /:' '___')"
 }
 
+# timer_failure_episode_key UNIT RESULT INACTIVE_EXIT_RAW PRIOR_KEYS
+#
+# The identity of a failure EPISODE — a maximal run of consecutive failures of
+# one unit with one Result — rather than of a single failing run.
+#
+# WHY THIS SITS IN FRONT OF timer_failure_dedup_key (alpha-engine-config-I7677
+# was right, and incomplete). Keying on the run made a WEEKLY timer page once
+# per failing run instead of once per cooldown window, which is what I7677
+# fixed. But the key changes exactly when the timer runs again, so for a timer
+# whose cadence is SHORTER than the outage, every run is a new key: one CRITICAL
+# and one RESOLVED, every cadence, for one standing condition that nobody has
+# repaired.
+#
+# Measured 2026-08-27/28 on this box: metron-deploy-drift.timer fires hourly and
+# failed for five consecutive hours. Brian received five CRITICALs and five
+# RESOLVEDs — each RESOLVED an hour behind, each announcing the end of a
+# condition that had not ended — for ONE undeployed commit. That is the shape
+# overseer-policy.md's escalation hygiene forbids in as many words: repeated
+# failures of the same component collapse into one record that accumulates
+# occurrences, and "a per-run failure record on every cycle of an ongoing outage
+# is not tracking, it is noise that buries the signal".
+#
+# So the timestamp segment is pinned to the FIRST failure of the episode, by
+# carrying forward whatever key the previous run already published for this
+# (unit, Result). The properties that made I7677 correct all survive:
+#
+#   * a repaired unit clears. Success drops the finding, the key vanishes from
+#     the prior rows, publish_clears fires exactly once, and the NEXT failure
+#     finds nothing to carry and opens a new episode with its own timestamp.
+#   * a different Result is a different episode — `exit-code` becoming `timeout`
+#     is a different fault and pages again, because the prefix includes Result.
+#   * two units never share an episode: the prefix includes the unit.
+#   * it is not a cooldown. Nothing here is time-based, so it cannot expire into
+#     a re-page of an already-fixed run, which is the failure I7677 removed.
+#
+# PRIOR_KEYS is passed in rather than read here so this stays a pure function of
+# its arguments, testable in test_box_health_timer_staleness.sh without systemd
+# and without a state file.
+timer_failure_episode_key() {
+    local unit="$1" result="$2" ts_raw="$3" prior_keys="$4" prefix carried
+    # The run key's leading segments, up to but not including the timestamp.
+    # `tr` is per-character, so translating the joined string and translating
+    # the pieces separately give the same bytes — this really is a prefix of
+    # what timer_failure_dedup_key produces.
+    prefix="boxhealth-critical-timerfail-$(printf '%s-%s-' "$unit" "${result:-unknown}" | tr ' /:' '___')"
+    carried=$(printf '%s\n' "$prior_keys" | awk -v p="$prefix" 'index($0, p) == 1 { print; exit }')
+    if [ -n "$carried" ]; then
+        printf '%s' "$carried"
+    else
+        timer_failure_dedup_key "$unit" "$result" "$ts_raw"
+    fi
+}
+
 # classify_throttle_delta — decide whether a cgroup's MemoryHigh throttling is
 # ACTIVE, from the counter's movement rather than its total.
 #
@@ -2031,11 +2084,13 @@ publish_problems() {
 # text+cooldown dedup (alpha-engine-config-I7677 items 2-3). See
 # timer_failure_dedup_key's docstring for why: a Result LEVEL that stays
 # `exit-code` for a whole weekly cadence must page once for that run, not once
-# per cooldown window for up to 7 days.
+# per cooldown window for up to 7 days. And see timer_failure_episode_key,
+# which wraps it, for the other half: a timer whose cadence is SHORTER than the
+# outage must page once for the OUTAGE, not once per run.
 #
 # The window (43200min = 30d) is a backstop against a stuck alerts store, not
-# the actual dedup mechanism -- the KEY changing when InactiveExitTimestamp
-# advances is what clears the page, so no window shorter than the longest
+# the actual dedup mechanism -- the key disappearing from the prior rows when
+# the unit finally succeeds is what clears the page, so no window shorter than the longest
 # timer cadence on this box (currently ~7d, see router-degraded-mode-drill,
 # morning-signal-bakeoff, reboot-if-needed, box-hygiene, fstrim) could ever be
 # both short enough to re-arm promptly and long enough not to re-page a stale
@@ -2043,9 +2098,11 @@ publish_problems() {
 #
 # On-demand re-verification (item 3, DECIDED): re-running the failing unit by
 # hand -- `systemctl start <unit>` -- is the repair/reverify path. Success
-# advances InactiveExitTimestamp and Result, which rolls the key and clears
-# the finding on the box's own next tick; a repeat failure correctly produces
-# a NEW key and a NEW page. Chosen over degrading to `warning` once
+# makes the finding disappear, which drops its key from the prior rows and
+# clears the page on the box's own next tick. A LATER failure, after that
+# clear, opens a new episode and pages again; a failure of the SAME unhandled
+# fault does not (timer_failure_episode_key), which is the whole point -- an
+# hourly timer failing all night is one condition, not twenty-four. Chosen over degrading to `warning` once
 # (age > 1 box-health cycle AND a newer deployed ExecStart target exists):
 # that alternative needs a freshness comparison against the unit's ExecStart
 # target through this box's multiple path-indirection layers (see the
@@ -2074,8 +2131,14 @@ while IFS= read -r _tf_line; do
         _tf_result=$(systemctl show "$_tf_svc" -p Result --value 2>/dev/null)
         _tf_ts=$(systemctl show "$_tf_svc" -p InactiveExitTimestamp --value 2>/dev/null)
     fi
+    # The EPISODE key, not the run key — see timer_failure_episode_key for the
+    # five-CRITICAL/five-RESOLVED hour-by-hour flap that made this necessary.
+    # ALERTED_NOW is appended to by publish_problems as we go, but the prior
+    # rows are fixed for the whole run (the state file is not rewritten until
+    # alerted_state_write on the way out), so every unit in this loop sees the
+    # same prior set.
     publish_problems critical 43200 "health alert" "$_tf_line" \
-        "$(timer_failure_dedup_key "$_tf_unit" "$_tf_result" "$_tf_ts")"
+        "$(timer_failure_episode_key "$_tf_unit" "$_tf_result" "$_tf_ts" "$(alerted_state_prior | cut -f1)")"
 done <<< "$timer_criticals"
 
 criticals="$other_criticals"

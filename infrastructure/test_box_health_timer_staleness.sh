@@ -39,8 +39,9 @@ fi
 eval "$(awk '/^human_age\(\) \{/,/^\}/' "$TARGET_SCRIPT")"
 eval "$(awk '/^classify_timer_staleness\(\) \{/,/^\}/' "$TARGET_SCRIPT")"
 eval "$(awk '/^timer_failure_dedup_key\(\) \{/,/^\}/' "$TARGET_SCRIPT")"
+eval "$(awk '/^timer_failure_episode_key\(\) \{/,/^\}/' "$TARGET_SCRIPT")"
 
-for fn in human_age classify_timer_staleness timer_failure_dedup_key; do
+for fn in human_age classify_timer_staleness timer_failure_dedup_key timer_failure_episode_key; do
     if ! declare -F "$fn" >/dev/null; then
         echo "FAIL - $fn() not found in box_health.sh (extraction failed)"
         exit 1
@@ -257,6 +258,75 @@ if [ "$k1" != "$k4" ]; then
     echo "ok   - different units never share a key"
 else
     echo "FAIL - two different units produced the same key: [$k1]"
+    FAILURES=$((FAILURES + 1))
+fi
+
+echo "== timer_failure_episode_key: an hourly timer failing all night is ONE page =="
+#
+# The live flap this fixes. metron-deploy-drift.timer fires hourly; it failed for
+# five consecutive hours on 2026-08-27/28 for one undeployed commit, and Brian
+# received five CRITICALs and five RESOLVEDs, each RESOLVED an hour behind and
+# each announcing the end of a condition that had not ended. Under the run key
+# every one of those hours was a different identity. Under the episode key they
+# are one.
+ep1=$(timer_failure_episode_key "metron-deploy-drift.timer" "exit-code" "Thu 2026-08-27 21:07:07 UTC" "")
+ep2=$(timer_failure_episode_key "metron-deploy-drift.timer" "exit-code" "Thu 2026-08-27 22:07:40 UTC" "$ep1")
+ep3=$(timer_failure_episode_key "metron-deploy-drift.timer" "exit-code" "Fri 2026-08-28 01:07:39 UTC" "$ep2")
+if [ "$ep1" = "$ep2" ] && [ "$ep2" = "$ep3" ]; then
+    echo "ok   - five consecutive hourly failures carry ONE key"
+else
+    echo "FAIL - the same standing failure re-keyed per run: [$ep1] [$ep2] [$ep3]"
+    FAILURES=$((FAILURES + 1))
+fi
+
+if [ "$ep1" = "$(timer_failure_dedup_key "metron-deploy-drift.timer" "exit-code" "Thu 2026-08-27 21:07:07 UTC")" ]; then
+    echo "ok   - the FIRST failure of an episode still keys on its own run"
+else
+    echo "FAIL - opening a new episode did not fall through to the run key: [$ep1]"
+    FAILURES=$((FAILURES + 1))
+fi
+
+echo "== timer_failure_episode_key: recovery ends the episode =="
+# Success drops the finding, so the key leaves the prior rows. The next failure
+# has nothing to carry and must open a NEW episode -- otherwise a unit that
+# broke, was fixed, and broke again a week later would never page the second time.
+ep_after_recovery=$(timer_failure_episode_key "metron-deploy-drift.timer" "exit-code" "Sat 2026-09-05 03:07:00 UTC" "")
+if [ "$ep_after_recovery" != "$ep1" ]; then
+    echo "ok   - a failure after a clear opens a new episode and pages again"
+else
+    echo "FAIL - a new outage inherited the old episode's key: [$ep1]"
+    FAILURES=$((FAILURES + 1))
+fi
+
+echo "== timer_failure_episode_key: a different fault is a different episode =="
+# exit-code becoming timeout is not the same failure, and must not be silently
+# folded into the page already standing for the previous one.
+ep_other_result=$(timer_failure_episode_key "metron-deploy-drift.timer" "timeout" "Fri 2026-08-28 02:07:00 UTC" "$ep1")
+if [ "$ep_other_result" != "$ep1" ]; then
+    echo "ok   - a new Result opens its own episode"
+else
+    echo "FAIL - a different fault was folded into the standing episode: [$ep1]"
+    FAILURES=$((FAILURES + 1))
+fi
+
+echo "== timer_failure_episode_key: another unit's standing episode is never inherited =="
+# The prior rows carry every unit's key. A prefix match that was not anchored on
+# (unit, Result) would let one broken timer silence the next one to break.
+ep_other_unit=$(timer_failure_episode_key "box-hygiene.timer" "exit-code" "Fri 2026-08-28 02:07:00 UTC" "$ep1")
+if [ "$ep_other_unit" != "$ep1" ]; then
+    echo "ok   - a second failing unit gets its own key"
+else
+    echo "FAIL - two units shared one episode key: [$ep1]"
+    FAILURES=$((FAILURES + 1))
+fi
+
+# A unit whose name is a PREFIX of another unit's must not match it. Anchoring on
+# "index == 1" alone is not enough without the trailing separators the prefix carries.
+ep_prefix_unit=$(timer_failure_episode_key "metron-deploy.timer" "exit-code" "Fri 2026-08-28 02:07:00 UTC" "$ep1")
+if [ "$ep_prefix_unit" != "$ep1" ]; then
+    echo "ok   - a unit name that prefixes another does not inherit its episode"
+else
+    echo "FAIL - metron-deploy.timer inherited metron-deploy-drift.timer's key"
     FAILURES=$((FAILURES + 1))
 fi
 
