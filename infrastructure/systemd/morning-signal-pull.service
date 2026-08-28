@@ -8,6 +8,25 @@ Type=oneshot
 User=ec2-user
 Group=ec2-user
 WorkingDirectory=/home/ec2-user/morning-signal
+# Sweep pip's rollback leftovers BEFORE the install (alpha-engine-config-I9000).
+# pip renames a package's directory to `~<name>` when an install is interrupted
+# and restores it on rollback; a rollback that does not complete leaves the
+# rename behind. Four such directories have sat in this venv since before
+# 2026-08-27 —
+#   .venv/lib{,64}/python3.11/site-packages/~{-,o}rning_signal-0.2.1.dist-info
+# — and pip printed `WARNING: Ignoring invalid distribution ~orning-signal` on
+# every install since. On 2026-08-28 the same corruption escalated: the install
+# died with `OSError: [Errno 2] No such file or directory:
+# .venv/bin/morning-signal`, i.e. this unit could no longer refresh the code the
+# 04:55 PT slot exists to refresh.
+#
+# Automated here rather than handed to an operator as a one-off `rm -rf`: a
+# manual repair fixes the instance and leaves the class, and the next
+# interrupted install re-creates it. `~*` under site-packages is pip's own
+# garbage marker and can never name a real distribution. Best-effort (leading
+# '-') and idempotent: with nothing to sweep it is a no-op, and a find failure
+# must never block the pull.
+ExecStartPre=-/usr/bin/find /home/ec2-user/morning-signal/.venv/lib /home/ec2-user/morning-signal/.venv/lib64 -maxdepth 3 -name "~*" -prune -exec rm -rf {} +
 # No `-` here: unlike morning-signal.service/-bakeoff.service (best-effort,
 # never skip a scheduled generation), THIS unit's whole job is the sync
 # itself, so a failed sync must fail the unit loud, not run silently
