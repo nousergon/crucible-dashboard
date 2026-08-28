@@ -18,12 +18,23 @@
 # observability surface, same as it was as an SF Task.
 set -eo pipefail
 
-cd /home/ec2-user/alpha-engine-dashboard
+CHECKOUT_DIR=/home/ec2-user/alpha-engine-dashboard
+cd "$CHECKOUT_DIR"
+
+# shellcheck source=lib/git-sync-lock.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib/git-sync-lock.sh"
+GIT_SYNC_LOCK="$(git_sync_lock_path "$CHECKOUT_DIR")"
 
 # ff-only, matching the SF's `git ... pull --ff-only origin main` exactly
 # (no reset --hard embellishment) — a diverged checkout should fail loud
 # here rather than silently rewrite history on a box other services share.
-git pull --ff-only origin main
+#
+# Flocked (config incident 2026-08-27 20:07 UTC, see infrastructure/lib/
+# git-sync-lock.sh): this health check is one of several unsynchronised
+# writers against this SAME checkout (deploy.yml, boot-pull.sh also touch
+# it), and a pull's own ref update can lose a compare-and-swap race
+# against a concurrent writer just like a bare fetch can.
+flock -w "$GIT_SYNC_LOCK_WAIT" "$GIT_SYNC_LOCK" git pull --ff-only origin main
 
 # Fleet-standard absolute venv interpreter (config#2954) — mirrors
 # box_health.sh's VENV_PY / morning-signal-watchdog.sh's DASH_PY. `source

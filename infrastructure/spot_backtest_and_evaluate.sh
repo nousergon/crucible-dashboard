@@ -59,7 +59,17 @@ echo "════════════════════════�
 echo "  STEP 2: Evaluator (ae-data via SSM)"
 echo "═══════════════════════════════════════════════════════════════"
 
-EVAL_CMD="set -eo pipefail; export HOME=/home/ec2-user ALPHA_ENGINE_DEPLOYED=1; sudo -u ec2-user git -C /home/ec2-user/alpha-engine-backtester pull --ff-only origin main; cd /home/ec2-user/alpha-engine-backtester; source .venv/bin/activate; python evaluate.py --mode ${EVAL_MODE} --upload 2>&1"
+# AE_DATA_INSTANCE_ID defaults to i-09b539c844515d549 — the SAME shared
+# on-box instance boot-pull.sh's REPOS array runs on (this box hosts
+# multiple checkouts side by side). alpha-engine-backtester isn't one of
+# boot-pull's REPOS, but it is still a shared on-box checkout other
+# processes on this instance could write concurrently, so this manual
+# operator pull is flocked the same as every other writer here
+# (alpha-engine-config incident 2026-08-27 20:07 UTC — see
+# infrastructure/lib/git-sync-lock.sh). No double quotes/backslashes: this
+# string is embedded in the SSM `--parameters "commands=[\"$EVAL_CMD\"]"`
+# JSON encoding below.
+EVAL_CMD="set -eo pipefail; export HOME=/home/ec2-user ALPHA_ENGINE_DEPLOYED=1; sudo -u ec2-user flock -w 150 /tmp/nousergon-git-sync-alpha-engine-backtester.lock git -C /home/ec2-user/alpha-engine-backtester pull --ff-only origin main; cd /home/ec2-user/alpha-engine-backtester; source .venv/bin/activate; python evaluate.py --mode ${EVAL_MODE} --upload 2>&1"
 
 SSM_CMD_ID=$(aws ssm send-command \
     --instance-ids "$AE_DATA_INSTANCE_ID" \

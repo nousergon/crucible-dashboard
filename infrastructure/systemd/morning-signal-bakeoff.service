@@ -25,8 +25,8 @@ EnvironmentFile=/etc/morning-signal/router-env.conf
 # any merged PR to oss_bakeoff.py/claude.py is live on the next comparison.
 # Best-effort (leading '-'): a transient git/pip blip must never SKIP a
 # scheduled comparison -- it runs last-good code (mirrors morning-signal.service).
-ExecStartPre=-/usr/bin/git fetch origin --quiet
-ExecStartPre=-/usr/bin/git reset --hard origin/main
+# KEPT deliberately — see morning-signal.service's comment on the same line.
+ExecStartPre=-/usr/local/bin/morning-signal-sync.sh /home/ec2-user/morning-signal
 ExecStartPre=-/home/ec2-user/morning-signal/.venv/bin/pip install -e . --quiet
 # No --date/--edition: defaults to today's date + the "am" edition, comparing
 # against whatever the real production episode used today.
