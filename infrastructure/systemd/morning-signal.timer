@@ -1,6 +1,14 @@
 [Unit]
 Description=Morning Signal — 04:00 PT (DST-aware); triggers the daily-news -> podcast chain
-Requires=morning-signal.service
+# NO Requires=<unit>.service here, deliberately (alpha-engine-config-I9000).
+# Requires= in a TIMER's [Unit] is a START dependency of the timer, not a
+# description of what it triggers: `systemctl enable --now <this>.timer` in an
+# installer therefore enqueues a start job for the service too — even when the
+# timer is already active and no calendar point has elapsed. On 2026-08-28 that
+# ran the weekly paid bakeoff and the daily generator at 03:00 UTC off the back
+# of an unrelated crucible-dashboard deploy. The timer→service binding is the
+# `Unit=` line below (or, absent that, the same-basename default); it needs no
+# dependency edge at all.
 
 [Timer]
 Unit=morning-signal.service

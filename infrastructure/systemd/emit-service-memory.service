@@ -4,6 +4,11 @@ Documentation=https://github.com/nousergon/nous-ergon-ops/blob/main/policies/sha
 After=network-online.target
 Wants=network-online.target
 
+# X-InstallMayStart: DELIBERATELY started by install-cloudwatch-agent-config.sh
+# — the first run is the only cheap place to prove the collector can still read
+# budget.yaml after that file's shape changes. No paid API, one CloudWatch
+# datapoint (alpha-engine-config-I9000).
+X-InstallMayStart=yes
 [Service]
 Type=oneshot
 ExecStart=/usr/local/bin/emit_service_memory.sh

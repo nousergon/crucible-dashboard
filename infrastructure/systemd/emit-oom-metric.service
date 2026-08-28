@@ -4,6 +4,14 @@ Documentation=https://github.com/nousergon/nous-ergon-ops/blob/main/policies/sha
 After=network-online.target
 Wants=network-online.target
 
+# X-InstallMayStart: this unit is DELIBERATELY started by
+# install-cloudwatch-agent-config.sh ("priming the OOM baseline") — the first
+# run establishes the counter the delta is measured against, and a failure
+# there is cheap to see and fails the install loudly. It calls no paid API and
+# publishes one CloudWatch datapoint, so an extra run costs nothing and
+# manufactures no failed unit. Declared here rather than allowlisted in the
+# test, matching the X-DeadManStaleness= precedent (alpha-engine-config-I9000).
+X-InstallMayStart=yes
 [Service]
 Type=oneshot
 ExecStart=/usr/local/bin/emit_oom_metric.sh

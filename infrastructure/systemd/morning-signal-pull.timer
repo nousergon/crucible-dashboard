@@ -1,6 +1,8 @@
 [Unit]
 Description=Morning Signal — daily auto-pull at 04:55 PT (DST-aware), 5 min before AM edition
-Requires=morning-signal-pull.service
+# NO Requires=<unit>.service here (alpha-engine-config-I9000) — Requires= in a
+# timer's [Unit] is a START dependency, so `enable --now <timer>` in an
+# installer also starts the service. Binding is by `Unit=`/same basename.
 
 [Timer]
 Unit=morning-signal-pull.service
