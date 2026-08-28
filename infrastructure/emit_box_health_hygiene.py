@@ -234,6 +234,15 @@ def _age_phrase(days: float | None) -> str:
 _KEY_PATTERNS = (
     (re.compile(r"^notice: timer has no dead-man threshold: (\S+)"), r"timer-deadman:\1"),
     (re.compile(r"^notice: memory budget observation hygiene"), "memory-observation"),
+    # One key per TIMER, not one per class: the live start-dependency scan
+    # (alpha-engine-config-I9062) can find several at once — four foreign
+    # timers carried the defect on 2026-08-28 — and a shared key would
+    # collapse them onto one console row, so fixing one would look like
+    # fixing all of them.
+    (
+        re.compile(r"^notice: timer start-dependency: (\S+)"),
+        r"timer-install-start:\1",
+    ),
     # A clear names its page's identity key first. Using it verbatim makes the
     # console row and the channel terminator that would have been sent instead
     # refer to the SAME thing.
