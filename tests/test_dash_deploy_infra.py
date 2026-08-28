@@ -812,10 +812,20 @@ class TestOffBoxHealthVerdict:
     def test_verdict_is_published_before_alerting(self):
         # Ordering is the whole point: a failing alert path must not also
         # prevent the count being recorded.
+        # CALL SITES, not definitions. Since alpha-engine-config-I9044 the
+        # krepis publish lives in `publish_page`, defined near the top of the
+        # file so the early-exit paths can reach it — so comparing the offset of
+        # the publish COMMAND would compare a definition to a call and fail for
+        # a reason that has nothing to do with ordering.
+        import re as _re
+
         sh = (REPO_ROOT / "infrastructure" / "box_health.sh").read_text()
         verdict = sh.index('publish_verdict "$(printf')
-        alert = sh.index("-m krepis.alerts publish")
-        assert verdict < alert, "verdict must be published before the alert attempt"
+        alert = _re.search(r"^publish_problems ", sh, _re.M)
+        assert alert, "no top-level publish_problems call site"
+        assert verdict < alert.start(), (
+            "verdict must be published before the alert attempt"
+        )
 
     def test_deploy_workflow_does_not_author_the_alarms(self):
         """The two alarm-shape assertions that used to live here MOVED REPOS.
