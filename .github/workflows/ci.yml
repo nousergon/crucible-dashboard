@@ -188,12 +188,40 @@ jobs:
       - name: requirements.txt is reproducible from requirements.in
         run: bash infrastructure/check_lock_reproducible.sh
 
+  # The PRODUCER side of the lockfile, exercised on every PR
+  # (alpha-engine-config-I9060). `.github/upgrade_lock.sh` is what replaced
+  # Dependabot's pip ecosystem here, and it runs on a weekly schedule from
+  # another repo — so nothing in this repo's own CI would ever have executed
+  # it. A producer nobody runs rots into a script that fails on its first real
+  # invocation months later, and a workflow that has never once executed is
+  # indistinguishable from one that works (alpha-engine-config-I8729).
+  #
+  # `--check` runs the exact compile the producer runs, writes nothing and
+  # opens nothing. It is a SMOKE TEST, not a gate: it is expected to report
+  # `changed=true` most weeks (upstream cuts releases), and it fails only when
+  # the producer itself is broken — a syntax error, a flag uv no longer
+  # accepts, a requirements.in that does not resolve under --upgrade.
+  lockfile-producer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version-file: .python-version
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: The lockfile producer must run
+        run: bash .github/upgrade_lock.sh --check
+
   # Alert (Telegram) ONLY on genuine post-merge breakage of the default
   # branch. PR-branch reds (mid-fix commits, cross-repo lib-tag merge-order
   # races) stay silent. Reusable workflow + transport in nousergon-lib.
   # See alpha-engine-config#1128.
   notify-main-failure:
-    needs: [test, lockfile-python-parity, lockfile-reproducible]
+    needs: [test, lockfile-python-parity, lockfile-reproducible, lockfile-producer]
     if: ${{ failure() && github.ref == 'refs/heads/main' }}
     uses: nousergon/nousergon-lib/.github/workflows/notify-ci-failure.yml@62597e550c08c0b7a7fe0af490cb141e344061b3
     secrets: inherit

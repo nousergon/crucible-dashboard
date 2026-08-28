@@ -90,11 +90,40 @@ def test_lockfile_pin_satisfies_the_declared_floor() -> None:
     assert floor <= pinned
 
 
-def test_dependabot_no_longer_blocks_krepis_dlp_releases() -> None:
+def test_nothing_caps_krepis_below_the_dlp_floor() -> None:
+    """Krepis must be free to move UP.
+
+    This was originally an assertion about Dependabot's root pip config: it
+    had carried an ``ignore`` entry pinning krepis below the gitleaks-enabled
+    releases, and removing that entry is what let the DLP floor rise. The pip
+    ecosystem itself was removed in alpha-engine-config-I9060 — Dependabot
+    edits the compiled ``requirements.txt`` and cannot recompile it from
+    ``requirements.in``, so every pip PR it opened failed
+    ``lockfile-reproducible`` by construction and krepis never moved by that
+    route either.
+
+    The invariant survives the mechanism change, so it is asserted against
+    BOTH: no pip entry may re-appear carrying a krepis ignore, and the
+    producer that now owns the upgrade must exist. A repo with neither has no
+    path from a released krepis to the spot box at all.
+    """
     cfg = yaml.safe_load((_ROOT / ".github/dependabot.yml").read_text())
-    pip = [u for u in cfg["updates"] if u["package-ecosystem"] == "pip" and u["directory"] == "/"]
-    assert len(pip) == 1, "expected exactly one root pip update config"
-    assert not any(entry.get("dependency-name") == "krepis" for entry in pip[0].get("ignore", []))
+    for update in cfg["updates"]:
+        if update.get("package-ecosystem") != "pip":
+            continue
+        assert not any(entry.get("dependency-name") == "krepis"
+                       for entry in update.get("ignore", [])), \
+            "a pip Dependabot entry caps krepis below the DLP floor again"
+
+    producer = _ROOT / ".github/upgrade_lock.sh"
+    assert producer.exists(), (
+        "no pip Dependabot entry AND no .github/upgrade_lock.sh — nothing "
+        "upgrades krepis, so the DLP floor can only ever be raised by hand"
+    )
+    assert "--upgrade" in producer.read_text(), (
+        "the producer does not upgrade; krepis would stay wherever the "
+        "lockfile last left it"
+    )
 
 
 def test_ci_installs_verified_gitleaks_and_runs_a_no_provider_dlp_preflight() -> None:
