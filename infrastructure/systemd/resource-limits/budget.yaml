@@ -976,6 +976,27 @@ state:
       a path that does not exist on the box — the detector's own `find` output
       is correct, so the mangling is downstream in notification rendering
       (filed separately).
+  - path: /home/ec2-user/alpha-engine-research/research.db
+    owner: none
+    disposition: external
+    source: >-
+      s3://alpha-engine-research/research.db (canonical; 373,198,848 bytes,
+      last modified 2026-08-22T10:05:32Z — measured via head-object 2026-08-28)
+    note: >-
+      Measured 2026-08-28 via SSM: 0 bytes, owner root, mtime today, no
+      systemd unit writes here. /home/ec2-user/alpha-engine-research is
+      boot-pull.sh's REPOS-array ops checkout of crucible-research on this
+      box — the directory name collides with the alpha-engine-research S3
+      bucket but is a different thing (a git clone, confirmed via
+      `git remote -v`). crucible-research/local/sync_db.py writes research.db
+      at the repo root as a manual debug pull target (_LOCAL_PATH); its pull()
+      only catches S3 ClientError 404, so any other failure (credentials,
+      network) during a `sudo ... pull` leaves an empty destination file,
+      which is what this is — the on-box copy never finished downloading and
+      holds no data. Nothing on the box reads it. The real research.db lives
+      only in S3, is ~356 MiB and grows continuously as signal history
+      accrues; box loss here costs nothing since there is nothing to lose —
+      a future working copy would be a re-pull via sync_db.py.
   - path: /home/ec2-user/.ssh/
     owner: none
     disposition: accepted-loss
