@@ -1,6 +1,8 @@
 [Unit]
 Description=Run the Morning Signal episode freshness watchdog daily after the generate slot
-Requires=morning-signal-watchdog.service
+# NO Requires=<unit>.service here (alpha-engine-config-I9000) — Requires= in a
+# timer's [Unit] is a START dependency, so `enable --now <timer>` in an
+# installer also starts the service. Binding is by `Unit=`/same basename.
 
 [Timer]
 # Generate fires at 05:00 PT (morning-signal.timer). 06:15 PT gives the run

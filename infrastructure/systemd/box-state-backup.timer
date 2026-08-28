@@ -1,6 +1,8 @@
 [Unit]
 Description=Nightly replication of declared durable state to S3
-Requires=box-state-backup.service
+# NO Requires=<unit>.service here (alpha-engine-config-I9000) — Requires= in a
+# timer's [Unit] is a START dependency, so `enable --now <timer>` in an
+# installer also starts the service. Binding is by `Unit=`/same basename.
 
 [Timer]
 # 03:40 UTC — after the DLM snapshot window and well clear of the 04:00 PT

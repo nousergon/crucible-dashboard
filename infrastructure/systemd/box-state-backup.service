@@ -3,6 +3,12 @@ Description=Replicate declared durable state to S3 (T1-4, config-I5250)
 After=network-online.target
 Wants=network-online.target
 
+# X-InstallMayStart: DELIBERATELY started by deploy-on-merge.sh §2g when the
+# T1-4 registry (budget.yaml) is re-rendered — a disposition repair must clear
+# box-health's CRITICAL on the merge itself rather than at the next 03:40 UTC
+# fire. It is an S3 replication of already-declared state: no paid API, and
+# re-running it early is idempotent (alpha-engine-config-I9000).
+X-InstallMayStart=yes
 [Service]
 Type=oneshot
 User=ec2-user

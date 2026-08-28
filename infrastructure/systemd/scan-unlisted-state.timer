@@ -1,6 +1,8 @@
 [Unit]
 Description=Run the unlisted-state scan daily (T1-4, alpha-engine-config-I6719)
-Requires=scan-unlisted-state.service
+# NO Requires=<unit>.service here (alpha-engine-config-I9000) — Requires= in a
+# timer's [Unit] is a START dependency, so `enable --now <timer>` in an
+# installer also starts the service. Binding is by `Unit=`/same basename.
 
 [Timer]
 # 04:20 UTC — after box-state-backup (03:40 UTC) so a file the nightly backup

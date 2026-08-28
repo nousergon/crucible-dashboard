@@ -1,6 +1,8 @@
 [Unit]
 Description=Daily code-pull at 12:00 UTC (5am PDT / 4am PST)
-Requires=boot-pull.service
+# NO Requires=<unit>.service here (alpha-engine-config-I9000) — Requires= in a
+# timer's [Unit] is a START dependency, so `enable --now <timer>` in an
+# installer also starts the service. Binding is by `Unit=`/same basename.
 
 [Timer]
 # 12:00 UTC every day. This is 5am PT during PDT (Mar-Nov) and 4am PT
