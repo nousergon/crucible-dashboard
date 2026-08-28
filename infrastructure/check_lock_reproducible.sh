@@ -69,22 +69,27 @@
 # `crucible-predictor/inference/lib_pin_drift.py` reads NOTHING for this
 # repo (it is in neither `_CO_INSTALL_PAIR` nor `_FLOOR_REPOS`), so the SHA
 # in this lock puts nothing outside a cross-repo check.
+#
+# THE FLAGS ABOVE LIVE IN ONE FILE, `.github/lockfile_compile.sh`, shared with
+# `.github/upgrade_lock.sh` — the producer that replaced Dependabot's pip
+# ecosystem here (alpha-engine-config-I9060). A verifier and a producer that
+# each carry their own copy of the flags drift into a lock this check can
+# never pass, which is exactly the failure being closed; they cannot drift
+# when there is one copy.
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
-PYVER="$(cat .python-version)"
-PLATFORM="x86_64-unknown-linux-gnu"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+# shellcheck source=.github/lockfile_compile.sh
+source "$ROOT/.github/lockfile_compile.sh"
+PYVER="$LOCK_PYVER"
+PLATFORM="$LOCK_PLATFORM"
 FRESH="$(mktemp)"
 trap 'rm -f "$FRESH" "$FRESH.err"' EXIT
 
 echo "Recompiling requirements.in under Python ${PYVER} for ${PLATFORM}..."
 cp requirements.txt "$FRESH"     # seed: hold current pins unless a constraint moves them
-if ! uv pip compile requirements.in \
-        --output-file "$FRESH" \
-        --python "$PYVER" \
-        --python-platform "$PLATFORM" \
-        --no-strip-extras \
-        --quiet 2>"$FRESH.err"; then
+if ! lockfile_compile "$FRESH" --quiet 2>"$FRESH.err"; then
     echo "FAIL: requirements.in does not resolve at all under Python ${PYVER}."
     echo "      The lockfile cannot be regenerated, so every floor raised in"
     echo "      requirements.in is unreachable by the deployed environment."
@@ -105,8 +110,7 @@ else
     echo
     echo "$diff_out"
     echo
-    echo "Fix: uv pip compile requirements.in --output-file requirements.txt \\"
-    echo "       --python ${PYVER} --python-platform ${PLATFORM} --no-strip-extras"
+    echo "Fix: $(lockfile_compile_hint)"
     echo "     then run the suite against the resolved environment before pushing."
     exit 1
 fi

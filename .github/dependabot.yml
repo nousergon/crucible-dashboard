@@ -6,21 +6,33 @@
 # (that shape is invalid and disables ALL updates for the repo). The `majors`
 # group + `cooldown.semver-major-days: 30` below is the closest legal expression.
 version: 2
+#
+# THE PIP ECOSYSTEM IS DELIBERATELY ABSENT (alpha-engine-config-I9060).
+# requirements.txt in this repo is a `uv pip compile` artifact of
+# requirements.in. Dependabot edits requirements.txt directly and knows
+# nothing about requirements.in, so by construction every pip PR it opened
+# arrived red on `lockfile-reproducible`:
+#
+#   FAIL: requirements.txt is not reproducible from requirements.in.
+#
+# Dependabot PRs are a STANDING auto-merge exception (`auto-merge-policy`); an
+# exception whose PRs are structurally incapable of going green never fires,
+# so the fleet believed this repo had automated Python dependency maintenance
+# and it had none. The human workaround already cost deploys here —
+# crucible-dashboard#778 moved requirements.in by hand because "every deploy
+# has been failing since #775".
+#
+# Python dependencies are upgraded by `.github/upgrade_lock.sh` instead — the
+# tool that owns the lockfile, running the same compile flags the guard
+# verifies against (`.github/lockfile_compile.sh`) — driven weekly by
+# nousergon/alpha-engine-config's `lockfile-upgrade-sweep`, which opens the PR
+# under the ne-groomer App token so CI actually grades it. Nothing that worked
+# is lost: pip-audit still runs on every PR, and it is what catches a
+# vulnerable pin.
+#
+# The npm ecosystem below is UNAFFECTED and stays: package-lock.json is a lock
+# npm itself maintains from package.json, and Dependabot moves both together.
 updates:
-  - package-ecosystem: pip
-    directory: "/"
-    schedule:
-      interval: weekly
-    cooldown:
-      semver-major-days: 30
-    groups:
-      minor-and-patch:
-        update-types:
-          - minor
-          - patch
-      majors:
-        update-types:
-          - major
   - package-ecosystem: npm
     directories:
       - "/dash-web"
