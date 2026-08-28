@@ -66,6 +66,13 @@ WARNING = [
     "watchdog: throttle state dir not writable (/var/lib/box-health) — cgroup throttling is UNMONITORED",
     "watchdog: service manifest missing (/etc/box-health/manifest) — using stale fallback list",
     "watchdog: memory budget check failed to run (rc=3)",
+    # alpha-engine-config-I8990: a morning-signal run on stale code is real
+    # and standing, but not "degraded right now" — the `-` on its
+    # ExecStartPre is a settled, ruled-on decision (episode generation must
+    # never be skipped by a transient sync blip). Console-visible, not paged.
+    "morning-signal stale: last sync attempt FAILED 3h ago — the service still starts on whatever was already checked out (abc1234), by design (ExecStartPre=-, see alpha-engine-config-I8990)",
+    "morning-signal stale: last sync REPORTED success 1d ago landing on abc1234, but origin/main is now def5678 and no sync has run since — check whether morning-signal.timer/-pull.timer are still firing",
+    "watchdog: morning-signal sync state missing (/tmp/nousergon-git-sync-state-morning-signal.json) — morning-signal-sync.sh has not recorded a run yet",
 ]
 
 INFO = [

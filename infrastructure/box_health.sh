@@ -72,6 +72,21 @@ done
 unset _ap
 : "${ALERT_PY:=/home/ec2-user/alpha-engine-dashboard/.venv/bin/python}"
 
+# git_sync_state_path (used by check_morning_signal_sync_drift below) —
+# same two-candidate resolution as alert_py.sh above and the one
+# morning-signal-sync.sh itself uses: this file runs both in place
+# (infrastructure/lib/git-sync-lock.sh is a subdir sibling) and installed to
+# /usr/local/bin/box_health.sh (install-box-health.sh installs
+# git-sync-lock.sh alongside it there, flat). A missing sibling degrades to
+# the function being undefined, which the drift check treats as "could not
+# check" (a `watchdog:` finding), never as "no drift" — principles.md
+# section 7.
+for _gsl in "$(dirname "${BASH_SOURCE[0]}")/lib/git-sync-lock.sh" \
+            "$(dirname "${BASH_SOURCE[0]}")/git-sync-lock.sh"; do
+    if [ -r "$_gsl" ]; then . "$_gsl"; break; fi
+done
+unset _gsl
+
 ENV_FILE="/home/ec2-user/.alpha-engine.env"
 VENV_PY="/home/ec2-user/alpha-engine-dashboard/.venv/bin/python"
 BUDGET_CHECK="/home/ec2-user/alpha-engine-dashboard/infrastructure/check_memory_budget.py"
@@ -91,6 +106,24 @@ INSTANCE_ID=$(curl -s --max-time 2 -H "X-aws-ec2-metadata-token: ${_imds_tok}" h
 MEM_MIN_MB=150                       # alert if MemAvailable drops below this
 DISK_WARN_PCT=80                     # root-disk warn band (page, deduped)
 DISK_CRIT_PCT=90                     # root-disk critical band (page, deduped)
+
+# The morning-signal shared checkout, read by check_morning_signal_sync_drift
+# below (alpha-engine-config-I8990). Overridable for tests only.
+MORNING_SIGNAL_CHECKOUT_DIR="${MORNING_SIGNAL_CHECKOUT_DIR:-/home/ec2-user/morning-signal}"
+# How long a recorded sync state may sit unrefreshed before its absence is
+# itself news, in minutes. morning-signal.timer fires once daily (04:00 PT)
+# and morning-signal-pull.timer once daily (04:55 PT) — either one writes
+# the state file on every attempt, success or failure — so a state file
+# older than ~36h means neither has run at all, not merely that today's run
+# hasn't landed yet.
+MORNING_SIGNAL_DRIFT_STATE_STALE_MIN=$((36 * 60))
+# A SUCCESSFUL sync's own report is trusted immediately (SYNC_OK=1 means the
+# script itself did `git reset --hard origin/main`), but is re-verified
+# independently — `git ls-remote`, no local write — once it is old enough
+# that a fresh daily sync should already have superseded it. 26h: one missed
+# daily cycle (24h) plus margin, still short of the 36h "no timer ran at
+# all" threshold above so the two branches do not race each other.
+MORNING_SIGNAL_DRIFT_VERIFY_GRACE_MIN=$((26 * 60))
 
 # The Overseer alert-drain's own artifacts, read to detect a drain that is
 # SCHEDULED-OFF or hung rather than one that merely died (alpha-engine-
@@ -1140,6 +1173,108 @@ http_liveness_problems() {
     fi
 }
 
+# check_morning_signal_sync_drift — detect the MISSING EFFECT of a failed
+# morning-signal git sync, not the failed event itself (alpha-engine-
+# config-I8990).
+#
+# WHY THIS EXISTS. morning-signal.service and morning-signal-bakeoff.service
+# invoke morning-signal-sync.sh via `ExecStartPre=-` — deliberately kept
+# failure-tolerant (episode generation must never be skipped by a transient
+# sync blip; see those units' headers). So when a sync fails past its own
+# 5-attempt retry, systemd ignores the exit status: the unit starts anyway
+# on whatever code was already on disk, produces a normal-looking signal,
+# and exits 0. `Result=success` afterwards, so classify_timer_staleness
+# above sees a healthy unit. Nothing anywhere said the run was stale — this
+# is that "nothing".
+#
+# READ-ONLY AGAINST THE SHARED CHECKOUT, ON PURPOSE. metron's deploy_drift.py
+# (the fleet's reference for this pattern) calls `git fetch` on the box's
+# OWN checkout to learn origin/main's SHA — which writes
+# refs/remotes/origin/main, i.e. it is itself an unflocked git WRITER against
+# a checkout other writers touch. That is exactly the incident class
+# git-sync-lock.sh exists to close (alpha-engine-config incident 2026-08-27
+# 20:07 UTC: two unlocked writers raced that same ref's compare-and-swap and
+# a commit sat undeployed for five hours). `git ls-remote` makes a bare
+# network query and updates no local ref at all, so this check can run
+# every 10 minutes without ever taking $GIT_SYNC_LOCK or racing the sync
+# script — it is not a writer and needs no lock.
+#
+# THE STATE FILE IS THE PRIMARY SIGNAL, NOT A HEAD-VS-REMOTE COMPARISON
+# ALONE. morning-signal runs on a schedule (once daily), so HEAD legitimately
+# trails a same-day origin/main push until the next scheduled sync — that is
+# normal lag, not a defect, and alerting on it would repeat metron
+# deploy_drift's own grace-window reasoning for no benefit here (this box
+# has no other way to know when the NEXT scheduled sync is due). What
+# morning-signal-sync.sh's state file gives that a bare comparison cannot is
+# a definitive, immediate "this specific attempt failed" — SYNC_OK=0 is
+# reported the moment it is recorded, no grace window needed, because it is
+# not an inference from staleness, it is the sync script's own verdict on
+# itself.
+#
+# UNMEASURED IS NOT HEALTHY. No checkout, no state file, or a state file
+# whose fields do not parse all report as `watchdog:` (warning) — never
+# silence and never folded into "no drift found" — principles.md section 7.
+check_morning_signal_sync_drift() {
+    local checkout_dir="$MORNING_SIGNAL_CHECKOUT_DIR"
+    [ -d "$checkout_dir" ] || return 0   # not installed on this box
+
+    if ! command -v git_sync_state_path >/dev/null 2>&1; then
+        echo "watchdog: morning-signal drift check cannot run — git_sync_state_path is undefined (git-sync-lock.sh not installed alongside box_health.sh)"
+        return 0
+    fi
+
+    local state_path
+    state_path="$(git_sync_state_path "$checkout_dir")"
+
+    if [ ! -f "$state_path" ]; then
+        echo "watchdog: morning-signal sync state missing (${state_path}) — morning-signal-sync.sh has not recorded a run yet"
+        return 0
+    fi
+
+    local sync_ok head_sha synced_at
+    sync_ok=$(awk -F= '$1=="SYNC_OK"{print $2; exit}' "$state_path" 2>/dev/null)
+    head_sha=$(awk -F= '$1=="HEAD_SHA"{print $2; exit}' "$state_path" 2>/dev/null)
+    synced_at=$(awk -F= '$1=="SYNCED_AT"{print $2; exit}' "$state_path" 2>/dev/null)
+
+    if [ -z "$sync_ok" ] || [ -z "$synced_at" ] || ! [ "$synced_at" -eq "$synced_at" ] 2>/dev/null; then
+        echo "watchdog: morning-signal sync state at ${state_path} is malformed"
+        return 0
+    fi
+
+    local now age_min
+    now=$(date +%s)
+    age_min=$(( (now - synced_at) / 60 ))
+    [ "$age_min" -lt 0 ] && age_min=0
+
+    if [ "$age_min" -gt "$MORNING_SIGNAL_DRIFT_STATE_STALE_MIN" ]; then
+        echo "watchdog: morning-signal sync state at ${state_path} is $(human_age "$age_min") old — neither morning-signal.timer nor morning-signal-pull.timer appears to have run"
+        return 0
+    fi
+
+    if [ "$sync_ok" = "0" ]; then
+        echo "morning-signal stale: last sync attempt FAILED $(human_age "$age_min") ago — the service still starts on whatever was already checked out (${head_sha:-unknown}), by design (ExecStartPre=-, see alpha-engine-config-I8990)"
+        return 0
+    fi
+
+    # SYNC_OK=1 but old enough that a fresh daily sync should have superseded
+    # it — verify the effect independently rather than trusting the script's
+    # own self-report indefinitely (the metron deploy_drift lesson: detect
+    # the missing EFFECT, never the missing event). `ls-remote` is a bare
+    # network query — it writes no local ref, so it cannot race the sync
+    # script's flock and needs none of its own.
+    if [ "$age_min" -gt "$MORNING_SIGNAL_DRIFT_VERIFY_GRACE_MIN" ]; then
+        local remote_sha
+        remote_sha=$(git -C "$checkout_dir" ls-remote origin refs/heads/main 2>/dev/null | cut -f1)
+        if [ -z "$remote_sha" ]; then
+            echo "watchdog: morning-signal drift check could not reach origin (ls-remote empty) — last known-good sync landed on ${head_sha:-unknown} $(human_age "$age_min") ago"
+            return 0
+        fi
+        if [ "$head_sha" != "$remote_sha" ]; then
+            echo "morning-signal stale: last sync REPORTED success $(human_age "$age_min") ago landing on ${head_sha:-unknown}, but origin/main is now ${remote_sha} and no sync has run since — check whether morning-signal.timer/-pull.timer are still firing"
+        fi
+    fi
+}
+
 # check_alert_drain_liveness — emit a problem line if the Overseer alert-drain
 # is SCHEDULED-OFF or hung, rather than merely dead. Its own function, not an
 # inline block, for the same reason http_liveness_problems is: extractable and
@@ -1769,6 +1904,7 @@ snapshot_problems() {
 
     http_liveness_problems
     check_alert_drain_liveness
+    check_morning_signal_sync_drift
 }
 
 # Gauges flow on every tick regardless of health outcome (see emit_metrics).
@@ -1946,6 +2082,20 @@ classify_problem_severity() {
         # overseer-policy.md section 3 is explicit that the watchdog's findings
         # about its own coverage are "recorded and swept, never paged".
         "watchdog: "*) echo warning ;;
+        # alpha-engine-config-I8990: a morning-signal run on stale code is a
+        # real, standing finding — not hygiene about the monitor itself — but
+        # NOT "degraded right now" in the critical sense either: the unit's
+        # own `ExecStartPre=-` is a deliberate, already-ruled-on decision that
+        # a transient sync blip must never SKIP an episode, so a stale run is
+        # an accepted, bounded risk of that choice, not an outage. It is
+        # exactly the shape `warning` exists for — a declared invariant
+        # (running code == origin/main) has drifted while nothing about the
+        # box or the episode's delivery is down — so it stays visible on the
+        # console with its age (never silently discarded) without paging.
+        # Whether a stale morning-signal run should instead PAGE is Brian's
+        # call, same as removing the `-` itself (issue's option (b)); this
+        # tier can be revisited if he rules it should.
+        "morning-signal stale: "*) echo warning ;;
 
         # ── critical: degraded now, or cannot recover ─────────────────────────
         # Everything below is listed rather than left to the default so the

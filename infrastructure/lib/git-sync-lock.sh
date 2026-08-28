@@ -52,3 +52,25 @@ git_sync_lock_path() {
     base="$(basename "$checkout_dir")"
     echo "/tmp/nousergon-git-sync-${base}.lock"
 }
+
+# git_sync_state_path <checkout-dir> — echoes the path of the small state
+# file a checkout's sync script records its OUTCOME to (alpha-engine-config
+# incident: `ExecStartPre=-morning-signal-sync.sh` is deliberately
+# failure-tolerant, so a failed sync starts the service on whatever code was
+# already on disk and the unit still exits 0 — nothing said the run was
+# stale). The sync script is the only writer; a drift check (box_health.sh's
+# check_morning_signal_sync_drift) is the reader. Same derivation as
+# git_sync_lock_path — one basename-keyed literal, not a second copy of it —
+# so a new shared checkout's sync script gets a correctly-scoped state path
+# for free.
+#
+# `.json`-suffixed for readability only: the format written is plain
+# `KEY=value` lines (SYNC_OK, HEAD_SHA, SYNCED_AT), not actual JSON, so it
+# can be read with awk/grep in a `set -u` bash without a JSON parser
+# dependency on the box.
+git_sync_state_path() {
+    local checkout_dir="$1"
+    local base
+    base="$(basename "$checkout_dir")"
+    echo "/tmp/nousergon-git-sync-state-${base}.json"
+}
