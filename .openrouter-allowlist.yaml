@@ -15,3 +15,9 @@ entries:
       Historical/test prose describing the direct-OpenRouter class this guard exists to catch (comment, docstring, or a test asserting the literal's ABSENCE) — not a live call site. Baseline sweep for alpha-engine-config-I7864.
     expires: "2026-11-18"
     tracking: alpha-engine-config-I7864
+  - path: tests/test_expenses_page.py
+    pattern: provider_comparison
+    reason: >-
+      Filters a cost-reconciliation fixture's rows to the one whose "Provider" column reads "openrouter" (an expense line-item label, not a provider ModelSpec) — a data-shape comparison in a display test, not a call site (alpha-engine-config-I9092 widened the guard's patterns to also catch runtime equality comparisons).
+    expires: "2027-08-28"
+    tracking: alpha-engine-config-I9092
