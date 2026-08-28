@@ -114,7 +114,12 @@ def git_remote_and_checkout(tmp_path: Path):
     if not _HAVE_GIT:
         pytest.skip("git not available")
     remote = tmp_path / "remote.git"
-    subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+    # `-b main` is NOT optional. Without it the branch name comes from the
+    # machine's `init.defaultBranch`, which is `main` on the laptop this was
+    # written on and `master` on the CI runner — so every `push origin main`
+    # below failed in CI and only in CI (2026-08-28, run 33138344414). Pin the
+    # name in the fixture rather than depending on the host's git config.
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(remote)], check=True)
 
     seed = tmp_path / "seed"
     subprocess.run(["git", "clone", "-q", str(remote), str(seed)], check=True)
