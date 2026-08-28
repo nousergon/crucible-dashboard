@@ -103,7 +103,9 @@ def test_new_finding_is_classified_warning_not_critical():
     from tests.box_health_helpers import classify
 
     assert classify("morning-signal stale: last sync attempt FAILED 3h ago") == "warning"
-    assert classify("watchdog: morning-signal sync state missing") == "warning"
+    # ...but a state file that has never been written is NOT a finding at all:
+    # nothing has run yet. `notice:` is console-only and does not publish.
+    assert classify("notice: morning-signal sync state not yet recorded") == "info"
 
 
 # ── live functional tests: morning-signal-sync.sh writes state on BOTH
@@ -285,12 +287,29 @@ def test_drift_check_is_silent_when_no_checkout(tmp_path):
     assert out == ""
 
 
-def test_drift_check_reports_watchdog_when_state_file_missing(tmp_path):
+def test_a_state_file_that_has_never_been_written_is_a_notice_not_a_warning(tmp_path):
+    """The window between installing the sync script and the first timer elapse.
+
+    Measured on i-09b539c844515d549 at 03:40 UTC 2026-08-28, minutes after this
+    detector was deployed: no state file, and morning-signal.timer's next elapse
+    7.5 hours away. At box-health's 10-minute cadence that is ~45 published
+    lines about a box with nothing wrong with it. `warning` publishes to the
+    alerts channel; `notice:` classifies as `info`, which does not publish and
+    still renders on the console with its age.
+    """
     checkout = tmp_path / "morning-signal"
     checkout.mkdir()
     _state_path(checkout).unlink(missing_ok=True)
     out = _run_drift_check(str(checkout))
-    assert out.startswith("watchdog: morning-signal sync state missing")
+    assert out.startswith("notice: morning-signal sync state not yet recorded")
+
+    from tests.box_health_helpers import classify
+
+    assert classify(out) == "info", (
+        "a first-run state gap must not reach the alerts channel — this is the "
+        "assertion that would have caught shipping ~45 silent-but-visible "
+        "messages into the thread the fix was meant to quieten"
+    )
 
 
 def test_drift_check_fires_on_a_failed_sync(tmp_path):

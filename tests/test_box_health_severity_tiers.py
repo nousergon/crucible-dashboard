@@ -72,10 +72,16 @@ WARNING = [
     # never be skipped by a transient sync blip). Console-visible, not paged.
     "morning-signal stale: last sync attempt FAILED 3h ago — the service still starts on whatever was already checked out (abc1234), by design (ExecStartPre=-, see alpha-engine-config-I8990)",
     "morning-signal stale: last sync REPORTED success 1d ago landing on abc1234, but origin/main is now def5678 and no sync has run since — check whether morning-signal.timer/-pull.timer are still firing",
-    "watchdog: morning-signal sync state missing (/tmp/nousergon-git-sync-state-morning-signal.json) — morning-signal-sync.sh has not recorded a run yet",
 ]
 
 INFO = [
+    # A sync state file that is missing because nothing has run YET is
+    # absence of evidence, not a fault. It was `watchdog:` (warning, which
+    # publishes) for a few hours on 2026-08-28; with a 10-minute cadence and
+    # a 7.5-hour wait for the next morning-signal.timer elapse that is ~45
+    # published lines about a healthy box. Console-visible with its age,
+    # never in the channel.
+    "notice: morning-signal sync state not yet recorded (/tmp/nousergon-git-sync-state-morning-signal.json) — morning-signal-sync.sh has not run since it was installed; expected until the next morning-signal.timer / -pull.timer elapse",
     # T1-8 moved warning -> info on 2026-08-21 (alpha-engine-config-I7858,
     # Brian ruling: "if i'm 4x away from the wall then i certainly no longer
     # want to be alerted of it"). It is a HEADROOM invariant, not the exit
