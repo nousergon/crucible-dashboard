@@ -1227,7 +1227,33 @@ check_morning_signal_sync_drift() {
     state_path="$(git_sync_state_path "$checkout_dir")"
 
     if [ ! -f "$state_path" ]; then
-        echo "watchdog: morning-signal sync state missing (${state_path}) — morning-signal-sync.sh has not recorded a run yet"
+        # `notice:`, NOT `watchdog:`, and the difference is a real one that was
+        # measured rather than reasoned about.
+        #
+        # `watchdog:` classifies as `warning`, which PUBLISHES to krepis.alerts
+        # — silently in-channel, but it still lands in the thread Brian reads.
+        # This branch is true for every box_health tick between the moment
+        # morning-signal-sync.sh is installed and the moment the first timer
+        # fires. Measured on i-09b539c844515d549 at 03:40 UTC 2026-08-28, with
+        # this detector freshly deployed: the state file did not exist, and
+        # morning-signal.timer's next elapse was 11:00 UTC — 7.5 hours, at a
+        # 10-minute cadence, so roughly 45 published lines about a condition
+        # that is not a fault. That is precisely the traffic this whole class
+        # of work exists to remove, and shipping it inside the fix would have
+        # been the joke telling itself.
+        #
+        # A state file that is missing because nothing has run YET is absence of
+        # evidence, exactly like the run-in-flight case classify_timer_staleness
+        # already carries rather than re-derives. The `info` tier does not
+        # publish, and emit_hygiene_envelope still renders it on the console on
+        # every run with its age — so a state file still missing in a week is
+        # plainly visible where a standing condition belongs (principles.md §7:
+        # a component emitting nothing is unobserved, not healthy), and absent
+        # from the channel where a changing one does.
+        #
+        # The failure this does NOT weaken: once a sync HAS run, SYNC_OK=0 and
+        # the stale-state branch below both stay at their existing tiers.
+        echo "notice: morning-signal sync state not yet recorded (${state_path}) — morning-signal-sync.sh has not run since it was installed; expected until the next morning-signal.timer / -pull.timer elapse"
         return 0
     fi
 
