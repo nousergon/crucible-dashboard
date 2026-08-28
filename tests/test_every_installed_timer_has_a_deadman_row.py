@@ -92,7 +92,22 @@ def _timer_unit_files() -> set[str]:
 def _installer_enabled_timers() -> set[str]:
     found: set[str] = set()
     for sh in INFRA.rglob("*.sh"):
-        found.update(_ENABLE_RE.findall(sh.read_text()))
+        # Comments stripped BEFORE matching. A shell comment is not an execution
+        # path, and matching one is the bug class that put a scheduled-identity
+        # scan on a YAML comment on 2026-08-27 — a file's own rationale tripping
+        # the guard that rationale explains, with the only available "fix" being
+        # to delete the explanation. Hit live 2026-08-28: box_health.sh's note on
+        # WHY a timer must not carry `Requires=` used a literal
+        # `systemctl enable --now <name>.timer` as its example and was harvested
+        # here as an installer (alpha-engine-config-I9062).
+        # FULL-LINE comments only, deliberately. Truncating at the first `#`
+        # anywhere would also cut a real command that follows a `#` inside a
+        # quoted string, turning a false positive into a false NEGATIVE — the
+        # worse direction for a guard.
+        stripped = "\n".join(
+            ln for ln in sh.read_text().splitlines() if not ln.lstrip().startswith("#")
+        )
+        found.update(_ENABLE_RE.findall(stripped))
     return found
 
 
@@ -138,3 +153,42 @@ def test_the_notice_string_box_health_emits_still_names_this_file():
         "box_health.sh no longer emits the dead-man registration notice this "
         "test mirrors. Re-derive the contract before changing either side."
     )
+
+
+def test_a_commented_out_enable_is_not_harvested_as_an_installer(tmp_path):
+    """A shell comment is not an execution path.
+
+    Hit live 2026-08-28 (alpha-engine-config-I9062): `box_health.sh`'s note
+    explaining WHY a timer must not carry `Requires=<x>.service` used a literal
+    `systemctl enable --now <name>.timer` as its example, and this harvester read
+    the prose as an installer — so the file's own rationale tripped the guard
+    that rationale explains, and the only available "fix" was to delete the
+    explanation. Same bug class as the 2026-08-27 scheduled-identity scan that
+    matched `ne-admin` inside a YAML comment.
+
+    Executed against the real harvester over a real file, not asserted from the
+    regex: what shipped is the comment-stripping in `_installer_enabled_timers`,
+    and a test of a re-implementation would prove only that two copies agree.
+    """
+    import sys
+
+    mod = sys.modules[__name__]
+
+    scratch = tmp_path / "infrastructure"
+    scratch.mkdir()
+    (scratch / "install-fake.sh").write_text(
+        "#!/bin/bash\n"
+        "# systemctl enable --now commented-out.timer\n"
+        "   # systemctl enable --now indented-comment.timer\n"
+        "systemctl enable --now really-enabled.timer\n"
+    )
+    original = mod.INFRA
+    try:
+        mod.INFRA = scratch
+        found = mod._installer_enabled_timers()
+    finally:
+        mod.INFRA = original
+
+    assert "really-enabled.timer" in found
+    assert "commented-out.timer" not in found
+    assert "indented-comment.timer" not in found
