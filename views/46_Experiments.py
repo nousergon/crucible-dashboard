@@ -134,6 +134,15 @@ _BLOCKED_BY_LABELS = {
         "scanner→predictor evidence unrated (counterfactual reported no cycle count)",
     "leaderboard_horizon_mismatch":
         "leaderboard primary horizon ≠ the horizon this gate decides on",
+    # Third arm of the entry-selection contest (alpha-engine-config-I8756,
+    # nousergon-lib#361, contract v0.124.94): the scanner top-20 → predictor
+    # arm carries the same three evidence verdicts as scanner→predictor direct.
+    "scanner_top20_predictor_counterfactual_unavailable":
+        "scanner top-20→predictor counterfactual unavailable",
+    "scanner_top20_predictor_thin_evidence":
+        "scanner top-20→predictor scored on too few cycles to compare (evidence thin)",
+    "scanner_top20_predictor_confidence_unknown":
+        "scanner top-20→predictor evidence unrated (counterfactual reported no cycle count)",
     "frozen": "frozen (--freeze)",
     "unclassified_error": "error",
     # Shadow-only hold (alpha-engine-config-I2515, Brian's 2026-08-20 ruling;
