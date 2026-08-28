@@ -30,6 +30,15 @@
 #      must be visible as a version skew, not as a delivery failure.
 #   7. alerted_state_lifecycle returns still_open for a key the prior carried
 #      and opened otherwise (the `state` field on the emitted record).
+#   8. A CLEAR INHERITS THE DESTINATION OF THE PAGE IT TERMINATES
+#      (alpha-engine-config-I9044). Field 2 of each state row is the opening
+#      page's severity, which this file already wrote and already carried
+#      across runs; publish_clears used to discard it and send every
+#      terminator into the operator's chat. A page that buzzed the phone still
+#      clears in the channel — the `timer job failing:` findings that dominate
+#      this box are `critical`, and their RESOLVED messages are unchanged. A
+#      page that never buzzed is recorded on the console instead, and is NOT
+#      counted as unpublished: it was delivered, to the other surface.
 #
 # The functions under test are pure functions of their arguments plus two file
 # paths, so this runs without systemd, AWS, or a real krepis — the whole point
@@ -51,7 +60,9 @@ fi
 
 # Source only the functions under test. box_health.sh runs checks at load time,
 # so extract the definitions rather than sourcing the whole script.
-for _fn in alerted_state_prior alerted_state_lifecycle alerted_state_write publish_clears; do
+for _fn in alerted_state_prior alerted_state_lifecycle alerted_state_write \
+           clear_destination krepis_push_set_load publish_channel_clear \
+           krepis_clear_supported publish_clears; do
     fn=$(awk -v f="^${_fn}\\\\(\\\\) \\\\{" '$0 ~ f,/^\}/' "$TARGET_SCRIPT")
     if [ -z "$fn" ]; then
         echo "FAIL - ${_fn}() not found in box_health.sh"
@@ -67,6 +78,16 @@ THROTTLE_STATE_DIR="$TMPDIR_T"
 ALERTED_STATE="$TMPDIR_T/alerted-problems"
 INSTANCE_ID="i-test"
 UNPUBLISHED_CLEARS=0
+# The console-route accumulators publish_clears fills. Initialised, not merely
+# declared: `set -u` turns an unset accumulator into a dead watchdog.
+CONSOLE_ROUTED_LINES=""
+CONSOLE_CLEAR_KEYS=()
+CONSOLE_CLEAR_MSGS=()
+# Pre-set so krepis_push_set_load returns without shelling out. The set itself
+# is krepis' (SEVERITY_PHONE_PUSH); what is under test is what publish_clears
+# does with each ANSWER, not how the answer is obtained.
+KREPIS_PUSH_SET="critical error"
+KREPIS_CLEAR=""
 
 # Stand-in for the krepis CLI: records every invocation instead of publishing.
 CALLS="$TMPDIR_T/calls"
@@ -102,7 +123,17 @@ check() {
     fi
 }
 
-reset_calls() { : > "$CALLS"; UNPUBLISHED_CLEARS=0; }
+reset_calls() {
+    : > "$CALLS"
+    UNPUBLISHED_CLEARS=0
+    CONSOLE_ROUTED_LINES=""
+    CONSOLE_CLEAR_KEYS=()
+    CONSOLE_CLEAR_MSGS=()
+    KREPIS_CLEAR=""
+}
+
+# How many terminators were routed to the console this call.
+console_clear_count() { echo "${#CONSOLE_CLEAR_KEYS[@]}"; }
 
 TAB=$'\t'
 prior_two="keyA${TAB}critical${TAB}timer job failing: alpha.timer
@@ -130,8 +161,11 @@ check "empty prior publishes no clear" "$(wc -l < "$CALLS" | tr -d ' ')" "0"
 echo "   ...and an empty CURRENT clears everything that was standing"
 reset_calls
 publish_clears "$prior_two" ""
-check "both standing keys cleared on a clean tick" \
-      "$(grep -c 'krepis.alerts clear' "$CALLS")" "2"
+check "the critical-opener key cleared in the channel" \
+      "$(grep -c 'krepis.alerts clear' "$CALLS")" "1"
+check "the warning-opener key was routed to the console instead" \
+      "$(console_clear_count)" "1"
+check "neither clear was counted as unpublished" "$UNPUBLISHED_CLEARS" "0"
 
 echo "== 5. the clear names the lines the page carried =="
 reset_calls
@@ -141,7 +175,11 @@ check "clear body names the first line" \
 check "clear body names the second line of the SAME page" \
       "$(grep -c 'timer job failing: beta.timer' "$CALLS")" "1"
 check "clear body is marked as a resolution" \
-      "$(grep -c 'health alert resolved' "$CALLS")" "2"
+      "$(grep -c 'health alert resolved' "$CALLS")" "1"
+check "the console record names the key of the page it terminates" \
+      "$(printf '%s' "$CONSOLE_ROUTED_LINES" | grep -c '^clear: keyB ')" "1"
+check "the console record names the line that page carried" \
+      "$(printf '%s' "$CONSOLE_ROUTED_LINES" | grep -c 'disk high: root >=80% used')" "1"
 
 echo "== 6. a krepis without publish_clear counts, never calls =="
 reset_calls
@@ -149,7 +187,9 @@ SUPPORTS_CLEAR=0
 publish_clears "$prior_two" ""
 check "no CLI call attempted on an unsupporting krepis" \
       "$(wc -l < "$CALLS" | tr -d ' ')" "0"
-check "both due clears counted as unpublished" "$UNPUBLISHED_CLEARS" "2"
+check "only the CHANNEL-bound clear counts as unpublished" "$UNPUBLISHED_CLEARS" "1"
+check "the console-bound clear is unaffected by the krepis pin" \
+      "$(console_clear_count)" "1"
 SUPPORTS_CLEAR=1
 
 echo "== 7. alerted_state_lifecycle: still_open vs opened =="
@@ -163,6 +203,23 @@ check "a key that is a PREFIX of a stored key is not a match" \
 rm -f "$ALERTED_STATE"
 check "no state file at all reads as opened, never as still_open" \
       "$(alerted_state_lifecycle keyA)" "opened"
+
+echo "== 8. a clear inherits the destination of the page it terminates =="
+check "a critical opener clears in the channel" "$(clear_destination critical)" "channel"
+check "an error opener clears in the channel"   "$(clear_destination error)"    "channel"
+check "a warning opener clears on the console"  "$(clear_destination warning)"  "console"
+check "an info opener clears on the console"    "$(clear_destination info)"     "console"
+# The severity field is what the state file carried. A row it could not be read
+# from is a page we cannot PROVE was quiet, and an owed terminator is never
+# withheld on a guess — same direction as classify_problem_severity's default arm.
+check "an unreadable severity falls back to the channel" \
+      "$(clear_destination "")" "channel"
+
+echo "   ...and the push set is krepis', not a copy: narrowing it moves the route"
+KREPIS_PUSH_SET="critical"
+check "error stops clearing in the channel when krepis stops pushing it" \
+      "$(clear_destination error)" "console"
+KREPIS_PUSH_SET="critical error"
 
 echo
 echo "passed: $PASS   failed: $FAIL"

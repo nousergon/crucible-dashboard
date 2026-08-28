@@ -92,7 +92,17 @@ def test_only_criticals_are_counted():
     over-firing this whole issue is about.
     """
     assert 'if [ "$severity" = "critical" ]; then' in SH
-    assert "UNALERTED_CRITICALS=$((UNALERTED_CRITICALS + ${#_problems[@]}))" in SH
+    # The count moved into publish_page with the console-routing split
+    # (alpha-engine-config-I9044) and is passed in as `count`; asserted INSIDE
+    # that function so the guard cannot be satisfied by prose elsewhere.
+    import re as _re
+
+    body = _re.search(r"^publish_page\(\) \{.*?^\}", SH, _re.M | _re.S)
+    assert body, "publish_page() not found — the krepis publish moved again"
+    assert "UNALERTED_CRITICALS=$((UNALERTED_CRITICALS + count))" in body.group(0)
+    assert 'if [ "$severity" = "critical" ]; then' in body.group(0), (
+        "the critical-only guard is no longer beside the count it gates"
+    )
 
 
 def test_the_counter_starts_at_zero_before_any_publish():

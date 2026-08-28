@@ -767,15 +767,18 @@ classify_throttle_delta() {
 # publishes only when something is wrong cannot be distinguished from one that
 # has died.
 #
-# rc=3 (the emitter could not publish) goes to the journal and no further. This
-# is a RENDERING path: a rendering failure must not manufacture a box-health
-# problem, and the console already shows a missing artifact as `unreadable`
-# rather than `ok`, so the gap stays visible where it belongs. Same contract as
-# the --emit-check call above, deliberately.
+# A FAILURE HERE IS RETURNED, NOT SWALLOWED (alpha-engine-config-I9044). It used
+# to end in `|| true` and both guards returned 0, on the reasoning that a
+# rendering failure must not manufacture a box-health problem. That reasoning
+# still holds — this never pages and never enters the problem set — but the
+# console is now the sole delivery path for the `warning` tier and for every
+# clear whose opener did not buzz, so "the emitter could not publish" is the
+# difference between routed and vanished. The caller uses this rc for exactly
+# one thing: to fall back to the channel. Nothing else reads it.
 emit_hygiene_envelope() {
-    [ -x "$VENV_PY" ] || { echo "box_health: hygiene envelope skipped, no venv python ($VENV_PY)" >&2; return 0; }
-    [ -r "$HYGIENE_EMITTER" ] || { echo "box_health: hygiene emitter missing ($HYGIENE_EMITTER)" >&2; return 0; }
-    printf '%s\n' "${1:-}" | "$VENV_PY" "$HYGIENE_EMITTER" >/dev/null || true
+    [ -x "$VENV_PY" ] || { echo "box_health: hygiene envelope skipped, no venv python ($VENV_PY)" >&2; return 1; }
+    [ -r "$HYGIENE_EMITTER" ] || { echo "box_health: hygiene emitter missing ($HYGIENE_EMITTER)" >&2; return 1; }
+    printf '%s\n' "${1:-}" | "$VENV_PY" "$HYGIENE_EMITTER" >/dev/null
 }
 
 # publish_verdict COUNT — put the watchdog's OWN conclusion on the metrics path.
@@ -889,6 +892,34 @@ ALERTED_NOW=""
 # a silent regression is a number whose non-zero is the finding.
 UNPUBLISHED_CLEARS=0
 
+# ── Console-routed pages and clears (alpha-engine-config-I9044) ────────────
+#
+# A CLEAR INHERITS THE DESTINATION OF THE PAGE IT TERMINATES. A terminator for
+# a page Brian was woken for is OWED to him and goes to the channel exactly as
+# before. A terminator for a page that never buzzed — `warning`, `info` — is
+# not a second announcement of a non-event: it is recorded on the console,
+# through the same fleet_check_result envelope emit_box_health_hygiene.py
+# already publishes on EVERY run.
+#
+# THE ROUTE IS DECIDED, NOT DEFERRED. Items land in these accumulators and
+# finalize_alert_lifecycle emits the envelope; if that emit FAILS or the
+# console is unavailable, console_route_fallback publishes every one of them
+# to the channel as it would have gone before. The fallback is the invariant
+# (alpha-engine-config-I7857): the change may make a terminator quieter, never
+# absent.
+#
+# Parallel arrays rather than a delimited string: a clear message is
+# multi-line by construction, and this script is asserted to run under bash
+# 3.2 where an associative array is not available.
+CONSOLE_ROUTED_LINES=""
+CONSOLE_CLEAR_KEYS=()
+CONSOLE_CLEAR_MSGS=()
+DEFERRED_PAGE_SEV=()
+DEFERRED_PAGE_WIN=()
+DEFERRED_PAGE_DKEY=()
+DEFERRED_PAGE_MSG=()
+DEFERRED_PAGE_COUNT=()
+
 # krepis_supports_clear — does the INSTALLED krepis carry the open/clear pair?
 #
 # A CAPABILITY PROBE, NOT A VERSION COMPARISON. This box installs krepis from a
@@ -905,6 +936,67 @@ UNPUBLISHED_CLEARS=0
 krepis_supports_clear() {
     "$ALERT_PY" -c 'import krepis.alerts as a; raise SystemExit(0 if hasattr(a, "publish_clear") else 1)' \
         </dev/null >/dev/null 2>&1
+}
+
+# Cached wrapper. Resolved LAZILY and at most once per run: a run whose clears
+# are all console-routed never needs the answer, and must not pay an
+# interpreter start to be told something it will not use.
+#   1 = supported, 0 = not, empty = not yet asked.
+KREPIS_CLEAR=""
+krepis_clear_supported() {
+    if [ -z "$KREPIS_CLEAR" ]; then
+        if krepis_supports_clear; then KREPIS_CLEAR=1; else KREPIS_CLEAR=0; fi
+    fi
+    [ "$KREPIS_CLEAR" = "1" ]
+}
+
+# krepis_push_set_load — the severities that actually BUZZ Brian's phone, read
+# from the installed krepis rather than restated here.
+#
+# WHY ASKED RATHER THAN HARDCODED. This set is the whole routing predicate for
+# clears, and it lives in krepis/alerts.py as SEVERITY_PHONE_PUSH. A copy of it
+# in this file would be a second implementation of someone else's constant: the
+# day krepis narrows the set to `critical` alone, a hardcoded copy would keep
+# sending `error` terminators into the channel for pages that had stopped
+# buzzing — the exact miscalibration this change removes, re-created by drift.
+# The probe is the same shape as krepis_supports_clear above and costs one
+# interpreter start, on the non-clean path only.
+#
+# NOT A SILENT SWALLOW. (a) The failure mode is "the installed krepis does not
+# expose its push set"; (b) the primary deliverable survives — the default is
+# the set krepis has shipped since the lifecycle pair landed, which routes MORE
+# clears to the channel, never fewer; (c) it is recorded on stderr and captured
+# by journald.
+KREPIS_PUSH_SET=""
+krepis_push_set_load() {
+    [ -n "$KREPIS_PUSH_SET" ] && return 0
+    KREPIS_PUSH_SET=$("$ALERT_PY" -c 'import krepis.alerts as a; s = getattr(a, "SEVERITY_PHONE_PUSH", None) or getattr(a, "SEVERITY_PUSH", None) or []; print(" ".join(sorted(s)))' \
+        </dev/null 2>/dev/null)
+    if [ -z "$KREPIS_PUSH_SET" ]; then
+        KREPIS_PUSH_SET="error critical"
+        echo "box_health: could not read krepis' phone-push severity set — assuming '$KREPIS_PUSH_SET', which routes MORE clears to the channel, never fewer" >&2
+    fi
+    return 0
+}
+
+# clear_destination SEVERITY — `channel` if a page at this severity buzzed the
+# operator's phone, `console` otherwise.
+#
+# A PURE FUNCTION of its argument and $KREPIS_PUSH_SET, so it is testable in a
+# bash with no krepis, no systemd and no network — which is how the routing
+# decision is proven rather than read.
+#
+# An EMPTY severity fails toward the CHANNEL, deliberately, and in the same
+# direction as classify_problem_severity's default arm: a state row whose
+# severity field could not be read is a page we cannot prove was quiet, and an
+# owed terminator is never withheld on a guess.
+clear_destination() {
+    local severity="$1"
+    if [ -z "$severity" ]; then echo channel; return 0; fi
+    case " $KREPIS_PUSH_SET " in
+        *" $severity "*) echo channel ;;
+        *)               echo console ;;
+    esac
 }
 
 # krepis_supports_publish_lifecycle — the SAME probe, for the OTHER half of the
@@ -1039,36 +1131,145 @@ publish_clears() {
         <(printf '%s\n' "$current_rows" | cut -f1 | grep -v '^$' | sort -u))
     [ -n "$gone_keys" ] || return 0
 
-    local supported=1
-    krepis_supports_clear || supported=0
+    krepis_push_set_load
 
-    local key lines msg _cl
+    local key lines msg _cl sev dest joined
     while IFS= read -r key; do
         [ -n "$key" ] || continue
         # Every line that page carried, so the clear names what ended rather
         # than only that something did.
         lines=$(printf '%s\n' "$prior_rows" | awk -F'\t' -v k="$key" '$1==k {print $3}')
+        # FIELD 2 IS THE SEVERITY THE OPENING PAGE CARRIED, and reading it is
+        # the whole of alpha-engine-config-I9044. publish_problems has recorded
+        # it on every row since the lifecycle pair landed and alerted_state_write
+        # persists it, so the opener's loudness already survives to this run —
+        # it was simply thrown away here.
+        sev=$(printf '%s\n' "$prior_rows" | awk -F'\t' -v k="$key" '$1==k {print $2; exit}')
         msg="dashboard EC2 (${INSTANCE_ID}) health alert resolved:"
         while IFS= read -r _cl; do
             [ -n "$_cl" ] || continue
             msg="$msg"$'\n'" - $_cl"
         done <<< "$lines"
-        if [ "$supported" -eq 0 ]; then
-            echo "box_health: clear DUE but installed krepis has no publish_clear (bump the krepis pin) — key=$key" >&2
-            UNPUBLISHED_CLEARS=$((UNPUBLISHED_CLEARS + 1))
+
+        dest=$(clear_destination "$sev")
+        if [ "$dest" = "console" ]; then
+            # Queued, not dropped: finalize_alert_lifecycle renders these onto
+            # the console envelope, and falls back to this same channel publish
+            # if that render fails. NOT counted as unpublished — a clear on the
+            # console is DELIVERED, and inflating health_clears_unpublished with
+            # successful deliveries would retire the one number whose non-zero
+            # is the finding.
+            CONSOLE_CLEAR_KEYS[${#CONSOLE_CLEAR_KEYS[@]}]="$key"
+            CONSOLE_CLEAR_MSGS[${#CONSOLE_CLEAR_MSGS[@]}]="$msg"
+            joined=$(printf '%s' "$lines" | tr '\n' ';' | sed 's/;$//; s/;/; /g')
+            CONSOLE_ROUTED_LINES="${CONSOLE_ROUTED_LINES}clear: ${key} — ${sev} page resolved: ${joined}"$'\n'
             continue
         fi
-        # </dev/null: this loop is fed by a here-string, and a child that
-        # reads stdin would eat the remaining keys — every clear after the
-        # first would silently never be attempted.
-        if ! "$ALERT_PY" -m krepis.alerts clear \
-            --message "$msg" \
-            --identity-key "$key" \
-            --source box-health </dev/null; then
-            echo "box_health: clear publish failed for key=$key" >&2
-            UNPUBLISHED_CLEARS=$((UNPUBLISHED_CLEARS + 1))
-        fi
+        # </dev/null inside publish_channel_clear: this loop is fed by a
+        # here-string, and a child that reads stdin would eat the remaining
+        # keys — every clear after the first would silently never be attempted.
+        publish_channel_clear "$key" "$msg" \
+            || UNPUBLISHED_CLEARS=$((UNPUBLISHED_CLEARS + 1))
     done <<< "$gone_keys"
+}
+
+# publish_channel_clear KEY MSG — the terminator as it has always been sent.
+# Returns non-zero when it reached nobody, which is the only condition
+# health_clears_unpublished is allowed to count.
+publish_channel_clear() {
+    local key="$1" msg="$2"
+    if ! krepis_clear_supported; then
+        echo "box_health: clear DUE but installed krepis has no publish_clear (bump the krepis pin) — key=$key" >&2
+        return 1
+    fi
+    if ! "$ALERT_PY" -m krepis.alerts clear \
+        --message "$msg" \
+        --identity-key "$key" \
+        --source box-health </dev/null; then
+        echo "box_health: clear publish failed for key=$key" >&2
+        return 1
+    fi
+    return 0
+}
+
+# DEFINED HERE, NOT BESIDE publish_problems, because bash is linear:
+# console_route_fallback calls it and finalize_alert_lifecycle is called from
+# the two all-healthy EARLY EXITS, hundreds of lines above the tier partition.
+# A definition below those call sites is a `command not found` waiting for the
+# first run whose console is unavailable — invisible to `bash -n`, which parses
+# without executing. test_the_helpers_are_defined_before_their_first_call_site
+# pins the ordering.
+# publish_page SEVERITY DEDUP_MIN DKEY MSG PROBLEM_COUNT — the krepis publish.
+#
+# Split out of publish_problems so console_route_fallback can send a deferred
+# page through the IDENTICAL call rather than a second copy of it. A fallback
+# that publishes by a different route is not proof the route still works.
+publish_page() {
+    local severity="$1" dedup_min="$2" dkey="$3" msg="$4" count="$5"
+    # krepis.alerts is the canonical CLI (config#1649): nousergon_lib.alerts is a
+    # re-export shim since lib v0.66.0 — guard-less under `python -m` on 0.81.0
+    # (silent exit-0 no-op, the config#1646 class). Invoke the real module.
+    # A FAILED CRITICAL PUBLISH IS THE ONE THING THE CLOUDWATCH BACKSTOP EXISTS
+    # FOR (alpha-engine-config-I8035), so it is counted here rather than only
+    # written to the journal. Counted in LINES, not in calls: one failed call
+    # can carry several findings, and the metric answers "how many confirmed
+    # criticals did nobody get told about", not "how many publishes failed".
+    # Lower tiers are journal-only as before — a warning that fails to publish
+    # is still on the console via emit_hygiene_envelope.
+    #
+    # LIFECYCLE (alpha-engine-config-I8105). `--state` says whether this page
+    # opens the condition or repeats one the previous tick already carried;
+    # `--identity-key` is what the later clear will reference. The identity is
+    # the dedup key deliberately: krepis treats identity_key as correlation
+    # ONLY and never feeds it back into the dedup check, so the clear can name
+    # a page whose dedup marker is still live without suppressing itself.
+    local _state
+    _state=$(alerted_state_lifecycle "$dkey")
+    # Empty-safe expansion: this script is asserted to run under macOS bash 3.2,
+    # where a bare "${arr[@]}" on an empty array is an unbound-variable error
+    # under `set -u`.
+    local _lifecycle=()
+    if krepis_publish_lifecycle_args; then
+        _lifecycle=(--state "$_state" --identity-key "$dkey")
+    fi
+    if ! "$ALERT_PY" -m krepis.alerts publish \
+        --message "$msg" \
+        --severity "$severity" \
+        --source box-health \
+        --dedup-key "$dkey" \
+        --dedup-window-min "$dedup_min" \
+        ${_lifecycle[@]+"${_lifecycle[@]}"} </dev/null; then
+        echo "box_health: $severity publish failed" >&2
+        if [ "$severity" = "critical" ]; then
+            UNALERTED_CRITICALS=$((UNALERTED_CRITICALS + count))
+        fi
+        return 1
+    fi
+    return 0
+}
+
+# console_route_fallback — THE INVARIANT (alpha-engine-config-I7857).
+#
+# Called when the console envelope could not be published. Everything this run
+# routed away from the channel goes to the channel now, exactly as it would
+# have gone before this change, and says so on stderr. A route whose failure
+# mode is "nothing was sent" is a silent swallow wearing a routing decision's
+# clothes; this is what makes it a routing decision.
+console_route_fallback() {
+    local i=0
+    while [ "$i" -lt "${#DEFERRED_PAGE_DKEY[@]}" ]; do
+        publish_page "${DEFERRED_PAGE_SEV[$i]}" "${DEFERRED_PAGE_WIN[$i]}" \
+            "${DEFERRED_PAGE_DKEY[$i]}" "${DEFERRED_PAGE_MSG[$i]}" \
+            "${DEFERRED_PAGE_COUNT[$i]}"
+        i=$((i + 1))
+    done
+    i=0
+    while [ "$i" -lt "${#CONSOLE_CLEAR_KEYS[@]}" ]; do
+        # Only NOW may this count: the clear has reached neither surface.
+        publish_channel_clear "${CONSOLE_CLEAR_KEYS[$i]}" "${CONSOLE_CLEAR_MSGS[$i]}" \
+            || UNPUBLISHED_CLEARS=$((UNPUBLISHED_CLEARS + 1))
+        i=$((i + 1))
+    done
 }
 
 # publish_unpublished_clears COUNT — the series that makes a missing
@@ -1088,10 +1289,31 @@ publish_unpublished_clears() {
 # whole point: an all-healthy tick is precisely when yesterday's page ended.
 # Wiring this only into the problems path would leave the most common recovery
 # — the box going green — the one case that still emits nothing.
+#
+# TAKES THE CONSOLE LINES AND EMITS THE ENVELOPE ITSELF (I9044). The two used to
+# be separate calls at each of the three exit paths, in that order. They are one
+# call now because the ORDER IS LOAD-BEARING and a pair can be half-copied to a
+# fourth exit path: the clears must be diffed before the envelope is rendered
+# (the envelope carries them), the envelope's outcome must be known before the
+# fallback can run, and health_clears_unpublished must be published after the
+# fallback or it reports a count taken before the last attempt.
+#
+# alerted_state_write runs AFTER the envelope, not before: publish_page derives
+# `--state` from alerted_state_prior, and a fallback publish against an
+# already-rewritten state file would call every opening page a repeat.
 finalize_alert_lifecycle() {
-    local prior
+    local hygiene_lines="${1:-}"
+    local prior console_lines
     prior=$(alerted_state_prior)
     publish_clears "$prior" "$ALERTED_NOW"
+
+    console_lines=$(printf '%s\n%s' "$hygiene_lines" "${CONSOLE_ROUTED_LINES%$'\n'}" \
+        | grep -v '^$' || true)
+    if ! emit_hygiene_envelope "$console_lines"; then
+        echo "box_health: console route unavailable — falling back to the channel for ${#DEFERRED_PAGE_DKEY[@]} page(s) and ${#CONSOLE_CLEAR_KEYS[@]} clear(s)" >&2
+        console_route_fallback
+    fi
+
     alerted_state_write "$ALERTED_NOW"
     publish_unpublished_clears "$UNPUBLISHED_CLEARS"
 }
@@ -1985,8 +2207,7 @@ if [ -z "$confirmed" ]; then
     # ALERTED_NOW is empty here, so this clears EVERY standing page. That is
     # the clean-tick recovery path and the most common one there is
     # (alpha-engine-config-I8105).
-    finalize_alert_lifecycle
-    emit_hygiene_envelope ""
+    finalize_alert_lifecycle ""
     exit 0
 fi
 attempt=1
@@ -2002,8 +2223,7 @@ done
 if [ -z "$confirmed" ]; then
     publish_verdict 0
     publish_unalerted 0
-    finalize_alert_lifecycle
-    emit_hygiene_envelope ""
+    finalize_alert_lifecycle ""
     exit 0
 fi
 
@@ -2033,12 +2253,14 @@ printf 'box_health: confirmed problems after %d samples:\n%s\n' "$attempt" "$con
 #   critical  A product or the box is degraded RIGHT NOW, or a service cannot
 #             come back if it restarts. PUSHES a phone notification.
 #   warning   A declared invariant is breached, or our ability to observe one is
-#             impaired, while nothing is currently degraded. Silent in-channel;
-#             still published to SNS and still emitted onto the Overseer intake
-#             bus, where box-health is a declared alert class with
-#             `intake: bus` / `response: drain-queue`. This tier is DELEGATED,
-#             not discarded.
-#   info      Hygiene about the monitoring itself. Silent, once a day.
+#             impaired, while nothing is currently degraded. CONSOLE ONLY since
+#             alpha-engine-config-I9044 — it reaches the Overseer intake bus
+#             through the drain, which is alive on the freshness-monitor's
+#             event-time leg, and it reaches a human through the console's
+#             fleet-check row rather than through a message in the chat. This
+#             tier is DELEGATED, not discarded, and the channel is still its
+#             fallback when the console cannot be written.
+#   info      Hygiene about the monitoring itself. Console only.
 #
 # WHY THE DEFAULT IS `critical` AND NOT `warning`. classify_problem_severity
 # below is an allow-list of things permitted to be quiet. A problem line that
@@ -2049,10 +2271,12 @@ printf 'box_health: confirmed problems after %d samples:\n%s\n' "$attempt" "$con
 # backstop against a check added in a hurry, not the normal path.
 #
 # WHAT THIS DEPENDS ON, stated because it is the risk the change creates: the
-# `warning` tier reaches Brian only through email and reaches the plane only
-# through the drain. A drain outage therefore converts this tier from "delegated"
-# to "unattended". That coupling is real and is why box-health's own
-# `watchdog:` coverage lines stay in this tier rather than dropping to info.
+# `warning` tier reaches the plane through the drain and reaches a human through
+# the console. A drain outage therefore converts this tier from "delegated" to
+# "console-only", which is why the console row publishes on EVERY run and
+# renders a missing artifact as `unreadable` rather than `ok` — an unobserved
+# surface must not read healthy. That coupling is real and is why box-health's
+# own `watchdog:` coverage lines stay in this tier rather than dropping to info.
 classify_problem_severity() {
     case "$1" in
         # ── info: hygiene about the MONITORING, substantive check still runs ──
@@ -2184,11 +2408,18 @@ aws cloudwatch put-metric-data --namespace "AlphaEngine/Box" \
     "MetricName=timers_without_deadman,Dimensions=[{Name=InstanceId,Value=${INSTANCE_ID}}],Value=$(printf '%s' "$notices" | grep -c 'timer has no dead-man threshold' || true),Unit=Count" \
     2>&1 | head -1 | sed 's/^/box_health: timer-coverage publish failed: /' >&2 || true
 
-# publish_problems SEVERITY DEDUP_MIN PREFIX LINES
+# publish_problems SEVERITY DEDUP_MIN PREFIX LINES [DKEY_OVERRIDE] [DESTINATION]
 # One path for both tiers so they cannot drift apart in formatting, dedup
 # behaviour, or failure reporting.
+#
+# DESTINATION defaults to `channel` and is the routing decision, not a mute
+# switch. `console` means: derive the identity, record the condition in
+# ALERTED_NOW exactly as a channel page does — so its later clear diffs
+# identically and inherits this severity — and hand the publish to
+# finalize_alert_lifecycle, which either renders it on the console or, if that
+# fails, publishes it here after all through publish_page.
 publish_problems() {
-    local severity="$1" dedup_min="$2" prefix="$3" lines="$4" dkey_override="${5:-}"
+    local severity="$1" dedup_min="$2" prefix="$3" lines="$4" dkey_override="${5:-}" destination="${6:-channel}"
     [ -z "$lines" ] && return 0
     local msg dkey p
     mapfile -t _problems <<< "$lines"
@@ -2206,43 +2437,14 @@ publish_problems() {
         # its text.
         dkey="boxhealth-${severity}-$(printf '%s' "${_problems[*]}" | tr ' /' '__' | cut -c1-64)"
     fi
-    # krepis.alerts is the canonical CLI (config#1649): nousergon_lib.alerts is a
-    # re-export shim since lib v0.66.0 — guard-less under `python -m` on 0.81.0
-    # (silent exit-0 no-op, the config#1646 class). Invoke the real module.
-    # A FAILED CRITICAL PUBLISH IS THE ONE THING THE CLOUDWATCH BACKSTOP EXISTS
-    # FOR (alpha-engine-config-I8035), so it is counted here rather than only
-    # written to the journal. Counted in LINES, not in calls: one failed call
-    # can carry several findings, and the metric answers "how many confirmed
-    # criticals did nobody get told about", not "how many publishes failed".
-    # Lower tiers are journal-only as before — a warning that fails to publish
-    # is still on the console via emit_hygiene_envelope.
-    #
-    # LIFECYCLE (alpha-engine-config-I8105). `--state` says whether this page
-    # opens the condition or repeats one the previous tick already carried;
-    # `--identity-key` is what the later clear will reference. The identity is
-    # the dedup key deliberately: krepis treats identity_key as correlation
-    # ONLY and never feeds it back into the dedup check, so the clear can name
-    # a page whose dedup marker is still live without suppressing itself.
-    local _state
-    _state=$(alerted_state_lifecycle "$dkey")
-    # Empty-safe expansion: this script is asserted to run under macOS bash 3.2,
-    # where a bare "${arr[@]}" on an empty array is an unbound-variable error
-    # under `set -u`.
-    local _lifecycle=()
-    if krepis_publish_lifecycle_args; then
-        _lifecycle=(--state "$_state" --identity-key "$dkey")
-    fi
-    if ! "$ALERT_PY" -m krepis.alerts publish \
-        --message "$msg" \
-        --severity "$severity" \
-        --source box-health \
-        --dedup-key "$dkey" \
-        --dedup-window-min "$dedup_min" \
-        ${_lifecycle[@]+"${_lifecycle[@]}"}; then
-        echo "box_health: $severity publish failed" >&2
-        if [ "$severity" = "critical" ]; then
-            UNALERTED_CRITICALS=$((UNALERTED_CRITICALS + ${#_problems[@]}))
-        fi
+    if [ "$destination" = "console" ]; then
+        DEFERRED_PAGE_SEV[${#DEFERRED_PAGE_SEV[@]}]="$severity"
+        DEFERRED_PAGE_WIN[${#DEFERRED_PAGE_WIN[@]}]="$dedup_min"
+        DEFERRED_PAGE_DKEY[${#DEFERRED_PAGE_DKEY[@]}]="$dkey"
+        DEFERRED_PAGE_MSG[${#DEFERRED_PAGE_MSG[@]}]="$msg"
+        DEFERRED_PAGE_COUNT[${#DEFERRED_PAGE_COUNT[@]}]="${#_problems[@]}"
+    else
+        publish_page "$severity" "$dedup_min" "$dkey" "$msg" "${#_problems[@]}" || true
     fi
     # Recorded whatever the publish outcome was: this file remembers which
     # CONDITIONS are standing, not which messages were delivered. Recording
@@ -2369,25 +2571,41 @@ publish_problems critical 60   "health alert" "$criticals"
 # safe: the standing set is visible there continuously with each finding's age,
 # rather than having to be remembered between repeats.
 #
-# WHY THIS TIER IS NOT SIMPLY MOVED OFF THE CHANNEL like the info tier was. Its
-# whole claim to being quiet is that it is DELEGATED, reaching the Overseer
-# intake bus as alert class box-health (intake: bus, response: drain-queue).
-# Measured live 2026-08-20: all four alpha-engine-alert-drain-{0400,1000,1600,
-# 2200}utc schedules are DISABLED under the 2026-08-07 automation pause
-# (alpha-engine-config-I6984). The delegated consumer is not running on a
-# schedule, so removing this tier from the channel would leave it with no reader
-# at all — dressed as consistency with the notice change. Re-examine when the
-# drain is unpaused: alpha-engine-config-I7858.
-publish_problems warning  43200 "budget/coverage finding (no action urgent)" "$warnings"
+# AND IT IS NOW OFF THE CHANNEL TOO — the stated blocker was re-measured and is
+# gone (alpha-engine-config-I9044).
+#
+# WAS: "all four alpha-engine-alert-drain-{0400,1000,1600,2200}utc schedules are
+# DISABLED under the 2026-08-07 automation pause (alpha-engine-config-I6984), so
+# the delegated consumer is not running on a schedule; removing this tier from
+# the channel would leave it with no reader at all."
+#
+# NOW: those four schedules are still DISABLED — and the drain has run daily
+# anyway, because it is dispatched by an EVENT-TIME leg rather than by them.
+# EventBridge rule `alpha-engine-freshness-monitor-cron` (cron(0 12 * * ? *),
+# ENABLED) fires the `alpha-engine-freshness-monitor` Lambda, which invokes
+# `alpha-engine-overseer-dispatcher` with {"playbook":"alert-drain"} on a
+# freshness CRITICAL (alpha-engine-config-I3282; FRESHNESS_MONITOR_DRAIN_
+# DISPATCH_ENABLED=true, verified live; wired at nousergon-data/infrastructure/
+# overseer/playbooks.yaml:192-231). Re-measured 2026-08-28 against the live
+# account: drain_ledger objects under s3://alpha-engine-research/overseer/
+# drain_ledger/ for 2026-08-24T1201Z, 08-25T1201Z, 08-26T1201Z, 08-26T1430Z,
+# 08-27T1202Z and 08-28T1202Z, each with an EC2 spot run log. The delegated
+# consumer is ALIVE, on a different trigger than the one that was measured.
+#
+# So the tier keeps its dedup window and its identity — the fallback still needs
+# both — and the `console` destination hands the publish to
+# finalize_alert_lifecycle. If the console envelope cannot be written, this
+# exact page goes to the channel after all, through publish_page.
+publish_problems warning  43200 "budget/coverage finding (no action urgent)" "$warnings" "" console
 
 # LAST publish_problems above, so ALERTED_NOW is final here: every page this
 # run carried is recorded, and every key that was carried last run and is not
 # carried now gets its terminator. Before publish_unalerted below only because
 # a failed clear is its own series, not a failed critical.
 ALERTED_NOW="${ALERTED_NOW%$'\n'}"
-finalize_alert_lifecycle
 
-# The info tier does NOT publish to krepis.alerts. It goes to the console.
+# Neither lower tier publishes to krepis.alerts. Both go to the console, and so
+# does every clear whose opening page did not buzz.
 #
 # WHY, and why the two previous fixes did not work. The whole three-tier design
 # rested on `info` being invisible to the operator. It is not.
@@ -2409,9 +2627,12 @@ finalize_alert_lifecycle
 # envelope publishes on EVERY run including clean ones, carries ran_at +
 # cadence_minutes so the console marks it STALE if the emitter dies, and renders
 # as `unreadable` -- never `ok` -- when the artifact is missing.
-# Both lower tiers, one surface. `warning` appears here IN ADDITION to its
-# channel publish above, never instead of it; `notice` appears here only.
-emit_hygiene_envelope "$(printf '%s\n%s' "$notices" "$warnings" | grep -v '^$' || true)"
+# Both lower tiers, one surface — and since alpha-engine-config-I9044 it is the
+# only surface either uses, with the channel as their fallback rather than their
+# default. finalize_alert_lifecycle renders these lines together with the run's
+# console-routed clears, and publishes every one of them to the channel instead
+# if the envelope cannot be written.
+finalize_alert_lifecycle "$(printf '%s\n%s' "$notices" "$warnings" | grep -v '^$' || true)"
 
 # LAST, deliberately: every critical publish above has now either landed or
 # failed, so this is the only point at which UNALERTED_CRITICALS is final.

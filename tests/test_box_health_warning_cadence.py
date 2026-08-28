@@ -16,9 +16,19 @@ sufficient: `info`/`warning` are "silent" only in the sense of
 `disable_notification=True`, which suppresses the phone push and not the
 message, so a daily info line still arrived in the chat every day. The `info`
 tier no longer publishes to the channel at all — its findings go to the
-console's fleet-check surface (`emit_box_health_hygiene.py`). `warning` keeps
-its channel publish and its 1440 window, because that tier is the Overseer
-intake bus's declared source.
+console's fleet-check surface (`emit_box_health_hygiene.py`).
+
+**Superseded again 2026-08-28 (alpha-engine-config-I9044).** `warning` kept its
+channel publish on one stated premise: its delegated consumer, the Overseer
+alert-drain, was not running. Re-measured, that premise is false — the drain's
+four EventBridge *schedules* are still disabled and the drain has run daily
+anyway, dispatched by `alpha-engine-freshness-monitor-cron` (ENABLED) through
+the freshness-monitor Lambda (drain_ledger objects for 2026-08-24..08-28). So
+`warning` is console-routed too. **The window survives the move and is still
+asserted below**, because the channel is now the tier's FALLBACK: when the
+console envelope cannot be written, this exact page is published with this
+exact window. A window deleted as "no longer used" would be missing at the one
+moment it matters.
 
 **What makes lowering the cadence safe is the dedup KEY, not the window.**
 `publish_problems` derives the key from the problem SET, so a warning
@@ -86,6 +96,24 @@ class TestTierCadence:
         assert "emit_hygiene_envelope" in src, (
             "the info tier has no channel publish AND no console emitter — "
             "that is suppression, not routing."
+        )
+
+    def test_the_warning_tier_is_console_routed_and_the_window_is_its_fallback(self):
+        """The window is asserted above; this asserts where the page GOES.
+
+        Reading a window off a `publish_problems` line says nothing about its
+        DESTINATION, and destination is the whole of I9044. The behavioural
+        proof — console when the console works, channel when it does not —
+        lives in test_box_health_hygiene_console_routing.py, which runs the
+        shipped shell; this pins the call site those tests would otherwise pass
+        without.
+        """
+        call = re.search(
+            r"^publish_problems\s+warning\s.*$", BOX_HEALTH.read_text(), re.M
+        )
+        assert call and call.group(0).rstrip().endswith("console"), (
+            "the warning tier publishes straight to the operator's channel "
+            f"again: {call.group(0) if call else 'no call site at all'}"
         )
 
     def test_critical_stays_hourly(self):
