@@ -37,6 +37,15 @@ done
 unset _ap
 : "${ALERT_PY:=/home/ec2-user/alpha-engine-dashboard/.venv/bin/python}"
 
+# Same two-candidate resolution as ALERT_PY above (this script runs in
+# place, not snapshotted, but mirrors the pattern rather than assuming
+# $BASH_SOURCE always resolves — see alert_py.sh's comment for why).
+for _gsl in "$(dirname "${BASH_SOURCE[0]}")/lib/git-sync-lock.sh" \
+            /home/ec2-user/alpha-engine-dashboard/infrastructure/lib/git-sync-lock.sh; do
+    if [ -r "$_gsl" ]; then . "$_gsl"; break; fi
+done
+unset _gsl
+
 LOG="/var/log/boot-pull.log"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$LOG"; }
@@ -126,7 +135,14 @@ for repo in "${REPOS[@]}"; do
     log "Pulling $repo ..."
     cd "$repo"
     PREV_SHA=$(git rev-parse HEAD 2>/dev/null || echo "none")
-    if git fetch origin >> "$LOG" 2>&1 && git reset --hard origin/main >> "$LOG" 2>&1; then
+    # Per-checkout flock (config incident 2026-08-27 20:07 UTC, see
+    # infrastructure/lib/git-sync-lock.sh): this loop is one of several
+    # unsynchronised writers against $repo (deploy.yml,
+    # substrate_health_check_daily.sh also touch alpha-engine-dashboard),
+    # and a fetch is itself a git WRITE — it mutates the remote-tracking
+    # ref — so it must take the lock too, not just the reset.
+    _repo_lock="$(git_sync_lock_path "$repo")"
+    if flock -w "$GIT_SYNC_LOCK_WAIT" "$_repo_lock" bash -c 'git fetch origin && git reset --hard origin/main' >> "$LOG" 2>&1; then
         NEW_SHA=$(git rev-parse HEAD 2>/dev/null || echo "none")
         log "OK   $repo — $(git log --oneline -1)"
         if [ "$PREV_SHA" != "$NEW_SHA" ]; then
@@ -439,7 +455,8 @@ if [ -n "$FAILED_UNITS" ]; then
                 log "WARN cannot revert $_repo — no usable previous sha ('$_prev')"
                 continue ;;
         esac
-        if git -C "$_repo" reset --hard "$_prev" >> "$LOG" 2>&1; then
+        _revert_lock="$(git_sync_lock_path "$_repo")"
+        if flock -w "$GIT_SYNC_LOCK_WAIT" "$_revert_lock" git -C "$_repo" reset --hard "$_prev" >> "$LOG" 2>&1; then
             log "REVERT $_repo -> $_prev"
         else
             log "REVERT FAILED $_repo — git reset to $_prev did not apply"

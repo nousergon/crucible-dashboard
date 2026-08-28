@@ -16,9 +16,13 @@ Environment="PATH=/home/ec2-user/morning-signal/.venv/bin:/usr/local/bin:/usr/bi
 # clock) so any merged PR is live on the next podcast regardless of schedule.
 # Best-effort (leading '-'): a transient git/pip blip must never SKIP an
 # episode — it runs last-good code; a genuinely broken merge still surfaces
-# via the generate step + the freshness watchdog.
-ExecStartPre=-/usr/bin/git fetch origin --quiet
-ExecStartPre=-/usr/bin/git reset --hard origin/main
+# via the generate step + the freshness watchdog. KEPT deliberately (not a
+# gap in this fix) — see morning-signal-sync.sh's header and the PR that
+# introduced it (alpha-engine-config incident 2026-08-27 20:07 UTC): the
+# retry inside the script is what now handles the transient case, and a
+# sync failure past that retry still runs silently stale code, tracked
+# separately rather than changed here without Brian's ruling.
+ExecStartPre=-/usr/local/bin/morning-signal-sync.sh /home/ec2-user/morning-signal
 ExecStartPre=-/home/ec2-user/morning-signal/.venv/bin/pip install -e . --quiet
 ExecStart=/home/ec2-user/morning-signal/.venv/bin/python generate_episode.py generate
 StandardOutput=journal

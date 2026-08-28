@@ -8,8 +8,13 @@ Type=oneshot
 User=ec2-user
 Group=ec2-user
 WorkingDirectory=/home/ec2-user/morning-signal
-ExecStart=/usr/bin/git fetch origin
-ExecStart=/usr/bin/git reset --hard origin/main
+# No `-` here: unlike morning-signal.service/-bakeoff.service (best-effort,
+# never skip a scheduled generation), THIS unit's whole job is the sync
+# itself, so a failed sync must fail the unit loud, not run silently
+# stale. morning-signal-sync.sh flocks the checkout, retries the fetch 5x,
+# and asserts origin/main is present before resetting (alpha-engine-config
+# incident 2026-08-27 20:07 UTC — see infrastructure/lib/git-sync-lock.sh).
+ExecStart=/usr/local/bin/morning-signal-sync.sh /home/ec2-user/morning-signal
 ExecStart=/home/ec2-user/morning-signal/.venv/bin/pip install -e . --quiet
 StandardOutput=journal
 StandardError=journal

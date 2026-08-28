@@ -21,6 +21,10 @@ SYSTEMD_SRC="$REPO_INFRA/systemd"
 DROPIN_DST="/etc/systemd/system/morning-signal.service.d"
 RECOVER_SRC="$REPO_INFRA/morning-signal-recover.sh"
 RECOVER_DST="/usr/local/bin/morning-signal-recover.sh"
+SYNC_SRC="$REPO_INFRA/morning-signal-sync.sh"
+SYNC_DST="/usr/local/bin/morning-signal-sync.sh"
+GIT_SYNC_LOCK_SRC="$REPO_INFRA/lib/git-sync-lock.sh"
+GIT_SYNC_LOCK_DST="/usr/local/bin/git-sync-lock.sh"
 
 if [ "$EUID" -ne 0 ]; then
     echo "ERROR: must run as root (sudo)" >&2
@@ -65,6 +69,14 @@ done
 
 install -m 0755 "$RECOVER_SRC" "$RECOVER_DST"
 echo "Installed $RECOVER_DST"
+
+# git-sync-lock.sh installed FLAT alongside morning-signal-sync.sh (not a
+# lib/ subdir) — morning-signal-sync.sh resolves it as a plain sibling when
+# run from this installed location (see its own two-candidate lookup).
+install -m 0644 "$GIT_SYNC_LOCK_SRC" "$GIT_SYNC_LOCK_DST"
+echo "Installed $GIT_SYNC_LOCK_DST"
+install -m 0755 "$SYNC_SRC" "$SYNC_DST"
+echo "Installed $SYNC_DST"
 
 systemctl daemon-reload
 systemctl enable --now morning-signal.timer

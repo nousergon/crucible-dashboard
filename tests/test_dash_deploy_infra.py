@@ -633,6 +633,7 @@ class TestProvisioningScriptRouting:
         "box_hygiene.sh": "payload; installed by install-box-health.sh",
         "deploy-on-merge.sh": "the deploy driver itself; invoked by deploy.yml",
         "morning-signal-recover.sh": "payload; installed by install-morning-signal.sh",
+        "morning-signal-sync.sh": "payload; installed by install-morning-signal.sh (alpha-engine-config incident 2026-08-27 20:07 UTC)",
         "morning-signal-watchdog.sh": "payload; installed by install-morning-signal-watchdog.sh",
         "test_deploy_manifest_gate.sh": "test",
         "test_installer_routing.sh": "test",

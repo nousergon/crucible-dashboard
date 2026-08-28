@@ -39,6 +39,13 @@ done
 unset _ap
 : "${ALERT_PY:=/home/ec2-user/alpha-engine-dashboard/.venv/bin/python}"
 
+# Same two-candidate resolution as ALERT_PY above.
+for _gsl in "$(dirname "${BASH_SOURCE[0]}")/lib/git-sync-lock.sh" \
+            /home/ec2-user/alpha-engine-dashboard/infrastructure/lib/git-sync-lock.sh; do
+    if [ -r "$_gsl" ]; then . "$_gsl"; break; fi
+done
+unset _gsl
+
 REPO_DIR="/home/ec2-user/alpha-engine-dashboard"
 LOG="/var/log/dashboard-deploy.log"
 TARGET_SHA="${1:-HEAD}"
@@ -1041,7 +1048,12 @@ revert_to_last_good() {
     fi
 
     log "REVERT $reason — rolling back $CURRENT_SHA -> $good"
-    sudo -u ec2-user git -C "$REPO_DIR" reset --hard "$good" >>"$LOG" 2>&1 \
+    # Flocked (config incident 2026-08-27 20:07 UTC, see infrastructure/lib/
+    # git-sync-lock.sh): this revert is one of several unsynchronised
+    # writers against $REPO_DIR (the SSM deploy body, boot-pull.sh,
+    # substrate_health_check_daily.sh also touch it).
+    flock -w "$GIT_SYNC_LOCK_WAIT" "$(git_sync_lock_path "$REPO_DIR")" \
+        sudo -u ec2-user git -C "$REPO_DIR" reset --hard "$good" >>"$LOG" 2>&1 \
         || { log "REVERT FAILED: git reset to $good did not apply"; return 1; }
 
     # Re-provision from the reverted tree. Without this the box runs old code

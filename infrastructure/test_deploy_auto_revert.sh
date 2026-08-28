@@ -27,6 +27,13 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEPLOY_SCRIPT="$SCRIPT_DIR/deploy-on-merge.sh"
 
+# revert_to_last_good() now flocks its git write (config incident
+# 2026-08-27 20:07 UTC) — source the real lock-path helper so
+# git_sync_lock_path()/$GIT_SYNC_LOCK_WAIT resolve exactly as they do on
+# the box, while `flock` itself is stubbed below like every other
+# dependency this harness records rather than performs.
+. "$SCRIPT_DIR/lib/git-sync-lock.sh"
+
 FAILURES=0
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
@@ -49,6 +56,7 @@ git() { echo "git $*" >> "$TMP/calls"; return "${STUB_GIT_RC:-0}"; }
 systemctl() { echo "systemctl $*" >> "$TMP/calls"; return 0; }
 sudo() { shift 2; "$@"; }              # `sudo -u ec2-user git ...` -> git ...
 bash() { echo "bash $*" >> "$TMP/calls"; return 0; }
+flock() { shift 3; "$@"; }             # `flock -w N lockpath cmd...` -> cmd...
 eval "$(awk '/^revert_to_last_good\(\) \{/,/^\}/' "$DEPLOY_SCRIPT")"
 declare -F revert_to_last_good >/dev/null || { echo "FAIL - revert_to_last_good() not found"; exit 1; }
 

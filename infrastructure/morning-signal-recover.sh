@@ -51,8 +51,12 @@ export PATH="/home/ec2-user/morning-signal/.venv/bin:/usr/local/bin:/usr/bin:/bi
 cd /home/ec2-user/morning-signal || { echo "ERROR: morning-signal checkout missing" >&2; exit 1; }
 
 # Refresh to latest main (best-effort, like the service's ExecStartPre=-).
-git fetch origin --quiet || echo "WARN: git fetch failed — running last-good code" >&2
-git reset --hard origin/main || echo "WARN: git reset failed — running last-good code" >&2
+# Routed through the shared sync script (flock + fetch retry + origin/main
+# presence check — alpha-engine-config incident 2026-08-27 20:07 UTC, see
+# infrastructure/lib/git-sync-lock.sh) rather than the bare git commands
+# this wrapper used to run directly — this file WAS the third,
+# non-cooperating writer against this checkout the incident's sweep found.
+/usr/local/bin/morning-signal-sync.sh /home/ec2-user/morning-signal || echo "WARN: morning-signal-sync failed — running last-good code" >&2
 /home/ec2-user/morning-signal/.venv/bin/python -m pip install -e . --quiet || echo "WARN: pip install failed — running last-good deps" >&2
 
 echo "morning-signal-recover: generating (no daily-news sweep) ..."

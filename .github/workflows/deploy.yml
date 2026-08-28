@@ -99,7 +99,26 @@ jobs:
           # Not fallback-guarded: systemd-run is present on AL2023 (verified on
           # the box), and a silent fallback to the un-scoped path would restore
           # exactly the accounting hole this closes while reporting success.
-          CMD_BODY="set -e; cd /home/ec2-user/alpha-engine-dashboard && sudo -u ec2-user git fetch origin --quiet && sudo -u ec2-user git reset --hard ${GITHUB_SHA} --quiet && systemd-run --scope --collect --quiet --unit=dash-deploy-${GITHUB_SHA:0:12} bash infrastructure/deploy-on-merge.sh ${GITHUB_SHA}"
+          #
+          # Flocked + retried + a success predicate (alpha-engine-config
+          # incident 2026-08-27 20:07 UTC — see infrastructure/lib/
+          # git-sync-lock.sh for the full class): this deploy's fetch/reset
+          # is one of THREE unsynchronised writers against this same
+          # checkout (boot-pull.sh, substrate_health_check_daily.sh are the
+          # other two), and a fetch is itself a git WRITE whose own ref
+          # update can lose a compare-and-swap race. The lock path is the
+          # literal /tmp/nousergon-git-sync-alpha-engine-dashboard.lock (the
+          # basename-derived path git_sync_lock_path() computes for this
+          # checkout) rather than sourcing the shared lib, because this
+          # command body has no double quotes or backslashes it can spend on
+          # a variable/function call without breaking the JSON `--parameters`
+          # encoding below. The fetch retries up to 5x (10s apart) as
+          # explicit repeated attempts for the same reason — no loop counter
+          # variable. `git cat-file -e <sha>^{commit}` is the explicit
+          # success predicate before the reset: an exhausted retry dies loud
+          # here (set -e stops the `&&` chain) instead of `reset --hard`
+          # silently landing on a stale ref while SSM reports success.
+          CMD_BODY="set -e; cd /home/ec2-user/alpha-engine-dashboard && (sudo -u ec2-user flock -w 150 /tmp/nousergon-git-sync-alpha-engine-dashboard.lock git fetch origin --quiet || (sleep 10 && sudo -u ec2-user flock -w 150 /tmp/nousergon-git-sync-alpha-engine-dashboard.lock git fetch origin --quiet) || (sleep 10 && sudo -u ec2-user flock -w 150 /tmp/nousergon-git-sync-alpha-engine-dashboard.lock git fetch origin --quiet) || (sleep 10 && sudo -u ec2-user flock -w 150 /tmp/nousergon-git-sync-alpha-engine-dashboard.lock git fetch origin --quiet) || (sleep 10 && sudo -u ec2-user flock -w 150 /tmp/nousergon-git-sync-alpha-engine-dashboard.lock git fetch origin --quiet)) && sudo -u ec2-user git cat-file -e ${GITHUB_SHA}^{commit} && sudo -u ec2-user flock -w 150 /tmp/nousergon-git-sync-alpha-engine-dashboard.lock git reset --hard ${GITHUB_SHA} --quiet && systemd-run --scope --collect --quiet --unit=dash-deploy-${GITHUB_SHA:0:12} bash infrastructure/deploy-on-merge.sh ${GITHUB_SHA}"
           CMD_ID=$(aws ssm send-command \
             --instance-ids ${DASHBOARD_INSTANCE_ID} \
             --document-name AWS-RunShellScript \
