@@ -59,6 +59,19 @@ echo "Installed /usr/local/bin/alert_py.sh"
 install -m 0755 "$REPO_INFRA/emit_box_health_hygiene.py" /usr/local/bin/emit_box_health_hygiene.py
 echo "Installed /usr/local/bin/emit_box_health_hygiene.py"
 
+# git-sync-lock.sh travels WITH box_health.sh for the same reason as
+# alert_py.sh and the hygiene emitter above (alpha-engine-config-I8990):
+# check_morning_signal_sync_drift resolves git_sync_state_path() as
+# `$(dirname "$BASH_SOURCE")/lib/git-sync-lock.sh` (in-repo) or
+# `$(dirname "$BASH_SOURCE")/git-sync-lock.sh` (installed, flat) — the same
+# two-candidate pattern install-morning-signal.sh already uses for
+# morning-signal-sync.sh. Installing it here too is idempotent: it is the
+# identical file morning-signal's own installer places at
+# /usr/local/bin/git-sync-lock.sh, just written by whichever installer runs
+# second.
+install -m 0644 "$REPO_INFRA/lib/git-sync-lock.sh" /usr/local/bin/git-sync-lock.sh
+echo "Installed /usr/local/bin/git-sync-lock.sh"
+
 # box-state-backup runs the script from the REPO path (like substrate-health
 # and daily-news) rather than a /usr/local/bin copy: it reads budget.yaml from
 # a path relative to itself, so splitting the two would need a second copy of
