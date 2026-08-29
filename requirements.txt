@@ -90,7 +90,7 @@ jsonschema==4.26.0
     # via altair
 jsonschema-specifications==2025.9.1
     # via jsonschema
-krepis[flow-doctor, openai]==0.59.39
+krepis[flow-doctor, openai]==0.59.42
     # via
     #   -r requirements.in
     #   nousergon-lib
@@ -104,7 +104,7 @@ narwhals==2.24.0
     # via
     #   altair
     #   plotly
-nousergon-lib[flow-doctor, github-app] @ git+https://github.com/nousergon/nousergon-lib@8f79c284592f695ceb4aca18ab8b73c2f9cb89da
+nousergon-lib[flow-doctor, github-app] @ git+https://github.com/nousergon/nousergon-lib@81f618ccad1b9ead1e84ee750014885a5cad25e7
     # via -r requirements.in
 numpy==2.5.1
     # via
