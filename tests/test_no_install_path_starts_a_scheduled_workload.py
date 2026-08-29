@@ -76,148 +76,39 @@ Two gaps this cannot see, named rather than left implicit:
 To close them properly the check has to run against the live systemd
 (`systemctl show <timer> -p Requires`) on the box — which `box_health.sh` could
 carry as a box-side assertion. Not built here.
+
+WHERE THE PARSER LIVES
+----------------------
+`nousergon_lib.systemd_install_guard`, since 2026-08-28. This test grew twins in
+`nousergon-data` and `nous-ergon-ops` the same day, and the twins had already
+fixed shell-noise defects this copy still carried (`>/dev/null.service` and
+`2>.service` reported as unit names) — one behaviour, three implementations,
+two of them ahead of the third. `shared-code-policy`'s second-adoption trigger
+had fired at the second copy; the lift is `alpha-engine-config-I9099`.
+
+What stays HERE is what is repo-specific and must not become a library
+allowlist: the paths, the presence assertions above, this narrative, and the
+failure message that names this repo's fix.
 """
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 import pytest
+from nousergon_lib.systemd_install_guard import (
+    load_units,
+    may_start,
+    scheduled_workloads,
+    start_closure,
+    started_units,
+    violations,
+)
 
 INFRA = Path(__file__).resolve().parents[1] / "infrastructure"
 SYSTEMD = INFRA / "systemd"
 
-# systemctl verbs that cause a unit to be ACTIVATED. `enable` alone and
-# `daemon-reload` do not, which is why they are absent.
-_START_RE = re.compile(
-    r"systemctl\s+(?P<flags>(?:--\S+\s+)*)"
-    r"(?P<verb>start|restart|enable|reload-or-restart|try-restart)\s+"
-    r"(?P<rest>[^\n;|&)]*)"
-)
-_DEP_KEYS = ("Requires", "Requisite", "BindsTo", "Wants")
-
-
-def _sections(text: str) -> dict[str, list[str]]:
-    """Split a unit file into {section: [lines]}, ignoring comments."""
-    out: dict[str, list[str]] = {}
-    current = ""
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith(("#", ";")):
-            continue
-        if line.startswith("[") and line.endswith("]"):
-            current = line[1:-1]
-            out.setdefault(current, [])
-            continue
-        out.setdefault(current, []).append(line)
-    return out
-
-
-def _directive(lines: list[str], key: str) -> list[str]:
-    vals: list[str] = []
-    for line in lines:
-        k, _, v = line.partition("=")
-        if k.strip() == key:
-            vals.extend(v.split())
-    return vals
-
-
-def _load_units() -> dict[str, dict[str, list[str]]]:
-    """Every unit this repo installs, with its drop-ins merged in."""
-    units: dict[str, dict[str, list[str]]] = {}
-    for path in sorted(SYSTEMD.glob("*")):
-        if path.is_dir() or path.suffix not in (".service", ".timer"):
-            continue
-        units[path.name] = _sections(path.read_text())
-    for dropin_dir in sorted(SYSTEMD.glob("*.service.d")):
-        target = units.setdefault(dropin_dir.name[: -len(".d")], {})
-        for conf in sorted(dropin_dir.glob("*.conf")):
-            for section, lines in _sections(conf.read_text()).items():
-                target.setdefault(section, []).extend(lines)
-    return units
-
-
-UNITS = _load_units()
-
-
-def _triggered_service(timer: str, sections: dict[str, list[str]]) -> str:
-    explicit = _directive(sections.get("Timer", []), "Unit")
-    if explicit:
-        return explicit[-1]
-    return timer[: -len(".timer")] + ".service"
-
-
-def _scheduled_workloads() -> set[str]:
-    """Type=oneshot services that a timer in this repo exists to trigger."""
-    out = set()
-    for name, sections in UNITS.items():
-        if not name.endswith(".timer"):
-            continue
-        target = _triggered_service(name, sections)
-        target_sections = UNITS.get(target)
-        if target_sections is None:
-            continue
-        if "oneshot" in _directive(target_sections.get("Service", []), "Type"):
-            out.add(target)
-    return out
-
-
-def _normalise(token: str) -> str | None:
-    token = token.strip().strip("\"'")
-    if not token or token.startswith("-") or "$" in token or "*" in token:
-        return None
-    if "." not in token.rsplit("/", 1)[-1]:
-        return token + ".service"
-    return token
-
-
-# A `systemctl` inside an `echo`/`printf`/`log` is operator guidance printed at
-# the end of an installer ("Run now: sudo systemctl start x.service"), not
-# something the script does. Six of this repo's installers carry one, and
-# reading them as executions is how a guard cries wolf until it is deleted.
-_QUOTED_RE = re.compile(r"\b(echo|printf|log|cat)\b")
-
-
-def _started_units(script: Path) -> set[str]:
-    """Units the script activates, by source text."""
-    started: set[str] = set()
-    for line in script.read_text().splitlines():
-        if line.lstrip().startswith("#"):
-            continue
-        for match in _START_RE.finditer(line):
-            prefix = line[: match.start()]
-            if _QUOTED_RE.search(prefix):
-                continue
-            verb = match.group("verb")
-            flags = match.group("flags") or ""
-            rest = match.group("rest")
-            if verb == "enable" and "--now" not in flags and "--now" not in rest:
-                continue
-            for token in rest.split():
-                unit = _normalise(token)
-                if unit:
-                    started.add(unit)
-    return started
-
-
-def _start_closure(unit: str) -> set[str]:
-    """`unit` plus everything starting it pulls in, per this repo's units."""
-    seen: set[str] = set()
-    stack = [unit]
-    while stack:
-        current = stack.pop()
-        if current in seen:
-            continue
-        seen.add(current)
-        sections = UNITS.get(current)
-        if sections is None:
-            continue
-        for key in _DEP_KEYS:
-            for dep in _directive(sections.get("Unit", []), key):
-                if dep.endswith((".service", ".timer")) and dep not in seen:
-                    stack.append(dep)
-    return seen
+UNITS = load_units(SYSTEMD)
 
 
 def _install_paths() -> list[Path]:
@@ -226,14 +117,9 @@ def _install_paths() -> list[Path]:
     return [p for p in paths if p.exists()]
 
 
-def _may_start(unit: str) -> bool:
-    sections = UNITS.get(unit, {})
-    return "yes" in _directive(sections.get("Unit", []), "X-InstallMayStart")
-
-
 def test_the_repo_still_has_scheduled_workloads_to_protect():
     """Guard against the guard silently covering nothing."""
-    workloads = _scheduled_workloads()
+    workloads = scheduled_workloads(UNITS)
     assert "morning-signal-bakeoff.service" in workloads, workloads
     assert "morning-signal.service" in workloads, workloads
     assert len(workloads) >= 8, workloads
@@ -243,20 +129,31 @@ def test_install_paths_are_parsed_at_all():
     """Guard against a regex that matches nothing reporting a clean sweep."""
     paths = _install_paths()
     assert len(paths) >= 10, paths
-    assert any(_started_units(p) for p in paths)
+    assert any(started_units(p) for p in paths)
     installer = INFRA / "install-morning-signal.sh"
-    assert "morning-signal.timer" in _started_units(installer)
+    assert "morning-signal.timer" in started_units(installer)
+
+
+def test_no_reported_unit_name_is_shell_noise():
+    """Every name the parser reports must look like a unit, in every installer.
+
+    This is the assertion the pre-lift copy in THIS repo could not make: it
+    reported `>/dev/null.service` and `2>.service` out of
+    `systemctl enable --now x.timer >/dev/null 2>&1 || true`. Verdict-neutral,
+    and exactly the garbage that gets a guard argued with the day it fires.
+    """
+    noise = {
+        unit
+        for script in _install_paths()
+        for unit in started_units(script)
+        if not unit.endswith((".timer", ".service")) or set("<>&|#") & set(unit)
+    }
+    assert not noise, sorted(noise)
 
 
 @pytest.mark.parametrize("script", _install_paths(), ids=lambda p: p.name)
 def test_no_install_path_starts_a_scheduled_workload(script: Path):
-    workloads = _scheduled_workloads()
-    offenders: dict[str, set[str]] = {}
-    for unit in _started_units(script):
-        pulled = _start_closure(unit) & workloads
-        pulled = {u for u in pulled if not _may_start(u)}
-        if pulled:
-            offenders[unit] = pulled
+    offenders = violations(script, UNITS)
     assert not offenders, (
         f"{script.name} activates a scheduled workload off-schedule: "
         + "; ".join(
@@ -274,12 +171,12 @@ def test_no_install_path_starts_a_scheduled_workload(script: Path):
 
 def test_every_install_may_start_declaration_is_still_exercised():
     """A declaration nobody uses is a stale allowlist entry, not a rationale."""
-    declared = {u for u in UNITS if _may_start(u)}
+    declared = {u for u in UNITS if may_start(u, UNITS)}
     assert declared, "the escape hatch has no users — did the key get renamed?"
     started: set[str] = set()
     for script in _install_paths():
-        for unit in _started_units(script):
-            started |= _start_closure(unit)
+        for unit in started_units(script):
+            started |= start_closure(unit, UNITS)
     unused = declared - started
     assert not unused, (
         f"X-InstallMayStart=yes declared on {sorted(unused)} but no install or "
