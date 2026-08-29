@@ -2847,6 +2847,113 @@ def load_champion_leaderboard(date: str) -> dict | None:
     return download_s3_json(_research_bucket(), f"{_CHAMPION_LEADERBOARD_PREFIX}{date}.json")
 
 
+# --- Scanner champion/challenger slots (alpha-engine-config-I9278) ---------
+#
+# TWO SLOTS, both written by crucible-research, both on the ONE frozen record
+# shape in crucible-research/contracts/scanner_cut_champion.schema.json:
+#
+#   scanner_cut   config/scanner_cut_champion.json                (live pointer)
+#                 config/apply_audit/scanner_cut_champion/{date}.json
+#                 config/apply_audit/scanner_cut_champion/latest.json
+#                 producer: crucible-research scoring/cut_promotion.py
+#   scanner_spec  config/scanner_spec_champion.json               (live pointer)
+#                 config/apply_audit/scanner_spec_champion/{date}.json
+#                 config/apply_audit/scanner_spec_champion/latest.json
+#                 producer: crucible-research scoring/spec_promotion.py
+#                 (alpha-engine-config-I9273 — no records written yet; its
+#                 absence renders as NEVER_RAN, never as an empty pane)
+#
+# DISTINCT from the producer-champion block above (config/producer_champion.json,
+# crucible-backtester's executor selection-path switch) and from the scanner
+# ABLATION leaderboard at scanner/leaderboard/ — champion-challenger-policy.md
+# §2: slots are separate axes and conflating them is a defect.
+#
+# The keys are addressed through loaders/scanner_champion.py::SLOTS rather than
+# named here per call site, so onboarding the spec slot's records costs zero
+# console edits (console-policy.md §2.6).
+
+_CUTS_WEEKLY_LEDGER_KEY = "research/cuts_weekly_ledger/ledger.parquet"
+
+
+@cached(ttl_key="research")
+def load_slot_champion_pointer(pointer_key: str) -> dict | None:
+    """Live pointer for a scanner champion/challenger slot. The pointer IS the
+    latest decision record (one shape, three keys — see the contract's own
+    ``description``). None when the slot has never written one: an honest
+    absence, never defaulted to a guessed champion here."""
+    return download_s3_json(_research_bucket(), pointer_key)
+
+
+@cached(ttl_key="research")
+def list_slot_audit_dates(audit_prefix: str) -> list[str]:
+    """Sorted decided_on dates under a slot's apply-audit prefix. Written
+    UNCONDITIONALLY on every evaluation, promote or hold — this listing IS the
+    slot's own decision history, and its emptiness is a fact about the engine,
+    not about the reader."""
+    return _list_dated_json_keys(audit_prefix)
+
+
+@cached(ttl_key="research")
+def load_slot_audit(audit_prefix: str, date: str) -> dict | None:
+    """One dated decision record for a slot."""
+    return download_s3_json(_research_bucket(), f"{audit_prefix}{date}.json")
+
+
+@cached(ttl_key="research")
+def load_slot_audit_latest(audit_prefix: str) -> dict | None:
+    """A slot's ``latest.json`` liveness mirror, fetched at the mirror key
+    rather than via the dated listing — the two disagree exactly when the
+    engine has stopped, which is the condition this key exists to expose
+    (SCANNER_CONTRACT.md §1: a dead engine must not read as an engine that
+    held)."""
+    return download_s3_json(_research_bucket(), f"{audit_prefix}latest.json")
+
+
+@cached(ttl_key="research")
+def load_slot_audit_latest_written_at(audit_prefix: str) -> str | None:
+    """S3 ``LastModified`` of a slot's ``latest.json``, ISO-8601 UTC.
+
+    A fallback as-of for the liveness claim ONLY — the record's own
+    ``generated_at`` is preferred, because §5.1 wants when the fact was true
+    rather than when an object happened to be written. Returns None when the
+    key is absent, which the caller renders as absence rather than as age 0."""
+    bucket = _research_bucket()
+    key = f"{audit_prefix}latest.json"
+    try:
+        head = get_s3_client().head_object(Bucket=bucket, Key=key)
+    except Exception as e:  # noqa: BLE001 — recorded, then rendered as absence
+        logger.info("head_object failed for %s/%s: %s", bucket, key, e)
+        _record_s3_error(bucket, key, type(e).__name__, str(e))
+        return None
+    stamp = head.get("LastModified")
+    return stamp.isoformat() if stamp is not None else None
+
+
+@cached(ttl_key="research")
+def load_cuts_weekly_ledger() -> pd.DataFrame | None:
+    """The universe-cut slot's append-only weekly performance ledger.
+
+    ONE object holding the WHOLE series (crucible-research
+    scoring/weekly_ledger.py::LEDGER_KEY) — read whole, never per-week keys,
+    and never written from here (this repo is read-only against S3).
+
+    Returns None when the object is absent or unparseable; an EMPTY frame when
+    the object exists and holds no rows. Those are different facts and
+    champion-challenger-policy.md §7.2 forbids rendering them identically, so
+    they are not collapsed here either."""
+    raw = _s3_get_object(_research_bucket(), _CUTS_WEEKLY_LEDGER_KEY)
+    if raw is None:
+        return None
+    try:
+        return pd.read_parquet(io.BytesIO(raw))
+    except Exception as e:  # noqa: BLE001 — recorded, then rendered as a defect
+        logger.warning("cuts weekly ledger parquet parse failed: %s", e)
+        _record_s3_error(
+            _research_bucket(), _CUTS_WEEKLY_LEDGER_KEY, "ParquetParseError", str(e)
+        )
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Daily closes — L1 cross-source agreement annotations (config#2458 / L4)
 # ---------------------------------------------------------------------------
