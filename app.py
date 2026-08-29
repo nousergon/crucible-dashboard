@@ -536,7 +536,22 @@ def _build_navigation():
             # Champion/challenger ablation ledgers (ARCH §37, config#1685):
             # producer ablation (agentic vs no_agent/single_agent) + scanner
             # ablation (live vs momentum_sleeve). Observe-only leaderboards.
-            page("46_Experiments.py", "Ablations", "⚗"),
+            #
+            # url_path pinned to "experiments" — the weekly research
+            # champion/challenger verdict email deep-links to
+            # …/experiments?date=YYYY-MM-DD
+            # (crucible-backtester optimizer/champion_digest.py::EXPERIMENTS_SLUG).
+            # Standalone st.Page for the same reason analysis / director /
+            # model-zoo / eod-report are: url_path is an st.Page-only attribute,
+            # so the helper cannot own a pinned slug. Guarded by
+            # tests/test_experiments_page.py. Before this pin the page's slug
+            # was Streamlit's filename default ("46_Experiments"), which no
+            # test held and which a rename would have moved silently — the one
+            # console surface carrying the verdict had no linkable address.
+            st.Page(
+                "views/46_Experiments.py", title="Ablations", icon="⚗",
+                url_path="experiments",
+            ),
         ],
         "🩺 System & Ops": [
             # Real-time fleet grid (30s st.fragment auto-refresh): every
