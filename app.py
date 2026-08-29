@@ -552,6 +552,26 @@ def _build_navigation():
                 "views/46_Experiments.py", title="Ablations", icon="⚗",
                 url_path="experiments",
             ),
+            # The SCANNER CUT champion/challenger slot (alpha-engine-config-I9278)
+            # — which universe cut feeds the sector teams, what the weekly
+            # promotion engine decided, why, and whether the engine is still
+            # running at all. A DIFFERENT slot from the Ablations page's
+            # "Champion loop" tab (that one is the backtester's executor
+            # selection-path switch); champion-challenger-policy.md §2 forbids
+            # conflating two slots on one axis.
+            #
+            # url_path pinned to "scanner-champion" — the weekly verdict line
+            # (crucible-research scoring/verdict_digest.py) deep-links here, and
+            # before the pin the slug would have been Streamlit's filename
+            # default, which no test held and a rename would have moved
+            # silently: the exact defect crucible-dashboard-PR802 fixed on the
+            # neighbouring page. Standalone st.Page because url_path is an
+            # st.Page-only attribute. Guarded by
+            # tests/test_scanner_champion_pane.py.
+            st.Page(
+                "views/56_Scanner_Champion.py", title="Scanner Champion", icon="⚖",
+                url_path="scanner-champion",
+            ),
         ],
         "🩺 System & Ops": [
             # Real-time fleet grid (30s st.fragment auto-refresh): every
