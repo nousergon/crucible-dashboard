@@ -160,7 +160,13 @@ class TestPageWiring:
         assert "scanner/leaderboard/" in src
         assert "signals_shadow/no_agent_quant/" in src
         assert "signals_shadow/single_agent_quant/" in src
-        assert "candidates_shadow/momentum_sleeve/" in src
+        # NOT a literal arm name (alpha-engine-config-I9280): the scanner
+        # slot's arms are resolved from the board, so pinning a name here is
+        # what let the list go stale through a champion cutover. Pin the
+        # RESOLUTION instead.
+        assert "candidates_shadow/{name}/" in src
+        assert "challenger_cohort_prefixes" in src
+        assert "_SCANNER_COHORT_PREFIXES" not in src
         # Honest empty state: the page must distinguish maturing from broken.
         assert "matur" in src.lower()
 
