@@ -1,0 +1,56 @@
+# .provider-linkage-allowlist.yaml — pre-cleared provider-linkage matches
+# (alpha-engine-config-I9295, spine I9294 — Brian's 2026-08-29 ruling: the
+# entire nous ergon system runs through the krepis router). Schema:
+# nousergon-lib scripts/provider_linkage_guard.py::load_allowlist. Replaces
+# the retired .openrouter-allowlist.yaml (narrower schema, openrouter-only).
+schema_version: 1
+entries:
+  - path: infrastructure/systemd/resource-limits/budget.yaml
+    pattern: "deepseek:base_url"
+    reason: >-
+      Router-infra config describing the ANTHROPIC-WIRE/DeepSeek-wire tenant
+      of the shared multi-tenant egress proxy (I7681) -- the note explains
+      why a second systemd unit exists for the same host, it is not a call
+      site.
+    expires: "2026-11-27"
+    tracking: alpha-engine-config-I9295
+  - path: live/morning_brief.py
+    pattern: "anthropic:sdk_client"
+    reason: >-
+      Module docstring narrating the RETIRED direct-Anthropic shape
+      (alpha-engine-config-I2997, migrated 2026-07-19; live-verified dead in
+      production even before the migration). Not a live call site -- the
+      module now calls krepis.router.resolve_group_spec exclusively.
+    expires: "2026-11-27"
+    tracking: alpha-engine-config-I9295
+  - path: live/morning_brief.py
+    pattern: "anthropic:env_key"
+    reason: >-
+      Same docstring narrative as the entry above -- describes the retired
+      st.secrets["anthropic"]["ANTHROPIC_API_KEY"] read, not a live read.
+    expires: "2026-11-27"
+    tracking: alpha-engine-config-I9295
+  - path: tests/test_expenses_page.py
+    pattern: "deepseek:base_url"
+    reason: >-
+      Test fixture mocking the expense-collector's DeepSeek billing-error
+      message string ("HTTP 500 from api.deepseek.com") -- billing telemetry
+      display, not an LLM call site.
+    expires: "2026-11-27"
+    tracking: alpha-engine-config-I9295
+  - path: tests/test_no_secret_environ_reads.py
+    pattern: "anthropic:env_key"
+    reason: >-
+      _PINNED_SECRETS asserts ANTHROPIC_API_KEY is NEVER read via
+      os.environ.get/getenv anywhere in the tree -- a regression test for
+      the literal's absence, same shape as nousergon-data's identical entry.
+    expires: "2026-11-27"
+    tracking: alpha-engine-config-I9295
+  - path: tests/test_no_secret_environ_reads.py
+    pattern: "openrouter:env_key"
+    reason: >-
+      Same _PINNED_SECRETS shape as the entry above, for OPENROUTER_API_KEY
+      (pinned 2026-07-19 alongside the morning_brief.py OpenRouter
+      migration, I2997) -- a regression test for the literal's absence.
+    expires: "2026-11-27"
+    tracking: alpha-engine-config-I9295
