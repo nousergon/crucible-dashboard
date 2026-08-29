@@ -310,8 +310,18 @@ class TestLibVersionPin:
             "nousergon_lib import alias still works via the shim)"
         )
         assert "@main" not in text, "nousergon-lib must be pinned to a tag, not @main"
-        assert "@v0.124.94" in text, (
-            "nousergon-lib should pin to v0.124.94 -- registers the weekly SF's new NormalizeRunDates state (alpha-engine-config-I8809, nousergon-lib#362): the dual-write normalization of $.run_date at graph entry; nousergon-data's sf-stage-consumer-guard installs THIS repo's requirements.txt, so nousergon-data#1556 cannot go green until this bump merges (the same cross-repo gate the v0.124.86 entry below describes). Prior: v0.124.88 -- PublishAggregateCostsDegraded "
+        assert "@v0.124.96" in text, (
+            "nousergon-lib should pin to v0.124.96 -- adds "
+            "nousergon_lib.systemd_install_guard, the install-start-dependency "
+            "parser tests/test_no_install_path_starts_a_scheduled_workload.py in "
+            "THIS repo now imports rather than defining (alpha-engine-config-I9099 "
+            "/ I9215, nousergon-lib#368). Without this pin that guard fails at "
+            "import and collects zero tests. The lifted parser is the UNION of the "
+            "three copies cut 2026-08-28: this repo held the origin, and the twins "
+            "in nousergon-data and nous-ergon-ops had already fixed shell noise it "
+            "still reported (`>/dev/null.service`, `2>.service`), so the bump is "
+            "also the fix for this repo's guard output. "
+            "Prior: v0.124.94 -- registers the weekly SF's new NormalizeRunDates state (alpha-engine-config-I8809, nousergon-lib#362): the dual-write normalization of $.run_date at graph entry; nousergon-data's sf-stage-consumer-guard installs THIS repo's requirements.txt, so nousergon-data#1556 cannot go green until this bump merges (the same cross-repo gate the v0.124.86 entry below describes). Prior: v0.124.88 -- PublishAggregateCostsDegraded "
             "(alpha-engine-config-I8336). THIRD RECURRENCE of the class this "
             "docstring already names twice: crucible-dashboard#775 bumped "
             "requirements.txt's SHA to the v0.124.88 release commit and left "
