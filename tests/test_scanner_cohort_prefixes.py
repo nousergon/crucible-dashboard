@@ -18,7 +18,6 @@ tell a correct constant from a stale one.
 
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
