@@ -13,9 +13,14 @@ Experiments rendered (one tab each; more join as substrates ship):
   ``single_agent_quant`` (one Sonnet call) — "does the agentic layer earn its
   keep?" Cohorts: ``signals_shadow/{producer}/``; leaderboard:
   ``research/producer_leaderboard/``.
-- Scanner ablation (config#1221): the live scanner vs the ``momentum_sleeve``
-  challenger. Cohorts: ``candidates_shadow/{spec}/``; leaderboard:
-  ``scanner/leaderboard/``.
+- Scanner ablation (config#1221): the scanner SPEC slot — the live candidate
+  ranking (champion, ``momentum_sleeve`` since the 2026-07-22 config#1186
+  cutover) vs every registered challenger, today ``tech_score_gate`` (the
+  displaced incumbent) and ``mom_12_1_sleeve`` (the horizon challenger).
+  Cohorts: ``candidates_shadow/{spec}/`` for challengers, the live
+  ``candidates/`` prefix for the champion; leaderboard:
+  ``scanner/leaderboard/``. The arm list is resolved from the board, never
+  from a constant here (alpha-engine-config-I9280).
 - Champion loop (config#2364/#2367/#2369): NOT observe-only like the two
   tabs above — this is the GATED executor selection-path switch
   (``scanner_predictor_direct`` vs ``thinktank_coverage`` — the retired
@@ -44,6 +49,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pandas as pd
 import streamlit as st
 
+from loaders.cohort_prefixes import challenger_cohort_prefixes
 from loaders.s3_loader import (
     list_champion_audit_dates,
     list_champion_leaderboard_dates,
@@ -70,9 +76,16 @@ _PRODUCER_COHORT_PREFIXES = {
     # it belongs in the same cohort/maturity accounting.
     "thinktank_coverage": "signals_shadow/thinktank_coverage/",
 }
-_SCANNER_COHORT_PREFIXES = {
-    "momentum_sleeve": "candidates_shadow/momentum_sleeve/",
-}
+# The scanner slot's arms are resolved from the BOARD, never from a constant
+# (alpha-engine-config-I9280). A hardcoded list here went stale twice: the
+# 2026-07-22 `config#1186` cutover made `momentum_sleeve` the CHAMPION — so it
+# correctly stopped writing `candidates_shadow/` on 2026-08-20 and this tab has
+# rendered an empty, permanently-stalling series for it since — and the
+# 2026-08-20 register repair (alpha-engine-config-I7808) added `tech_score_gate`
+# and `mom_12_1_sleeve`, neither of which this page has ever shown.
+# champion-challenger-policy.md §7.5: a view names the arm, never a literal that
+# goes stale when the champion changes.
+_SCANNER_COHORT_PREFIX_TMPL = "candidates_shadow/{name}/"
 
 _METRIC_COLUMNS = {
     "name": "Spec",
@@ -422,13 +435,41 @@ def _render_champion_loop() -> None:
                 st.json(picked)
 
 
+def _challenger_cohort_prefixes(lb_prefix: str, lb_dates: list[str], tmpl: str) -> dict[str, str]:
+    """The newest board's challenger prefixes (alpha-engine-config-I9280).
+
+    The resolution itself lives in ``loaders.cohort_prefixes`` so it is
+    importable without a Streamlit runtime and carries a behavioural test;
+    this wrapper only supplies the board.
+    """
+    if not lb_dates:
+        return {}
+    return challenger_cohort_prefixes(load_leaderboard(lb_prefix, lb_dates[-1]), tmpl)
+
+
 def _render_experiment(
-    *, title: str, blurb: str, lb_prefix: str, cohort_prefixes: dict[str, str],
+    *,
+    title: str,
+    blurb: str,
+    lb_prefix: str,
+    cohort_prefixes: dict[str, str] | None = None,
+    cohort_prefix_tmpl: str | None = None,
 ) -> None:
     st.subheader(title)
     st.caption(blurb)
 
     lb_dates = list_leaderboard_dates(lb_prefix)
+    if cohort_prefixes is None:
+        if cohort_prefix_tmpl is None:
+            raise ValueError(
+                "_render_experiment needs exactly one of cohort_prefixes or "
+                "cohort_prefix_tmpl — a tab with neither would render an empty "
+                "cohort table that is indistinguishable from an arm emitting "
+                "nothing"
+            )
+        cohort_prefixes = _challenger_cohort_prefixes(
+            lb_prefix, lb_dates, cohort_prefix_tmpl
+        )
     cohorts = _cohort_frame(cohort_prefixes)
     n_matured = int((cohorts["Status"] == "matured").sum()) if not cohorts.empty else 0
 
@@ -501,16 +542,20 @@ with producer_tab:
 
 with scanner_tab:
     _render_experiment(
-        title="Scanner champion vs momentum sleeve",
+        title="Scanner candidate ranking — champion vs challengers",
         blurb=(
-            "config#1221 — the live scanner (champion candidate feed) vs the "
-            "momentum_sleeve challenger, scored on the scanner's own long-only "
-            "top-N objective. The attractiveness-feed counterfactual "
+            "config#1221 — the scanner SPEC slot. The champion is whichever arm "
+            "`crucible-research/data/scanner_specs.py::LIVE_CHAMPION` names "
+            "(`momentum_sleeve` since the 2026-07-22 config#1186 cutover); the "
+            "challengers are read off the board itself, so a promotion moves "
+            "this tab with no dashboard edit. Every arm holds eligibility, "
+            "width and clock constant and varies only the ranking signal. The "
+            "attractiveness-feed counterfactual "
             "(scanner_factor_counterfactual) is scored separately in the weekly "
             "e2e_lift artifact."
         ),
         lb_prefix=_SCANNER_LB_PREFIX,
-        cohort_prefixes=_SCANNER_COHORT_PREFIXES,
+        cohort_prefix_tmpl=_SCANNER_COHORT_PREFIX_TMPL,
     )
 
 with champion_tab:
