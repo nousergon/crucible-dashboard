@@ -530,3 +530,38 @@ class TestBlockedBySlugContractParity:
             "needs re-checking against the new shape."
         )
         assert "object" in arm_confidence["type"]
+
+
+class TestSlugContract:
+    """The weekly RESEARCH champion/challenger verdict email
+    (``crucible-backtester optimizer/champion_digest.py::EXPERIMENTS_SLUG``)
+    deep-links to ``…/experiments?date=YYYY-MM-DD``. Mirrors
+    ``test_analysis_page.py::TestSlugContract``.
+
+    Before this pin the page carried Streamlit's filename-derived default slug
+    ("46_Experiments"), held by no test — so the ONLY console surface rendering
+    the champion/challenger verdict had no stable address to link to, and a
+    file rename would have moved it silently.
+    """
+
+    # Must equal the producer slug in crucible-backtester
+    # optimizer/champion_digest.EXPERIMENTS_SLUG.
+    EXPECTED_SLUG = "experiments"
+
+    def test_app_pins_experiments_url_path(self):
+        app_src = (Path(__file__).parent.parent / "app.py").read_text()
+        assert f'url_path="{self.EXPECTED_SLUG}"' in app_src
+
+    def test_the_slug_is_pinned_on_the_experiments_page_itself(self):
+        """A repo-wide substring match would pass on ANY page pinning this
+        slug. Assert the pin sits in the same ``st.Page`` block as the
+        Experiments view file."""
+        app_src = (Path(__file__).parent.parent / "app.py").read_text()
+        block = re.search(
+            r'st\.Page\(\s*"views/46_Experiments\.py".*?\)', app_src, re.S,
+        )
+        assert block is not None, "46_Experiments.py is no longer a standalone st.Page"
+        assert f'url_path="{self.EXPECTED_SLUG}"' in block.group(0)
+
+    def test_page_file_exists(self):
+        assert (Path(__file__).parent.parent / "views" / "46_Experiments.py").exists()
