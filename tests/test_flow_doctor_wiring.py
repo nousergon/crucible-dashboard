@@ -310,22 +310,8 @@ class TestLibVersionPin:
             "nousergon_lib import alias still works via the shim)"
         )
         assert "@main" not in text, "nousergon-lib must be pinned to a tag, not @main"
-        assert "@81f618ccad1b9ead1e84ee750014885a5cad25e7" in text, (
-            "alpha-engine-config-I9329: INTERIM pin to nousergon-lib-PR376's "
-            "branch HEAD commit, not a released tag -- nousergon-lib's version "
-            "is a merge-time autobump, so the tag this PR lands on cannot be "
-            "known before it merges. A raw commit SHA is exactly as immutable "
-            "as a tag (more so: a tag can be force-moved; this guard's own "
-            "concern is immutability, which a commit satisfies directly). "
-            "This line and this assertion MUST be re-pointed to the real "
-            "vX.Y.Z tag nousergon-lib main resolves to BEFORE this PR merges "
-            "-- see the PR body's merge-order precondition "
-            "(`git -C nousergon-lib branch -r --contains "
-            "81f618ccad1b9ead1e84ee750014885a5cad25e7`). "
-            "Was pinned to v0.124.96 -- see git blame on this line for the "
-            "full prior-pin history (each entry named the nousergon-lib PR, "
-            "the registry/pipeline_status states it added, and the cross-repo "
-            "gate it cleared); trimmed here rather than carried forward "
-            "verbatim to keep this docstring from growing unbounded across "
-            "every future pin bump."
+        assert "@v0.124.102" in text, (
+            "nousergon-lib must be pinned to a released tag (I7301/I9329): "
+            "LibPinDriftCheck reads requirements.in and sha_pinned degrades "
+            "every weekly-SF run."
         )
