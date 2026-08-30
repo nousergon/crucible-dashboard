@@ -237,26 +237,11 @@ krepis[openai]>=0.59.39
 # bump also removes `>/dev/null.service` and `2>.service` from this repo's guard
 # output. Without the bump the import fails and the guard collects zero tests.
 #
-# alpha-engine-config-I9329 (eval-judge spot cutover): nousergon-lib#376 adds
-# DispatchEvalJudgeSpot to pipeline_status.registry.STATE_TO_ARCHIVE_PAGE
-# (+ its WaitForEvalJudgeSpotBootstrap/WaitForEvalJudgeProcess WAIT_GROUPING
-# rows), replacing the retired EvalJudgePoll lambda:invoke entry -- required
-# by nousergon-data's sf-stage-consumer-guard before the matching SF states'
-# nousergon-data PR can merge (the same cross-repo gate the v0.124.86 entry
-# above describes).
-#
-# INTERIM PIN, NOT A RELEASED TAG: nousergon-lib's version is a merge-time
-# autobump (nousergon-lib#376's own CI job "version untouched by PRs"), so
-# the tag this bump will land on cannot be known before Brian merges that PR.
-# Pinned here to nousergon-lib#376's branch HEAD commit instead of a tag as
-# an explicit, stated exception to "pinned to a tag, not the floating main ref" -- a commit
-# SHA is exactly as immutable as a tag and strictly more so (a tag can be
-# force-moved; nothing here does, but the guard's own reasoning is
-# immutability, which a raw commit satisfies directly). THIS LINE MUST BE
-# RE-POINTED to the actual v0.125.x tag nousergon-lib#376 lands as BEFORE
-# this PR merges -- see the PR body's merge-order precondition. Check with:
-#   git -C nousergon-lib branch -r --contains 81f618ccad1b9ead1e84ee750014885a5cad25e7
-nousergon-lib[flow-doctor,github_app] @ git+https://github.com/nousergon/nousergon-lib@81f618ccad1b9ead1e84ee750014885a5cad25e7
+# alpha-engine-config-I9329 (eval-judge spot cutover): v0.124.102 carries
+# DispatchEvalJudgeSpot + WaitForEvalJudge* WAIT_GROUPING rows (nousergon-lib#376).
+# Repointed from interim SHA pin (I7301) so LibPinDriftCheck can resolve the
+# dashboard pin from requirements.in.
+nousergon-lib[flow-doctor,github_app] @ git+https://github.com/nousergon/nousergon-lib@v0.124.102
 
 # crucible-dash-api (config#1973 phase 9-B): read-only FastAPI over the
 # results view-model, consumed same-box by the /dash Next.js frontend.
