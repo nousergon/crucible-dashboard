@@ -1446,6 +1446,75 @@ def ram_mb_from_proc() -> int:
     raise RuntimeError("MemTotal not found in /proc/meminfo")
 
 
+# ── Category attribution: what box_health.sh puts in the ALERT ─────────────
+#
+# box_health.sh used to render this check's verdict as
+# `memory budget: BREACH (detail in journal)` and
+# `notice: memory budget observation hygiene (detail in journal)` — a message
+# that names no finding and instructs the reader to go and read a journal that
+# the emitter had already read. Emit the answer, not the assignment.
+#
+# It could not simply interpolate the finding text: those strings carry live
+# byte counts ("holds 185 MB (1.7x)") that move between ticks, and box_health's
+# confirm-on-retry intersection matches problem lines byte-for-byte while the
+# critical tier derives its dedup key from the problem SET. A moving substring
+# there produces a finding that can never confirm and a page that re-keys
+# forever — the defect already paid for at #648 (the cgroup throttle's
+# "33x/51x/56x") and I8678 (the alert-drain's live age).
+#
+# So the alert carries the CATEGORY SET: a sorted, de-duplicated list of labels
+# from a closed vocabulary. Stable for as long as the condition is, actionable
+# without leaving the message, and the full text still goes to the journal
+# unchanged.
+#
+# THE MATCHER LIVES HERE, beside the strings it matches, deliberately. A
+# consumer-side parser in box_health.sh would be a second implementation of
+# this file's own message shapes, free to drift the moment one of them is
+# reworded — the exact fork this fleet keeps paying for. Adding a finding
+# without a row here is visible immediately, as `unattributed`.
+#
+# ORDERED MOST-SPECIFIC-FIRST with an EXPLICIT terminal branch. No plausible
+# default: a finding nobody anticipated is reported as `unattributed`, never
+# folded into whichever neighbouring label happened to be last.
+_FINDING_CATEGORIES: tuple[tuple[str, str], ...] = (
+    # Live runtime override — checked BEFORE plain cap drift, because the
+    # override message CONTAINS the drift message and the override is the
+    # actionable half (a `systemctl revert`, not a re-run of the installer).
+    ("LIVE OVERRIDE", "runtime-cap-override"),
+    ("uncensor_until", "uncensor-window-active"),
+    ("MemoryMax drift", "cap-drift"),
+    ("ORPHAN drop-in", "orphan-dropin"),
+    ("CENSORED reading", "censored-observation"),
+    ("APPROACHING its soft cap", "approaching-cap"),
+    ("OVER-PROVISIONED", "over-provisioned-cap"),
+    ("peak marks not writable", "peak-marks-unwritable"),
+    ("memory.stat unreadable for", "working-set-unmeasurable"),
+    ("no cgroup for", "unit-unmeasurable"),
+    ("declares ram_mb=", "ram-declaration-drift"),
+    ("aggregate MemoryMax", "aggregate-overcommit"),
+    ("steady-state working set", "steady-state-overcommit"),
+    ("timer-job caps total", "timer-job-headroom"),
+)
+
+
+def finding_category(line: str) -> str:
+    """One label from the closed vocabulary, or an explicit `unattributed`."""
+    for needle, label in _FINDING_CATEGORIES:
+        if needle in line:
+            return label
+    return "unattributed"
+
+
+def category_summary(lines: list[str]) -> str:
+    """The sorted, de-duplicated category set for a run's findings.
+
+    Sorted so the string is a function of the SET and not of the order the
+    checks happened to run in — an alert whose text depends on evaluation order
+    would re-key on a reordering that changed nothing.
+    """
+    return ",".join(sorted({finding_category(ln) for ln in lines if ln.strip()}))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     mode = ap.add_mutually_exclusive_group()
@@ -1495,6 +1564,12 @@ def main() -> int:
             print(f"BREACH: budget.yaml declares ram_mb={declared_ram} but the box "
                   f"has {ram_mb} MB. Re-budget after an instance resize.",
                   file=sys.stderr)
+            # This path returns before the aggregate emit below, so it carries
+            # its own category line. Without it the alert would render an empty
+            # category set for a real breach — a message that says less than
+            # the one it replaced, which is the failure mode this whole change
+            # exists to remove.
+            print("box-health-categories: ram-declaration-drift", file=sys.stderr)
             return 1
     else:
         ram_mb = int(spec["ram_mb"])
@@ -1885,6 +1960,24 @@ def main() -> int:
                 f"timer-job caps total {tj_mb} MB against {tj_headroom_mb} MB "
                 f"of headroom")
         emit_headroom_check(spec, aggregate, hygiene, dry_run=args.dry_run)
+
+    # ── the machine-readable half, for box_health.sh's alert text ───────────
+    #
+    # One line, last, on stderr — where every other finding this check emits
+    # already goes, and which box_health.sh captures with 2>&1. Printed
+    # WHENEVER there is a finding, on both the breach and the hygiene path, so
+    # the two alert strings can name what was found instead of pointing at this
+    # journal. The human-readable detail above is unchanged.
+    verdict_lines: list[str] = list(breaches) + list(hygiene)
+    if over:
+        verdict_lines.append("aggregate MemoryMax over the ceiling")
+    if ss_over:
+        verdict_lines.append("steady-state working set over the bound")
+    if tj_over:
+        verdict_lines.append("timer-job caps total over the headroom")
+    if verdict_lines:
+        print(f"box-health-categories: {category_summary(verdict_lines)}",
+              file=sys.stderr)
 
     if over or ss_over or tj_over or breaches:
         return 1

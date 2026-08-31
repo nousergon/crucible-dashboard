@@ -233,9 +233,22 @@ else
 fi
 
 echo "== missing failing-run detail degrades gracefully (backward-compatible 5-arg call) =="
-assert_problem "5-arg call (no timestamp detail) still reports the failure" \
-    "timer job failing: unit.timer (last run result=failed)" \
+# The driver clause is present even here, as the literal `unclassified`. That is
+# deliberate and is the assertion, not an accident of the 5-arg shape: a caller
+# that could not run timer_failure_driver must produce the SAME line shape as
+# one that could, because box_health.sh's confirm-on-retry intersection matches
+# problem lines byte-for-byte and a clause that appears or vanishes with a
+# helper's availability is a finding that can intermittently fail to confirm.
+assert_problem "5-arg call (no timestamp detail) still reports the failure, with an explicit unclassified driver" \
+    "timer job failing: unit.timer (last run result=failed, driver=unclassified)" \
     "$((NOW - 60))" 1800 failed
+
+echo "== the driver clause carries through to the message =="
+assert_problem "a supplied driver appears in the failing line" \
+    "driver=import-or-dependency-broken" \
+    "$((NOW - 60))" 1800 exit-code \
+    "Mon 2026-08-31 07:01:39 UTC" "Tue 2026-09-01 07:00:00 UTC" inactive "" \
+    import-or-dependency-broken
 
 echo "== timer_failure_dedup_key is stable per run and changes when the run changes =="
 k1=$(timer_failure_dedup_key "router-degraded-mode-drill.timer" "exit-code" "Tue 2026-08-18 10:30:52 UTC")
