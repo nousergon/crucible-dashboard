@@ -118,9 +118,15 @@ def _install_paths() -> list[Path]:
 
 
 def test_the_repo_still_has_scheduled_workloads_to_protect():
-    """Guard against the guard silently covering nothing."""
+    """Guard against the guard silently covering nothing.
+
+    morning-signal-bakeoff.service was the running example this test's
+    docstring named — it is RETIRED (alpha-engine-config-I9457,
+    morning-signal-I165) and no longer installed by this repo, so it is
+    deliberately absent from the set below rather than pinned to it.
+    """
     workloads = scheduled_workloads(UNITS)
-    assert "morning-signal-bakeoff.service" in workloads, workloads
+    assert "morning-signal-bakeoff.service" not in workloads, workloads
     assert "morning-signal.service" in workloads, workloads
     assert len(workloads) >= 8, workloads
 
