@@ -671,10 +671,17 @@ human_age() {
 #   $5 triggered service's Result
 #   $8 triggered service's ActiveState  $9 the finding this unit carried on the
 #      PREVIOUS run, verbatim, or empty
+#   ${10} the DRIVER label from timer_failure_driver's closed vocabulary. Passed
+#      in rather than derived here so this function stays pure — the journal
+#      read is the caller's, and every branch of the vocabulary stays testable
+#      without systemd. Empty only if the caller could not run the classifier at
+#      all, which is itself reported as `driver=unclassified` rather than as a
+#      missing clause: a page that silently drops the field would be
+#      indistinguishable from one whose cause happened to be blank.
 classify_timer_staleness() {
     local name="$1" now="$2" last="$3" budget="$4" result="$5" age
     local fail_since="${6:-}" next_elapse="${7:-}"
-    local active_state="${8:-}" prior_finding="${9:-}"
+    local active_state="${8:-}" prior_finding="${9:-}" driver="${10:-}"
 
     # ── A RUN IN FLIGHT MAKES `Result` MEANINGLESS (alpha-engine-config-I8359) ──
     #
@@ -745,6 +752,15 @@ classify_timer_staleness() {
         # would defeat both confirm-on-retry stability and the identity-keyed
         # dedup below.
         local detail=""
+        # DRIVER FIRST, before the timestamps. It is the only part of this line
+        # a reader can act on without leaving the message, and burying it after
+        # two calendar strings is how the previous shape read as "something
+        # failed, go look" (alpha-engine-config: emit the answer, not the
+        # assignment). `unclassified` is emitted rather than omitted when the
+        # caller could not run the classifier — an absent field would silently
+        # shrink the line and change its bytes, which the confirm-on-retry
+        # intersection matches exactly.
+        detail="${detail}, driver=${driver:-unclassified}"
         [ -n "$fail_since" ] && detail="${detail}, failing run started ${fail_since}"
         [ -n "$next_elapse" ] && detail="${detail}, next attempt ${next_elapse}"
         echo "timer job failing: $name (last run result=$result${detail})"
@@ -807,6 +823,153 @@ classify_timer_staleness() {
     if [ "$age" -gt "$budget" ]; then
         echo "timer has not run in $(human_age "$age") (budget $(human_age "$budget")): $name"
     fi
+}
+
+# ── Driver attribution: emit the ANSWER, not the assignment ────────────────
+#
+# `timer job failing: X (last run result=exit-code)` names the exit CLASS and
+# stops. It tells the reader that something failed and hands them the lookup —
+# ssh to the box, `journalctl -u X`, read. Every one of those inputs is already
+# available to THIS process at the moment the finding is made, so the page was
+# asking a human to re-derive what the emitter had in hand.
+#
+# `timer_failure_driver` closes that: one label from a CLOSED SET, ordered
+# MOST-SPECIFIC-FIRST, terminating in an EXPLICIT unattributed branch.
+#
+# WHY A CLOSED SET AND NOT THE JOURNAL LINE ITSELF. Two constraints meet here.
+# The confirm-on-retry intersection (see snapshot_problems' caller) matches
+# problem lines BYTE-FOR-BYTE across samples, and the general critical tier
+# derives its dedup key from the problem SET — so any substring that moves
+# between ticks produces a finding that can never confirm and a page that
+# re-keys forever. That is the same reasoning that keeps a computed relative
+# age out of these lines (alpha-engine-config-I7677), moved the cgroup
+# throttle's "33x/51x/56x" count to the journal (#648), and made the
+# alert-drain's staleness text static (I8678). A label drawn from a fixed
+# vocabulary satisfies both: it carries the cause AND it is stable for as long
+# as the cause is. The variable detail — the actual journal text, the exit
+# status — still goes to the journal, on every run, where nothing keys on it.
+#
+# WHY THE TERMINAL BRANCH IS EXPLICIT. An `elif` chain ending in a plausible
+# default ("exited-nonzero", "unknown-error") silently misattributes every case
+# nobody anticipated, and reads as an answer. There are TWO terminal outcomes
+# here and both are named:
+#
+#   unattributed-no-journal-record — the unit failed and left NO journal entry.
+#       Real, and not rare: morning-signal-bakeoff.service reports
+#       `Result=exit-code` with `-- No entries --` over 30 days (measured live
+#       2026-08-31). Reporting that as an empty detail would render as a
+#       dangling ", driver=" and read as a rendering bug rather than as the
+#       genuine finding it is — a unit whose failure left no evidence.
+#   unattributed — a journal exists and nothing in the vocabulary matched.
+#       The honest answer, and the one whose RATE is the signal: a rising
+#       unattributed share means the vocabulary needs a row, which is a
+#       question the journal line below can answer without a redeploy.
+#
+# ORDERING, most specific first:
+#   1-5  an EXACT systemd-reserved exit status (216/217/203/200/226). These are
+#        unambiguous by definition — systemd assigns them itself, before
+#        ExecStart, and no program can return them by accident.
+#   6-11 a cause named in the failing run's OWN journal.
+#   12-14 the failure MECHANISM (timeout, signal, start-limit), which explains
+#        how the attempt ended rather than why. `start-limit-hit` is LAST among
+#        the attributed labels deliberately: it is a consequence of earlier
+#        failures, so whenever an earlier cause is still visible that cause is
+#        the better answer.
+#
+# oom-killed sits at the very top rather than beside killed-by-signal because
+# an OOM kill IS a SIGKILL, and the generic label would swallow it.
+#
+# Pure function of its arguments — no systemctl, no journalctl, no clock — so
+# the whole vocabulary is unit-testable without systemd.
+#
+#   $1 the service's Result       $2 its ExecMainStatus (numeric, may be empty)
+#   $3 the tail of the failing run's journal (may be empty)
+timer_failure_driver() {
+    local result="${1:-}" status="${2:-}" journal="${3:-}"
+
+    # OOM first: the kernel's own record outranks everything, and systemd
+    # reports it as Result=oom-kill only on newer versions — the journal text
+    # is the portable half, so both are checked here rather than relying on
+    # either alone.
+    case "$result" in oom-kill) echo oom-killed; return ;; esac
+    case "$journal" in
+        *"Out of memory"*|*"oom-kill"*|*"Killed process"*|*"out-of-memory"*)
+            echo oom-killed; return ;;
+    esac
+
+    # systemd-reserved statuses. Matched EXACTLY, never as a range: a program
+    # is free to return 216 for its own reasons, but only when systemd itself
+    # failed the unit before ExecStart does the code mean what it says — which
+    # is why each of these is paired with a non-success Result by the caller.
+    case "$status" in
+        216|217) echo identity-unresolvable; return ;;
+        203)     echo exec-missing; return ;;
+        200)     echo working-directory-missing; return ;;
+        226)     echo sandbox-denied; return ;;
+    esac
+
+    # Causes named in the run's own journal. Each pattern is deliberately
+    # narrow: a broad one ("error", "failed") would match nearly every journal
+    # and turn this into the plausible default the terminal branch exists to
+    # avoid.
+    case "$journal" in
+        *"ModuleNotFoundError"*|*"ImportError"*|*"cannot import name"*|*"No module named"*)
+            echo import-or-dependency-broken; return ;;
+    esac
+    case "$journal" in
+        *"ExpiredToken"*|*"security token included in the request is expired"*|*"InvalidClientTokenId"*)
+            echo credentials-expired; return ;;
+    esac
+    case "$journal" in
+        *"AccessDenied"*|*"Permission denied"*|*"403 Forbidden"*|*"is not authorized to perform"*|*"UnauthorizedOperation"*)
+            echo access-denied; return ;;
+    esac
+    case "$journal" in
+        *"No space left on device"*|*"Disk quota exceeded"*)
+            echo disk-full; return ;;
+    esac
+    case "$journal" in
+        *"Could not resolve host"*|*"Name or service not known"*|*"Temporary failure in name resolution"*|*"Connection refused"*|*"Network is unreachable"*|*"Connection timed out"*|*"Failed to establish a new connection"*)
+            echo upstream-unreachable; return ;;
+    esac
+    case "$journal" in
+        *"Dependency failed for"*)
+            echo dependency-failed; return ;;
+    esac
+
+    # Mechanism, not cause. Reached only when nothing above named a reason.
+    case "$result" in
+        timeout|timeout-abort) echo timed-out; return ;;
+        signal|core-dump|watchdog) echo killed-by-signal; return ;;
+        start-limit-hit) echo start-limit-hit; return ;;
+    esac
+
+    # ── the two terminal branches, both explicit ──────────────────────────────
+    # Whitespace-only counts as absent: `journalctl -o cat` on a unit with no
+    # entries emits nothing, but a `--since` that lands past every entry can
+    # leave a bare newline, and treating that as "a journal we could not
+    # attribute" would report the wrong one of the two findings.
+    if [ -z "$(printf '%s' "$journal" | tr -d '[:space:]')" ]; then
+        echo unattributed-no-journal-record
+        return
+    fi
+    echo unattributed
+}
+
+# unit_is_covered UNIT MONITORED_SERVICES COVERED_TIMER_SERVICES
+#
+# Whether any OTHER check in this script can see this unit at all. Used only by
+# the failed-unit backstop below; pure so its answer is testable without
+# systemd.
+#
+# Both lists are space-delimited and matched on whole words — a substring match
+# would let `signal.service` cover `morning-signal.service`, which is exactly
+# the kind of quiet over-claim a coverage check must not make.
+unit_is_covered() {
+    local unit="$1" monitored=" ${2:-} " timer_covered=" ${3:-} "
+    case "$monitored" in *" $unit "*) echo yes; return ;; esac
+    case "$timer_covered" in *" $unit "*) echo yes; return ;; esac
+    echo no
 }
 
 # timer_failure_dedup_key UNIT RESULT INACTIVE_EXIT_RAW
@@ -2075,10 +2238,29 @@ snapshot_problems() {
         # something is degrading our ability to measure it, 3 = the check could
         # not run. Collapsing 1 and 2 into one alert is what made the page rate
         # track bookkeeping instead of health.
+        # WHAT WAS FOUND, not where to look for it. check_memory_budget.py
+        # emits `box-health-categories: <sorted csv>` on its last stderr line
+        # whenever it has a finding -- a closed vocabulary defined beside the
+        # message strings themselves (see finding_category there), so the alert
+        # names the condition while the moving numbers stay in the journal
+        # line below.
+        #
+        # STILL dedup-stable, which is why this is a category set and not the
+        # finding text: the set changes only when the SET OF CONDITIONS
+        # changes, which is exactly when a new page is wanted. A live byte
+        # count here would re-key every tick and could never confirm.
+        #
+        # `unreported` when the line is absent. Not a silent fallback to the
+        # old wording: an emitter that found something and said nothing about
+        # what is a defect in that emitter, and the alert has to be able to
+        # show it rather than paper over it with prose.
+        local budget_cats
+        budget_cats=$(printf '%s\n' "$budget_out" | sed -n 's/^box-health-categories: //p' | tail -1)
+        [ -n "$budget_cats" ] || budget_cats="unreported"
         case "$budget_rc" in
             0) ;;
-            1) echo "memory budget: BREACH (detail in journal)" ;;
-            2) echo "notice: memory budget observation hygiene (detail in journal)" ;;
+            1) echo "memory budget: BREACH ($budget_cats)" ;;
+            2) echo "notice: memory budget observation hygiene ($budget_cats)" ;;
             *) echo "watchdog: memory budget check failed to run (rc=$budget_rc)" ;;
         esac
         if [ "$budget_rc" -ne 0 ]; then
@@ -2140,6 +2322,12 @@ snapshot_problems() {
     # and caught only by the second (config-I5209).
     local t props active sub next_real next_mono timer_units _k _v
     local svc last_epoch now_epoch result budget staleness_ok inactive_exit_raw svc_active
+    local exec_status journal_tail driver
+    # Every service reached by an ENABLED timer this run. The failed-unit
+    # backstop at the end of this block subtracts it from systemd's own failed
+    # set; see there for why "enabled" and not "installed" is the right test.
+    local covered_timer_svcs=""
+    local -a _jargs
     now_epoch=$(date +%s)
 
     # The thresholds live in the generated manifest, so they can be absent for
@@ -2234,9 +2422,122 @@ snapshot_problems() {
         # Result above: only meaningful when there is a triggered service.
         svc_active=""
         [ -n "$svc" ] && svc_active=$(systemctl show "$svc" -p ActiveState --value 2>/dev/null)
+
+        # This timer's service is now COVERED — by this check, whatever it
+        # concludes. Recorded before the verdict, not after: coverage is a
+        # question about whether anything LOOKED, and a healthy unit is as
+        # covered as a failing one.
+        [ -n "$svc" ] && covered_timer_svcs="${covered_timer_svcs}${svc} "
+
+        # ── driver attribution, on EVERY run ─────────────────────────────────
+        #
+        # NOT gated on the finding. A driver field that exists only when the
+        # alert fires cannot be used to watch a condition build, cannot show
+        # that a cause CHANGED between two failures of one unit, and cannot be
+        # queried after the fact for a run whose page was deduped. So the
+        # classification is written to the journal for every enabled timer on
+        # every tick, including `driver=none` for a healthy one — the same
+        # contract publish_verdict and publish_unalerted keep, and for the same
+        # reason (principles.md section 7: a field that appears only on the bad
+        # path is unobserved, not clean).
+        exec_status=""; journal_tail=""; driver="none"
+        if [ -n "$svc" ] && [ -n "$result" ] && [ "$result" != "success" ]; then
+            exec_status=$(systemctl show "$svc" -p ExecMainStatus --value 2>/dev/null)
+            # Scoped to the FAILING RUN, not to "the last 40 lines of this
+            # unit ever". Two reasons, and the second is load-bearing:
+            # correctness (an older, unrelated traceback must not attribute
+            # today's failure) and STABILITY — `inactive_exit_raw` does not
+            # move until the unit runs again, so the same window is read on
+            # every tick and the label cannot flap under a byte-exact
+            # confirm-on-retry intersection.
+            if command -v journalctl >/dev/null 2>&1; then
+                _jargs=(-u "$svc" -n 40 --no-pager -o cat)
+                [ -n "$inactive_exit_raw" ] && _jargs+=(--since "$inactive_exit_raw")
+                journal_tail=$(journalctl "${_jargs[@]}" 2>/dev/null)
+            else
+                # Distinct from "the unit left no journal record". One is a
+                # finding about the unit, the other about this box's tooling,
+                # and collapsing them would let a broken probe read as evidence.
+                journal_tail=""
+                echo "watchdog: journalctl unavailable — timer failure drivers cannot be attributed"
+            fi
+            driver=$(timer_failure_driver "$result" "$exec_status" "$journal_tail")
+        fi
+        printf 'box_health: timer driver: unit=%s service=%s result=%s status=%s driver=%s\n' \
+               "$t" "${svc:-none}" "${result:-unknown}" "${exec_status:-na}" "$driver" >&2
+
         classify_timer_staleness "$t" "$now_epoch" "$last_epoch" "$budget" "$result" \
-            "$inactive_exit_raw" "$next_real" "$svc_active" "$(alerted_timer_finding "$t")"
+            "$inactive_exit_raw" "$next_real" "$svc_active" "$(alerted_timer_finding "$t")" \
+            "$driver"
     done
+
+    # ── failed-unit backstop (a failed unit NO enumeration in this file reaches) ──
+    #
+    # THE DEFECT THIS CLOSES, and it is the worst class this file can carry:
+    # not noise, but a unit that is failing right now and that box_health.sh
+    # cannot see at all. Detection blindness outranks the defects it hides.
+    #
+    # Every check above enumerates from a DECLARATION: the service checks walk
+    # SERVICES[] (the generated manifest), and the timer checks walk
+    # `list-unit-files --type=timer` and then `continue` on any timer that is
+    # not `is-enabled`. That skip is right for a timer somebody parked on
+    # purpose — and it is indistinguishable from a timer that stopped being
+    # enabled BECAUSE its service kept failing, or one that is `static`,
+    # `indirect`, `generated` or `transient`, for all of which `is-enabled`
+    # also exits non-zero. In every one of those cases the unit's failure is
+    # dropped silently, and the watchdog reports a healthy box.
+    #
+    # Measured live 2026-08-31 on i-09b539c844515d549: `systemctl --failed`
+    # listed llm-capability-probe.service (`status=2/INVALIDARGUMENT`,
+    # `Start request repeated too quickly`, cause `cannot import name 'routes'
+    # from 'nousergon_lib.egress'`). box-health last paged it 2026-08-25 and
+    # has said nothing since, while the unit stayed failed throughout.
+    #
+    # WHY THIS IS SOURCE-INDEPENDENT, and why that is the whole point. It reads
+    # systemd's OWN failed set rather than any list this repo maintains, so it
+    # closes the class rather than the instance: it does not matter WHICH
+    # enumeration dropped the unit, or whether the next gap is a template
+    # instance, an unmanifested service or a timer somebody disabled. Anything
+    # systemd calls failed that nothing else here named gets named. That also
+    # makes it self-retiring in the right direction — fix a coverage gap
+    # upstream and the unit stops appearing here, because it is covered.
+    #
+    # NOT hygiene, and not `watchdog:`. Every other coverage statement in this
+    # file is about the watchdog's own bookkeeping and is recorded rather than
+    # paged (overseer-policy.md section 3, invariant 17). This one names a unit
+    # that IS down. The coverage gap is why nobody was told; the finding is the
+    # outage.
+    local failed_units failed_rc fu fu_result fu_status fu_journal fu_driver fu_exit
+    failed_units=$(systemctl list-units --type=service --state=failed --no-legend --plain 2>/dev/null)
+    failed_rc=$?
+    if [ "$failed_rc" -ne 0 ]; then
+        # Fail LOUD. An enumeration that cannot run is a watchdog malfunction,
+        # never an empty failed set — the same rule the timer enumeration above
+        # already follows, and the reason neither returns quietly.
+        echo "watchdog: cannot enumerate failed units (systemctl list-units exited $failed_rc) — the failed-unit backstop did not run"
+    else
+        while IFS= read -r fu; do
+            fu="${fu%% *}"
+            [ -n "$fu" ] || continue
+            [ "$(unit_is_covered "$fu" "${SERVICES[*]}" "$covered_timer_svcs")" = "no" ] || continue
+            fu_result=$(systemctl show "$fu" -p Result --value 2>/dev/null)
+            fu_status=$(systemctl show "$fu" -p ExecMainStatus --value 2>/dev/null)
+            fu_exit=$(systemctl show "$fu" -p InactiveExitTimestamp --value 2>/dev/null)
+            fu_journal=""
+            if command -v journalctl >/dev/null 2>&1; then
+                _jargs=(-u "$fu" -n 40 --no-pager -o cat)
+                [ -n "$fu_exit" ] && _jargs+=(--since "$fu_exit")
+                fu_journal=$(journalctl "${_jargs[@]}" 2>/dev/null)
+            fi
+            fu_driver=$(timer_failure_driver "${fu_result:-unknown}" "$fu_status" "$fu_journal")
+            printf 'box_health: failed-unit backstop: unit=%s result=%s status=%s driver=%s\n' \
+                   "$fu" "${fu_result:-unknown}" "${fu_status:-na}" "$fu_driver" >&2
+            # Same shape as `timer job failing:` on purpose — driver first, then
+            # the failing run's own timestamp — so both route through the same
+            # episode-keyed publish below and read identically in the channel.
+            echo "unit failed and otherwise unmonitored: $fu (last run result=${fu_result:-unknown}, driver=${fu_driver}${fu_exit:+, failing run started ${fu_exit}})"
+        done <<< "$failed_units"
+    fi
 
     # ── per-service cgroup memory pressure (alpha-engine-config-I4512) ─────
     # The 2026-07-27 failure: two services (litellm-proxy, llm-egress-proxy)
@@ -2619,6 +2920,15 @@ classify_problem_severity() {
         "disk critical: "*) echo critical ;;
         "memory pressure: "*) echo critical ;;
         "timer job failing: "*) echo critical ;;
+        # The failed-unit backstop. `critical` because the line names a unit
+        # systemd itself reports FAILED — it is an outage, not a statement
+        # about the watchdog's bookkeeping, which is the distinction that
+        # keeps every other coverage finding in the `watchdog: ` -> warning
+        # row above (overseer-policy.md section 3, invariant 17). It is
+        # published through the same episode-keyed path as `timer job
+        # failing:` so a standing failed unit pages once per episode, not
+        # once per dedup window.
+        "unit failed and otherwise unmonitored: "*) echo critical ;;
         # Latent, not current — but the unit cannot start again, and
         # reboot-if-needed.timer makes that an unattended, all-at-once event.
         "unit cannot restart: "*) echo critical ;;
@@ -2753,7 +3063,15 @@ timer_criticals=""; other_criticals=""
 while IFS= read -r _line; do
     [ -z "$_line" ] && continue
     case "$_line" in
+        # Both unit-level failure findings, both carrying (unit, Result,
+        # InactiveExitTimestamp), so both take the identity-keyed publish
+        # rather than the set-derived one. Adding the backstop here rather
+        # than giving it a parallel mechanism is policy-shared-code's mirror
+        # rule applied in-file: a second episode-keying implementation would be
+        # a second thing to keep correct, and the two would drift the first
+        # time only one of them was fixed.
         "timer job failing: "*) timer_criticals="${timer_criticals}${_line}"$'\n' ;;
+        "unit failed and otherwise unmonitored: "*) timer_criticals="${timer_criticals}${_line}"$'\n' ;;
         *)                      other_criticals="${other_criticals}${_line}"$'\n' ;;
     esac
 done <<< "$criticals"
@@ -2762,10 +3080,26 @@ other_criticals="${other_criticals%$'\n'}"
 
 while IFS= read -r _tf_line; do
     [ -z "$_tf_line" ] && continue
-    _tf_unit="${_tf_line#timer job failing: }"
-    _tf_unit="${_tf_unit%% (*}"
+    # Two prefixes, two resolutions. A `timer job failing:` line names the
+    # TIMER, whose triggered service has to be resolved through `-p Unit`; a
+    # backstop line already names the SERVICE. Getting this wrong would not
+    # fail loudly — `systemctl show <service> -p Unit` returns the service
+    # itself — but it would silently key the episode on the wrong Result, so
+    # the two cases are separated explicitly rather than left to that
+    # coincidence.
     _tf_svc=""
-    [ -n "$_tf_unit" ] && _tf_svc=$(systemctl show "$_tf_unit" -p Unit --value 2>/dev/null)
+    case "$_tf_line" in
+        "unit failed and otherwise unmonitored: "*)
+            _tf_unit="${_tf_line#unit failed and otherwise unmonitored: }"
+            _tf_unit="${_tf_unit%% (*}"
+            _tf_svc="$_tf_unit"
+            ;;
+        *)
+            _tf_unit="${_tf_line#timer job failing: }"
+            _tf_unit="${_tf_unit%% (*}"
+            [ -n "$_tf_unit" ] && _tf_svc=$(systemctl show "$_tf_unit" -p Unit --value 2>/dev/null)
+            ;;
+    esac
     _tf_result=""; _tf_ts=""
     if [ -n "$_tf_svc" ]; then
         _tf_result=$(systemctl show "$_tf_svc" -p Result --value 2>/dev/null)

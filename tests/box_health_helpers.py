@@ -190,6 +190,9 @@ LIFECYCLE_FUNCTIONS = (
     "alerted_state_lifecycle",
     "alerted_state_write",
     "timer_failure_dedup_key",
+    # The episode wrapper, not just the run key: without it the harness would
+    # load the half that #787 replaced and prove nothing about what ships.
+    "timer_failure_episode_key",
     "emit_hygiene_envelope",
     "publish_page",
     "publish_problems",
@@ -403,3 +406,61 @@ def run_lifecycle(body: str, tmp_path, overrides: dict | None = None) -> Lifecyc
         )
     payloads = [p for p in console_log.read_text().split(f"{US}END\n") if p != ""]
     return LifecycleRun(proc, calls, payloads, metric_log.read_text().splitlines())
+
+
+# ── Pure-function harness: run ONE shipped bash function against arguments ──
+#
+# Same contract, and the same reason, as `classify` above: the bytes that run on
+# the box are what gets exercised. `timer_failure_driver` and `unit_is_covered`
+# are pure by construction — no systemctl, no journalctl, no clock — precisely
+# so this harness can be this small.
+def run_pure(name: str, *args: str) -> str:
+    """Run one shipped pure function and return its stdout, stripped."""
+    bash = shutil.which("bash")
+    if not bash:
+        raise AssertionError("bash not available; cannot exercise the shipped function")
+    script = function_source(name) + f'\n{name} "$@"\n'
+    r = subprocess.run(
+        [bash, "-c", script, "_", *args], capture_output=True, text=True, timeout=30
+    )
+    if r.returncode != 0:
+        raise AssertionError(
+            f"{name} exited {r.returncode} for {args!r}: {r.stderr.strip()}"
+        )
+    return r.stdout.strip()
+
+
+_STALENESS_DEPS = ("human_age", "classify_timer_staleness")
+
+
+def timer_staleness_findings(
+    name: str,
+    now: str = "1000000",
+    last: str = "999000",
+    budget: str = "86400",
+    result: str = "exit-code",
+    fail_since: str = "",
+    next_elapse: str = "",
+    active_state: str = "inactive",
+    prior_finding: str = "",
+    driver: str = "",
+) -> list[str]:
+    """Run the SHIPPED classify_timer_staleness and return its problem lines."""
+    bash = shutil.which("bash")
+    if not bash:
+        raise AssertionError("bash not available; cannot exercise the shipped function")
+    script = "\n".join(
+        ["set -uo pipefail"]
+        + [function_source(f) for f in _STALENESS_DEPS]
+        + ['classify_timer_staleness "$@"']
+    )
+    r = subprocess.run(
+        [bash, "-c", script, "_", name, now, last, budget, result,
+         fail_since, next_elapse, active_state, prior_finding, driver],
+        capture_output=True, text=True, timeout=30,
+    )
+    if r.returncode != 0:
+        raise AssertionError(
+            f"classify_timer_staleness exited {r.returncode}: {r.stderr.strip()}"
+        )
+    return [ln for ln in r.stdout.splitlines() if ln.strip()]
