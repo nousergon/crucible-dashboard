@@ -1198,9 +1198,14 @@ timers:
     note: daily 04:55 America/Los_Angeles; codified by crucible-dashboard-PR635
           on 2026-08-09 WITHOUT a row here — the box_health notice caught it the
           same day, which is config#6657 deliverable 3 working as intended
-  - unit: morning-signal-bakeoff.timer
-    max_staleness: 8d
-    note: weekly Wed 05:00 America/Los_Angeles
+  # morning-signal-bakeoff.timer RETIRED 2026-08-31 (alpha-engine-config-I9457,
+  # morning-signal-I165) — the unit and its .service are no longer installed
+  # (deploy-on-merge.sh §2d tears them down idempotently), so no row belongs
+  # here: this file declares dead-man thresholds for INSTALLED timers, and a
+  # stale row for an absent unit is itself the drift T1-6 exists to catch.
+  # The bakeoff is paused at the application layer in the morning-signal repo
+  # pending a compliant candidate-registration path (I165); re-add this row
+  # alongside the reinstated units if it ever resumes.
   - unit: daily-news.timer
     max_staleness: 26h
     note: daily 04:00 America/Los_Angeles

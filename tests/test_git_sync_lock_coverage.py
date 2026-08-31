@@ -13,8 +13,10 @@ verified against origin/main:
     boot-pull.sh (daily timer), substrate_health_check_daily.sh (Mon-Fri
     22:30 UTC health check) — three unsynchronised writers, no lock.
   - /home/ec2-user/morning-signal: morning-signal-pull.service,
-    morning-signal.service, morning-signal-bakeoff.service,
-    morning-signal-recover.sh — four unsynchronised writers, no lock.
+    morning-signal.service, morning-signal-recover.sh — three
+    unsynchronised writers, no lock (a fourth, morning-signal-bakeoff.service,
+    shared the defect at the time and is now RETIRED — alpha-engine-config-
+    I9457, morning-signal-I165).
 
 This walks every shell script under infrastructure/ (plus every systemd
 unit and .github/workflows/deploy.yml, the other two places on-box git
@@ -270,15 +272,18 @@ def test_morning_signal_sync_script_exists_and_is_executable():
 
 
 def test_morning_signal_ExecStartPre_units_keep_best_effort_prefix():
-    """morning-signal.service and morning-signal-bakeoff.service are
-    deliberately kept failure-tolerant (leading '-') on their sync
-    ExecStartPre — episode generation must never be skipped by a
-    transient sync blip. This is a settled, documented decision (not a
+    """morning-signal.service is deliberately kept failure-tolerant (leading
+    '-') on its sync ExecStartPre — episode generation must never be skipped
+    by a transient sync blip. This is a settled, documented decision (not a
     gap): a sync failure past the retry still runs stale code silently,
     tracked separately. morning-signal-pull.service is the opposite by
     design — its ExecStart has NO '-', because a failed sync there is the
-    unit's entire job."""
-    for name in ("morning-signal.service", "morning-signal-bakeoff.service"):
+    unit's entire job.
+
+    morning-signal-bakeoff.service carried the same best-effort prefix and is
+    no longer part of this assertion — it is RETIRED (alpha-engine-config-
+    I9457, morning-signal-I165) and no longer installed by this repo."""
+    for name in ("morning-signal.service",):
         src = (_SYSTEMD_DIR / name).read_text()
         sync_lines = [
             line.strip()

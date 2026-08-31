@@ -45,12 +45,12 @@ install -m 0644 "$SYSTEMD_SRC/morning-signal-router-env.conf" \
     /etc/morning-signal/router-env.conf
 echo "Installed /etc/morning-signal/router-env.conf"
 
-# The bakeoff units are deliberately NOT here — `install-morning-signal-bakeoff.sh`
-# owns them, and two installers writing one artifact is the divergence
-# `test_only_one_delivery_path_for_these_units` exists to prevent. This
-# installer owns the SHARED router file above, which the bakeoff unit only
-# reads; deploy-on-merge runs this block before the bakeoff block, so the file
-# is present before the unit that names it.
+# The bakeoff units are RETIRED (alpha-engine-config-I9457, morning-signal-
+# I165) and no longer installed anywhere in this repo — deploy-on-merge.sh
+# §2d tears them down idempotently instead. They previously had their own
+# installer (`install-morning-signal-bakeoff.sh`) precisely so two installers
+# never wrote the same artifact; that installer is gone along with the units
+# it owned. This installer still owns the shared router file above.
 for unit in morning-signal.service morning-signal.timer morning-signal-pull.service morning-signal-pull.timer; do
     cp "$SYSTEMD_SRC/$unit" "/etc/systemd/system/$unit"
     echo "Installed /etc/systemd/system/$unit"

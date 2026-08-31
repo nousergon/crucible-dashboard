@@ -635,23 +635,39 @@ if any_file_state_stale \
     log "re-installed morning-signal core units"
 fi
 
-# ── 2d. Re-install morning-signal OSS bakeoff units if they changed ────────
-# The weekly Phase B shadow-bakeoff (config#1659) timer/service.
+# ── 2d. Morning-signal OSS bakeoff units — RETIRED (alpha-engine-config-I9457) ──
+# The weekly Phase B shadow-bakeoff (config#1659) is PAUSED at the application
+# layer since 2026-08-29 (morning-signal-I165, in the separate `morning-signal`
+# repo): its candidate side dispatches straight to OpenRouter with a bare
+# ModelSpec, bypassing the krepis router — forbidden by alpha-engine-config-I6367
+# and Brian's 2026-08-29 ruling ("no other parallel setups, it should all funnel
+# through the krepis router"). `scripts/oss_bakeoff.py::main()` now refuses to
+# dispatch unless `MORNING_SIGNAL_BAKEOFF_ALLOW_DIRECT_OPENROUTER=1` is set, and
+# the shipped unit never sets it — confirmed live 2026-08-31 via a manual
+# `systemctl start`, exit 1, "refusing — the candidate comparison dispatches
+# directly to OpenRouter". That is a deliberate, permanent-until-fixed-elsewhere
+# refusal, not a transient fault, so leaving the timer installed means it fails
+# again every Wednesday and box-health pages again for a condition nothing here
+# can repair — the compliant candidate-registration path is tracked at I165 in
+# the morning-signal repo, outside this repo's scope.
 #
-# State-compare (config#2338): a not-yet-installed dst (first rollout) is
-# "stale" by definition (file_state_stale treats a missing dst as stale),
-# so this still self-provisions on first introduction with no manual step —
-# same as the old diff-vs-parent gate did for brand-new files, but now also
-# self-heals if a rollout deploy was missed entirely.
-BAKEOFF_INFRA="$REPO_DIR/infrastructure"
-if any_file_state_stale \
-    "$BAKEOFF_INFRA/systemd/morning-signal-bakeoff.service:/etc/systemd/system/morning-signal-bakeoff.service" \
-    "$BAKEOFF_INFRA/systemd/morning-signal-bakeoff.timer:/etc/systemd/system/morning-signal-bakeoff.timer"; then
-    log "morning-signal bakeoff units differ from installed copies — re-installing"
-    bash "$REPO_DIR/infrastructure/install-morning-signal-bakeoff.sh" >>"$LOG" 2>&1 \
-        || fail "install-morning-signal-bakeoff.sh"
-    log "re-installed morning-signal bakeoff units"
-fi
+# So this repo retires its half — same idempotent teardown pattern as §3b's
+# crucible-dash retirement: a box still running the old units (or a fresh box
+# that never saw them) both converge to "not installed" with no manual SSM
+# step. The application code and I165 stay in the morning-signal repo; when a
+# compliant registration path lands there, re-add this block's install-side
+# counterpart (still in git history at infrastructure/install-morning-signal-
+# bakeoff.sh, pre-I9457) rather than reintroducing the units blind.
+for bakeoff_unit in morning-signal-bakeoff.service morning-signal-bakeoff.timer; do
+    if [ -f "/etc/systemd/system/$bakeoff_unit" ]; then
+        systemctl stop "$bakeoff_unit" >>"$LOG" 2>&1 || log "WARN stop $bakeoff_unit (retiring anyway)"
+        systemctl disable "$bakeoff_unit" >>"$LOG" 2>&1 || log "WARN disable $bakeoff_unit (retiring anyway)"
+        rm -f "/etc/systemd/system/$bakeoff_unit"
+        log "retired $bakeoff_unit (alpha-engine-config-I9457 / morning-signal-I165)"
+    fi
+done
+systemctl reset-failed morning-signal-bakeoff.service >>"$LOG" 2>&1 || true
+systemctl daemon-reload >>"$LOG" 2>&1 || fail "daemon-reload after morning-signal-bakeoff teardown"
 
 # ── 2e. Re-install box-health/hygiene watchdog if its script/units changed ──
 #
