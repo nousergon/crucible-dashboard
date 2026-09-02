@@ -112,10 +112,11 @@ _CODE_REPOS_FALLBACK = [
     "nousergon/nousergon-groomer", "nousergon/crucible-executor",
     "nousergon/crucible-predictor", "nousergon/crucible-research",
     "nousergon/crucible-backtester", "nousergon/crucible-dashboard",
-    "nousergon/crucible-evaluator", "nousergon/nousergon-data",
+    "nousergon/crucible-evaluator", "nousergon/crucible",
+    "nousergon/nousergon-data",
     "nousergon/nousergon-lib", "nousergon/nousergon-docs",
     "nousergon/metron", "nousergon/vires", "nousergon/telos",
-    "nousergon/scannerctl", "nousergon/crucible"
+    "nousergon/scannerctl"
 ]
 # Exported as CODE_REPOS for backward compatibility with tests importing the
 # name — it is now a function, not a list. Tests that asserted set equality
