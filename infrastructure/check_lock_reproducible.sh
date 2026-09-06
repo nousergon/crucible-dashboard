@@ -59,16 +59,27 @@
 # satisfy the constraints we declare?
 #
 # WHAT IS COMPARED. Every pinned line, INCLUDING its extras
-# (`name[extra,...]==version`), as a set. The `nousergon-lib @ git+...` line
-# is compared by PRESENCE and EXTRAS only, never by ref: a compile always
-# resolves the vX.Y.Z tag in requirements.in to the commit SHA it points at,
-# by design (a tag can be force-moved, a commit cannot). requirements.in is
+# (`name[extra,...]==version`), as a set. The `nousergon-lib @ git+...` line is
+# compared here by PRESENCE and EXTRAS only, never by ref FORM: a compile is
+# free to resolve the vX.Y.Z tag in requirements.in to the commit SHA it points
+# at, by design (a tag can be force-moved, a commit cannot). requirements.in is
 # where the human-authored tag lives, and
 # tests/test_flow_doctor_wiring.py::test_requirements_in_pins_lib_to_stable_tag
 # owns that boundary — it asserts the exact tag and forbids `@main`.
 # `crucible-predictor/inference/lib_pin_drift.py` reads NOTHING for this
 # repo (it is in neither `_CO_INSTALL_PAIR` nor `_FLOOR_REPOS`), so the SHA
 # in this lock puts nothing outside a cross-repo check.
+#
+# REF EQUALITY IS COMPARED, though — by `infrastructure/check_lib_ref_parity.sh`,
+# which this script calls last. Presence+extras alone missed the same defect
+# three times (#739 2026-08-20, #775 2026-08-22, #813 2026-08-31): the lock
+# moved forward and requirements.in did not. The box's
+# `infrastructure/check_package_drift.py` reads the tag from requirements.in
+# and compares it against the INSTALLED version, which the LOCK decides, so a
+# lock ahead of the .in makes deploy-on-merge.sh refuse every deploy while CI
+# stays green — 8 of 8 deploy.yml runs failed that way from 2026-09-02 to
+# 2026-09-06. Ref FORM stays free; the two halves naming DIFFERENT code does
+# not. The reasoning lives in that script's own header.
 #
 # THE FLAGS ABOVE LIVE IN ONE FILE, `.github/lockfile_compile.sh`, shared with
 # `.github/upgrade_lock.sh` — the producer that replaced Dependabot's pip
@@ -128,6 +139,9 @@ for extra in flow-doctor github-app; do
         exit 1
     fi
 done
-echo "OK: the nousergon-lib git pin is present with both extras (its ref form"
+echo "OK: the nousergon-lib git pin is present with both extras (its ref FORM"
 echo "    is owned by tests/test_flow_doctor_wiring.py, which asserts the tag"
 echo "    in requirements.in)."
+
+# Ref EQUALITY between the two files — the half presence+extras cannot see.
+bash "$ROOT/infrastructure/check_lib_ref_parity.sh"
