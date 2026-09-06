@@ -310,7 +310,7 @@ class TestLibVersionPin:
             "nousergon_lib import alias still works via the shim)"
         )
         assert "@main" not in text, "nousergon-lib must be pinned to a tag, not @main"
-        assert "@v0.124.102" in text, (
+        assert "@v0.124.104" in text, (
             "nousergon-lib must be pinned to a released tag (I7301/I9329): "
             "LibPinDriftCheck reads requirements.in and sha_pinned degrades "
             "every weekly-SF run."
