@@ -176,7 +176,7 @@ def is_callable_window(
 
     The window is ``[window_open - pre_open_lead, window_close]`` in ET, and
     only on NYSE trading days (``is_trading_day`` is injected — pass
-    ``trading_calendar.is_trading_day``). ``now`` is converted to ET, so the
+    ``nousergon_lib.trading_calendar.is_trading_day``). ``now`` is converted to ET, so the
     caller may pass any tz-aware datetime.
     """
     now_et = now.astimezone(ET)
