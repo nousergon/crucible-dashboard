@@ -190,9 +190,15 @@ LIFECYCLE_FUNCTIONS = (
     "alerted_state_lifecycle",
     "alerted_state_write",
     "timer_failure_dedup_key",
+    "alerted_timer_key",
     # The episode wrapper, not just the run key: without it the harness would
     # load the half that #787 replaced and prove nothing about what ships.
     "timer_failure_episode_key",
+    # The confirm-on-retry intersection and its identity helper: the harness
+    # replays whole ticks, and a tick that intersected on bytes is exactly the
+    # defect the 2026-09-06 tests pin.
+    "problem_identity",
+    "confirm_intersect",
     "emit_hygiene_envelope",
     "publish_page",
     "publish_problems",
@@ -464,3 +470,59 @@ def timer_staleness_findings(
             f"classify_timer_staleness exited {r.returncode}: {r.stderr.strip()}"
         )
     return [ln for ln in r.stdout.splitlines() if ln.strip()]
+
+
+# Anchored on the timer-publish loop's START and on the NEXT statement after
+# it. This block is MAIN-FLOW code, not a function, and it is where the episode
+# key actually reaches the wire -- including the in-flight branch that must
+# carry the prior key rather than re-derive one from a running unit. Extracting
+# it is the only way to exercise the shipped bytes; a Python re-implementation
+# would prove the two agree, which is the failure mode this file's docstring
+# already names.
+_TIMER_PUBLISH_LOOP_RE = re.compile(
+    r'^while IFS= read -r _tf_line; do$.*?^done <<< "\$timer_criticals"$',
+    re.MULTILINE | re.DOTALL,
+)
+
+
+def timer_publish_loop_source() -> str:
+    """The literal shell text of the timer-finding publish loop, or raise."""
+    m = _TIMER_PUBLISH_LOOP_RE.search(BOX_HEALTH)
+    if not m:
+        raise AssertionError(
+            "the timer-finding publish loop was not found in box_health.sh. It "
+            "is where a confirmed timer finding becomes an identity-keyed page; "
+            "if it moved, these tests must be updated deliberately, not skipped."
+        )
+    return m.group(0)
+
+
+_FAKE_SYSTEMCTL = r"""#!/bin/bash
+# Stands in for systemd at the process boundary. `show <unit> -p <P> --value`
+# answers from FAKE_SYSTEMCTL_<P> (per-unit override FAKE_SYSTEMCTL_<P>_<unit>
+# with dots and dashes folded to underscores); everything else is silent.
+if [ "$1" = "show" ]; then
+    unit="$2"; prop=""
+    for a in "$@"; do case "$a" in -p) prop=NEXT ;; *) [ "$prop" = NEXT ] && { prop="$a"; break; } ;; esac; done
+    safe=$(printf '%s' "$unit" | tr '.-' '__')
+    specific="FAKE_SYSTEMCTL_${prop}_${safe}"
+    generic="FAKE_SYSTEMCTL_${prop}"
+    if [ -n "${!specific-}" ]; then printf '%s\n' "${!specific}"
+    elif [ -n "${!generic-}" ]; then printf '%s\n' "${!generic}"
+    fi
+fi
+exit 0
+"""
+
+
+def install_fake_systemctl(tmp_path) -> None:
+    """Put the fake systemd on the PATH run_lifecycle will build.
+
+    Called BEFORE run_lifecycle, which mkdirs the same `bin` with exist_ok and
+    prepends it to PATH.
+    """
+    binroot = tmp_path / "bin"
+    binroot.mkdir(exist_ok=True)
+    f = binroot / "systemctl"
+    f.write_text(_FAKE_SYSTEMCTL)
+    f.chmod(0o755)

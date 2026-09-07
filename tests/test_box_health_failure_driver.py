@@ -57,6 +57,19 @@ def driver(result: str = "exit-code", status: str = "", journal: str = "") -> st
          "disk-full"),
         ("exit-code", "1", "curl: (6) Could not resolve host: example.invalid",
          "upstream-unreachable"),
+        # GitHub answers an unauthorised caller on a PRIVATE repo with 404,
+        # not 403, so this text is a credential finding and must not fall
+        # through to `unattributed` (alpha-engine-config-I10141, measured
+        # live on ops-checkout-freshness.timer / telos-ops 2026-09-07).
+        ("exit-code", "1",
+         "fatal: repository 'https://github.com/nousergon/telos-ops.git/' not found",
+         "git-remote-unreadable"),
+        ("exit-code", "128",
+         "fatal: Could not read from remote repository.",
+         "git-remote-unreadable"),
+        ("exit-code", "1",
+         "fatal: 'origin' does not appear to be a git repository",
+         "git-remote-unreadable"),
         ("exit-code", "1", "Dependency failed for something.service",
          "dependency-failed"),
         # Mechanism, only once no cause was named.
