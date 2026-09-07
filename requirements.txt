@@ -6,7 +6,7 @@ annotated-doc==0.0.5
     # via fastapi
 annotated-types==0.8.0
     # via pydantic
-anyio==4.14.2
+anyio==4.15.1
     # via
     #   httpx
     #   httpx2
@@ -19,14 +19,12 @@ attrs==26.1.0
     #   referencing
 beautifulsoup4==4.15.0
     # via yfinance
-blinker==1.9.0
-    # via streamlit
-boto3==1.43.83
+boto3==1.43.89
     # via
     #   -r requirements.in
     #   krepis
     #   nousergon-lib
-botocore==1.43.83
+botocore==1.43.89
     # via
     #   boto3
     #   s3transfer
@@ -48,7 +46,7 @@ click==8.5.0
     #   uvicorn
 cryptography==50.0.1
     # via pyjwt
-curl-cffi==0.16.2
+curl-cffi==0.16.3
     # via yfinance
 fastapi==0.141.1
     # via -r requirements.in
@@ -93,11 +91,11 @@ jsonschema==4.26.0
     # via altair
 jsonschema-specifications==2025.9.1
     # via jsonschema
-krepis[flow-doctor, openai]==0.59.43
+krepis[flow-doctor, openai]==0.59.51
     # via
     #   -r requirements.in
     #   nousergon-lib
-lxml==6.1.2
+lxml==6.1.3
     # via yfinance
 markupsafe==3.0.3
     # via jinja2
@@ -107,15 +105,15 @@ narwhals==2.25.0
     # via
     #   altair
     #   plotly
-nousergon-lib[flow-doctor, github-app] @ git+https://github.com/nousergon/nousergon-lib@v0.124.104
+nousergon-lib[flow-doctor, github-app] @ git+https://github.com/nousergon/nousergon-lib@acfe2f1fe83108f128238a84f9729ca52b81bd26
     # via -r requirements.in
-numpy==2.5.2
+numpy==2.5.3
     # via
     #   pandas
     #   pydeck
     #   streamlit
     #   yfinance
-openai==3.6.0
+openai==3.8.0
     # via krepis
 packaging==26.3
     # via
@@ -127,15 +125,15 @@ pandas==3.0.5
     #   -r requirements.in
     #   streamlit
     #   yfinance
-peewee==4.4.0
+peewee==4.5.0
     # via yfinance
 pillow==12.3.0
     # via streamlit
-platformdirs==4.11.5
+platformdirs==4.11.7
     # via yfinance
 plotly==7.0.0
     # via -r requirements.in
-protobuf==7.36.0
+protobuf==7.36.1
     # via
     #   streamlit
     #   yfinance
@@ -205,7 +203,7 @@ starlette==1.6.0
     # via
     #   fastapi
     #   streamlit
-streamlit==1.62.0
+streamlit==1.63.0
     # via
     #   -r requirements.in
     #   streamlit-calendar
