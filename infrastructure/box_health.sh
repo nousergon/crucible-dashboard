@@ -932,6 +932,29 @@ timer_failure_driver() {
         *"Could not resolve host"*|*"Name or service not known"*|*"Temporary failure in name resolution"*|*"Connection refused"*|*"Network is unreachable"*|*"Connection timed out"*|*"Failed to establish a new connection"*)
             echo upstream-unreachable; return ;;
     esac
+    # A git remote a caller could not read: a minted App-installation token
+    # that failed to cover the repo, or genuinely does not exist yet. GitHub
+    # answers an AUTHORIZATION failure on a private repo with 404 "not found"
+    # rather than 403, precisely to avoid confirming the repo exists to a
+    # caller it does not trust — so this text is functionally a credential
+    # finding wearing a different message than access-denied's, and it needs
+    # its own case rather than falling through to `unattributed`.
+    #
+    # MEASURED 2026-09-07 on i-09b539c844515d549: ops-checkout-freshness.timer
+    # failed once (10:00:29 UTC) on exactly this text for `telos-ops` --
+    # `git ls-remote origin refs/heads/main` -> "fatal: repository
+    # 'https://github.com/nousergon/telos-ops.git/' not found" -- and
+    # succeeded again on its very next hourly run with no repo or credential
+    # change in between (alpha-engine-config-I10141). The finding correctly
+    # confirmed and cleared (timer_failure_episode_key, #827); only the
+    # DRIVER was blind to it, so the page named the timer and nothing about
+    # why. `does not appear to be a git repository` covers the from-scratch
+    # variant `git -C <repo> ls-remote` produces on a working tree whose
+    # `.git/config` lost its `[remote "origin"]` stanza mid-read.
+    case "$journal" in
+        *"repository '"*"' not found"*|*"Could not read from remote repository"*|*"does not appear to be a git repository"*)
+            echo git-remote-unreadable; return ;;
+    esac
     case "$journal" in
         *"Dependency failed for"*)
             echo dependency-failed; return ;;
@@ -1047,6 +1070,84 @@ timer_failure_episode_key() {
     else
         timer_failure_dedup_key "$unit" "$result" "$ts_raw"
     fi
+}
+
+# problem_identity LINE — the stable IDENTITY of one problem line, which is what
+# confirm-on-retry intersects on.
+#
+# For every line but two this IS the line: an exact-match intersection is the
+# correct and strictest thing, and widening it where it is not needed would let
+# two genuinely different problems confirm each other.
+#
+# The two exceptions are the unit-level failure findings, whose DETAIL TEXT can
+# legitimately change between two samples of ONE tick. Measured 2026-09-06 on
+# i-09b539c844515d549, the tick starting 12:07:21 UTC:
+#
+#   sample 1 (12:07:34) — the triggered service was ActiveState=activating, so
+#     `Result` read `success` and classify_timer_staleness re-emitted the PRIOR
+#     line verbatim (the I8359 carry): `... failing run started 11:07:00 ...`
+#   samples 2-4 (12:07:48 / 12:08:05 / 12:08:20) — the run had finished and
+#     failed: `... failing run started 12:07:21 ...`
+#
+# Both lines assert the same true thing, and neither is present in the other's
+# sample, so the byte-identical intersection emptied the confirmed set.
+# publish_clears then fired `alerts.clear` at 12:08:33 for a condition that had
+# not ended, the key left ALERTED_STATE, and the next tick at 12:18 — all four
+# samples agreeing again — found no prior key to carry and opened a NEW episode.
+# Brian received that CRITICAL/RESOLVED pair twice on 2026-09-06, at 05:07 and
+# 12:07 UTC, for ONE standing condition.
+#
+# WHY THIS IS A CLASS AND NOT ONE TIMER. box-health.timer is OnUnitActiveSec=10min
+# so its ticks drift against the wall clock, and the confirmation window is only
+# ~12s wide. Any hourly timer whose service runs a few seconds will land its run
+# inside that window a couple of times a day. The I8359 carry covers only the
+# case where all four samples fall INSIDE the run; this covers the case where the
+# run ENDS in the middle of the window.
+#
+# The identity is the unit — the text up to the ` (` that opens the detail —
+# because that is exactly what the episode key is built from
+# (timer_failure_episode_key's prefix is unit + Result). Everything after it is
+# evidence about the current run, which is precisely what may legitimately move.
+#
+# Pure function of its argument, testable without systemd.
+problem_identity() {
+    case "$1" in
+        "timer job failing: "*|"unit failed and otherwise unmonitored: "*)
+            printf '%s' "${1%% (*}" ;;
+        *)  printf '%s' "$1" ;;
+    esac
+}
+
+# confirm_intersect RUNNING NEXT — the confirm-on-retry intersection, taken on
+# IDENTITY rather than on bytes, keeping the FRESHER line.
+#
+# Two properties, both load-bearing:
+#
+#   * a problem survives iff its identity is present in BOTH sets. For every
+#     line except the two unit-failure findings the identity is the line, so
+#     this is the same strict set intersection `comm -12` performed.
+#   * the surviving line is NEXT's — the newest sample — so a timer finding
+#     confirmed across the window is published naming the newest failing run,
+#     not the stale text sample 1 happened to carry.
+#
+# Output is sorted, like the `comm -12` it replaces. publish_problems derives
+# the set-derived tiers' dedup key from the joined problem set, so an unstable
+# ordering would mint a new key — and a new page — for an unchanged set.
+#
+# Pure function of its two arguments: no systemd, no clock, no state file.
+confirm_intersect() {
+    local running="$1" next="$2" line ident
+    local -A fresh=()
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        fresh["$(problem_identity "$line")"]="$line"
+    done <<< "$next"
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        ident="$(problem_identity "$line")"
+        [ -n "${fresh[$ident]+set}" ] || continue
+        printf '%s\n' "${fresh[$ident]}"
+    done <<< "$running" | sort
 }
 
 # classify_throttle_delta — decide whether a cgroup's MemoryHigh throttling is
@@ -1485,6 +1586,20 @@ alerted_timer_finding() {
     local unit="$1"
     alerted_state_prior | awk -F'\t' -v k="boxhealth-critical-timerfail-${unit}-" \
         'index($1, k) == 1 { print $3; exit }'
+}
+
+# alerted_timer_key UNIT — the identity KEY this unit's finding was published
+# under on the PREVIOUS run, or empty.
+#
+# Same row, same prefix match and the same stability argument as
+# alerted_timer_finding above; field 1 instead of field 3. Used only by the
+# publish loop's in-flight branch, which needs the key and not the text: the
+# text it is publishing came from the confirmed set, and re-deriving the key
+# from an in-flight unit is what mints a spurious `-success-` episode.
+alerted_timer_key() {
+    local unit="$1"
+    alerted_state_prior | awk -F'\t' -v k="boxhealth-critical-timerfail-${unit}-" \
+        'index($1, k) == 1 { print $1; exit }'
 }
 
 # alerted_state_lifecycle KEY — `still_open` if the previous run alerted on
@@ -2777,8 +2892,11 @@ attempt=1
 while [ "$attempt" -lt "$RETRY_ATTEMPTS" ] && [ -n "$confirmed" ]; do
     sleep "$RETRY_DELAY"
     next=$(snapshot_problems)
-    # intersection: lines present in BOTH the running set and this fresh sample
-    confirmed=$(comm -12 <(printf '%s\n' "$confirmed" | sort) <(printf '%s\n' "$next" | sort))
+    # Intersection: problems present in BOTH the running set and this fresh
+    # sample, matched on IDENTITY and carrying the fresher line — see
+    # problem_identity for the mid-window flap that a byte-identical `comm -12`
+    # turned into a spurious RESOLVED followed by a fresh CRITICAL.
+    confirmed=$(confirm_intersect "$confirmed" "$next")
     attempt=$((attempt + 1))
 done
 
@@ -3100,19 +3218,47 @@ while IFS= read -r _tf_line; do
             [ -n "$_tf_unit" ] && _tf_svc=$(systemctl show "$_tf_unit" -p Unit --value 2>/dev/null)
             ;;
     esac
-    _tf_result=""; _tf_ts=""
+    # ── A RUN IN FLIGHT AT *PUBLISH* TIME (measured 2026-09-06) ────────────
+    #
+    # `Result` and `InactiveExitTimestamp` are read LIVE here, seconds to
+    # minutes after the confirmation window that produced this line. If the
+    # unit happens to be running at THIS instant, systemd has already reset
+    # `Result` to `success` (the mechanism classify_timer_staleness documents
+    # at length in its own in-flight branch), so the episode prefix becomes
+    # `...-<unit>-success-`, no prior key can match it, and a standing episode
+    # is republished under a brand-new key — the second way to open a spurious
+    # episode for a condition that never ended.
+    #
+    # Same reasoning, same remedy: CARRY, do not re-derive. A run in flight is
+    # not evidence about the finished run this line describes; the honest key
+    # is the one the last actually-measured outcome was published under. If
+    # there is no prior key — the episode genuinely opens while the unit is
+    # mid-run — we fall through and derive one, which is the pre-existing
+    # behaviour and the only option available.
+    _tf_result=""; _tf_ts=""; _tf_key=""
+    _tf_active=""
     if [ -n "$_tf_svc" ]; then
-        _tf_result=$(systemctl show "$_tf_svc" -p Result --value 2>/dev/null)
-        _tf_ts=$(systemctl show "$_tf_svc" -p InactiveExitTimestamp --value 2>/dev/null)
+        _tf_active=$(systemctl show "$_tf_svc" -p ActiveState --value 2>/dev/null)
     fi
+    case "$_tf_active" in
+        activating|active|reloading|deactivating)
+            _tf_key=$(alerted_timer_key "$_tf_unit") ;;
+        *)
+            if [ -n "$_tf_svc" ]; then
+                _tf_result=$(systemctl show "$_tf_svc" -p Result --value 2>/dev/null)
+                _tf_ts=$(systemctl show "$_tf_svc" -p InactiveExitTimestamp --value 2>/dev/null)
+            fi
+            ;;
+    esac
     # The EPISODE key, not the run key — see timer_failure_episode_key for the
     # five-CRITICAL/five-RESOLVED hour-by-hour flap that made this necessary.
     # ALERTED_NOW is appended to by publish_problems as we go, but the prior
     # rows are fixed for the whole run (the state file is not rewritten until
     # alerted_state_write on the way out), so every unit in this loop sees the
     # same prior set.
-    publish_problems critical 43200 "health alert" "$_tf_line" \
-        "$(timer_failure_episode_key "$_tf_unit" "$_tf_result" "$_tf_ts" "$(alerted_state_prior | cut -f1)")"
+    [ -n "$_tf_key" ] || _tf_key=$(timer_failure_episode_key \
+        "$_tf_unit" "$_tf_result" "$_tf_ts" "$(alerted_state_prior | cut -f1)")
+    publish_problems critical 43200 "health alert" "$_tf_line" "$_tf_key"
 done <<< "$timer_criticals"
 
 criticals="$other_criticals"

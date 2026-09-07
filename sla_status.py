@@ -133,7 +133,7 @@ def _utc_at(d: date, t) -> datetime:
 
 
 def _is_trading_day(d: date) -> bool:
-    from trading_calendar import is_trading_day
+    from nousergon_lib.trading_calendar import is_trading_day
 
     return is_trading_day(d)
 

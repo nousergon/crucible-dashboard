@@ -1,7 +1,24 @@
-"""Unit tests for trading_calendar — NYSE holiday and trading day checks."""
+"""Unit tests for the fleet trading calendar this repo imports.
+
+alpha-engine-config-I10142: this repo used to carry its own hand-maintained
+``trading_calendar.py`` fork (2025-2030 only, no lower-edge guard) that
+answered ``True`` for pre-2025 weekday holidays -- Labor Day 2024, July 4
+2024, Thanksgiving 2024, Christmas 2024 -- because it never imported
+``krepis``/``nousergon_lib`` at all. The fork is deleted; every caller
+(``sla_status.py``, ``live/morning_brief.py``,
+``loaders/fleet_status_loader.py``) now imports
+``nousergon_lib.trading_calendar`` directly, so these tests exercise the
+real fleet module rather than a local copy.
+"""
 from datetime import date
 
-from trading_calendar import is_trading_day, next_trading_day, NYSE_HOLIDAYS
+from nousergon_lib.trading_calendar import (
+    NYSE_CALENDAR_COVERS_FROM,
+    NYSE_HOLIDAYS,
+    TradingCalendarPrecedesCoverageError,
+    is_trading_day,
+    next_trading_day,
+)
 
 
 class TestIsTradingDay:
@@ -28,6 +45,41 @@ class TestIsTradingDay:
     def test_normal_monday(self):
         # 2026-04-06 is a normal Monday
         assert is_trading_day(date(2026, 4, 6)) is True
+
+
+class TestPre2025DefectFixed:
+    """I10142 / krepis-PR206: the old fork's table started at 2025 with no
+    below-range guard, so every one of these read as a trading day (True).
+    The fleet module covers back to 2016 and must answer False."""
+
+    def test_labor_day_2024(self):
+        assert is_trading_day(date(2024, 9, 2)) is False
+
+    def test_independence_day_2024(self):
+        assert is_trading_day(date(2024, 7, 4)) is False
+
+    def test_thanksgiving_2024(self):
+        assert is_trading_day(date(2024, 11, 28)) is False
+
+    def test_christmas_2024(self):
+        assert is_trading_day(date(2024, 12, 25)) is False
+
+
+class TestPrecedesCoverageRaises:
+    """Migration hazard named in I10142: below NYSE_CALENDAR_COVERS_FROM
+    (2016-01-01) the fleet module RAISES rather than silently answering
+    True, unlike the old fork. Every caller in this repo (sla_status.py's
+    <=17-day lookback, fleet_status_loader.py's 12-day lookback, and
+    morning_brief.py's today-only check) is bounded well inside the
+    covered range, so this is a coverage-edge property test, not a
+    reachable path from any current caller."""
+
+    def test_raises_below_coverage_floor(self):
+        import pytest
+
+        before = date(NYSE_CALENDAR_COVERS_FROM.year - 1, 12, 31)
+        with pytest.raises(TradingCalendarPrecedesCoverageError):
+            is_trading_day(before)
 
 
 class TestNextTradingDay:

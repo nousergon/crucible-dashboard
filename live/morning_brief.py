@@ -314,7 +314,7 @@ def get_or_generate_brief(
     Demand (gate 2) is satisfied by being called from a Streamlit rerun. No
     cron / background warmer ever calls this.
     """
-    from trading_calendar import is_trading_day
+    from nousergon_lib.trading_calendar import is_trading_day
 
     if not _ai_advisor_enabled():
         return {
