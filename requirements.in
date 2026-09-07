@@ -99,7 +99,17 @@ yfinance>=1.7.0
 # krepis release declaring flow-doctor>=0.16.0, which carries the verdict/
 # transport split for TelegramNotifier/GitHubNotifier.validate() that stops a
 # transient Telegram timeout from killing a strict Lambda import.
-krepis[openai]>=0.59.39
+#
+# Floor raised to 0.59.53 (alpha-engine-config-I10142, krepis-PR206): this
+# repo carried its own hand-maintained trading_calendar.py fork with the
+# same pre-2025 defect krepis-PR206 fixes upstream (is_trading_day guarded
+# only the future edge, so every pre-2025 weekday -- Labor Day 2024, July 4
+# 2024, Thanksgiving 2024, Christmas 2024 -- read as a trading day). The
+# fork is deleted; sla_status.py, live/morning_brief.py and
+# loaders/fleet_status_loader.py now import nousergon_lib.trading_calendar
+# (the krepis re-export), which requires this floor for
+# NYSE_CALENDAR_COVERS_FROM/TradingCalendarPrecedesCoverageError.
+krepis[openai]>=0.59.53
 # nousergon-lib (renamed from alpha-engine-lib at v0.60.0) provides
 # setup_logging used by app.py + health_checker.py
 # to attach the FlowDoctorHandler when FLOW_DOCTOR_ENABLED=1, the

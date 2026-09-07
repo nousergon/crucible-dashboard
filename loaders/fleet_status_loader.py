@@ -68,7 +68,7 @@ from loaders.s3_loader import (
     load_latest_sf_watch_canary,
     load_saturday_sf_watch,
 )
-from trading_calendar import is_trading_day
+from nousergon_lib.trading_calendar import is_trading_day
 from loaders.cache import cached
 
 logger = logging.getLogger(__name__)
