@@ -99,7 +99,17 @@ yfinance>=1.7.0
 # krepis release declaring flow-doctor>=0.16.0, which carries the verdict/
 # transport split for TelegramNotifier/GitHubNotifier.validate() that stops a
 # transient Telegram timeout from killing a strict Lambda import.
-krepis[openai]>=0.59.39
+#
+# Floor raised to 0.59.53 (alpha-engine-config-I10142, krepis-PR206): this
+# repo carried its own hand-maintained trading_calendar.py fork with the
+# same pre-2025 defect krepis-PR206 fixes upstream (is_trading_day guarded
+# only the future edge, so every pre-2025 weekday -- Labor Day 2024, July 4
+# 2024, Thanksgiving 2024, Christmas 2024 -- read as a trading day). The
+# fork is deleted; sla_status.py, live/morning_brief.py and
+# loaders/fleet_status_loader.py now import nousergon_lib.trading_calendar
+# (the krepis re-export), which requires this floor for
+# NYSE_CALENDAR_COVERS_FROM/TradingCalendarPrecedesCoverageError.
+krepis[openai]>=0.59.53
 # nousergon-lib (renamed from alpha-engine-lib at v0.60.0) provides
 # setup_logging used by app.py + health_checker.py
 # to attach the FlowDoctorHandler when FLOW_DOCTOR_ENABLED=1, the
@@ -241,7 +251,24 @@ krepis[openai]>=0.59.39
 # DispatchEvalJudgeSpot + WaitForEvalJudge* WAIT_GROUPING rows (nousergon-lib#376).
 # Repointed from interim SHA pin (I7301) so LibPinDriftCheck can resolve the
 # dashboard pin from requirements.in.
-nousergon-lib[flow-doctor,github_app] @ git+https://github.com/nousergon/nousergon-lib@v0.124.102
+#
+# v0.124.104 (2026-09-06): repointed to match the LOCK, which #813 moved to
+# v0.124.104 on 2026-08-31 while leaving this line at v0.124.102 — the same
+# split-pin shape as #775 above, third recurrence in this repo (#739,
+# 2026-08-20 was the first). check_package_drift reads the tag from HERE and
+# compares it against the INSTALLED version (which comes from the lock), so a
+# lock ahead of this line makes deploy-on-merge.sh's gate refuse every deploy
+# while CI stays green: `.github/workflows/deploy.yml` FAILED on 8 of 8 runs
+# from 2026-09-02 to 2026-09-06 with
+#
+#   FAIL check_package_drift: nousergon-lib: requirements.in pins tag
+#   v0.124.102 but the installed version is 0.124.104
+#
+# and every merge in that window — box_health.sh's identity fix (#827)
+# included — sat merged-but-not-live on the box. The class is closed in the
+# same PR: infrastructure/check_lib_ref_parity.sh now fails CI when this
+# line's VCS ref and the lock's disagree.
+nousergon-lib[flow-doctor,github_app] @ git+https://github.com/nousergon/nousergon-lib@v0.124.104
 
 # crucible-dash-api (config#1973 phase 9-B): read-only FastAPI over the
 # results view-model, consumed same-box by the /dash Next.js frontend.
