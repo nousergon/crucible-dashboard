@@ -932,6 +932,29 @@ timer_failure_driver() {
         *"Could not resolve host"*|*"Name or service not known"*|*"Temporary failure in name resolution"*|*"Connection refused"*|*"Network is unreachable"*|*"Connection timed out"*|*"Failed to establish a new connection"*)
             echo upstream-unreachable; return ;;
     esac
+    # A git remote a caller could not read: a minted App-installation token
+    # that failed to cover the repo, or genuinely does not exist yet. GitHub
+    # answers an AUTHORIZATION failure on a private repo with 404 "not found"
+    # rather than 403, precisely to avoid confirming the repo exists to a
+    # caller it does not trust — so this text is functionally a credential
+    # finding wearing a different message than access-denied's, and it needs
+    # its own case rather than falling through to `unattributed`.
+    #
+    # MEASURED 2026-09-07 on i-09b539c844515d549: ops-checkout-freshness.timer
+    # failed once (10:00:29 UTC) on exactly this text for `telos-ops` --
+    # `git ls-remote origin refs/heads/main` -> "fatal: repository
+    # 'https://github.com/nousergon/telos-ops.git/' not found" -- and
+    # succeeded again on its very next hourly run with no repo or credential
+    # change in between (alpha-engine-config-I10141). The finding correctly
+    # confirmed and cleared (timer_failure_episode_key, #827); only the
+    # DRIVER was blind to it, so the page named the timer and nothing about
+    # why. `does not appear to be a git repository` covers the from-scratch
+    # variant `git -C <repo> ls-remote` produces on a working tree whose
+    # `.git/config` lost its `[remote "origin"]` stanza mid-read.
+    case "$journal" in
+        *"repository '"*"' not found"*|*"Could not read from remote repository"*|*"does not appear to be a git repository"*)
+            echo git-remote-unreadable; return ;;
+    esac
     case "$journal" in
         *"Dependency failed for"*)
             echo dependency-failed; return ;;
