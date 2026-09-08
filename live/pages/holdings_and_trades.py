@@ -14,21 +14,14 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 import pandas as pd
 import streamlit as st
 
-from charts.nav_chart import make_intraday_curve
 from components.morning_brief_card import render_morning_brief_card
 from loaders.s3_loader import (
     load_intraday_nav,
-    load_intraday_nav_series,
     load_intraday_working_orders,
     load_thesis_summaries,
     load_trades_full,
 )
-from shared import (
-    build_intraday_curve,
-    compute_live_metrics,
-    load_and_prepare_eod,
-    series_date_for,
-)
+from shared import compute_live_metrics, load_and_prepare_eod
 from ticker_detail import show_ticker_detail
 
 
@@ -97,18 +90,17 @@ def _render_live_header(m):
     )
 
 
-def _render_intraday_curve(nav_json, prep):
-    """Render today's intraday portfolio-vs-SPY cumulative-return curve.
-
-    Needs >=2 points to draw a line; silently renders nothing earlier in
-    the session (the header numbers already convey the live state)."""
-    series_date = series_date_for(nav_json)
-    if not series_date:
-        return
-    curve = build_intraday_curve(load_intraday_nav_series(series_date), prep)
-    if curve is None or len(curve) < 2:
-        return
-    st.plotly_chart(make_intraday_curve(curve), width="stretch")
+# The intraday portfolio-vs-SPY cumulative-return curve (green/red alpha
+# shading) was removed from this page 2026-09-08. Crucible is positioned as an
+# experiment harness whose flagship experiment happens to be a paper portfolio
+# (business/product-positioning/crucible.md §4: "Not sold on returns. Alpha vs.
+# SPY is one tracked metric of one experiment, never the headline"). An
+# alpha-shaded curve above the fold on the public live surface IS that headline.
+# Alpha-over-time remains available as an instrument on /dash, where it is
+# framed as one experiment's metric. The chart builder
+# (charts.nav_chart.make_intraday_curve) and its series feed are retained and
+# still serve the /dash API (dash_api/main.py) — this removes a placement, not
+# a capability.
 
 
 st.title("Live Portfolio")
@@ -125,7 +117,6 @@ _nav_json = load_intraday_nav()
 _live = compute_live_metrics(_nav_json, prep)
 if _live is not None:
     _render_live_header(_live)
-    _render_intraday_curve(_nav_json, prep)
     _render_working_orders()
     st.divider()
     st.caption(
