@@ -1,8 +1,13 @@
 """Live Portfolio — current positions plus the last 5 trading days of fills.
 
-Default landing page for live.nousergon.ai ("Live Portfolio" titling per
-the public-presence plan §9b.1, L4570e). Positions parse out of the EOD
+The SECOND nav stop on live.nousergon.ai, behind the Promotion Record page
+(alpha-engine-config-I10218, Brian's ruling 2026-09-08 option (e); this page
+was the default landing page until then). "Live Portfolio" titling per the
+public-presence plan §9b.1, L4570e. Positions parse out of the EOD
 `positions_snapshot` field; trades come from `trades_full`. Both read-only.
+
+This is experiment #1's holdings, not the product — the harness and its
+promotion gates are (business/product-positioning/crucible.md §1).
 """
 
 import json

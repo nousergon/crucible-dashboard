@@ -1,12 +1,17 @@
 """
 S3 data loading for the Nous Ergon public site.
-Minimal subset — only loads eod_pnl.csv (portfolio performance data).
-Credentials come from the EC2 IAM role (no explicit creds needed).
+
+The public subset of the console's reader: the paper-portfolio artifacts
+(eod_pnl / trades_full / intraday), the research artifacts the per-ticker
+views read, and the promotion-decision artifacts behind the Promotion
+Record page (alpha-engine-config-I10218). Credentials come from the EC2 IAM
+role (no explicit creds needed).
 """
 
 import io
 import logging
 import os
+import re
 
 import boto3
 import pandas as pd
@@ -521,3 +526,172 @@ def load_uptime_history(max_sessions: int = 20) -> list[dict]:
     records = [r for r in records if "connected_minutes" in r]
     records.sort(key=lambda r: r.get("date", ""))
     return records
+
+
+# ---------------------------------------------------------------------------
+# Promotion-decision artifacts (alpha-engine-config-I10218)
+# ---------------------------------------------------------------------------
+#
+# Ported from the console's top-level ``loaders/s3_loader.py`` rather than
+# imported from it: ``live/`` shadows the name ``loaders`` at runtime
+# (nous-ergon-live.service roots at ``live/`` — see live/loaders/cache.py),
+# so the console module is simply not reachable from this app. The ported
+# subset is the read side only, with the console's error-telemetry sink
+# (``_record_s3_error``) dropped — that sink feeds an OPS surface, which
+# architecture.d/069 point 4 keeps structurally unreachable from the public
+# app. Failures here are WARN-logged and surface as an honest absence.
+
+_ISO_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+_CHAMPION_POINTER_KEY = "config/producer_champion.json"
+_CHAMPION_AUDIT_PREFIX = "config/apply_audit/producer_champion/"
+_MODEL_ZOO_LEADERBOARD_PREFIX = "predictor/model_zoo/leaderboard/"
+
+
+def _list_dated_json_keys(prefix: str) -> list[str]:
+    """Sorted ``YYYY-MM-DD`` dates for flat ``{prefix}{date}.json`` keys.
+
+    Returns [] on any listing failure — WARN-logged, never swallowed
+    silently. An empty list is rendered by the caller as an explicit
+    awaiting-data state naming the missing artifact, never as success.
+    """
+    bucket = _research_bucket()
+    try:
+        client = get_s3_client()
+        paginator = client.get_paginator("list_objects_v2")
+        dates: set[str] = set()
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+            for obj in page.get("Contents", []):
+                stem = obj.get("Key", "")[len(prefix):]
+                if stem.endswith(".json") and _ISO_DATE_PATTERN.match(stem[:-5]):
+                    dates.add(stem[:-5])
+        return sorted(dates)
+    except Exception as e:
+        logger.warning("Failed to list dated JSON keys under %s: %s", prefix, e)
+        return []
+
+
+@cached(ttl_key="research")
+def load_champion_pointer() -> dict | None:
+    """The live selection-producer champion pointer.
+
+    ``config/producer_champion.json`` — schema v1 ``{schema_version,
+    champion, promoted_at, promotion_source}``. None until the first
+    promotion or operator bootstrap write: an honest absence, never guessed
+    at here (the executor's own pre-bootstrap default is not restated on a
+    public surface as though it were a recorded decision).
+    """
+    return download_s3_json(_research_bucket(), _CHAMPION_POINTER_KEY)
+
+
+@cached(ttl_key="research")
+def list_champion_audit_dates() -> list[str]:
+    """Dates with a weekly champion-promotion audit record.
+
+    Written UNCONDITIONALLY by every Saturday evaluator run regardless of
+    outcome, so this listing IS the promotion loop's own freshness signal —
+    a correctly-held no-contest week never touches the pointer, so pointer
+    mtime alone cannot prove the engine is alive.
+    """
+    return _list_dated_json_keys(_CHAMPION_AUDIT_PREFIX)
+
+
+@cached(ttl_key="research")
+def load_champion_audit(date: str) -> dict | None:
+    """One weekly champion-promotion audit record
+    (``producer_champion_audit.schema.json``, currently v2)."""
+    if not date:
+        return None
+    return download_s3_json(_research_bucket(), f"{_CHAMPION_AUDIT_PREFIX}{date}.json")
+
+
+@cached(ttl_key="research")
+def load_champion_audit_latest() -> dict | None:
+    """Latest weekly champion-promotion audit record, read at the
+    ``latest.json`` mirror key."""
+    return download_s3_json(_research_bucket(), f"{_CHAMPION_AUDIT_PREFIX}latest.json")
+
+
+def champion_audit_last_modified(date: str | None = None) -> str | None:
+    """S3 ``LastModified`` date of a champion audit record — the MEASURED
+    write date, independent of the payload's self-reported ``date`` field.
+
+    Paired with the loaders above for the same reason
+    ``load_universe_archive_last_modified`` exists: a producer that stops
+    running leaves its payload's own date frozen, and a frozen date rendered
+    without its measured recency reads as current.
+    """
+    stem = date or "latest"
+    return get_s3_object_last_modified(
+        _research_bucket(), f"{_CHAMPION_AUDIT_PREFIX}{stem}.json"
+    )
+
+
+@cached(ttl_key="research")
+def load_model_zoo_leaderboard(date_str: str | None = None) -> dict:
+    """The weekly model-zoo (M-slot) selection leaderboard.
+
+    ``predictor/model_zoo/leaderboard/{date|latest}.json``. Schema:
+    ``{date, mode, champion_arch, serving_champion, promotion_baseline_ic,
+    margin, candidates: [{spec_id, version_id, cpcv_mean_ic, passes_gate,
+    eligible, reason}], winner_version_id, promoted}``. Returns {} on any
+    failure — no leaderboard exists until the first Saturday rotation.
+    """
+    key = f"{_MODEL_ZOO_LEADERBOARD_PREFIX}{date_str or 'latest'}.json"
+    data = download_s3_json(_research_bucket(), key)
+    return data if isinstance(data, dict) else {}
+
+
+@cached(ttl_key="research")
+def list_model_zoo_leaderboard_dates() -> list[str]:
+    """Sorted ISO dates that have a model-zoo leaderboard."""
+    return _list_dated_json_keys(_MODEL_ZOO_LEADERBOARD_PREFIX)
+
+
+def model_zoo_leaderboard_last_modified(date_str: str | None = None) -> str | None:
+    """Measured S3 ``LastModified`` date of a model-zoo leaderboard."""
+    stem = date_str or "latest"
+    return get_s3_object_last_modified(
+        _research_bucket(), f"{_MODEL_ZOO_LEADERBOARD_PREFIX}{stem}.json"
+    )
+
+
+@cached(ttl_key="research")
+def load_model_zoo_history(limit: int = 12) -> list[dict]:
+    """Compact per-cycle promotion summary across the leaderboard archive,
+    newest first — the multi-week promotion trajectory.
+
+    Deliberately a SUBSET of the console's same-named loader: the ops-facing
+    guardrail telemetry it also extracts (selection PBO, the chasing-noise
+    monitor) is omitted here rather than rendered and hidden, so no ops field
+    reaches this surface at all (architecture.d/069 point 4). [] when no
+    rotation has run yet.
+    """
+    dates = list_model_zoo_leaderboard_dates()
+    if not dates:
+        return []
+    rows: list[dict] = []
+    for d in sorted(dates, reverse=True)[:limit]:
+        lb = load_model_zoo_leaderboard(d)
+        if not isinstance(lb, dict) or not lb:
+            continue
+        cands = [c for c in (lb.get("candidates") or []) if isinstance(c, dict)]
+        winner_id = lb.get("winner_version_id")
+        winner_ic = next(
+            (c.get("cpcv_mean_ic") for c in cands if c.get("version_id") == winner_id),
+            None,
+        )
+        rows.append({
+            "date": lb.get("date", d),
+            "mode": lb.get("mode"),
+            "baseline_ic": lb.get("promotion_baseline_ic"),
+            "baseline_source": lb.get("promotion_baseline_source"),
+            "winner_ic": winner_ic,
+            "margin": lb.get("margin"),
+            "promoted": lb.get("promoted"),
+            "promoted_kind": lb.get("promoted_kind"),
+            "reverted_from": lb.get("reverted_from"),
+            "n_candidates": len(cands),
+            "n_eligible": sum(1 for c in cands if c.get("eligible")),
+        })
+    return rows
