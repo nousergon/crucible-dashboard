@@ -252,6 +252,12 @@ krepis[openai]>=0.59.53
 # Repointed from interim SHA pin (I7301) so LibPinDriftCheck can resolve the
 # dashboard pin from requirements.in.
 #
+# v0.124.113 (2026-09-08): nousergon-lib PR391/392/393. Required by
+# nousergon-data's sf-stage-consumer-guard, which installs THIS
+# requirements.txt and runs this repo's drift tests against that repo's
+# candidate SF definitions — v0.124.104 has no STATE_TO_ARCHIVE_PAGE entry
+# for WeeklyCoverageSweepDeferred, so nousergon-data-PR1654 could not go
+# green until this moved (alpha-engine-config-I10170).
 # v0.124.104 (2026-09-06): repointed to match the LOCK, which #813 moved to
 # v0.124.104 on 2026-08-31 while leaving this line at v0.124.102 — the same
 # split-pin shape as #775 above, third recurrence in this repo (#739,
@@ -268,7 +274,7 @@ krepis[openai]>=0.59.53
 # included — sat merged-but-not-live on the box. The class is closed in the
 # same PR: infrastructure/check_lib_ref_parity.sh now fails CI when this
 # line's VCS ref and the lock's disagree.
-nousergon-lib[flow-doctor,github_app] @ git+https://github.com/nousergon/nousergon-lib@v0.124.104
+nousergon-lib[flow-doctor,github_app] @ git+https://github.com/nousergon/nousergon-lib@v0.124.113
 
 # crucible-dash-api (config#1973 phase 9-B): read-only FastAPI over the
 # results view-model, consumed same-box by the /dash Next.js frontend.
