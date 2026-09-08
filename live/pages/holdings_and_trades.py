@@ -76,18 +76,16 @@ def _render_working_orders():
 
 
 def _render_live_header(m):
-    """Render the live intraday header strip (NAV + today's return + alpha)."""
+    """Render the live intraday header strip: NAV plus today's return.
+
+    The two benchmark tiles this strip used to carry ("S&P 500 — today" and
+    "Alpha vs S&P 500") were removed 2026-09-08 (Brian's ruling on
+    alpha-engine-config-I10215, option (a)), for the same reason as the
+    intraday alpha curve below — see that comment. `LiveMetrics.day_alpha`
+    and `.spy_return` are still computed and still consumed by the /dash API;
+    this page just stops headlining them."""
     st.markdown(f"#### 🟢 Live — as of {m.as_of_et}")
-    cols = st.columns(3)
-    cols[0].metric("Live NAV", f"${m.nav:,.0f}", delta=f"{m.day_return:+.2%} today")
-    cols[1].metric(
-        "S&P 500 — today",
-        f"{m.spy_return:+.2%}" if m.spy_return is not None else "—",
-    )
-    cols[2].metric(
-        "Alpha vs S&P 500",
-        f"{m.day_alpha:+.2%}" if m.day_alpha is not None else "—",
-    )
+    st.metric("Live NAV", f"${m.nav:,.0f}", delta=f"{m.day_return:+.2%} today")
 
 
 # The intraday portfolio-vs-SPY cumulative-return curve (green/red alpha
