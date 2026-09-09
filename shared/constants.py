@@ -100,5 +100,11 @@ def get_thresholds() -> dict[str, float | int]:
             if k in merged and v is not None:
                 merged[k] = v
     except Exception:
+        # CARVE-OUT (alpha-engine-config-I10226): (a) config.yaml load/
+        # parse failure. (c) no recording surface -- this function's own
+        # docstring already documents the fallback contract ("falls back
+        # to defaults if config load fails"); DEFAULT_THRESHOLDS is a
+        # complete, valid config on its own, not a degraded one. See
+        # .debug-swallow-allowlist.yaml.
         pass
     return merged
