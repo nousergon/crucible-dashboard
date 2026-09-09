@@ -417,6 +417,13 @@ def render_positions(report: dict, eod_win: pd.DataFrame, window: str) -> None:
                 summ["Weight"] = summ["Weight"].apply(lambda w: f"{w:.1%}")
                 st.dataframe(summ, use_container_width=True, hide_index=True)
     except Exception:  # noqa: BLE001 — allocation is secondary; never break the page
+        # CARVE-OUT (alpha-engine-config-I10226): (a) sector-allocation
+        # chart/table rendering failed. (c) no recording surface -- this
+        # block is explicitly secondary display within a page whose
+        # primary content already rendered above; the fleet rule against
+        # breaking a Streamlit page on a non-primary render (see the noqa
+        # comment above, pre-existing) applies. See
+        # .debug-swallow-allowlist.yaml.
         pass
 
 

@@ -1,0 +1,47 @@
+# .debug-swallow-allowlist.yaml -- baseline for tests/test_no_debug_only_swallows.py
+# (alpha-engine-config-I10226).
+#
+# The class this guards: an `except Exception` whose body only records the
+# failure at logger.debug(...) or discards it as a bare `pass` -- invisible
+# by construction. Mirrors `crucible-executor`'s `.debug-swallow-allowlist.yaml`
+# (alpha-engine-config-I10031) and `.provider-linkage-allowlist.yaml`
+# (alpha-engine-config-I9295): a new site with no entry fails the build. An
+# entry whose `expires` has passed fails loudly -- re-justify or remove,
+# never silently re-grandfather. An entry that no longer matches anything
+# ALSO fails, so the allowance cannot quietly widen after the site it
+# covered is fixed or moves.
+#
+# This repo is a read-only Streamlit dashboard (AGENTS.md): "every chart
+# sources from an existing module's output; no metric is computed ad-hoc."
+# The two carve-outs below are both display-secondary paths whose own
+# fallback contract is already documented at the site.
+#
+# `path` + `line` identify the `except` line itself. Every entry requires a
+# `reason` naming (a) the failure mode swallowed and (c) the concrete
+# recording surface (or "no recording surface -- carve-out" for a
+# documented display-fallback swallow), per
+# `~/Development/CLAUDE.md` "Fail loud and fast."
+
+schema_version: 1
+entries:
+  - path: shared/constants.py
+    line: 102
+    reason: >-
+      config.yaml threshold-override load/parse failure inside
+      get_thresholds(). No recording surface -- the function's own
+      docstring documents the fallback contract (falls back to
+      DEFAULT_THRESHOLDS, a complete valid config on its own, not a
+      degraded one).
+    expires: "2027-03-08"
+    tracking: alpha-engine-config-I10226
+
+  - path: views/1_Performance.py
+    line: 419
+    reason: >-
+      Sector-allocation chart/table rendering failure inside a Performance
+      page section. No recording surface -- this block is explicitly
+      secondary display (pre-existing "allocation is secondary; never
+      break the page" comment); the page's primary content has already
+      rendered above this block.
+    expires: "2027-03-08"
+    tracking: alpha-engine-config-I10226

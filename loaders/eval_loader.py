@@ -503,7 +503,14 @@ def load_reviewed_ids(*, bucket: str | None = None) -> set[str]:
                 if rid:
                     reviewed.add(rid)
             except Exception:  # noqa: BLE001
-                pass  # tolerate corrupt lines; operator can re-review
+                # (a) one JSONL line in a calibration-review archive failed
+                # to parse (corrupt/truncated line). (c) recorded at
+                # WARNING here (alpha-engine-config-I10226) -- silently
+                # dropping a review record here means load_reviewed_ids()
+                # under-reports what has already been reviewed, and the UI
+                # would let an operator re-review a record it thinks is
+                # unreviewed with no other trace of why.
+                logger.warning("[eval_loader] corrupt review line in %s, skipped", key)
     return reviewed
 
 
