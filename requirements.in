@@ -109,7 +109,7 @@ yfinance>=1.7.0
 # loaders/fleet_status_loader.py now import nousergon_lib.trading_calendar
 # (the krepis re-export), which requires this floor for
 # NYSE_CALENDAR_COVERS_FROM/TradingCalendarPrecedesCoverageError.
-krepis[openai]>=0.59.53
+krepis[openai]>=0.59.54
 # nousergon-lib (renamed from alpha-engine-lib at v0.60.0) provides
 # setup_logging used by app.py + health_checker.py
 # to attach the FlowDoctorHandler when FLOW_DOCTOR_ENABLED=1, the
