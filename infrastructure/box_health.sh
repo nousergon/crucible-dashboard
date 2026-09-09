@@ -158,8 +158,12 @@ ALERT_DRAIN_PAUSE_REVIEW_DAYS=14
 MANIFEST="/etc/alpha-engine/box-services.conf"
 # Declared empty BEFORE the source so a manifest rendered by an older
 # generator degrades to "no HTTP liveness, reported" rather than aborting the
-# whole watchdog on an unset array under `set -u`.
+# whole watchdog on an unset array under `set -u`. Same reasoning covers
+# SERVICE_HEALTH_PATH (alpha-engine-config-I10228): a manifest from before
+# this map existed leaves it empty, and every unit then probes `/` exactly as
+# it always has — never a silent regression to no coverage.
 declare -A SERVICE_PORT=()
+declare -A SERVICE_HEALTH_PATH=()
 if [ -r "$MANIFEST" ]; then
     # shellcheck source=/dev/null
     . "$MANIFEST"
@@ -995,10 +999,47 @@ unit_is_covered() {
     echo no
 }
 
-# timer_failure_dedup_key UNIT RESULT INACTIVE_EXIT_RAW
+# timer_failure_line_driver LINE — extracts the `driver=...` token that
+# timer_failure_driver already wrote into a "timer job failing: " or "unit
+# failed and otherwise unmonitored: " line, so the episode key can be
+# cause-aware WITHOUT a second systemctl/journalctl read at publish time.
+#
+# WHY READ IT BACK OFF THE LINE rather than re-deriving it from a fresh
+# systemctl/journalctl call the way the caller does at classification time.
+# The same "run in flight at publish time" hazard documented above
+# timer_failure_episode_key's call site applies here too: Result and
+# ExecMainStatus can have already moved on by the time the episode key is
+# computed, seconds to minutes after confirm-on-retry produced this line. The
+# line's own `driver=` text is the value that was ACTUALLY published, so
+# reading it back is the only way the key and the message it identifies can
+# never disagree.
+#
+# Both line shapes always carry `driver=X` immediately after `result=...`,
+# followed by either `, failing run started`, `, next attempt`, or the closing
+# `)` — never nothing, because timer_failure_driver's terminal branches
+# (`unattributed`, `unattributed-no-journal-record`) are both non-empty by
+# design. `unclassified` is the fallback for a line this repo did not
+# generate (e.g. a hand-crafted test fixture), not a case this file itself
+# ever produces.
+#
+# Pure string function, testable without systemd.
+timer_failure_line_driver() {
+    local line="$1" rest
+    case "$line" in
+        *", driver="*)
+            rest="${line#*, driver=}"
+            rest="${rest%%,*}"
+            rest="${rest%%)*}"
+            printf '%s' "$rest"
+            ;;
+        *) printf 'unclassified' ;;
+    esac
+}
+
+# timer_failure_dedup_key UNIT RESULT DRIVER INACTIVE_EXIT_RAW
 #
 # Identity for ONE "timer job failing" finding, keyed on (unit, Result,
-# InactiveExitTimestamp) rather than on message text plus a cooldown
+# DRIVER, InactiveExitTimestamp) rather than on message text plus a cooldown
 # (alpha-engine-config-I7677). `systemctl show <unit> -p Result` is a LEVEL,
 # not an event -- it stays e.g. `exit-code` until the unit's NEXT run, so a
 # text/cooldown dedup on "timer job failing: ..." re-fires every cooldown
@@ -1009,20 +1050,33 @@ unit_is_covered() {
 # again (success clears it; another failure is correctly a NEW page for a NEW
 # run).
 #
+# DRIVER joined the key alpha-engine-config-I10237: two UNRELATED failures of
+# one unit that both happen to report the same coarse Result (`exit-code` is
+# the overwhelming majority case — see timer_failure_driver's own docstring)
+# collapsed into one dedup identity even though InactiveExitTimestamp had
+# advanced, because timer_failure_episode_key (below) carries the OLD key
+# forward whenever its (unit, Result) prefix still matches. Folding the
+# closed-vocabulary driver label into the key itself, not just the episode
+# prefix, keeps this function's own contract — "the same failing run pages
+# once" — exact: two runs of the SAME driver still collapse under the episode
+# wrapper; a driver CHANGE cannot, because the run key it falls back to no
+# longer matches the carried prefix either.
+#
 # Pure (date -d is a deterministic function of its argument, not of wall
 # clock) so this is unit-testable without systemd -- see
 # test_box_health_timer_staleness.sh.
 timer_failure_dedup_key() {
-    local unit="$1" result="$2" ts_raw="$3" ts_epoch=""
+    local unit="$1" result="$2" driver="$3" ts_raw="$4" ts_epoch=""
     [ -n "$ts_raw" ] && ts_epoch=$(date -d "$ts_raw" +%s 2>/dev/null)
     printf 'boxhealth-critical-timerfail-%s' \
-        "$(printf '%s-%s-%s' "$unit" "${result:-unknown}" "${ts_epoch:-$ts_raw}" | tr ' /:' '___')"
+        "$(printf '%s-%s-%s-%s' "$unit" "${result:-unknown}" "${driver:-unclassified}" "${ts_epoch:-$ts_raw}" | tr ' /:' '___')"
 }
 
-# timer_failure_episode_key UNIT RESULT INACTIVE_EXIT_RAW PRIOR_KEYS
+# timer_failure_episode_key UNIT RESULT DRIVER INACTIVE_EXIT_RAW PRIOR_KEYS
 #
 # The identity of a failure EPISODE — a maximal run of consecutive failures of
-# one unit with one Result — rather than of a single failing run.
+# one unit with one Result AND one DRIVER — rather than of a single failing
+# run.
 #
 # WHY THIS SITS IN FRONT OF timer_failure_dedup_key (alpha-engine-config-I7677
 # was right, and incomplete). Keying on the run made a WEEKLY timer page once
@@ -1041,15 +1095,31 @@ timer_failure_dedup_key() {
 # occurrences, and "a per-run failure record on every cycle of an ongoing outage
 # is not tracking, it is noise that buries the signal".
 #
-# So the timestamp segment is pinned to the FIRST failure of the episode, by
-# carrying forward whatever key the previous run already published for this
-# (unit, Result). The properties that made I7677 correct all survive:
+# WHY DRIVER JOINED RESULT IN THE PREFIX (alpha-engine-config-I10237, and
+# I7677 was again right but incomplete in the same direction). `Result` is
+# systemd's own coarse three-way classification (exit-code / timeout /
+# oom-kill) — it is not the CAUSE. Measured live on i-09b539c844515d549:
+# llm-capability-probe.service failed 2026-08-31 on `cannot import name
+# 'routes' from nousergon_lib.egress` (driver=import-or-dependency-broken,
+# since fixed) and again 2026-09-07 on an unrelated false-positive capability
+# check (driver=unattributed-no-journal-record, alpha-engine-config-I10222).
+# Both report Result=exit-code, so a Result-only prefix carried the 8/31 key
+# forward across the 9/7 failure and the second, DIFFERENT fault never paged
+# — `alerts.publish: dedup_skipped=True` on every tick for a week. Folding
+# DRIVER into the prefix makes a driver change open a new episode exactly the
+# way a Result change already does, while two consecutive runs that share the
+# same driver still collapse into the one page the class of fix above exists
+# to guarantee.
+#
+# The properties that made I7677 correct all survive:
 #
 #   * a repaired unit clears. Success drops the finding, the key vanishes from
 #     the prior rows, publish_clears fires exactly once, and the NEXT failure
 #     finds nothing to carry and opens a new episode with its own timestamp.
 #   * a different Result is a different episode — `exit-code` becoming `timeout`
 #     is a different fault and pages again, because the prefix includes Result.
+#   * a different DRIVER is a different episode, even under the SAME Result —
+#     see above.
 #   * two units never share an episode: the prefix includes the unit.
 #   * it is not a cooldown. Nothing here is time-based, so it cannot expire into
 #     a re-page of an already-fixed run, which is the failure I7677 removed.
@@ -1058,17 +1128,17 @@ timer_failure_dedup_key() {
 # its arguments, testable in test_box_health_timer_staleness.sh without systemd
 # and without a state file.
 timer_failure_episode_key() {
-    local unit="$1" result="$2" ts_raw="$3" prior_keys="$4" prefix carried
+    local unit="$1" result="$2" driver="$3" ts_raw="$4" prior_keys="$5" prefix carried
     # The run key's leading segments, up to but not including the timestamp.
     # `tr` is per-character, so translating the joined string and translating
     # the pieces separately give the same bytes — this really is a prefix of
     # what timer_failure_dedup_key produces.
-    prefix="boxhealth-critical-timerfail-$(printf '%s-%s-' "$unit" "${result:-unknown}" | tr ' /:' '___')"
+    prefix="boxhealth-critical-timerfail-$(printf '%s-%s-%s-' "$unit" "${result:-unknown}" "${driver:-unclassified}" | tr ' /:' '___')"
     carried=$(printf '%s\n' "$prior_keys" | awk -v p="$prefix" 'index($0, p) == 1 { print; exit }')
     if [ -n "$carried" ]; then
         printf '%s' "$carried"
     else
-        timer_failure_dedup_key "$unit" "$result" "$ts_raw"
+        timer_failure_dedup_key "$unit" "$result" "$driver" "$ts_raw"
     fi
 }
 
@@ -1106,8 +1176,9 @@ timer_failure_episode_key() {
 #
 # The identity is the unit — the text up to the ` (` that opens the detail —
 # because that is exactly what the episode key is built from
-# (timer_failure_episode_key's prefix is unit + Result). Everything after it is
-# evidence about the current run, which is precisely what may legitimately move.
+# (timer_failure_episode_key's prefix is unit + Result + driver, since
+# alpha-engine-config-I10237). Everything after it is evidence about the
+# current run, which is precisely what may legitimately move.
 #
 # Pure function of its argument, testable without systemd.
 problem_identity() {
@@ -1868,6 +1939,22 @@ http_liveness_problems() {
     # worker pool behind a static handler). Catching that needs a per-service
     # deep health route, which is a bigger change than the hole it closes.
     #
+    # WHERE A DECLARED health_check_path CHANGES THE PREDICATE
+    # (alpha-engine-config-I10228). The status-agnostic rule above is
+    # deliberately weak for `/` because most services here answer a bare GET
+    # with something other than 200 while genuinely healthy (five 404s, one
+    # 400, measured 2026-08-03). It stops being the right rule once a service
+    # DECLARES a real health route: the egress proxy's `/__proxy_health__`
+    # answers version, DLP self-test verdict and the block-rate SLI, and
+    # `/` on that same process answers 404 for every request whatsoever — so
+    # probing `/` and reading a 404 as liveness never once observed the route
+    # that actually says whether the proxy works. Measured on
+    # i-09b539c844515d549: 22,322 lines in llm-egress-proxy-8971.log over
+    # 21 days, zero POSTs, zero CONNECTs — the watchdog's own `GET / 404`
+    # liveness checks were the ENTIRE traffic that port ever saw. A unit with
+    # a declared path is therefore held to that path answering 200; a unit
+    # without one keeps the original status-agnostic rule exactly as before.
+    #
     # Requires the manifest: the unit->port pairing lives there. The bare
     # SERVICES/PORTS arrays are two independent lists, NOT index-aligned (the
     # fallback block at the top of this file had signal.service sitting
@@ -1881,7 +1968,7 @@ http_liveness_problems() {
         # signal is not health — say so instead of inheriting the silence.
         echo "watchdog: manifest carries no SERVICE_PORT map — HTTP liveness is UNMONITORED (re-run install-box-health.sh)"
     elif [ "${MANIFEST_OK:-0}" -eq 1 ]; then
-        local unit port code scheme insecure
+        local unit port code scheme insecure path
         for unit in "${!SERVICE_PORT[@]}"; do
             port="${SERVICE_PORT[$unit]}"
             # 443 is nginx terminating TLS with the Cloudflare origin cert,
@@ -1889,6 +1976,9 @@ http_liveness_problems() {
             # a liveness probe over loopback, not a certificate check.
             scheme=http; insecure=()
             if [ "$port" = "443" ]; then scheme=https; insecure=(-k); fi
+            # Declared route wins; `/` is the default for every unit this
+            # map does not name (see SERVICE_HEALTH_PATH's declaration above).
+            path="${SERVICE_HEALTH_PATH[$unit]:-/}"
             # NO `|| echo 000` here: -w '%{http_code}' ALREADY prints 000 when
             # the transfer fails, so appending a fallback yields "000000",
             # which matches nothing and silently disarms the check. That is
@@ -1898,13 +1988,30 @@ http_liveness_problems() {
             # exposed it (test_shipped_function_names_the_wedged_service).
             code=$(curl -s "${insecure[@]}" -m "$HTTP_PROBE_TIMEOUT" \
                        -o /dev/null -w '%{http_code}' \
-                       "${scheme}://127.0.0.1:${port}/" 2>/dev/null) || code=""
+                       "${scheme}://127.0.0.1:${port}${path}" 2>/dev/null) || code=""
             [ -n "$code" ] || code=000   # curl absent or killed outright
-            # Any status line means the server is answering. 000 means it
-            # accepted the connection (or not) and never replied inside the
-            # timeout — the wedge.
-            if [ "$code" = "000" ]; then
-                echo "service not answering HTTP within ${HTTP_PROBE_TIMEOUT}s: $unit"
+            if [ "$path" = "/" ]; then
+                # The original status-agnostic rule. Any status line means
+                # the server is answering. 000 means it accepted the
+                # connection (or not) and never replied inside the timeout —
+                # the wedge.
+                if [ "$code" = "000" ]; then
+                    echo "service not answering HTTP within ${HTTP_PROBE_TIMEOUT}s: $unit"
+                fi
+            else
+                # A declared health route makes 200 the bar, not "answered at
+                # all" — the whole reason a service earns this branch is that
+                # its bare `/` answering something is not evidence of health.
+                # 000 still gets its own line: a wedge on a declared route is
+                # the same finding as a wedge on `/`, and collapsing it into
+                # the "did not return 200" text below would bury the wedge
+                # among ordinary 4xx/5xx responses from a route that answered
+                # but disagreed.
+                if [ "$code" = "000" ]; then
+                    echo "service not answering HTTP within ${HTTP_PROBE_TIMEOUT}s: $unit"
+                elif [ "$code" != "200" ]; then
+                    echo "declared health route did not answer 200: $unit (path=$path, code=$code)"
+                fi
             fi
         done
     fi
@@ -3033,6 +3140,12 @@ classify_problem_severity() {
         # intent is on the record and the totality test can see it.
         "service down: "*) echo critical ;;
         "service not answering HTTP"*) echo critical ;;
+        # alpha-engine-config-I10228: a declared health route answering
+        # non-200 is the same class of finding as not answering at all — the
+        # route exists to say more than "something is listening", so a
+        # service failing its OWN declared check pages exactly as a wedge
+        # does.
+        "declared health route did not answer 200: "*) echo critical ;;
         "port not listening: "*) echo critical ;;
         "low memory: "*) echo critical ;;
         "disk critical: "*) echo critical ;;
@@ -3256,8 +3369,16 @@ while IFS= read -r _tf_line; do
     # rows are fixed for the whole run (the state file is not rewritten until
     # alerted_state_write on the way out), so every unit in this loop sees the
     # same prior set.
+    #
+    # DRIVER comes off the line itself (timer_failure_line_driver), not a
+    # fresh systemctl/journalctl read — the same "run in flight at publish
+    # time" hazard the comment above governs for Result and
+    # InactiveExitTimestamp applies identically to a re-derived driver, and
+    # the line's own text is what was actually published (alpha-engine-config-
+    # I10237).
+    _tf_driver=$(timer_failure_line_driver "$_tf_line")
     [ -n "$_tf_key" ] || _tf_key=$(timer_failure_episode_key \
-        "$_tf_unit" "$_tf_result" "$_tf_ts" "$(alerted_state_prior | cut -f1)")
+        "$_tf_unit" "$_tf_result" "$_tf_driver" "$_tf_ts" "$(alerted_state_prior | cut -f1)")
     publish_problems critical 43200 "health alert" "$_tf_line" "$_tf_key"
 done <<< "$timer_criticals"
 

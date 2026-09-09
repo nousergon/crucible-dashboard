@@ -237,6 +237,20 @@ max_steady_state_fraction: 0.50 # sum(anon + swap) / RAM. 0.37 on 2026-08-16 (co
 # blocks the queue, so the ordering above is the point, not a formality.
 
 services:
+  # `health_check_path:` (optional per service) — the path box_health.sh's
+  # HTTP liveness probe (generate-box-manifest.py's SERVICE_HEALTH_PATH map,
+  # http_liveness_problems in box_health.sh) curls instead of `/`, for a
+  # service that answers a route more useful than a bare status line.
+  # DEFAULT (field absent) is unchanged: `/`, status-agnostic — a listening
+  # socket that answers ANYTHING, including a 404, counts as alive, because
+  # several services on this box legitimately answer non-200 to a bare GET.
+  # A DECLARED path is a stricter contract: box_health.sh reports non-200
+  # from it as a distinct finding rather than as liveness
+  # (alpha-engine-config-I10228). alpha-engine-config's private
+  # `PORT_REGISTRY.yaml` is the canonical per-port record across the whole
+  # box (including services this repo does not own); this field is the
+  # subset of it box_health.sh's own generator can actually consume, kept in
+  # sync by hand at the two rows currently populated.
   # ── alpha-engine ────────────────────────────────────────────────────────
   - unit: dashboard.service
     port: 8501
@@ -739,6 +753,7 @@ services:
 
   - unit: llm-egress-proxy.service
     port: 8990
+    health_check_path: /__proxy_health__
     memory_high: 210M
     memory_max: 300M
     note: >
@@ -767,6 +782,7 @@ services:
 
   - unit: llm-egress-proxy-anthropic.service
     port: 8971
+    health_check_path: /__proxy_health__
     memory_high: 210M
     memory_max: 300M
     note: >

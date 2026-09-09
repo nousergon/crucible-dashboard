@@ -31,11 +31,22 @@ st.set_page_config(
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
+# Nav order: the promotion record leads (alpha-engine-config-I10218,
+# Brian's ruling 2026-09-08, option (e)). Leaving a page titled "Live
+# Portfolio" as the first thing a visitor sees re-establishes by information
+# architecture the returns-first framing that crucible-dashboard-PR834
+# removed from the pixels. The harness is the product
+# (business/product-positioning/crucible.md §1); the paper portfolio is
+# experiment #1 and now reads as the experiment it is.
 pg = st.navigation([
+    st.Page(
+        os.path.join(_HERE, "pages", "promotion_decisions.py"),
+        title="Promotion Record",
+        default=True,
+    ),
     st.Page(
         os.path.join(_HERE, "pages", "holdings_and_trades.py"),
         title="Live Portfolio",
-        default=True,
     ),
     st.Page(os.path.join(_HERE, "pages", "system_pulse.py"), title="System Pulse"),
     # Uptime page absorbed into System Pulse as its Reliability strip
@@ -57,12 +68,16 @@ pg = st.navigation([
 ])
 
 # Link-funnel (public-presence role matrix): this surface is the live
-# proof-of-life tier; the narrative (what the system is, how it's designed)
-# is owned by the Crucible product site (2026-06-12 restructure: the apex
-# is the lab landing) — link out rather than re-tell it here.
+# proof-of-life tier — the harness making and recording decisions today
+# (Promotion Record), the pipelines turning (System Pulse), and the paper
+# portfolio those decisions drive (Live Portfolio). The narrative — what the
+# system is and how it's designed — is owned by the Crucible product site
+# (2026-06-12 restructure: the apex is the lab landing), so link out rather
+# than re-tell it here.
 with st.sidebar:
     st.caption(
-        "What this system is and how it's designed: "
+        "This site is the running system's own record. "
+        "What it is and how it's designed: "
         "[crucible.nousergon.ai](https://crucible.nousergon.ai)"
     )
 

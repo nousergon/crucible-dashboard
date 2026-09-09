@@ -54,3 +54,30 @@ entries:
       migration, I2997) -- a regression test for the literal's absence.
     expires: "2026-11-27"
     tracking: alpha-engine-config-I9295
+
+  # -- `dist` class, enforcement flip (alpha-engine-config-I10225) --
+
+  - path: requirements.in
+    pattern: "openai:dist"
+    reason: >-
+      `krepis[openai]>=0.59.53` -- the `openai` extra is krepis's OWN declared
+      transport dependency for the router edge's OpenAI-compatible wire
+      (krepis.llm.LLMClient), pulled in through the router package, not a
+      free-standing pin. views/36_Claude_Code_Usage.py and live/
+      morning_brief.py's Phase-2 brief both reach it exclusively via
+      krepis.router.resolve_group_spec / krepis.llm.LLMClient -- no module in
+      this repo imports `openai` directly (measured: no `import openai` /
+      `from openai` hit outside krepis's own installed package).
+    expires: "2026-12-07"
+    tracking: alpha-engine-config-I10225
+  - path: requirements.txt
+    pattern: "openai:dist"
+    reason: >-
+      Two lines: `krepis[flow-doctor, openai]==0.59.53` (the pinned resolve
+      of the requirements.in extra above) and `openai==3.6.0` annotated
+      "# via krepis" by pip-compile -- a TRANSITIVE resolve of krepis's own
+      `[openai]` extra, not a direct pin this repo added. Same router-bound
+      reasoning as the requirements.in entry: no call site in this repo
+      constructs `openai.OpenAI(...)` directly.
+    expires: "2026-12-07"
+    tracking: alpha-engine-config-I10225
