@@ -16,6 +16,7 @@ live S3. The three dead write paths are named per row instead of implying an
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from datetime import date as _date
@@ -39,6 +40,8 @@ from loaders.s3_loader import (
     load_trades_full,
 )
 
+logger = logging.getLogger(__name__)
+
 
 @cached(ttl=900)
 def _load_manifests(bucket: str, module: str, max_days: int = 90) -> list[dict]:
@@ -56,8 +59,14 @@ def _load_manifests(bucket: str, module: str, max_days: int = 90) -> list[dict]:
             data = _fetch_s3_json(bucket, key)
             if data:
                 manifests.append(data)
-    except Exception:
-        pass
+    except Exception as exc:
+        # (a) listing/reading data_manifest/{module}/ failed (S3 error,
+        # malformed manifest JSON) -- this page's whole purpose is
+        # reporting data maturity, so silently returning an empty list
+        # here renders as "no manifests yet" indistinguishable from a
+        # real S3/paginator failure. (c) recorded at WARNING here
+        # (alpha-engine-config-I10226).
+        logger.warning("_load_manifests(%s, %s) failed: %s", bucket, module, exc)
     return manifests
 
 
@@ -69,8 +78,13 @@ def _count_s3_objects(bucket: str, prefix: str) -> int:
         paginator = client.get_paginator("list_objects_v2")
         for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
             count += page.get("KeyCount", 0)
-    except Exception:
-        pass
+    except Exception as exc:
+        # (a) S3 object-count listing failed for this prefix. (c) recorded
+        # at WARNING here (alpha-engine-config-I10226) -- same class as
+        # _load_manifests above, a data-maturity count silently rendered
+        # as zero is indistinguishable from a real listing failure on the
+        # page whose job is reporting exactly that.
+        logger.warning("_count_s3_objects(%s, %s) failed: %s", bucket, prefix, exc)
     return count
 
 
@@ -263,8 +277,13 @@ if conn:
         # primary horizon (EPIC config#1483 Phase 3, config#1531).
         outcomes_21d = load_outcomes(conn, horizons=(21,))
         n_resolved_21d = len(outcomes_21d)
-    except Exception:
-        pass
+    except Exception as exc:
+        # (a) score_performance_outcomes read failed. (c) recorded at
+        # WARNING here (alpha-engine-config-I10226) -- same class as the
+        # listing/count swallows above, a maturity metric silently
+        # rendered as zero on the page whose job is reporting exactly
+        # this.
+        logger.warning("n_resolved_21d load_outcomes failed: %s", exc)
 
 n_roundtrips = 0
 if trades_df is not None and not trades_df.empty and "entry_trade_id" in trades_df.columns:
@@ -289,8 +308,12 @@ if conn:
                 n_tc_weeks = cnt
             elif attr == "n_cio_weeks":
                 n_cio_weeks = cnt
-        except Exception:
-            pass
+        except Exception as exc:
+            # (a) per-table distinct-eval-date count failed for `tbl`.
+            # (c) recorded at WARNING here (alpha-engine-config-I10226) --
+            # same class as the other maturity-metric swallows on this
+            # page.
+            logger.warning("%s eval_date count failed: %s", tbl, exc)
 
 # Dead-write-path honesty (config#1841): threshold met → "Data ready", never
 # "Active", for optimizers whose live artifact has never been written / is

@@ -459,7 +459,12 @@ def check_key_exists(bucket: str, key: str) -> bool:
         client.head_object(Bucket=bucket, Key=key)
         return True
     except Exception as e:
-        logger.debug("check_key_exists %s/%s: %s", bucket, key, e)
+        # (a) head_object raised for a reason OTHER than a clean 404/403
+        # "not found" (e.g. a transient S3/network error) -- returning
+        # False either way means a real outage here is indistinguishable
+        # from "the key legitimately does not exist" to every caller.
+        # (c) recorded at WARNING here (alpha-engine-config-I10226).
+        logger.warning("check_key_exists %s/%s: %s", bucket, key, e)
         return False
 
 
