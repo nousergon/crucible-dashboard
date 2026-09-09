@@ -29,10 +29,11 @@ import shlex
 from tests.box_health_helpers import run_lifecycle
 
 UNIT = "metron-deploy-drift.timer"
-FINDING = "timer job failing: metron-deploy-drift.timer (last run result=exit-code, driver=upstream-unreachable)"
+DRIVER = "upstream-unreachable"
+FINDING = f"timer job failing: {UNIT} (last run result=exit-code, driver={DRIVER})"
 
 
-def _tick(prior_rows: str, result: str, ts: str) -> str:
+def _tick(prior_rows: str, result: str, ts: str, driver: str = DRIVER) -> str:
     """One box-health tick: seed the prior state, publish, write the new state.
 
     Deliberately the SHIPPED sequence -- episode key, publish_problems,
@@ -41,7 +42,7 @@ def _tick(prior_rows: str, result: str, ts: str) -> str:
     """
     return "\n".join([
         f'printf %s {shlex.quote(prior_rows)} > "$ALERTED_STATE"',
-        f'_key=$(timer_failure_episode_key "{UNIT}" "{result}" "{ts}" '
+        f'_key=$(timer_failure_episode_key "{UNIT}" "{result}" "{driver}" "{ts}" '
         '"$(alerted_state_prior | cut -f1)")',
         f'publish_problems critical 43200 "health alert" {shlex.quote(FINDING)} "$_key"',
         'ALERTED_NOW="${ALERTED_NOW%$\'\\n\'}"',
@@ -66,7 +67,7 @@ def _state_of(run) -> str:
     raise AssertionError("no state emitted")
 
 
-FIRST_KEY = f"boxhealth-critical-timerfail-{UNIT}-exit-code-1787864827"
+FIRST_KEY = f"boxhealth-critical-timerfail-{UNIT}-exit-code-{DRIVER}-1787864827"
 # A REAL tab: alerted_state rows are tab-separated and `cut -f1` is what
 # reads them. A repr-escaped "\\t" would make the whole row read as the
 # key and the harness would prove nothing.
@@ -120,7 +121,7 @@ class TestRecoveryReopens:
             'publish_clears "$(alerted_state_prior)" "$ALERTED_NOW"',
             'alerted_state_write "$ALERTED_NOW"',
             # ... and it fails again, with nothing in the prior rows to carry.
-            f'_key=$(timer_failure_episode_key "{UNIT}" "exit-code" '
+            f'_key=$(timer_failure_episode_key "{UNIT}" "exit-code" "{DRIVER}" '
             '"Fri 2026-08-28 06:07:38 UTC" "$(alerted_state_prior | cut -f1)")',
             f'publish_problems critical 43200 "health alert" {shlex.quote(FINDING)} "$_key"',
             'printf "KEY=%s\\n" "$_key"',
@@ -135,6 +136,65 @@ class TestRecoveryReopens:
         )
         assert key in run.channel_pages, "the new episode did not page"
         assert run.page_state(key) == "opened"
+
+
+class TestDifferentDriverIsANewEpisodeEvenUnderTheSameResult:
+    """alpha-engine-config-I10237, through the SHIPPED publish path.
+
+    The live sequence: llm-capability-probe.service failed 2026-08-31 on
+    `cannot import name 'routes' from nousergon_lib.egress`
+    (driver=import-or-dependency-broken), and again 2026-09-07 on an
+    unrelated false-positive capability check
+    (driver=unattributed-no-journal-record) -- both Result=exit-code. Before
+    this fix the episode prefix was (unit, Result) only, the 8/31 key carried
+    forward across the 9/7 run, and `alerts.publish: dedup_skipped=True`ed the
+    genuinely new failure for a week.
+    """
+
+    UNIT2 = "llm-capability-probe.service"
+    DRIVER_831 = "import-or-dependency-broken"
+    DRIVER_907 = "unattributed-no-journal-record"
+    FINDING_831 = (
+        f"unit failed and otherwise unmonitored: {UNIT2} (last run "
+        f"result=exit-code, driver={DRIVER_831}, failing run started "
+        "Mon 2026-08-31 09:59:00 UTC)"
+    )
+    FINDING_907 = (
+        f"unit failed and otherwise unmonitored: {UNIT2} (last run "
+        f"result=exit-code, driver={DRIVER_907}, failing run started "
+        "Mon 2026-09-07 10:11:57 UTC)"
+    )
+
+    def test_the_9_7_failure_pages_instead_of_being_absorbed_into_8_31s_episode(self):
+        tmp = __import__("pathlib").Path(_tmp())
+        key_831 = (
+            "boxhealth-critical-timerfail-"
+            f"{self.UNIT2}-exit-code-{self.DRIVER_831}-1787903940"
+        )
+        row_831 = f"{key_831}\tcritical\t{self.FINDING_831}"
+        body = "\n".join([
+            f'printf %s {shlex.quote(row_831)} > "$ALERTED_STATE"',
+            f'_key=$(timer_failure_episode_key "{self.UNIT2}" "exit-code" '
+            f'"{self.DRIVER_907}" "Mon 2026-09-07 10:11:57 UTC" '
+            '"$(alerted_state_prior | cut -f1)")',
+            f'publish_problems critical 43200 "health alert" '
+            f'{shlex.quote(self.FINDING_907)} "$_key"',
+            'ALERTED_NOW="${ALERTED_NOW%$\'\\n\'}"',
+            'publish_clears "$(alerted_state_prior)" "$ALERTED_NOW"',
+            'alerted_state_write "$ALERTED_NOW"',
+            'printf "KEY=%s\\n" "$_key"',
+        ])
+        run = run_lifecycle(body, tmp)
+        key_907 = _key_of(run)
+        assert key_907 != key_831, (
+            "the 9/7 failure inherited the 8/31 episode's key -- this is the "
+            "exact suppression measured live on i-09b539c844515d549"
+        )
+        assert key_907 in run.channel_pages, (
+            "the 9/7 failure, a genuinely different driver under the same "
+            "Result, did not page -- I10237 is not fixed"
+        )
+        assert run.page_state(key_907) == "opened"
 
 
 class TestUnreadableStateFailsOpen:
@@ -155,7 +215,7 @@ class TestUnreadableStateFailsOpen:
             # `[ -r ]` guard and a missing file do NOT exercise the same way.
             'printf %s "unreadable" > "$ALERTED_STATE"',
             'chmod 000 "$ALERTED_STATE"',
-            f'_key=$(timer_failure_episode_key "{UNIT}" "exit-code" '
+            f'_key=$(timer_failure_episode_key "{UNIT}" "exit-code" "{DRIVER}" '
             '"Fri 2026-08-28 01:07:38 UTC" "$(alerted_state_prior | cut -f1)")',
             f'publish_problems critical 43200 "health alert" {shlex.quote(FINDING)} "$_key"',
             'chmod 644 "$ALERTED_STATE"',

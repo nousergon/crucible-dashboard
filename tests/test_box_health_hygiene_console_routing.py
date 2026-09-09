@@ -450,7 +450,7 @@ WARNING_BUDGET_LINE = "memory budget: BREACH (detail in journal)"
 # does; `_resolve` is the NEXT run, in which the condition is gone.
 
 _OPEN_CRITICAL_TIMER = f'''
-_key=$(timer_failure_dedup_key "morning-signal.timer" "exit-code" "")
+_key=$(timer_failure_dedup_key "morning-signal.timer" "exit-code" "" "")
 publish_problems critical 43200 "health alert" "{CRITICAL_TIMER_LINE}" "$_key"
 ALERTED_NOW="${{ALERTED_NOW%$'\\n'}}"
 finalize_alert_lifecycle ""
@@ -670,8 +670,8 @@ class TestWhatPublishClearsAlreadyGotRight:
         first would silently never be attempted, and nothing else in the system
         would say so."""
         body = '''
-_a=$(timer_failure_dedup_key "alpha.timer" "exit-code" "")
-_b=$(timer_failure_dedup_key "beta.timer" "exit-code" "")
+_a=$(timer_failure_dedup_key "alpha.timer" "exit-code" "" "")
+_b=$(timer_failure_dedup_key "beta.timer" "exit-code" "" "")
 publish_problems critical 43200 "health alert" "timer job failing: alpha.timer (x)" "$_a"
 publish_problems critical 43200 "health alert" "timer job failing: beta.timer (x)" "$_b"
 ALERTED_NOW="${ALERTED_NOW%$'\\n'}"

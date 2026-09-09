@@ -34,14 +34,15 @@ if [ ! -r "$TARGET_SCRIPT" ]; then
     exit 1
 fi
 
-# Source ONLY the two pure functions under test. box_health.sh at top level
-# loads env, hits IMDS and reads the manifest, none of which belongs here.
+# Source ONLY the pure functions under test. box_health.sh at top level loads
+# env, hits IMDS and reads the manifest, none of which belongs here.
 eval "$(awk '/^human_age\(\) \{/,/^\}/' "$TARGET_SCRIPT")"
 eval "$(awk '/^classify_timer_staleness\(\) \{/,/^\}/' "$TARGET_SCRIPT")"
+eval "$(awk '/^timer_failure_line_driver\(\) \{/,/^\}/' "$TARGET_SCRIPT")"
 eval "$(awk '/^timer_failure_dedup_key\(\) \{/,/^\}/' "$TARGET_SCRIPT")"
 eval "$(awk '/^timer_failure_episode_key\(\) \{/,/^\}/' "$TARGET_SCRIPT")"
 
-for fn in human_age classify_timer_staleness timer_failure_dedup_key timer_failure_episode_key; do
+for fn in human_age classify_timer_staleness timer_failure_line_driver timer_failure_dedup_key timer_failure_episode_key; do
     if ! declare -F "$fn" >/dev/null; then
         echo "FAIL - $fn() not found in box_health.sh (extraction failed)"
         exit 1
@@ -251,26 +252,33 @@ assert_problem "a supplied driver appears in the failing line" \
     import-or-dependency-broken
 
 echo "== timer_failure_dedup_key is stable per run and changes when the run changes =="
-k1=$(timer_failure_dedup_key "router-degraded-mode-drill.timer" "exit-code" "Tue 2026-08-18 10:30:52 UTC")
-k2=$(timer_failure_dedup_key "router-degraded-mode-drill.timer" "exit-code" "Tue 2026-08-18 10:30:52 UTC")
+k1=$(timer_failure_dedup_key "router-degraded-mode-drill.timer" "exit-code" "" "Tue 2026-08-18 10:30:52 UTC")
+k2=$(timer_failure_dedup_key "router-degraded-mode-drill.timer" "exit-code" "" "Tue 2026-08-18 10:30:52 UTC")
 if [ "$k1" = "$k2" ]; then
     echo "ok   - same (unit, result, timestamp) produces the same key"
 else
     echo "FAIL - key is not stable for identical inputs: [$k1] vs [$k2]"
     FAILURES=$((FAILURES + 1))
 fi
-k3=$(timer_failure_dedup_key "router-degraded-mode-drill.timer" "success" "Tue 2026-08-25 10:30:04 UTC")
+k3=$(timer_failure_dedup_key "router-degraded-mode-drill.timer" "success" "" "Tue 2026-08-25 10:30:04 UTC")
 if [ "$k1" != "$k3" ]; then
     echo "ok   - a new run (new Result, new timestamp) produces a DIFFERENT key"
 else
     echo "FAIL - key did not change when the run changed: [$k1]"
     FAILURES=$((FAILURES + 1))
 fi
-k4=$(timer_failure_dedup_key "other-unit.timer" "exit-code" "Tue 2026-08-18 10:30:52 UTC")
+k4=$(timer_failure_dedup_key "other-unit.timer" "exit-code" "" "Tue 2026-08-18 10:30:52 UTC")
 if [ "$k1" != "$k4" ]; then
     echo "ok   - different units never share a key"
 else
     echo "FAIL - two different units produced the same key: [$k1]"
+    FAILURES=$((FAILURES + 1))
+fi
+k5=$(timer_failure_dedup_key "router-degraded-mode-drill.timer" "exit-code" "upstream-unreachable" "Tue 2026-08-18 10:30:52 UTC")
+if [ "$k1" != "$k5" ]; then
+    echo "ok   - a different DRIVER, same (unit, result, timestamp), produces a DIFFERENT key (I10237)"
+else
+    echo "FAIL - driver did not participate in the run key: [$k1]"
     FAILURES=$((FAILURES + 1))
 fi
 
@@ -282,9 +290,9 @@ echo "== timer_failure_episode_key: an hourly timer failing all night is ONE pag
 # each announcing the end of a condition that had not ended. Under the run key
 # every one of those hours was a different identity. Under the episode key they
 # are one.
-ep1=$(timer_failure_episode_key "metron-deploy-drift.timer" "exit-code" "Thu 2026-08-27 21:07:07 UTC" "")
-ep2=$(timer_failure_episode_key "metron-deploy-drift.timer" "exit-code" "Thu 2026-08-27 22:07:40 UTC" "$ep1")
-ep3=$(timer_failure_episode_key "metron-deploy-drift.timer" "exit-code" "Fri 2026-08-28 01:07:39 UTC" "$ep2")
+ep1=$(timer_failure_episode_key "metron-deploy-drift.timer" "exit-code" "upstream-unreachable" "Thu 2026-08-27 21:07:07 UTC" "")
+ep2=$(timer_failure_episode_key "metron-deploy-drift.timer" "exit-code" "upstream-unreachable" "Thu 2026-08-27 22:07:40 UTC" "$ep1")
+ep3=$(timer_failure_episode_key "metron-deploy-drift.timer" "exit-code" "upstream-unreachable" "Fri 2026-08-28 01:07:39 UTC" "$ep2")
 if [ "$ep1" = "$ep2" ] && [ "$ep2" = "$ep3" ]; then
     echo "ok   - five consecutive hourly failures carry ONE key"
 else
@@ -292,7 +300,7 @@ else
     FAILURES=$((FAILURES + 1))
 fi
 
-if [ "$ep1" = "$(timer_failure_dedup_key "metron-deploy-drift.timer" "exit-code" "Thu 2026-08-27 21:07:07 UTC")" ]; then
+if [ "$ep1" = "$(timer_failure_dedup_key "metron-deploy-drift.timer" "exit-code" "upstream-unreachable" "Thu 2026-08-27 21:07:07 UTC")" ]; then
     echo "ok   - the FIRST failure of an episode still keys on its own run"
 else
     echo "FAIL - opening a new episode did not fall through to the run key: [$ep1]"
@@ -303,7 +311,7 @@ echo "== timer_failure_episode_key: recovery ends the episode =="
 # Success drops the finding, so the key leaves the prior rows. The next failure
 # has nothing to carry and must open a NEW episode -- otherwise a unit that
 # broke, was fixed, and broke again a week later would never page the second time.
-ep_after_recovery=$(timer_failure_episode_key "metron-deploy-drift.timer" "exit-code" "Sat 2026-09-05 03:07:00 UTC" "")
+ep_after_recovery=$(timer_failure_episode_key "metron-deploy-drift.timer" "exit-code" "upstream-unreachable" "Sat 2026-09-05 03:07:00 UTC" "")
 if [ "$ep_after_recovery" != "$ep1" ]; then
     echo "ok   - a failure after a clear opens a new episode and pages again"
 else
@@ -314,7 +322,7 @@ fi
 echo "== timer_failure_episode_key: a different fault is a different episode =="
 # exit-code becoming timeout is not the same failure, and must not be silently
 # folded into the page already standing for the previous one.
-ep_other_result=$(timer_failure_episode_key "metron-deploy-drift.timer" "timeout" "Fri 2026-08-28 02:07:00 UTC" "$ep1")
+ep_other_result=$(timer_failure_episode_key "metron-deploy-drift.timer" "timeout" "upstream-unreachable" "Fri 2026-08-28 02:07:00 UTC" "$ep1")
 if [ "$ep_other_result" != "$ep1" ]; then
     echo "ok   - a new Result opens its own episode"
 else
@@ -325,7 +333,7 @@ fi
 echo "== timer_failure_episode_key: another unit's standing episode is never inherited =="
 # The prior rows carry every unit's key. A prefix match that was not anchored on
 # (unit, Result) would let one broken timer silence the next one to break.
-ep_other_unit=$(timer_failure_episode_key "box-hygiene.timer" "exit-code" "Fri 2026-08-28 02:07:00 UTC" "$ep1")
+ep_other_unit=$(timer_failure_episode_key "box-hygiene.timer" "exit-code" "upstream-unreachable" "Fri 2026-08-28 02:07:00 UTC" "$ep1")
 if [ "$ep_other_unit" != "$ep1" ]; then
     echo "ok   - a second failing unit gets its own key"
 else
@@ -335,11 +343,75 @@ fi
 
 # A unit whose name is a PREFIX of another unit's must not match it. Anchoring on
 # "index == 1" alone is not enough without the trailing separators the prefix carries.
-ep_prefix_unit=$(timer_failure_episode_key "metron-deploy.timer" "exit-code" "Fri 2026-08-28 02:07:00 UTC" "$ep1")
+ep_prefix_unit=$(timer_failure_episode_key "metron-deploy.timer" "exit-code" "upstream-unreachable" "Fri 2026-08-28 02:07:00 UTC" "$ep1")
 if [ "$ep_prefix_unit" != "$ep1" ]; then
     echo "ok   - a unit name that prefixes another does not inherit its episode"
 else
     echo "FAIL - metron-deploy.timer inherited metron-deploy-drift.timer's key"
+    FAILURES=$((FAILURES + 1))
+fi
+
+echo "== timer_failure_episode_key: alpha-engine-config-I10237 measured sequence =="
+#
+# THE DEFECT, RECONSTRUCTED EXACTLY. llm-capability-probe.service on
+# i-09b539c844515d549: failed 2026-08-31 on `cannot import name 'routes' from
+# nousergon_lib.egress` (driver=import-or-dependency-broken, since fixed by
+# alpha-engine-config-PR10236's companion), then failed again 2026-09-07 on an
+# UNRELATED false-positive capability check (driver=unattributed-no-journal-
+# record, alpha-engine-config-I10222). Both report Result=exit-code.
+#
+# UNPATCHED BEHAVIOUR, asserted directly rather than merely by absence: a
+# Result-only prefix -- exactly what timer_failure_episode_key computed before
+# I10237 -- matches the 8/31 key against the 9/7 run, so the 9/7 failure would
+# have been dedup_skipped and never paged. That is not hypothetical: it is
+# what `alerts.publish: dedup_skipped=True (last published 685478s ago)` on
+# the box on 2026-09-08 actually did.
+old_style_prefix="boxhealth-critical-timerfail-$(printf '%s-%s-' \
+    "llm-capability-probe.service" "exit-code" | tr ' /:' '___')"
+key_831=$(timer_failure_episode_key "llm-capability-probe.service" "exit-code" \
+    "import-or-dependency-broken" "Mon 2026-08-31 09:59:00 UTC" "")
+if printf '%s' "$key_831" | grep -q "^${old_style_prefix}"; then
+    echo "ok   - UNPATCHED (Result-only) prefix would have matched the 9/7 run too -- this is the suppression that shipped"
+else
+    echo "FAIL - the 8/31 key does not even carry the shared Result-only prefix, test is not measuring the right thing: [$key_831]"
+    FAILURES=$((FAILURES + 1))
+fi
+
+# PATCHED BEHAVIOUR: the actual function, with the actual driver values.
+key_907=$(timer_failure_episode_key "llm-capability-probe.service" "exit-code" \
+    "unattributed-no-journal-record" "Mon 2026-09-07 10:11:57 UTC" "$key_831")
+if [ "$key_907" != "$key_831" ]; then
+    echo "ok   - PATCHED: the 9/7 failure (different driver, same Result) opens a NEW episode and pages"
+else
+    echo "FAIL - I10237 REGRESSION: the 9/7 failure was silently absorbed into the 8/31 episode, exactly as measured live"
+    FAILURES=$((FAILURES + 1))
+fi
+# And the SAME driver, a later run, still collapses -- the fix must not turn
+# every re-occurrence of one standing fault into its own page either.
+key_907b=$(timer_failure_episode_key "llm-capability-probe.service" "exit-code" \
+    "unattributed-no-journal-record" "Mon 2026-09-07 20:11:57 UTC" "$key_907")
+if [ "$key_907b" = "$key_907" ]; then
+    echo "ok   - a second run of the SAME (unit, Result, driver) still collapses into one episode"
+else
+    echo "FAIL - two runs of one unresolved driver re-keyed against each other: [$key_907] vs [$key_907b]"
+    FAILURES=$((FAILURES + 1))
+fi
+
+echo "== timer_failure_line_driver: extracts the driver token box_health.sh itself writes =="
+d1=$(timer_failure_line_driver \
+    "unit failed and otherwise unmonitored: llm-capability-probe.service (last run result=exit-code, driver=unattributed-no-journal-record, failing run started Mon 2026-09-07 10:11:57 UTC)")
+if [ "$d1" = "unattributed-no-journal-record" ]; then
+    echo "ok   - extracted from a 'unit failed and otherwise unmonitored:' line with a trailing timestamp clause"
+else
+    echo "FAIL - got [$d1]"
+    FAILURES=$((FAILURES + 1))
+fi
+d2=$(timer_failure_line_driver \
+    "timer job failing: unit.timer (last run result=exit-code, driver=unclassified)")
+if [ "$d2" = "unclassified" ]; then
+    echo "ok   - extracted from a 'timer job failing:' line with no trailing clause"
+else
+    echo "FAIL - got [$d2]"
     FAILURES=$((FAILURES + 1))
 fi
 
@@ -373,8 +445,8 @@ fi
 
 # Byte-identical matters: the identity key is derived from this line's finding,
 # and any drift would roll the key, which IS a clear plus a new page.
-k_prior=$(timer_failure_dedup_key "unit.timer" "exit-code" "Mon 2026-08-24 07:01:39 UTC")
-k_carry=$(timer_failure_dedup_key "unit.timer" "exit-code" "Mon 2026-08-24 07:01:39 UTC")
+k_prior=$(timer_failure_dedup_key "unit.timer" "exit-code" "" "Mon 2026-08-24 07:01:39 UTC")
+k_carry=$(timer_failure_dedup_key "unit.timer" "exit-code" "" "Mon 2026-08-24 07:01:39 UTC")
 if [ "$k_prior" = "$k_carry" ]; then
     echo "ok   - the carried finding keeps the identity key stable"
 else

@@ -61,9 +61,52 @@ class _Answers(BaseHTTPRequestHandler):
         pass
 
 
+class _ProxyLike(BaseHTTPRequestHandler):
+    """A service with a declared health route (alpha-engine-config-I10228).
+
+    `/` always 404s — exactly like llm-egress-proxy.service, which has no
+    route at `/` at all. `/__proxy_health__` answers per the class attribute
+    `HEALTH_CODE`, set per test, so the same handler exercises both the
+    200-is-healthy and non-200-is-a-finding cases.
+    """
+
+    HEALTH_CODE = 200
+
+    def do_GET(self):  # noqa: N802 - stdlib interface
+        if self.path == "/__proxy_health__":
+            self.send_response(self.HEALTH_CODE)
+            self.end_headers()
+        else:
+            self.send_error(404)
+
+    def log_message(self, *_args):
+        pass
+
+
 @pytest.fixture()
 def answering_server():
     srv = HTTPServer(("127.0.0.1", 0), _Answers)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    yield srv.server_address[1]
+    srv.shutdown()
+
+
+@pytest.fixture()
+def proxy_like_server():
+    """A service whose declared health route answers 200. `/` still 404s."""
+    _ProxyLike.HEALTH_CODE = 200
+    srv = HTTPServer(("127.0.0.1", 0), _ProxyLike)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    yield srv.server_address[1]
+    srv.shutdown()
+
+
+@pytest.fixture()
+def proxy_like_server_unhealthy():
+    """A service whose declared health route itself answers non-200 —
+    the actual finding this class of check exists to surface."""
+    _ProxyLike.HEALTH_CODE = 503
+    srv = HTTPServer(("127.0.0.1", 0), _ProxyLike)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     yield srv.server_address[1]
     srv.shutdown()
@@ -224,7 +267,11 @@ def _bash4() -> str:
     pytest.skip("no bash >= 4 available; `declare -A` would fail vacuously")
 
 
-def _run_shipped_function(service_port: dict[str, int], manifest_ok: int = 1) -> str:
+def _run_shipped_function(
+    service_port: dict[str, int],
+    manifest_ok: int = 1,
+    service_health_path: dict[str, str] | None = None,
+) -> str:
     """Extract `http_liveness_problems` from box_health.sh and RUN it.
 
     Not a reimplementation of the loop — the real one, lifted by name. Half the
@@ -232,11 +279,15 @@ def _run_shipped_function(service_port: dict[str, int], manifest_ok: int = 1) ->
     pairing; a loop proven only by reading it is a loop nobody has run.
     """
     entries = " ".join(f'["{u}"]={p}' for u, p in service_port.items())
+    health_entries = " ".join(
+        f'["{u}"]="{p}"' for u, p in (service_health_path or {}).items()
+    )
     script = (
         f'set -u\n'
         f'MANIFEST_OK={manifest_ok}\n'
         f'HTTP_PROBE_TIMEOUT={PROBE_TIMEOUT}\n'
         f'declare -A SERVICE_PORT=({entries})\n'
+        f'declare -A SERVICE_HEALTH_PATH=({health_entries})\n'
         f'source <(sed -n "/^http_liveness_problems() {{/,/^}}/p" '
         f'  "{REPO_ROOT / "infrastructure" / "box_health.sh"}")\n'
         f'http_liveness_problems\n'
@@ -272,3 +323,118 @@ def test_shipped_function_does_nothing_without_a_manifest():
     """MANIFEST_OK=0 is already reported loudly by the caller; probing an
     unpaired list would name the wrong service."""
     assert _run_shipped_function({}, manifest_ok=0).strip() == ""
+
+
+# ── health_check_path (alpha-engine-config-I10228) ─────────────────────────
+#
+# The defect this closes: box_health.sh curled `/` on the egress proxy, which
+# has no route at `/` at all, read the 404 as liveness, and never once probed
+# `/__proxy_health__` — the route that actually says whether the proxy works.
+# Measured on i-09b539c844515d549: 22,322 lines of `llm-egress-proxy-8971.log`
+# over 21 days, zero POSTs, zero CONNECTs — the watchdog's own `GET / 404`
+# checks were the entire traffic that port ever saw.
+
+
+def test_generator_carries_health_check_path_through_for_the_egress_proxies():
+    """budget.yaml declares `health_check_path: /__proxy_health__` on both
+    egress-proxy rows; the generator must emit it into SERVICE_HEALTH_PATH,
+    and must NOT emit an entry for a service that declares nothing — the
+    other thirteen services stay on the `/` default unchanged."""
+    out = subprocess.run(
+        ["python3", str(GENERATOR), "--stdout"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    block = re.search(r"declare -A SERVICE_HEALTH_PATH=\((.*?)\n\)", out, re.S).group(1)
+    pairs = dict(re.findall(r'^\s*\["([^"]+)"\]="([^"]*)"$', block, re.M))
+    expected = {
+        s["unit"]: str(s["health_check_path"])
+        for s in BUDGET["services"]
+        if s.get("health_check_path")
+    }
+    assert pairs == expected
+    assert expected == {
+        "llm-egress-proxy.service": "/__proxy_health__",
+        "llm-egress-proxy-anthropic.service": "/__proxy_health__",
+    }
+    assert "dashboard.service" not in pairs, (
+        "a service with no declared health_check_path got one anyway — its "
+        "probe silently stopped being status-agnostic"
+    )
+
+
+def test_a_declared_health_route_answering_200_is_healthy(proxy_like_server):
+    """The positive case: the route this whole class of check exists to
+    probe answers 200, and the service is reported healthy even though its
+    bare `/` 404s (which a pre-fix probe would have read as liveness too, for
+    the wrong reason)."""
+    out = _run_shipped_function(
+        {"proxy.service": proxy_like_server},
+        service_health_path={"proxy.service": "/__proxy_health__"},
+    )
+    assert out.strip() == ""
+
+
+def test_a_declared_health_route_answering_non200_is_a_distinct_finding(
+    proxy_like_server_unhealthy,
+):
+    """The defect, closed: a declared route that itself answers non-200 must
+    be named as its OWN finding, distinct from `service not answering HTTP`
+    (a 000/wedge) and distinct from silence (which is what `/` reading a 404
+    as liveness produced before this fix)."""
+    out = _run_shipped_function(
+        {"proxy.service": proxy_like_server_unhealthy},
+        service_health_path={"proxy.service": "/__proxy_health__"},
+    )
+    assert "declared health route did not answer 200: proxy.service" in out
+    assert "path=/__proxy_health__" in out
+    assert "code=503" in out
+    assert "service not answering HTTP" not in out, (
+        "a real (non-000) non-200 response was reported as a wedge instead "
+        "of as a declared-route failure"
+    )
+
+
+def test_a_declared_health_route_that_never_answers_is_still_the_wedge_finding():
+    """A 000 on a declared route is the SAME wedge finding as a 000 on `/` —
+    it must not be swallowed by the new non-200 branch, which would otherwise
+    read 'no status line' as some other non-200 code."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("127.0.0.1", 0))
+    sock.listen(8)
+    port = sock.getsockname()[1]
+    held: list = []
+
+    def accept_and_ignore():
+        while True:
+            try:
+                conn, _ = sock.accept()
+            except OSError:
+                return
+            held.append(conn)
+
+    threading.Thread(target=accept_and_ignore, daemon=True).start()
+    try:
+        out = _run_shipped_function(
+            {"proxy.service": port},
+            service_health_path={"proxy.service": "/__proxy_health__"},
+        )
+    finally:
+        sock.close()
+        for c in held:
+            c.close()
+    assert "service not answering HTTP within" in out
+    assert "proxy.service" in out
+    assert "declared health route" not in out
+
+
+def test_a_service_with_no_declared_path_keeps_the_status_agnostic_rule(
+    answering_server,
+):
+    """No regression on the other thirteen services: absent from
+    SERVICE_HEALTH_PATH means `/` and the original status-agnostic rule, so a
+    healthy 404-on-`/` service (e.g. a Next.js app) stays silent."""
+    out = _run_shipped_function(
+        {"nextjs.service": answering_server}, service_health_path={}
+    )
+    assert out.strip() == ""

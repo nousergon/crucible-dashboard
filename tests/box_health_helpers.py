@@ -189,6 +189,10 @@ LIFECYCLE_FUNCTIONS = (
     "alerted_state_prior",
     "alerted_state_lifecycle",
     "alerted_state_write",
+    # DRIVER is read back off the published line, not re-derived
+    # (alpha-engine-config-I10237) — the loop below depends on this being
+    # sourced, or every episode key silently falls back to "unclassified".
+    "timer_failure_line_driver",
     "timer_failure_dedup_key",
     "alerted_timer_key",
     # The episode wrapper, not just the run key: without it the harness would

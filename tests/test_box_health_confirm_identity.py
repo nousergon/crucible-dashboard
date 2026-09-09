@@ -57,8 +57,12 @@ S2 = (
     "next attempt Sat 2026-09-06 13:07:00 UTC)"
 )
 
-# The key the 11:07 run was published under — the one the 12:08:33 clear named.
-PRIOR_KEY = f"boxhealth-critical-timerfail-{UNIT}-exit-code-1788671220"
+# The key the 11:07 run was published under — the one the 12:08:33 clear
+# named. Carries `-upstream-unreachable-` (alpha-engine-config-I10237): the
+# episode prefix folds in the driver S1/S2 already declare in their own text,
+# so the carried key must match that shape or this fixture stops testing the
+# mid-window intersection and starts testing I10237's carry instead.
+PRIOR_KEY = f"boxhealth-critical-timerfail-{UNIT}-exit-code-upstream-unreachable-1788671220"
 PRIOR_ROW = f"{PRIOR_KEY}\tcritical\t{S1}"
 
 
