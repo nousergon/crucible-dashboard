@@ -155,6 +155,12 @@ def main() -> int:
     # service as index i of the other. An alert that names a service has to
     # come from an explicit pairing, not from an assumed alignment.
     service_port: list[tuple[str, str]] = []
+    # unit -> declared health_check_path, for the two services (so far) whose
+    # HTTP liveness probe should hit a real route instead of `/`
+    # (alpha-engine-config-I10228). Absent for every other service —
+    # box_health.sh defaults an unlisted unit to `/`, so this list growing is
+    # additive and never changes an already-working probe.
+    service_health_path: list[tuple[str, str]] = []
     for svc in spec["services"]:
         services.append(svc["unit"])
         port = svc.get("port")
@@ -167,6 +173,9 @@ def main() -> int:
         if str(port) != "none":
             ports.append(str(port))
             service_port.append((svc["unit"], str(port)))
+        health_path = svc.get("health_check_path")
+        if health_path:
+            service_health_path.append((svc["unit"], str(health_path)))
 
     excluded = [e["unit"] for e in spec.get("manifest_exclude", [])]
     # budget.yaml rows first, then any installed unit that declares its own and
@@ -202,6 +211,17 @@ def main() -> int:
         "# alert built on that assumption would name the wrong service.",
         "declare -A SERVICE_PORT=(",
         *[f'    ["{unit}"]={port}' for unit, port in service_port],
+        ")",
+        "",
+        "# unit -> health_check_path, for the subset of services above whose",
+        "# HTTP liveness probe should hit a real route instead of `/`",
+        "# (alpha-engine-config-I10228). A unit absent from this map is probed",
+        "# at `/` with the original status-agnostic predicate (any status line",
+        "# counts as alive); a unit present here is held to its declared route",
+        "# answering 200, because that route exists precisely to say more than",
+        "# 'something is listening'.",
+        "declare -A SERVICE_HEALTH_PATH=(",
+        *[f'    ["{unit}"]="{path}"' for unit, path in service_health_path],
         ")",
         "",
         "# Units deliberately outside coverage (OS plumbing, templates). box_health.sh",
