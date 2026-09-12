@@ -398,15 +398,16 @@ services:
 
   - unit: crucible-dash-web.service
     port: 3002
-    memory_high: 190M
-    memory_max: 260M
+    memory_high: 154M
+    memory_max: 220M
     note: >-
-      2026-09-12 (automated, alpha-engine-config-I7291): 154M/220M ->
-      190M/260M. Derived, not estimated: memory.peak 109 MiB measured over
-      29.8 days of unit uptime, memory_max at 2.4x that peak and memory_high
-      at 70% of max. If this number looks wrong, the measurement is the thing
-      to argue with — see check_memory_budget.py's proposal block for why
-      those multiples.
+      2026-09-12: the automated proposal (alpha-engine-config-I7291) derived
+      190M/260M from a 109 MiB peak over 29.8 days, but with vires.service
+      held at 380M/460M (cap_proposals: manual) that +40M put sum(memory_max)
+      at 5534 MB against the 5514 MB bound. Held at 154M/220M — still 2.0x the
+      measured peak — as the smallest raise to drop; blocked-overcommit is the
+      status the proposer itself would have given it had the hold been
+      declared before the run.
 
   # ── metron ──────────────────────────────────────────────────────────────
   - unit: metron-api.service
