@@ -490,16 +490,14 @@ services:
 
   - unit: vires.service
     port: 8530
-    memory_high: 210M
-    memory_max: 300M
+    memory_high: 380M
+    memory_max: 460M
+    # cap_proposals: manual — the note below is a standing DO NOT LOWER ruling
+    # (2026-08-03). The proposer honours this key, not prose: on 2026-09-12 it
+    # proposed 210M/300M from a 29.8-day peak of 127 MiB because the ruling
+    # lived only in the note (alpha-engine-config-I7291, bot PR #848).
+    cap_proposals: manual
     note: >-
-      2026-09-12 (automated, alpha-engine-config-I7291): 380M/460M ->
-      210M/300M. Derived, not estimated: memory.peak 127 MiB measured over
-      29.8 days of unit uptime, memory_max at 2.4x that peak and memory_high
-      at 70% of max. If this number looks wrong, the measurement is the thing
-      to argue with — see check_memory_budget.py's proposal block for why
-      those multiples.
-
       Caps raised 112M/160M -> 380M/460M on 2026-08-03, after the service
       wedged in normal use. DO NOT LOWER: 112M was roughly a THIRD of this
       service's real working set, and every reading taken under it was a floor.
