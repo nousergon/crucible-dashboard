@@ -400,6 +400,14 @@ services:
     port: 3002
     memory_high: 154M
     memory_max: 220M
+    note: >-
+      2026-09-12: the automated proposal (alpha-engine-config-I7291) derived
+      190M/260M from a 109 MiB peak over 29.8 days, but with vires.service
+      held at 380M/460M (cap_proposals: manual) that +40M put sum(memory_max)
+      at 5534 MB against the 5514 MB bound. Held at 154M/220M — still 2.0x the
+      measured peak — as the smallest raise to drop; blocked-overcommit is the
+      status the proposer itself would have given it had the hold been
+      declared before the run.
 
   # ── metron ──────────────────────────────────────────────────────────────
   - unit: metron-api.service
@@ -458,19 +466,38 @@ services:
 
   - unit: metron-dash-web.service
     port: 3003
-    memory_high: 154M
-    memory_max: 220M
+    memory_high: 260M
+    memory_max: 360M
+    note: >-
+      2026-09-12 (automated, alpha-engine-config-I7291): 154M/220M ->
+      260M/360M. Derived, not estimated: memory.peak 154 MiB measured over
+      29.8 days of unit uptime, memory_max at 2.4x that peak and memory_high
+      at 70% of max. If this number looks wrong, the measurement is the thing
+      to argue with — see check_memory_budget.py's proposal block for why
+      those multiples.
 
   # ── other products ──────────────────────────────────────────────────────
   - unit: telos-web.service
     port: 3001
-    memory_high: 105M
-    memory_max: 150M
+    memory_high: 140M
+    memory_max: 190M
+    note: >-
+      2026-09-12 (automated, alpha-engine-config-I7291): 105M/150M ->
+      140M/190M. Derived, not estimated: memory.peak 81 MiB measured over 29.8
+      days of unit uptime, memory_max at 2.4x that peak and memory_high at 70%
+      of max. If this number looks wrong, the measurement is the thing to
+      argue with — see check_memory_budget.py's proposal block for why those
+      multiples.
 
   - unit: vires.service
     port: 8530
     memory_high: 380M
     memory_max: 460M
+    # cap_proposals: manual — the note below is a standing DO NOT LOWER ruling
+    # (2026-08-03). The proposer honours this key, not prose: on 2026-09-12 it
+    # proposed 210M/300M from a 29.8-day peak of 127 MiB because the ruling
+    # lived only in the note (alpha-engine-config-I7291, bot PR #848).
+    cap_proposals: manual
     note: >-
       Caps raised 112M/160M -> 380M/460M on 2026-08-03, after the service
       wedged in normal use. DO NOT LOWER: 112M was roughly a THIRD of this
@@ -542,8 +569,15 @@ services:
 
   - unit: signal.service
     port: 8505
-    memory_high: 175M
-    memory_max: 250M
+    memory_high: 120M
+    memory_max: 170M
+    note: >-
+      2026-09-12 (automated, alpha-engine-config-I7291): 175M/250M ->
+      120M/170M. Derived, not estimated: memory.peak 74 MiB measured over 29.8
+      days of unit uptime, memory_max at 2.4x that peak and memory_high at 70%
+      of max. If this number looks wrong, the measurement is the thing to
+      argue with — see check_memory_budget.py's proposal block for why those
+      multiples.
 
   - unit: mnemon.service
     port: 8503
@@ -754,9 +788,16 @@ services:
   - unit: llm-egress-proxy.service
     port: 8990
     health_check_path: /__proxy_health__
-    memory_high: 210M
-    memory_max: 300M
+    memory_high: 260M
+    memory_max: 370M
     note: >
+      2026-09-12 (automated, alpha-engine-config-I7291): 210M/300M ->
+      260M/370M. Derived, not estimated: memory.peak 156 MiB measured over
+      29.8 days of unit uptime, memory_max at 2.4x that peak and memory_high
+      at 70% of max. If this number looks wrong, the measurement is the thing
+      to argue with — see check_memory_budget.py's proposal block for why
+      those multiples.
+
       2026-08-12: 250M/400M -> 210M/300M. The DO-NOT-LOWER below is preserved
       because its REASONING still holds and only its NUMBER was wrong, and the
       distinction matters if anyone is tempted to go further.
@@ -783,9 +824,16 @@ services:
   - unit: llm-egress-proxy-anthropic.service
     port: 8971
     health_check_path: /__proxy_health__
-    memory_high: 210M
-    memory_max: 300M
+    memory_high: 100M
+    memory_max: 130M
     note: >
+      2026-09-12 (automated, alpha-engine-config-I7291): 210M/300M ->
+      100M/130M. Derived, not estimated: memory.peak 58 MiB measured over 24.8
+      days of unit uptime, memory_max at 2.4x that peak and memory_high at 70%
+      of max. If this number looks wrong, the measurement is the thing to
+      argue with — see check_memory_budget.py's proposal block for why those
+      multiples.
+
       The ANTHROPIC-WIRE tenant of the egress proxy, added 2026-08-18
       (alpha-engine-config-I7681). Same binary and same launcher shape as
       llm-egress-proxy.service above; a SECOND process because the port is the
