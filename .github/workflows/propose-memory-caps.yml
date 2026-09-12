@@ -28,16 +28,44 @@ name: propose-memory-caps
 # pipeline runs then and its stages move memory on this box, and a peak
 # measured mid-pipeline would be read as steady-state demand. Sunday is the
 # buffer day (Brian's standing weekly convention).
+#
+# ── WHO OPENS THE PULL REQUEST (alpha-engine-config-I10332) ──────────────────
+#
+# Not GITHUB_TOKEN. Measured 2026-09-12: this workflow had never once
+# succeeded — every scheduled run reached the write and died with
+#
+#     pull request create failed: GraphQL: GitHub Actions is not permitted to
+#     create or approve pull requests (createPullRequest)
+#
+# The organisation holds "Allow GitHub Actions to create and approve pull
+# requests" = false ON PURPOSE (a workflow that can open AND approve its own
+# pull request is a self-approving change path), and even a pull request
+# GITHUB_TOKEN could open would arrive with no CI — GitHub does not start
+# workflow runs for events raised by that token. So the branch push and the
+# `gh pr create` below run under an hour-lived installation token of the
+# fleet's ne-groomer GitHub App (already installed org-wide; no new permanent
+# secret anywhere), minted from the three groom-App SSM parameters through the
+# workflow-specific OIDC role `github-actions-dashboard-bot-pr` and narrowed to
+# `contents: write` + `pull_requests: write` on THIS repository only. The role
+# reads those three parameters and nothing else; its trust pins this file on
+# main. Codified in nous-ergon-ops/infrastructure/iam/github-actions-dashboard-bot-pr/.
+#
+# The SSM read of the box stays on github-actions-lambda-deploy (unchanged).
+# The last step asserts the OUTCOME — the opened pull request is carrying
+# check runs — so a regression to a token that gets no CI goes red on the
+# Sunday it happens rather than leaving a checkless pull request looking calm.
 
 on:
   schedule:
     - cron: "0 11 * * SUN"
   workflow_dispatch: {}
 
+# `contents: read` only. Every write goes through the App token minted below;
+# leaving the default token write-capable would let a future edit reintroduce
+# the ungradeable-pull-request failure without anything here changing.
 permissions:
   id-token: write
-  contents: write
-  pull-requests: write
+  contents: read
 
 concurrency:
   group: propose-memory-caps
@@ -51,10 +79,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      # persist-credentials: false — the default checkout writes GITHUB_TOKEN
+      # into http.extraheader, and the push below would silently use it and be
+      # rejected. The push sets its own credential explicitly.
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
 
-      - name: Configure AWS credentials via OIDC
+      - name: Configure AWS credentials via OIDC (github-actions-lambda-deploy)
         uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
         with:
           role-to-assume: arn:aws:iam::711398986525:role/github-actions-lambda-deploy
@@ -109,22 +142,76 @@ jobs:
       - name: The result must still pass the declared budget check
         run: python3 infrastructure/check_memory_budget.py --declared
 
-      - name: Open a PR if the caps moved
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Did the caps move?
+        id: changed
+        run: |
+          if git diff --quiet -- infrastructure/systemd/resource-limits/budget.yaml; then
+            echo "any=false" >> "$GITHUB_OUTPUT"
+            echo "no drift — declared caps agree with the measurement"
+          else
+            echo "any=true" >> "$GITHUB_OUTPUT"
+            git diff --stat -- infrastructure/systemd/resource-limits/budget.yaml
+          fi
+
+      - name: Install the App-token minter
+        if: steps.changed.outputs.any == 'true'
+        run: python3 -m pip install --quiet "nousergon-lib[github-app]>=0.124.30"
+
+      # pip exits successfully when an extra name is misspelled. Import the
+      # package the extra exists to provide so failure occurs at installation.
+      - name: Prove the github-app extra actually installed
+        if: steps.changed.outputs.any == 'true'
+        run: python3 -c "import jwt; print('PyJWT', jwt.__version__)"
+
+      - name: Configure AWS credentials via OIDC (github-actions-dashboard-bot-pr)
+        if: steps.changed.outputs.any == 'true'
+        uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
+        with:
+          role-to-assume: arn:aws:iam::711398986525:role/github-actions-dashboard-bot-pr
+          aws-region: us-east-1
+
+      - name: Mint a repo-narrowed ne-groomer token
+        if: steps.changed.outputs.any == 'true'
+        id: token
         run: |
           set -euo pipefail
-          if git diff --quiet -- infrastructure/systemd/resource-limits/budget.yaml; then
-            echo "no drift — declared caps agree with the measurement"
-            exit 0
-          fi
+          TOKEN="$(python3 -c "
+          from nousergon_lib.github_app import installation_token
+          print(installation_token(permissions={'contents': 'write', 'pull_requests': 'write'}, repositories=['crucible-dashboard']), end='')
+          ")"
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Open a PR if the caps moved
+        if: steps.changed.outputs.any == 'true'
+        id: pr
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+        run: |
+          set -euo pipefail
           BRANCH="bot/memory-caps-$(date -u +%Y%m%d)"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "ne-groomer[bot]"
+          git config user.email "ne-groomer[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH"
           git add infrastructure/systemd/resource-limits/budget.yaml
           git commit -m "fix(budget): re-derive memory caps from measured peaks (config-I7291)"
-          git push -u origin "$BRANCH"
+
+          # The token goes in an askpass helper, never in the remote URL: a
+          # URL-embedded token lands in .git/config and in any shell trace.
+          printf '#!/usr/bin/env bash\nprintf "%%s" "$GIT_TOKEN"\n' > "$RUNNER_TEMP/askpass.sh"
+          chmod 700 "$RUNNER_TEMP/askpass.sh"
+          export GIT_ASKPASS="$RUNNER_TEMP/askpass.sh"
+          export GIT_TOKEN="$GH_TOKEN"
+          export GIT_TERMINAL_PROMPT=0
+          REMOTE="https://x-access-token@github.com/${GITHUB_REPOSITORY}.git"
+          git push "$REMOTE" "HEAD:refs/heads/${BRANCH}"
+
+          # A failed `gh pr create` after a successful push would leave an
+          # orphan branch with nobody to notice it. Clean up, never accumulate.
+          cleanup() {
+            git push "$REMOTE" --delete "refs/heads/${BRANCH}" || true
+          }
+          trap cleanup ERR
           {
             echo "Automated cap derivation from live \`memory.peak\` readings on \`${DASHBOARD_INSTANCE_ID}\` (alpha-engine-config-I7291)."
             echo
@@ -138,9 +225,37 @@ jobs:
             echo
             echo "Prepared by: propose-memory-caps.yml via [Claude Code](https://claude.com/claude-code)"
           } > pr-body.md
-          gh pr create --base main --head "$BRANCH" \
+          PR_URL="$(gh pr create --base main --head "$BRANCH" \
             --title "fix(budget): re-derive memory caps from measured peaks ($(date -u +%Y-%m-%d))" \
-            --body-file pr-body.md
+            --body-file pr-body.md)"
+          trap - ERR
+          echo "url=$PR_URL" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "propose-memory-caps: opened $PR_URL"
+
+      # The check that makes this workflow's own claim falsifiable: it asserts
+      # the OUTCOME — this commit was graded — not the configuration meant to
+      # produce it. If the token is ever swapped back to GITHUB_TOKEN, or the
+      # App's access is revoked, or ci.yml's triggers change so a bot branch
+      # matches none of them, this goes red on the Sunday it happens.
+      - name: The pull request must actually be graded
+        if: steps.changed.outputs.any == 'true'
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          SHA: ${{ steps.pr.outputs.sha }}
+          PR_URL: ${{ steps.pr.outputs.url }}
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 30); do
+            COUNT="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${SHA}/check-runs" --jq '.total_count' 2>/dev/null || echo 0)"
+            if [ "${COUNT:-0}" -gt 0 ]; then
+              echo "propose-memory-caps: ${PR_URL} has ${COUNT} check run(s) on ${SHA}."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error title=the memory-caps pull request was not graded::${PR_URL} still has zero check runs on ${SHA} after five minutes. A pull request with no checks reads as 'nothing to see' rather than red. Check that the ne-groomer App token minted above is what pushed, and that ci.yml still triggers on pull_request."
+          exit 1
 
   notify-main-failure:
     needs: [propose]
