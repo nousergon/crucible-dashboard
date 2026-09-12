@@ -31,6 +31,28 @@ name: refresh-rag-manifest
 # pipeline's 09:00 UTC trigger (see marketing/src/pages/architecture.astro's
 # Saturday diagram), giving the RAG ingestion + emit_manifest step time to
 # finish before this fetches latest.json.
+#
+# ── WHO OPENS THE PULL REQUEST (alpha-engine-config-I10333) ──────────────────
+#
+# Not GITHUB_TOKEN. Measured 2026-09-12: this workflow had never once
+# succeeded — the S3 fetch, the schema guard and the format all passed, and
+# every scheduled run then died at the branch push with
+#
+#     remote: Permission to nousergon/crucible-dashboard.git denied to
+#     github-actions[bot]. ... error: 403
+#
+# The org ruleset requires a pull request and grants the Actions token no
+# bypass, and even if it could push, the organisation holds "Allow GitHub
+# Actions to create and approve pull requests" = false ON PURPOSE, and a pull
+# request GITHUB_TOKEN opened would arrive with no CI. So the push and the
+# `gh pr create` below run under an hour-lived installation token of the
+# fleet's ne-groomer GitHub App (already installed org-wide; no new permanent
+# secret anywhere), minted from the three groom-App SSM parameters through the
+# workflow-specific OIDC role `github-actions-dashboard-bot-pr` and narrowed
+# to `contents: write` + `pull_requests: write` on THIS repository only.
+# Codified in nous-ergon-ops/infrastructure/iam/github-actions-dashboard-bot-pr/.
+# The S3 read stays on github-actions-lambda-deploy (unchanged). The last
+# step asserts the OUTCOME — the opened pull request is carrying check runs.
 
 on:
   schedule:
@@ -50,10 +72,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # persist-credentials: false — the default checkout writes GITHUB_TOKEN
+      # into http.extraheader, and the push below would silently use it and be
+      # rejected. The push sets its own credential explicitly.
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
 
-      - name: Configure AWS credentials via OIDC
+      - name: Configure AWS credentials via OIDC (github-actions-lambda-deploy)
         uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
         with:
           role-to-assume: arn:aws:iam::711398986525:role/github-actions-lambda-deploy
@@ -94,27 +121,109 @@ jobs:
           npm ci
           npx biome format --write src/data/rag-manifest.json
 
-      - name: Open PR if the manifest changed
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Did the manifest change?
+        id: changed
+        run: |
+          if git diff --quiet -- marketing/src/data/rag-manifest.json; then
+            echo "any=false" >> "$GITHUB_OUTPUT"
+            echo "no drift — manifest unchanged, nothing to open"
+          else
+            echo "any=true" >> "$GITHUB_OUTPUT"
+            git diff --stat -- marketing/src/data/rag-manifest.json
+          fi
+
+      - name: Install the App-token minter
+        if: steps.changed.outputs.any == 'true'
+        run: python3 -m pip install --quiet "nousergon-lib[github-app]>=0.124.30"
+
+      # pip exits successfully when an extra name is misspelled. Import the
+      # package the extra exists to provide so failure occurs at installation.
+      - name: Prove the github-app extra actually installed
+        if: steps.changed.outputs.any == 'true'
+        run: python3 -c "import jwt; print('PyJWT', jwt.__version__)"
+
+      - name: Configure AWS credentials via OIDC (github-actions-dashboard-bot-pr)
+        if: steps.changed.outputs.any == 'true'
+        uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
+        with:
+          role-to-assume: arn:aws:iam::711398986525:role/github-actions-dashboard-bot-pr
+          aws-region: us-east-1
+
+      - name: Mint a repo-narrowed ne-groomer token
+        if: steps.changed.outputs.any == 'true'
+        id: token
         run: |
           set -euo pipefail
-          if git diff --quiet -- marketing/src/data/rag-manifest.json; then
-            echo "no drift — manifest unchanged, nothing to open"
-            exit 0
-          fi
+          TOKEN="$(python3 -c "
+          from nousergon_lib.github_app import installation_token
+          print(installation_token(permissions={'contents': 'write', 'pull_requests': 'write'}, repositories=['crucible-dashboard']), end='')
+          ")"
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Open PR if the manifest changed
+        if: steps.changed.outputs.any == 'true'
+        id: pr
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+        run: |
+          set -euo pipefail
           BRANCH="bot/refresh-rag-manifest-$(date -u +%Y%m%d)"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "ne-groomer[bot]"
+          git config user.email "ne-groomer[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH"
           git add marketing/src/data/rag-manifest.json
           git commit -m "chore(marketing): refresh RAG manifest snapshot ($(date -u +%Y-%m-%d))"
-          git push -u origin "$BRANCH"
-          gh pr create \
+
+          # The token goes in an askpass helper, never in the remote URL: a
+          # URL-embedded token lands in .git/config and in any shell trace.
+          printf '#!/usr/bin/env bash\nprintf "%%s" "$GIT_TOKEN"\n' > "$RUNNER_TEMP/askpass.sh"
+          chmod 700 "$RUNNER_TEMP/askpass.sh"
+          export GIT_ASKPASS="$RUNNER_TEMP/askpass.sh"
+          export GIT_TOKEN="$GH_TOKEN"
+          export GIT_TERMINAL_PROMPT=0
+          REMOTE="https://x-access-token@github.com/${GITHUB_REPOSITORY}.git"
+          git push "$REMOTE" "HEAD:refs/heads/${BRANCH}"
+
+          # A failed `gh pr create` after a successful push would leave an
+          # orphan branch with nobody to notice it. Clean up, never accumulate.
+          cleanup() {
+            git push "$REMOTE" --delete "refs/heads/${BRANCH}" || true
+          }
+          trap cleanup ERR
+          PR_URL="$(gh pr create \
             --title "chore(marketing): refresh RAG manifest snapshot ($(date -u +%Y-%m-%d))" \
-            --body "Automated weekly refresh of \`marketing/src/data/rag-manifest.json\` from \`s3://alpha-engine-research/rag/manifest/latest.json\` (config#908). Public-safe rollup only — schema-validated by this workflow. marketing-ci.yml gates the build before merge." \
+            --body "Automated weekly refresh of \`marketing/src/data/rag-manifest.json\` from \`s3://alpha-engine-research/rag/manifest/latest.json\` (config#908). Public-safe rollup only — schema-validated by this workflow. marketing-ci.yml gates the build before merge. Opened by refresh-rag-manifest.yml as ne-groomer[bot]." \
             --base main \
-            --head "$BRANCH"
+            --head "$BRANCH")"
+          trap - ERR
+          echo "url=$PR_URL" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "refresh-rag-manifest: opened $PR_URL"
+
+      # The check that makes this workflow's own claim falsifiable: it asserts
+      # the OUTCOME — this commit was graded — not the configuration meant to
+      # produce it. If the token is ever swapped back to GITHUB_TOKEN, or the
+      # App's access is revoked, or marketing-ci.yml's triggers change so a bot
+      # branch matches none of them, this goes red on the Saturday it happens.
+      - name: The pull request must actually be graded
+        if: steps.changed.outputs.any == 'true'
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          SHA: ${{ steps.pr.outputs.sha }}
+          PR_URL: ${{ steps.pr.outputs.url }}
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 30); do
+            COUNT="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${SHA}/check-runs" --jq '.total_count' 2>/dev/null || echo 0)"
+            if [ "${COUNT:-0}" -gt 0 ]; then
+              echo "refresh-rag-manifest: ${PR_URL} has ${COUNT} check run(s) on ${SHA}."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error title=the manifest pull request was not graded::${PR_URL} still has zero check runs on ${SHA} after five minutes. A pull request with no checks reads as 'nothing to see' rather than red. Check that the ne-groomer App token minted above is what pushed, and that marketing-ci.yml still triggers on pull_request for this path."
+          exit 1
 
   notify-main-failure:
     needs: [refresh]
