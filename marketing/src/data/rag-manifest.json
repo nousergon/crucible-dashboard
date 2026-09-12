@@ -1,31 +1,31 @@
 {
-  "generated_at": "2026-07-19T01:40:44.925128+00:00",
+  "generated_at": "2026-09-12T11:57:40.182927+00:00",
   "schema_version": "1.1.0",
   "totals": {
-    "documents": 22650,
-    "chunks": 265182,
-    "tickers": 1616
+    "documents": 80295,
+    "chunks": 338573,
+    "tickers": 2035
   },
   "by_source": {
     "10-K": {
-      "documents": 1497,
-      "tickers": 776,
-      "chunks": 46012
+      "documents": 1522,
+      "tickers": 786,
+      "chunks": 46785
     },
     "10-Q": {
-      "documents": 5349,
-      "tickers": 891,
-      "chunks": 174486
+      "documents": 5772,
+      "tickers": 906,
+      "chunks": 187777
     },
     "8-K": {
-      "documents": 10849,
-      "tickers": 903,
-      "chunks": 39356
+      "documents": 11723,
+      "tickers": 918,
+      "chunks": 42360
     },
     "news": {
-      "documents": 3949,
-      "tickers": 1564,
-      "chunks": 3949
+      "documents": 60272,
+      "tickers": 2029,
+      "chunks": 60272
     },
     "thesis_news": {
       "documents": 221,
@@ -49,28 +49,502 @@
     }
   },
   "by_ticker_coverage": {
-    "tickers_with_any_doc": 1616,
-    "p25_docs_per_ticker": 1,
-    "p50_docs_per_ticker": 16,
-    "p75_docs_per_ticker": 21
+    "tickers_with_any_doc": 2035,
+    "p25_docs_per_ticker": 2,
+    "p50_docs_per_ticker": 14,
+    "p75_docs_per_ticker": 35
   },
   "embedding": {
     "model": "voyage-3-lite",
     "dimension": 512
   },
   "ingestion": {
-    "last_run_ts": "2026-07-19T00:32:15.716429+00:00",
+    "last_run_ts": "2026-09-12T11:39:34.001527+00:00",
     "by_source_last_ts": {
-      "10-K": "2026-07-18T15:56:23.805482+00:00",
-      "10-Q": "2026-07-18T15:56:24.702333+00:00",
-      "8-K": "2026-07-18T18:51:06.278935+00:00",
-      "news": "2026-07-19T00:32:15.716429+00:00",
+      "10-K": "2026-09-12T11:37:42.320331+00:00",
+      "10-Q": "2026-09-12T11:37:29.079228+00:00",
+      "8-K": "2026-09-12T11:39:34.001527+00:00",
+      "news": "2026-09-12T11:23:07.693417+00:00",
       "thesis_news": "2026-03-31T17:51:46.445317+00:00",
       "thesis_research": "2026-03-31T17:51:48.547672+00:00",
       "thesis_score": "2026-03-31T17:57:51.654055+00:00",
       "thesis_signal": "2026-07-18T19:08:51.828606+00:00"
     },
     "by_date_source": [
+      {
+        "date": "2026-09-12",
+        "doc_type": "10-K",
+        "documents": 1,
+        "chunks": 29
+      },
+      {
+        "date": "2026-09-12",
+        "doc_type": "10-Q",
+        "documents": 8,
+        "chunks": 232
+      },
+      {
+        "date": "2026-09-12",
+        "doc_type": "8-K",
+        "documents": 28,
+        "chunks": 116
+      },
+      {
+        "date": "2026-09-12",
+        "doc_type": "news",
+        "documents": 635,
+        "chunks": 635
+      },
+      {
+        "date": "2026-09-11",
+        "doc_type": "news",
+        "documents": 969,
+        "chunks": 969
+      },
+      {
+        "date": "2026-09-10",
+        "doc_type": "news",
+        "documents": 960,
+        "chunks": 960
+      },
+      {
+        "date": "2026-09-09",
+        "doc_type": "news",
+        "documents": 1196,
+        "chunks": 1196
+      },
+      {
+        "date": "2026-09-08",
+        "doc_type": "news",
+        "documents": 852,
+        "chunks": 852
+      },
+      {
+        "date": "2026-09-07",
+        "doc_type": "news",
+        "documents": 418,
+        "chunks": 418
+      },
+      {
+        "date": "2026-09-06",
+        "doc_type": "news",
+        "documents": 340,
+        "chunks": 340
+      },
+      {
+        "date": "2026-09-05",
+        "doc_type": "10-Q",
+        "documents": 11,
+        "chunks": 340
+      },
+      {
+        "date": "2026-09-05",
+        "doc_type": "8-K",
+        "documents": 28,
+        "chunks": 104
+      },
+      {
+        "date": "2026-09-05",
+        "doc_type": "news",
+        "documents": 919,
+        "chunks": 919
+      },
+      {
+        "date": "2026-09-04",
+        "doc_type": "news",
+        "documents": 1325,
+        "chunks": 1325
+      },
+      {
+        "date": "2026-09-03",
+        "doc_type": "news",
+        "documents": 1134,
+        "chunks": 1134
+      },
+      {
+        "date": "2026-09-02",
+        "doc_type": "news",
+        "documents": 1269,
+        "chunks": 1269
+      },
+      {
+        "date": "2026-09-01",
+        "doc_type": "news",
+        "documents": 1093,
+        "chunks": 1093
+      },
+      {
+        "date": "2026-08-31",
+        "doc_type": "news",
+        "documents": 652,
+        "chunks": 652
+      },
+      {
+        "date": "2026-08-30",
+        "doc_type": "news",
+        "documents": 239,
+        "chunks": 239
+      },
+      {
+        "date": "2026-08-29",
+        "doc_type": "10-Q",
+        "documents": 8,
+        "chunks": 187
+      },
+      {
+        "date": "2026-08-29",
+        "doc_type": "8-K",
+        "documents": 16,
+        "chunks": 48
+      },
+      {
+        "date": "2026-08-29",
+        "doc_type": "news",
+        "documents": 774,
+        "chunks": 774
+      },
+      {
+        "date": "2026-08-28",
+        "doc_type": "news",
+        "documents": 2071,
+        "chunks": 2071
+      },
+      {
+        "date": "2026-08-27",
+        "doc_type": "news",
+        "documents": 1855,
+        "chunks": 1855
+      },
+      {
+        "date": "2026-08-26",
+        "doc_type": "news",
+        "documents": 1601,
+        "chunks": 1601
+      },
+      {
+        "date": "2026-08-25",
+        "doc_type": "news",
+        "documents": 1438,
+        "chunks": 1438
+      },
+      {
+        "date": "2026-08-24",
+        "doc_type": "news",
+        "documents": 602,
+        "chunks": 602
+      },
+      {
+        "date": "2026-08-23",
+        "doc_type": "news",
+        "documents": 437,
+        "chunks": 437
+      },
+      {
+        "date": "2026-08-22",
+        "doc_type": "10-K",
+        "documents": 3,
+        "chunks": 166
+      },
+      {
+        "date": "2026-08-22",
+        "doc_type": "10-Q",
+        "documents": 24,
+        "chunks": 1091
+      },
+      {
+        "date": "2026-08-22",
+        "doc_type": "8-K",
+        "documents": 48,
+        "chunks": 175
+      },
+      {
+        "date": "2026-08-22",
+        "doc_type": "news",
+        "documents": 745,
+        "chunks": 745
+      },
+      {
+        "date": "2026-08-21",
+        "doc_type": "news",
+        "documents": 1743,
+        "chunks": 1743
+      },
+      {
+        "date": "2026-08-20",
+        "doc_type": "news",
+        "documents": 1419,
+        "chunks": 1419
+      },
+      {
+        "date": "2026-08-19",
+        "doc_type": "news",
+        "documents": 883,
+        "chunks": 883
+      },
+      {
+        "date": "2026-08-18",
+        "doc_type": "news",
+        "documents": 790,
+        "chunks": 790
+      },
+      {
+        "date": "2026-08-17",
+        "doc_type": "news",
+        "documents": 519,
+        "chunks": 519
+      },
+      {
+        "date": "2026-08-16",
+        "doc_type": "news",
+        "documents": 449,
+        "chunks": 449
+      },
+      {
+        "date": "2026-08-15",
+        "doc_type": "10-K",
+        "documents": 1,
+        "chunks": 1
+      },
+      {
+        "date": "2026-08-15",
+        "doc_type": "10-Q",
+        "documents": 4,
+        "chunks": 59
+      },
+      {
+        "date": "2026-08-15",
+        "doc_type": "8-K",
+        "documents": 6,
+        "chunks": 18
+      },
+      {
+        "date": "2026-08-15",
+        "doc_type": "news",
+        "documents": 670,
+        "chunks": 670
+      },
+      {
+        "date": "2026-08-14",
+        "doc_type": "news",
+        "documents": 1679,
+        "chunks": 1679
+      },
+      {
+        "date": "2026-08-13",
+        "doc_type": "10-Q",
+        "documents": 4,
+        "chunks": 24
+      },
+      {
+        "date": "2026-08-13",
+        "doc_type": "8-K",
+        "documents": 13,
+        "chunks": 39
+      },
+      {
+        "date": "2026-08-13",
+        "doc_type": "news",
+        "documents": 1705,
+        "chunks": 1705
+      },
+      {
+        "date": "2026-08-12",
+        "doc_type": "news",
+        "documents": 1519,
+        "chunks": 1519
+      },
+      {
+        "date": "2026-08-11",
+        "doc_type": "10-Q",
+        "documents": 7,
+        "chunks": 96
+      },
+      {
+        "date": "2026-08-11",
+        "doc_type": "8-K",
+        "documents": 9,
+        "chunks": 48
+      },
+      {
+        "date": "2026-08-11",
+        "doc_type": "news",
+        "documents": 918,
+        "chunks": 918
+      },
+      {
+        "date": "2026-08-10",
+        "doc_type": "news",
+        "documents": 940,
+        "chunks": 940
+      },
+      {
+        "date": "2026-08-09",
+        "doc_type": "news",
+        "documents": 997,
+        "chunks": 997
+      },
+      {
+        "date": "2026-08-08",
+        "doc_type": "news",
+        "documents": 1101,
+        "chunks": 1101
+      },
+      {
+        "date": "2026-08-07",
+        "doc_type": "10-K",
+        "documents": 1,
+        "chunks": 4
+      },
+      {
+        "date": "2026-08-07",
+        "doc_type": "10-Q",
+        "documents": 40,
+        "chunks": 1182
+      },
+      {
+        "date": "2026-08-07",
+        "doc_type": "8-K",
+        "documents": 48,
+        "chunks": 147
+      },
+      {
+        "date": "2026-08-07",
+        "doc_type": "news",
+        "documents": 1219,
+        "chunks": 1219
+      },
+      {
+        "date": "2026-08-06",
+        "doc_type": "news",
+        "documents": 849,
+        "chunks": 849
+      },
+      {
+        "date": "2026-08-05",
+        "doc_type": "news",
+        "documents": 893,
+        "chunks": 893
+      },
+      {
+        "date": "2026-08-04",
+        "doc_type": "10-Q",
+        "documents": 8,
+        "chunks": 190
+      },
+      {
+        "date": "2026-08-04",
+        "doc_type": "8-K",
+        "documents": 13,
+        "chunks": 37
+      },
+      {
+        "date": "2026-08-04",
+        "doc_type": "news",
+        "documents": 2116,
+        "chunks": 2116
+      },
+      {
+        "date": "2026-08-03",
+        "doc_type": "10-Q",
+        "documents": 1,
+        "chunks": 4
+      },
+      {
+        "date": "2026-08-03",
+        "doc_type": "8-K",
+        "documents": 5,
+        "chunks": 16
+      },
+      {
+        "date": "2026-08-03",
+        "doc_type": "news",
+        "documents": 611,
+        "chunks": 611
+      },
+      {
+        "date": "2026-08-02",
+        "doc_type": "news",
+        "documents": 605,
+        "chunks": 605
+      },
+      {
+        "date": "2026-07-31",
+        "doc_type": "10-K",
+        "documents": 12,
+        "chunks": 390
+      },
+      {
+        "date": "2026-07-31",
+        "doc_type": "10-Q",
+        "documents": 64,
+        "chunks": 1687
+      },
+      {
+        "date": "2026-07-31",
+        "doc_type": "8-K",
+        "documents": 141,
+        "chunks": 558
+      },
+      {
+        "date": "2026-07-30",
+        "doc_type": "10-Q",
+        "documents": 8,
+        "chunks": 200
+      },
+      {
+        "date": "2026-07-30",
+        "doc_type": "8-K",
+        "documents": 11,
+        "chunks": 32
+      },
+      {
+        "date": "2026-07-30",
+        "doc_type": "news",
+        "documents": 11787,
+        "chunks": 11787
+      },
+      {
+        "date": "2026-07-29",
+        "doc_type": "10-K",
+        "documents": 2,
+        "chunks": 17
+      },
+      {
+        "date": "2026-07-29",
+        "doc_type": "10-Q",
+        "documents": 136,
+        "chunks": 4231
+      },
+      {
+        "date": "2026-07-29",
+        "doc_type": "8-K",
+        "documents": 233,
+        "chunks": 729
+      },
+      {
+        "date": "2026-07-25",
+        "doc_type": "10-K",
+        "documents": 5,
+        "chunks": 166
+      },
+      {
+        "date": "2026-07-25",
+        "doc_type": "10-Q",
+        "documents": 100,
+        "chunks": 3768
+      },
+      {
+        "date": "2026-07-25",
+        "doc_type": "8-K",
+        "documents": 275,
+        "chunks": 937
+      },
+      {
+        "date": "2026-07-25",
+        "doc_type": "news",
+        "documents": 1387,
+        "chunks": 1387
+      },
       {
         "date": "2026-07-19",
         "doc_type": "news",
