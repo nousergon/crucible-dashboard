@@ -108,23 +108,43 @@ LEDGER_KEY = "research/cuts_weekly_ledger/ledger.parquet"
 # ---------------------------------------------------------------------------
 #
 # Source of truth: crucible-research/contracts/scanner_cut_champion.schema.json
-# (`reason_code.enum`, v2) plus the v1 slugs the same file records as RETIRED
-# and read-tolerated. A hold is an OUTCOME; most reason codes describe an
-# expected steady state and MUST NOT render as a warning, or the pane trains
-# its reader to ignore it — which is how a real defect gets missed.
+# (`reason_code.enum`, v5) plus the v1/v3/v5-retired slugs the same file
+# records as RETIRED and read-tolerated. A hold is an OUTCOME; most reason
+# codes describe an expected steady state and MUST NOT render as a warning,
+# or the pane trains its reader to ignore it — which is how a real defect
+# gets missed.
+#
+# `test_taxonomy_matches_the_producers_contract`
+# (tests/test_scanner_champion_pane.py) reads that schema's live enum and
+# fails if a slug it carries has no disposition here — this list must not
+# drift from the schema by hand-editing alone.
 
 _NORMAL_REASON_CODES: frozenset[str] = frozenset({
-    # v2 (current)
+    # v5 (current)
     "promoted",
-    "champion_already_leads",
-    "no_promotable_challenger",   # registry state — one promotable arm
+    "no_supported_challenger_lead",  # `held`: no challenger's lead is
+                                      # supported by the anytime-valid
+                                      # sequence — never "incumbent won"
+                                      # (alpha-engine-config-I10541)
     "weekly_ledger_missing",      # expected until the ledger producer is wired
+    "arena_unmeasurable",
+    "arena_unservable",
+    "arena_bootstrap",
+    # v3 (RETIRED at the I9317 arena wiring, never re-minted — read-tolerated
+    # so an archived v3 record stays readable)
+    "no_promotable_challenger",
     "weekly_ledger_arm_missing",
-    "insufficient_weeks",         # expected for ~5 weeks after that
+    "insufficient_weeks",
     "margin_not_met",
     "cooldown_active",
     "corroborating_horizon_disagrees",
-    # v1 (RETIRED, never re-minted — read-tolerated so history stays readable)
+    # v5 (RETIRED at the I10541 fix, never re-minted — read-tolerated so an
+    # archived v4-and-earlier record stays readable; MUST NOT be read as "the
+    # incumbent won" — the engine's `held` status cannot honestly distinguish
+    # that from no supported evidence at all)
+    "champion_already_leads",
+    # v1 (RETIRED at the I8261 cutover, never re-minted — read-tolerated so
+    # history stays readable)
     "board_missing",
     "board_unmeasurable",
     "decision_horizon_immature",
