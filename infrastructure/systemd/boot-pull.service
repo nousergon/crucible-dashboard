@@ -6,6 +6,9 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 User=ec2-user
+# /var/lib/boot-pull for last-pull-shas, created and owned for User= by systemd —
+# the first hourly run (2026-09-13 15:39 UTC) could not mkdir it as ec2-user.
+StateDirectory=boot-pull
 ExecStart=/home/ec2-user/alpha-engine-dashboard/infrastructure/boot-pull.sh
 TimeoutStartSec=300
 RemainAfterExit=no

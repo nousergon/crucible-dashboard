@@ -107,16 +107,28 @@ class TestNeverResetADirtyTree:
         loop = _pull_loop_block()
         assert "merge --ff-only origin/main" in loop
 
-    def test_dirty_tree_is_detected_before_merging(self):
+    def test_merge_is_attempted_before_any_dirty_verdict(self):
+        """The fast-forward is ATTEMPTED and git's refusal is the finding.
+
+        The first shape of this check pre-empted the merge with a blanket
+        `git status --porcelain` test and, on its first run (2026-09-13
+        15:39 UTC), graded 10 of 19 checkouts "dirty" and paged the operator
+        chat — every one held only files the box writes into its checkouts
+        by design (the SSM-rendered config.yaml, a .venv, a sqlite file) and
+        every one would have fast-forwarded cleanly. So: merge first; only a
+        refused merge consults the tree, and then only TRACKED modifications
+        (`--untracked-files=no`) make it a dirty-tree verdict.
+        """
         loop = _pull_loop_block()
-        assert "git status --porcelain" in loop
-        # the dirty-tree branch must exit before any merge is attempted
-        dirty_idx = loop.index("git status --porcelain")
-        merge_idx = loop.index("merge --ff-only")
+        merge_idx = loop.index("merge --ff-only origin/main")
+        status_idx = loop.index("git status --porcelain --untracked-files=no")
         exit_idx = loop.index("exit 3")
-        assert dirty_idx < exit_idx < merge_idx, (
-            "the dirty-tree check does not gate the merge — a dirty tree could "
-            "still reach `merge --ff-only`"
+        assert merge_idx < status_idx < exit_idx, (
+            "the dirty-tree verdict must follow a REFUSED merge, never pre-empt it"
+        )
+        assert "git status --porcelain)" not in loop, (
+            "a blanket porcelain test (untracked files included) is back — that is "
+            "the 10-of-19 false-dirty page of 2026-09-13"
         )
 
     def test_dirty_tree_is_reported_not_silently_skipped(self):
