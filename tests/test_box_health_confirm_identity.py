@@ -157,7 +157,9 @@ def _publish_tick(prior_rows: str, findings: list[str]) -> str:
 
 
 class TestPublishTimeInFlight:
-    """`Result` is re-read LIVE at publish time, minutes after the window."""
+    """ActiveState is read LIVE at publish time, minutes after the window;
+    Result and the failing-run timestamp are not (alpha-engine-config-I10613)
+    — they come off the published line itself, same as the driver (I10237)."""
 
     def _run(self, tmp_path, active_state: str, result: str, ts: str):
         install_fake_systemctl(tmp_path)
@@ -186,15 +188,38 @@ class TestPublishTimeInFlight:
         assert run.channel_clears == {}
         assert run.page_state(PRIOR_KEY) == "still_open"
 
-    def test_a_settled_unit_is_still_read_live(self, tmp_path):
-        """The carry is scoped to in-flight. A finished unit's real outcome is
-        what the episode key must be built from — otherwise a Result CHANGE
-        (`exit-code` becoming `timeout`, a different fault) could never open the
-        new episode I7677/#787 require."""
+    def test_a_settled_unit_is_keyed_from_the_line_not_a_fresh_live_read(
+        self, tmp_path
+    ):
+        """SUPERSEDED by alpha-engine-config-I10613 (was
+        "a settled unit is still read live", asserting the opposite).
+
+        A live `systemctl show` at publish time can describe a DIFFERENT run
+        than the confirmed line does — not just an in-flight one. Measured
+        2026-09-13: ops-checkout-freshness.timer's carried line named its
+        08:50:39 failure (result=exit-code); by publish time its NEXT run had
+        already succeeded, so a live read reported Result=success and a
+        newer InactiveExitTimestamp, and the published key was keyed on
+        `...-success-...` — a "timer job failing" CRITICAL for a condition
+        that had already cleared.
+
+        So Result and the failing-run timestamp are now read back off the
+        PUBLISHED LINE (`timer_failure_line_result` /
+        `_line_started`), exactly like the driver already is (I10237) — a
+        FAKE_SYSTEMCTL override for a settled unit's Result/timestamp is
+        therefore inert; only the line's own text can move the key. A
+        genuine Result change (`exit-code` becoming `timeout`) is picked up
+        one confirm-on-retry tick later instead, when classify_timer_staleness
+        itself samples the new live state and produces a line that SAYS
+        `result=timeout` — a ~10-minute delay traded against never paging on
+        a live read that has raced ahead of the line it is meant to describe.
+        """
         run = self._run(tmp_path, "inactive", "timeout", "Sat 2026-09-06 12:07:30 UTC")
-        assert _emit(run, "KEY").startswith(
-            f"boxhealth-critical-timerfail-{UNIT}-timeout-"
-        )
+        # The FAKE_SYSTEMCTL Result/timestamp overrides above are irrelevant
+        # to the key now — S2's own text (result=exit-code, driver=
+        # upstream-unreachable, failing run started 12:07:21) still carries
+        # forward to PRIOR_KEY's prefix, same as the end-to-end test below.
+        assert _emit(run, "KEY") == PRIOR_KEY
 
 
 class TestTheMeasuredTickEndToEnd:

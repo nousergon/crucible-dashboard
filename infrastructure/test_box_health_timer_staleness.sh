@@ -39,10 +39,14 @@ fi
 eval "$(awk '/^human_age\(\) \{/,/^\}/' "$TARGET_SCRIPT")"
 eval "$(awk '/^classify_timer_staleness\(\) \{/,/^\}/' "$TARGET_SCRIPT")"
 eval "$(awk '/^timer_failure_line_driver\(\) \{/,/^\}/' "$TARGET_SCRIPT")"
+eval "$(awk '/^timer_failure_line_result\(\) \{/,/^\}/' "$TARGET_SCRIPT")"
+eval "$(awk '/^timer_failure_line_started\(\) \{/,/^\}/' "$TARGET_SCRIPT")"
 eval "$(awk '/^timer_failure_dedup_key\(\) \{/,/^\}/' "$TARGET_SCRIPT")"
 eval "$(awk '/^timer_failure_episode_key\(\) \{/,/^\}/' "$TARGET_SCRIPT")"
 
-for fn in human_age classify_timer_staleness timer_failure_line_driver timer_failure_dedup_key timer_failure_episode_key; do
+for fn in human_age classify_timer_staleness timer_failure_line_driver \
+    timer_failure_line_result timer_failure_line_started \
+    timer_failure_dedup_key timer_failure_episode_key; do
     if ! declare -F "$fn" >/dev/null; then
         echo "FAIL - $fn() not found in box_health.sh (extraction failed)"
         exit 1
@@ -412,6 +416,137 @@ if [ "$d2" = "unclassified" ]; then
     echo "ok   - extracted from a 'timer job failing:' line with no trailing clause"
 else
     echo "FAIL - got [$d2]"
+    FAILURES=$((FAILURES + 1))
+fi
+
+echo "== timer_failure_episode_key: evidence loss for the SAME run is carried, alpha-engine-config-I10612/I10613 =="
+#
+# THE DEFECT, RECONSTRUCTED EXACTLY. router-degraded-mode-drill.timer failing
+# since 2026-09-08 10:30:29 under driver=upstream-unreachable; box_hygiene.sh's
+# weekly vacuum (I10612) removed the failing run's journal at 09:20 today; the
+# 09:22:07 tick re-read the SAME InactiveExitTimestamp but got
+# driver=unattributed-no-journal-record. Both keys observed live carried the
+# identical trailing epoch, 1788863429 -- the giveaway that this is the same
+# run, not a new one.
+same_ts="Sun 2026-09-13 06:30:29 UTC"   # arbitrary concrete timestamp; the
+                                        # SAME string is reused below so both
+                                        # calls compute the identical epoch.
+prior_real=$(timer_failure_episode_key "router-degraded-mode-drill.timer" \
+    "exit-code" "upstream-unreachable" "$same_ts" "")
+carried_evidence_loss=$(timer_failure_episode_key "router-degraded-mode-drill.timer" \
+    "exit-code" "unattributed-no-journal-record" "$same_ts" "$prior_real")
+if [ "$carried_evidence_loss" = "$prior_real" ]; then
+    echo "ok   - unattributed-no-journal-record for the SAME run carries the prior (real-driver) key"
+else
+    echo "FAIL - evidence loss for an unchanged run opened a new episode: [$prior_real] vs [$carried_evidence_loss]"
+    FAILURES=$((FAILURES + 1))
+fi
+
+# The plain `unattributed` terminal branch gets the same treatment.
+carried_evidence_loss_plain=$(timer_failure_episode_key "router-degraded-mode-drill.timer" \
+    "exit-code" "unattributed" "$same_ts" "$prior_real")
+if [ "$carried_evidence_loss_plain" = "$prior_real" ]; then
+    echo "ok   - unattributed (no record at all) for the SAME run also carries the prior key"
+else
+    echo "FAIL - got [$carried_evidence_loss_plain], expected [$prior_real]"
+    FAILURES=$((FAILURES + 1))
+fi
+
+# I10237 MUST STILL HOLD: a driver change between two REAL drivers, or an
+# unattributed* driver reporting a DIFFERENT run (different timestamp), still
+# opens a new episode. Reusing the exact I10237 measured sequence from above
+# (key_831 -> key_907) already asserts this; restated here as the
+# closes-when's explicit negative case with a fresh pair of timestamps so this
+# block does not depend on state mutated earlier in the file.
+other_ts="Mon 2026-09-07 10:11:57 UTC"
+new_run_no_carry=$(timer_failure_episode_key "router-degraded-mode-drill.timer" \
+    "exit-code" "unattributed-no-journal-record" "$other_ts" "$prior_real")
+if [ "$new_run_no_carry" != "$prior_real" ]; then
+    echo "ok   - unattributed-no-journal-record for a DIFFERENT run (different timestamp) opens its own episode"
+else
+    echo "FAIL - I10237 REGRESSION: a genuinely new, evidence-free run was folded into the prior episode"
+    FAILURES=$((FAILURES + 1))
+fi
+
+echo "== timer_failure_line_result / timer_failure_line_started: read back what was published, alpha-engine-config-I10613 =="
+#
+# THE DEFECT, RECONSTRUCTED EXACTLY. ops-checkout-freshness.timer failed at
+# 08:50:39 UTC (git-remote-unreadable); the 09:53 tick sampled while its
+# 09:50:51 run was already in flight, so classify_timer_staleness re-emitted
+# the PRIOR line verbatim (the I8359 carry) describing the 08:50:39 failure.
+# By the time the publish loop's live systemctl read ran, that in-flight run
+# had SUCCEEDED, so a fresh read reported Result=success and the WRONG
+# (later) timestamp. Parsing the line itself must recover the ORIGINAL result
+# and timestamp regardless of what systemd reports live afterwards.
+carried_line="unit failed and otherwise unmonitored: ops-checkout-freshness.timer (last run result=exit-code, driver=git-remote-unreadable, failing run started Sun 2026-09-13 08:50:39 UTC)"
+
+r1=$(timer_failure_line_result "$carried_line")
+if [ "$r1" = "exit-code" ]; then
+    echo "ok   - timer_failure_line_result reads the ORIGINAL result off the line, not a live re-read"
+else
+    echo "FAIL - got [$r1]"
+    FAILURES=$((FAILURES + 1))
+fi
+
+t1=$(timer_failure_line_started "$carried_line")
+if [ "$t1" = "Sun 2026-09-13 08:50:39 UTC" ]; then
+    echo "ok   - timer_failure_line_started reads the ORIGINAL failing-run timestamp off the line"
+else
+    echo "FAIL - got [$t1]"
+    FAILURES=$((FAILURES + 1))
+fi
+
+# The resulting episode key must be built from the LINE's (exit-code, T1), not
+# from a hypothetical live (success, T2) read -- i.e. it must be stable and
+# non-empty, keyed on the real failure, never on "success".
+key_from_line=$(timer_failure_episode_key "ops-checkout-freshness.timer" "$r1" \
+    "$(timer_failure_line_driver "$carried_line")" "$t1" "")
+case "$key_from_line" in
+    *-success-*)
+        echo "FAIL - the line-derived episode key is keyed on success: [$key_from_line]"
+        FAILURES=$((FAILURES + 1))
+        ;;
+    *git-remote-unreadable*)
+        echo "ok   - the line-derived episode key carries the real driver/result, never the live success read"
+        ;;
+    *)
+        echo "FAIL - unexpected key shape: [$key_from_line]"
+        FAILURES=$((FAILURES + 1))
+        ;;
+esac
+
+# A `next attempt` clause (no journal history) must not leak into the
+# extracted timestamp -- there IS no "failing run started" clause in that
+# shape, so the extraction must come back empty rather than swallowing the
+# next line's own trailing text.
+t_no_start=$(timer_failure_line_started \
+    "timer job failing: unit.timer (last run result=exit-code, driver=upstream-unreachable, next attempt Sun 2026-09-14 09:20:00 UTC)")
+if [ -z "$t_no_start" ]; then
+    echo "ok   - a line with only 'next attempt' (no 'failing run started') extracts an empty timestamp"
+else
+    echo "FAIL - got [$t_no_start]"
+    FAILURES=$((FAILURES + 1))
+fi
+
+echo "== a line parsing to result=success (or unparseable) must never be published =="
+#
+# This is the guard in the publish loop itself, not a pure function -- assert
+# the two inputs that guard must recognize as 'do not publish'.
+success_line="timer job failing: unit.timer (last run result=success, driver=unclassified)"
+r_success=$(timer_failure_line_result "$success_line")
+if [ "$r_success" = "success" ]; then
+    echo "ok   - a line whose own text says result=success parses to 'success' (the publish loop drops this)"
+else
+    echo "FAIL - got [$r_success]"
+    FAILURES=$((FAILURES + 1))
+fi
+
+unparseable_line="a hand-crafted line this file never generates"
+r_unparseable=$(timer_failure_line_result "$unparseable_line")
+if [ -z "$r_unparseable" ]; then
+    echo "ok   - a line with no 'last run result=' clause parses to empty (the publish loop drops this too)"
+else
+    echo "FAIL - got [$r_unparseable]"
     FAILURES=$((FAILURES + 1))
 fi
 
