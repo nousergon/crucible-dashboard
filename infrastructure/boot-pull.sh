@@ -176,22 +176,32 @@ for repo in "${REPOS[@]}"; do
     # and a fetch is itself a git WRITE — it mutates the remote-tracking
     # ref — so it must take the lock too, not just the merge.
     #
-    # `git reset --hard` was replaced with fetch + a DIRTY-TREE CHECK +
-    # `merge --ff-only` (alpha-engine-config-I10260): reset --hard discards
-    # whatever a dirty working tree holds with no record of what was lost.
-    # A dirty tree is reported (exit 3, distinguished below) and left
-    # untouched; a clean tree that cannot fast-forward (local commits that
-    # diverged from origin) fails the same way a real network error would —
-    # both need a human, and boot-pull must never guess which of the two by
-    # discarding history.
+    # `git reset --hard` was replaced with fetch + `merge --ff-only`
+    # (alpha-engine-config-I10260): reset --hard discards whatever a dirty
+    # working tree holds with no record of what was lost.
+    #
+    # THE MERGE IS ATTEMPTED, NOT PRE-EMPTED. The first shape of this check
+    # refused any tree where `git status --porcelain` printed anything and,
+    # on its first run (2026-09-13 15:39 UTC), graded 10 of 19 checkouts
+    # "dirty" and paged the operator chat — every one of them held only
+    # files the box WRITES INTO ITS CHECKOUTS BY DESIGN (the SSM-rendered
+    # config.yaml, a .venv, a sqlite file, __pycache__) and every one would
+    # have fast-forwarded cleanly. git already knows exactly which local
+    # change a fast-forward would overwrite, and refuses only then; that
+    # refusal is the finding. It is reported as dirty-tree (exit 3,
+    # distinguished below) when a TRACKED file is modified, and as a plain
+    # failure otherwise (diverged local commits, a network error) — both
+    # need a human, and boot-pull never guesses which by discarding history.
     _repo_lock="$(git_sync_lock_path "$repo")"
     if flock -w "$GIT_SYNC_LOCK_WAIT" "$_repo_lock" bash -c '
         set -e
         git fetch origin
-        if [ -n "$(git status --porcelain)" ]; then
-            exit 3
+        if ! git merge --ff-only origin/main; then
+            if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+                exit 3
+            fi
+            exit 1
         fi
-        git merge --ff-only origin/main
     ' >> "$LOG" 2>&1; then
         NEW_SHA=$(git rev-parse HEAD 2>/dev/null || echo "none")
         log "OK   $repo — $(git log --oneline -1)"
