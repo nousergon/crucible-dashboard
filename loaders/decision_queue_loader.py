@@ -110,7 +110,7 @@ _CODE_REPOS_FALLBACK = [
     "nousergon/claude-code-config", "nousergon/nous-ergon-ops",
     "nousergon/nousergon-console", "nousergon/oiax",
     "nousergon/nousergon-groomer", "nousergon/crucible",
-    "nousergon/crucible-executor", "nousergon/crucible-trader",
+    "nousergon/crucible-trader", "nousergon/crucible-executor",
     "nousergon/crucible-predictor", "nousergon/crucible-research",
     "nousergon/crucible-backtester", "nousergon/crucible-dashboard",
     "nousergon/crucible-evaluator",
