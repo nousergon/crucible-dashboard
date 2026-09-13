@@ -149,3 +149,26 @@ class TestNeverResetADirtyTree:
     def test_a_genuine_diverged_history_is_a_distinct_message_from_dirty(self):
         loop = _pull_loop_block()
         assert "fetch/fast-forward failed" in loop
+
+
+class TestPipGateIsRosterDeclared:
+    """The requirements-changed pip gate runs ONLY for checkouts the roster
+    marks `venv: true` (alpha-engine-config-I10260).
+
+    Measured 2026-09-13 15:46 UTC: the gate fired for alpha-engine-backtester
+    — zero systemd units on the dashboard box, venv Python 3.11 — which failed
+    pip on a scipy floor needing 3.12 and paged the operator chat for a venv
+    nothing runs. Which venvs the box executes is roster knowledge, never a
+    filesystem inference from "requirements.txt + .venv exist".
+    """
+
+    def test_venv_repos_are_read_from_the_roster_field(self):
+        src = _src()
+        assert "select(.managed != false and .venv == true)" in src
+
+    def test_pip_gate_requires_the_roster_venv_flag(self):
+        loop = _pull_loop_block()
+        gate = loop.index('[ -f "requirements.txt" ] && [ -x ".venv/bin/python" ]')
+        flag = loop.index('_venv_managed=1')
+        assert flag < gate, "the pip gate must consult the roster's venv flag before requirements.txt/.venv existence"
+        assert '[ "$_venv_managed" -eq 1 ] &&' in loop
