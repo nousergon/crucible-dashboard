@@ -151,6 +151,18 @@ else
         [ -n "$_roster_name" ] && REPOS+=("$CHECKOUT_ROOT/$_roster_name")
     done < <(jq -r '.checkouts[] | select(.managed != false) | .name' "$CHECKOUT_ROSTER" 2>>"$LOG")
     unset _roster_name
+    # Checkouts the box EXECUTES from a .venv this puller keeps in sync —
+    # the ONLY ones the requirements-changed pip gate below runs for. The
+    # gate used to fire for any checkout with requirements.txt + .venv, and
+    # on 2026-09-13 15:46 UTC alpha-engine-backtester (zero units on this
+    # box, venv Python 3.11) failed pip on a scipy floor needing 3.12 and
+    # paged the operator chat for a venv nothing runs (alpha-engine-config-
+    # I10260). `venv: true` in the roster is the declaration; absent = no.
+    VENV_REPOS=" "
+    while IFS= read -r _roster_name; do
+        [ -n "$_roster_name" ] && VENV_REPOS="${VENV_REPOS}${CHECKOUT_ROOT}/${_roster_name} "
+    done < <(jq -r '.checkouts[] | select(.managed != false and .venv == true) | .name' "$CHECKOUT_ROSTER" 2>>"$LOG")
+    unset _roster_name
     if [ ${#REPOS[@]} -eq 0 ]; then
         log "FAIL checkout roster $CHECKOUT_ROSTER parsed to zero managed checkouts"
         PULL_FAILURES=$((PULL_FAILURES + 1))
@@ -223,7 +235,8 @@ for repo in "${REPOS[@]}"; do
         # (arcticdb/voyageai/edgartools, ~1.5 GB) into that slim venv and risk
         # filling the shared t3.small's disk. The daily-news wrapper owns its
         # slim deps; boot-pull still git-syncs the repo (reset --hard above).
-        if [ "$repo" != "/home/ec2-user/alpha-engine-data" ] && \
+        case "${VENV_REPOS:- }" in *" $repo "*) _venv_managed=1 ;; *) _venv_managed=0 ;; esac
+        if [ "$_venv_managed" -eq 1 ] && [ "$repo" != "/home/ec2-user/alpha-engine-data" ] && \
            [ "$PREV_SHA" != "$NEW_SHA" ] && [ -f "requirements.txt" ] && [ -x ".venv/bin/python" ]; then
             if git diff "$PREV_SHA" "$NEW_SHA" -- requirements.txt | grep -q "^[+-]"; then
                 log "GATE $repo — requirements.txt changed, running pip install"
