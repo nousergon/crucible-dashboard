@@ -1130,8 +1130,8 @@ timers:
       tests/test_every_installed_timer_has_a_deadman_row.py for the guard that
       now blocks that state in CI.
   - unit: boot-pull.timer
-    max_staleness: 26h
-    note: daily 12:00 UTC + up to 5min randomized delay
+    max_staleness: 3h
+    note: hourly (OnUnitActiveSec=1h) + up to 30s randomized delay, since alpha-engine-config-I10260 — was daily 12:00 UTC
   - unit: router-spend-export.timer
     max_staleness: 26h
     note: >-

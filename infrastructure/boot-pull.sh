@@ -1,19 +1,21 @@
 #!/bin/bash
-# boot-pull.sh — Pull latest code for all Alpha Engine repos on the micro EC2.
+# boot-pull.sh — Pull latest code for every roster-managed checkout on the
+# micro EC2 (alpha-engine-config-I10260: checkout-roster.json, not a
+# hardcoded array — see the REPOS section below).
 #
-# Runs as a systemd oneshot service, triggered by a daily timer at 12:00 UTC
-# (5am PDT / 4am PST). Also runnable manually:
+# Runs as a systemd oneshot service, triggered by an HOURLY timer
+# (OnUnitActiveSec=1h; was daily 12:00 UTC until alpha-engine-config-I10260 —
+# a daily puller against an hourly freshness grader is the drift this fix
+# closes). Also runnable manually:
 #
 #   sudo systemctl start boot-pull
 #
 # Why a timer instead of on-boot?
-# The micro is always-on (24/7). The timer bounds drift to ≤24h regardless
-# of whether the instance reboots. 5am PT / 12:00 UTC was chosen because it
-# runs before Brian wakes up so any failure is visible in the morning and
-# can be addressed before the weekday Saturday pipeline fires at 5 PM PT.
+# The micro is always-on (24/7). The timer bounds drift to the cadence below
+# regardless of whether the instance reboots.
 #
 # Mirrors the trading instance's boot-pull.sh (alpha-engine/infrastructure/)
-# with a different REPOS array.
+# with a different roster.
 
 set -uo pipefail
 
@@ -115,20 +117,48 @@ else
     log "OK   $CRED_HELPER --check nous-ergon-ops"
 fi
 
-# Repos the micro needs at runtime. Order matters only for dependency
-# (alpha-engine-config first so other repos can reference it on pull).
-# robodashboard (the prior 3rd Streamlit service on this box) was decommissioned
-# 2026-07-01 in favor of Metron — see nousergon/metron-ops#119. Metron has its own
-# merge-deploy GHA but is NOT yet in this safety-net loop (its pip-editable +
-# npm-build install shape doesn't fit this REPOS-array pattern) — tracked as a
-# follow-up, not silently dropped.
-REPOS=(
-    /home/ec2-user/alpha-engine-config
-    /home/ec2-user/alpha-engine-data
-    /home/ec2-user/alpha-engine-research
-    /home/ec2-user/alpha-engine-dashboard
-    /home/ec2-user/flow-doctor
-)
+# ── The declared checkout roster (alpha-engine-config-I10260) ──────────────
+# Repos the micro needs at runtime, DERIVED from checkout-roster.json rather
+# than hand-listed here — this array used to be a hardcoded 5 while
+# check_ops_checkout_freshness.py (nous-ergon-ops) graded every one of the 19
+# checkouts actually on the box, so 14 drifted on a rolling basis with only
+# that check's own `attention` status ever saying so. Both scripts now read
+# the SAME file: this one directly off disk (a different repo — no Python
+# import path), the checker via its own lib/checkout_roster.py. Order matters
+# only for dependency (alpha-engine-config first so other repos can reference
+# it on pull), which is why REPOS is built by iterating the roster's own
+# array order, not sorted.
+#
+# `metron` deploys its build artifacts through its own merge-deploy GHA
+# (nousergon/metron-ops#119) — this loop only fast-forwards its git tree so
+# check_ops_checkout_freshness.py's `stale` verdict for it clears; it does not
+# attempt metron's pip-editable/npm-build install steps, which are out of
+# scope for this plain-git-sync loop.
+CHECKOUT_ROOT="/home/ec2-user"
+CHECKOUT_ROSTER="${CHECKOUT_ROSTER:-$CHECKOUT_ROOT/nous-ergon-ops/alpha-engine-dashboard/live/infrastructure/checkout-roster.json}"
+
+REPOS=()
+if [ ! -r "$CHECKOUT_ROSTER" ]; then
+    log "FAIL checkout roster $CHECKOUT_ROSTER unreadable — boot-pull cannot derive a managed-checkout list this run"
+    PULL_FAILURES=$((PULL_FAILURES + 1))
+    FAILED_REPOS+=("roster:unreadable")
+elif ! command -v jq >/dev/null 2>&1; then
+    log "FAIL jq not on PATH — cannot parse the checkout roster"
+    PULL_FAILURES=$((PULL_FAILURES + 1))
+    FAILED_REPOS+=("roster:no-jq")
+else
+    while IFS= read -r _roster_name; do
+        [ -n "$_roster_name" ] && REPOS+=("$CHECKOUT_ROOT/$_roster_name")
+    done < <(jq -r '.checkouts[] | select(.managed != false) | .name' "$CHECKOUT_ROSTER" 2>>"$LOG")
+    unset _roster_name
+    if [ ${#REPOS[@]} -eq 0 ]; then
+        log "FAIL checkout roster $CHECKOUT_ROSTER parsed to zero managed checkouts"
+        PULL_FAILURES=$((PULL_FAILURES + 1))
+        FAILED_REPOS+=("roster:empty")
+    else
+        log "OK   checkout roster loaded — ${#REPOS[@]} managed checkout(s)"
+    fi
+fi
 
 for repo in "${REPOS[@]}"; do
     if [ ! -d "$repo/.git" ]; then
@@ -144,9 +174,25 @@ for repo in "${REPOS[@]}"; do
     # unsynchronised writers against $repo (deploy.yml,
     # substrate_health_check_daily.sh also touch alpha-engine-dashboard),
     # and a fetch is itself a git WRITE — it mutates the remote-tracking
-    # ref — so it must take the lock too, not just the reset.
+    # ref — so it must take the lock too, not just the merge.
+    #
+    # `git reset --hard` was replaced with fetch + a DIRTY-TREE CHECK +
+    # `merge --ff-only` (alpha-engine-config-I10260): reset --hard discards
+    # whatever a dirty working tree holds with no record of what was lost.
+    # A dirty tree is reported (exit 3, distinguished below) and left
+    # untouched; a clean tree that cannot fast-forward (local commits that
+    # diverged from origin) fails the same way a real network error would —
+    # both need a human, and boot-pull must never guess which of the two by
+    # discarding history.
     _repo_lock="$(git_sync_lock_path "$repo")"
-    if flock -w "$GIT_SYNC_LOCK_WAIT" "$_repo_lock" bash -c 'git fetch origin && git reset --hard origin/main' >> "$LOG" 2>&1; then
+    if flock -w "$GIT_SYNC_LOCK_WAIT" "$_repo_lock" bash -c '
+        set -e
+        git fetch origin
+        if [ -n "$(git status --porcelain)" ]; then
+            exit 3
+        fi
+        git merge --ff-only origin/main
+    ' >> "$LOG" 2>&1; then
         NEW_SHA=$(git rev-parse HEAD 2>/dev/null || echo "none")
         log "OK   $repo — $(git log --oneline -1)"
         if [ "$PREV_SHA" != "$NEW_SHA" ]; then
@@ -229,9 +275,15 @@ for repo in "${REPOS[@]}"; do
         # removed this pattern for the same reason; flow-doctor arrives
         # transitively via alpha-engine-lib[flow_doctor].
     else
-        log "FAIL $repo — fetch/reset failed"
+        _pull_rc=$?
+        if [ "$_pull_rc" -eq 3 ]; then
+            log "WARN $repo — uncommitted changes in the working tree, NOT reset (alpha-engine-config-I10260: boot-pull never discards local work) — resolve by hand, then this repo converges on the next hourly run"
+            FAILED_REPOS+=("$repo (dirty-tree)")
+        else
+            log "FAIL $repo — fetch/fast-forward failed (diverged history, or network/auth error)"
+            FAILED_REPOS+=("$repo (git)")
+        fi
         PULL_FAILURES=$((PULL_FAILURES + 1))
-        FAILED_REPOS+=("$repo (git)")
     fi
 done
 

@@ -1,23 +1,31 @@
 [Unit]
-Description=Daily code-pull at 12:00 UTC (5am PDT / 4am PST)
+Description=Hourly code-pull for every roster-managed checkout (alpha-engine-config-I10260)
 # NO Requires=<unit>.service here (alpha-engine-config-I9000) — Requires= in a
 # timer's [Unit] is a START dependency, so `enable --now <timer>` in an
 # installer also starts the service. Binding is by `Unit=`/same basename.
 
+# Dead-man threshold, matching ops-checkout-freshness.timer's convention (3x
+# the cadence). `X-` so systemd ignores it; read by budget.yaml/box_health.sh.
+X-DeadManStaleness=3h
+
 [Timer]
-# 12:00 UTC every day. This is 5am PT during PDT (Mar-Nov) and 4am PT
-# during PST (Nov-Mar). Chosen to run before Brian wakes up so any pull
-# failure is visible in the morning and can be addressed before the
-# Saturday pipeline fires at 17:00 PT (00:00 UTC Sat).
-OnCalendar=*-*-* 12:00:00
-# If the instance was stopped at 12:00 UTC (rare for the always-on
-# micro, but possible during maintenance), run the next time systemd
-# comes up instead of skipping the slot entirely.
+# HOURLY, not daily (alpha-engine-config-I10260). A daily cadence measured 10
+# of 19 checkouts drifting on a rolling basis with only ops-checkout-freshness
+# (which runs hourly) ever noticing — the puller converging slower than the
+# grader that watches it is exactly the defect. OnBootSec gives a rebooted box
+# a first pull without waiting an hour.
+OnBootSec=5min
+OnUnitActiveSec=1h
+# If the instance was stopped when a tick was due (rare for the always-on
+# micro, but possible during maintenance), run once systemd comes up instead
+# of skipping the slot entirely.
 Persistent=true
-# Random 5-minute jitter so multiple instances in the same account
-# don't hammer GitHub at exactly the same second (only relevant if
-# more instances are added later — harmless for now).
-RandomizedDelaySec=300
+# Random jitter so multiple instances in the same account don't hammer GitHub
+# at exactly the same second (only relevant if more instances are added later
+# — harmless for now). Shortened from the daily timer's 300s: a 5-minute
+# jitter on an hourly cadence would itself be a meaningful fraction of the
+# interval.
+RandomizedDelaySec=30
 Unit=boot-pull.service
 
 [Install]
