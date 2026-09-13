@@ -983,6 +983,44 @@ timer_failure_driver() {
     echo unattributed
 }
 
+# unmonitored_enabled_services UNIT_DIR COVERED — the coverage self-check's
+# candidate list: every enabled, non-oneshot service under UNIT_DIR that is
+# neither monitored nor excluded (COVERED is a space-separated list of both),
+# as a space-terminated list. Pure over the filesystem and `systemctl` on
+# PATH, so a test can point it at a fixture directory and a fake systemctl.
+#
+# TEMPLATE UNITS (`name@.service`) ARE SKIPPED, AND THEIR INSTANCES ARE
+# ENUMERATED INSTEAD (alpha-engine-config-I10629). A template cannot run;
+# `systemctl is-enabled` answers `indirect` with exit 0 for one, and
+# `systemctl show <template> -p Type` answers EMPTY — not `oneshot` — so the
+# plain loop named `ops-config-pull@.service` as an unmonitored enabled
+# service on every tick from 2026-09-12. The instances are what execute, so
+# an instantiated long-running template is still caught here: they are read
+# from `systemctl list-units`, which is where instances exist.
+unmonitored_enabled_services() {
+    local dir="$1" covered=" ${2:-} " u n inst unmonitored=""
+    for u in "$dir"/*.service; do
+        [ -e "$u" ] || continue
+        n=$(basename "$u")
+        case "$n" in
+            *@.service)
+                # Instances of this template, if any are loaded right now.
+                while read -r inst _; do
+                    [ -n "$inst" ] || continue
+                    case "$covered" in *" $inst "*) continue ;; esac
+                    [ "$(systemctl show "$inst" -p Type --value 2>/dev/null)" = "oneshot" ] && continue
+                    unmonitored="${unmonitored}${inst} "
+                done < <(systemctl list-units --all --plain --no-legend "${n%.service}*.service" 2>/dev/null)
+                continue ;;
+        esac
+        case "$covered" in *" $n "*) continue ;; esac
+        systemctl is-enabled --quiet "$n" 2>/dev/null || continue
+        [ "$(systemctl show "$n" -p Type --value 2>/dev/null)" = "oneshot" ] && continue
+        unmonitored="${unmonitored}${n} "
+    done
+    printf '%s' "$unmonitored"
+}
+
 # unit_is_covered UNIT MONITORED_SERVICES COVERED_TIMER_SERVICES
 #
 # Whether any OTHER check in this script can see this unit at all. Used only by
@@ -2605,16 +2643,8 @@ snapshot_problems() {
     # what, and cannot distinguish a new app service from OS plumbing — a
     # count-based version of this check false-alarmed on dbus aliases and the
     # CloudWatch agent when first deployed 2026-07-27.
-    local u n
-    local unmonitored=""   # see the note above: `local u n unmonitored` leaves it UNSET
-    for u in /etc/systemd/system/*.service; do
-        [ -e "$u" ] || continue
-        n=$(basename "$u")
-        case " ${SERVICES[*]} ${MONITOR_EXCLUDE[*]:-} " in *" $n "*) continue ;; esac
-        systemctl is-enabled --quiet "$n" 2>/dev/null || continue
-        [ "$(systemctl show "$n" -p Type --value 2>/dev/null)" = "oneshot" ] && continue
-        unmonitored="${unmonitored}${n} "
-    done
+    local unmonitored
+    unmonitored=$(unmonitored_enabled_services /etc/systemd/system "${SERVICES[*]} ${MONITOR_EXCLUDE[*]:-}")
     if [ -n "${unmonitored:-}" ]; then
         echo "watchdog: unmonitored enabled service(s): ${unmonitored%% } — add to budget.yaml or manifest_exclude"
     fi
