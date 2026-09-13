@@ -1036,6 +1036,55 @@ timer_failure_line_driver() {
     esac
 }
 
+# timer_failure_line_result LINE / timer_failure_line_started LINE — the same
+# read-it-back-off-the-line treatment timer_failure_line_driver already gets
+# (alpha-engine-config-I10237), extended to Result and the failing run's own
+# timestamp (alpha-engine-config-I10613).
+#
+# Before this, the publish loop derived Result and InactiveExitTimestamp from
+# a FRESH `systemctl show` at publish time, seconds to minutes after the line
+# was produced. Measured 2026-09-13: ops-checkout-freshness.timer failed at
+# 08:50:39 (git-remote-unreadable), box-health's 09:53 tick sampled while the
+# unit's 09:50:51 run was already in flight and classify_timer_staleness
+# re-emitted the PRIOR line verbatim (the I8359 carry) describing the OLD
+# failing run — but by the time the publish loop's `systemctl show` ran
+# afterwards, that in-flight run had SUCCEEDED: ActiveState read inactive,
+# Result read success, InactiveExitTimestamp read the run that just passed.
+# The line and the live read now describe two different runs, and the
+# published episode key was built entirely from the wrong one:
+# `...-ops-checkout-freshness.timer-success-git-remote-unreadable-...` — a
+# "timer job failing" page keyed on Result=success.
+#
+# Parsing the line's own `result=` and `failing run started ` text instead
+# means the published key always describes the SAME run the line's prose
+# describes, exactly as timer_failure_line_driver already guarantees for the
+# driver segment. Pure string functions, testable without systemd.
+timer_failure_line_result() {
+    local line="$1" rest
+    case "$line" in
+        *"last run result="*)
+            rest="${line#*last run result=}"
+            rest="${rest%%,*}"
+            rest="${rest%%)*}"
+            printf '%s' "$rest"
+            ;;
+        *) printf '' ;;
+    esac
+}
+
+timer_failure_line_started() {
+    local line="$1" rest
+    case "$line" in
+        *", failing run started "*)
+            rest="${line#*, failing run started }"
+            rest="${rest%%, next attempt*}"
+            rest="${rest%%)*}"
+            printf '%s' "$rest"
+            ;;
+        *) printf '' ;;
+    esac
+}
+
 # timer_failure_dedup_key UNIT RESULT DRIVER INACTIVE_EXIT_RAW
 #
 # Identity for ONE "timer job failing" finding, keyed on (unit, Result,
@@ -1127,6 +1176,33 @@ timer_failure_dedup_key() {
 # PRIOR_KEYS is passed in rather than read here so this stays a pure function of
 # its arguments, testable in test_box_health_timer_staleness.sh without systemd
 # and without a state file.
+#
+# EVIDENCE LOSS IS NOT A NEW CAUSE (alpha-engine-config-I10612/I10613). The
+# journal is not durable — box_hygiene.sh's weekly vacuum (I10612) or plain
+# rotation can remove the failing run's own journal entries between two ticks
+# that read the SAME still-failing run. When that happens
+# `timer_failure_driver` degrades from whatever it had named to
+# `unattributed-no-journal-record` even though nothing about the failure
+# changed. Measured 2026-09-13: router-degraded-mode-drill.timer, failing
+# since 2026-09-08 10:30:29 under driver=upstream-unreachable, had its journal
+# vacuumed at 09:20; box_health.sh's very next tick (09:22:07) re-read the same
+# InactiveExitTimestamp, got driver=unattributed-no-journal-record, and — under
+# the I10237 exact (unit, Result, driver) prefix — opened a brand-new episode
+# for a condition that had not changed. Brian received a CRITICAL and a
+# RESOLVED for nothing.
+#
+# THE FIX, and why it does not undo I10237. An `unattributed*` driver is
+# treated as missing evidence, not a differing cause, ONLY when it is reporting
+# the SAME failing run a prior key already covers — checked by comparing the
+# run's own timestamp segment (what timer_failure_dedup_key encodes as the
+# trailing epoch), not merely unit+Result. I10237's own regression case
+# (llm-capability-probe.service: import-or-dependency-broken on 2026-08-31,
+# unattributed-no-journal-record on 2026-09-07) has two DIFFERENT
+# InactiveExitTimestamps — a new run, evidence simply never existed for it —
+# so the timestamp check fails there and it still opens its own episode,
+# exactly as I10237 requires. Only a driver change between two REAL
+# (non-`unattributed*`) values ever means a genuinely different fault; that
+# path is unchanged.
 timer_failure_episode_key() {
     local unit="$1" result="$2" driver="$3" ts_raw="$4" prior_keys="$5" prefix carried
     # The run key's leading segments, up to but not including the timestamp.
@@ -1135,6 +1211,24 @@ timer_failure_episode_key() {
     # what timer_failure_dedup_key produces.
     prefix="boxhealth-critical-timerfail-$(printf '%s-%s-%s-' "$unit" "${result:-unknown}" "${driver:-unclassified}" | tr ' /:' '___')"
     carried=$(printf '%s\n' "$prior_keys" | awk -v p="$prefix" 'index($0, p) == 1 { print; exit }')
+
+    if [ -z "$carried" ]; then
+        case "$driver" in
+            unattributed|unattributed-no-journal-record)
+                # Loosen the prefix to (unit, Result) — any driver — but require
+                # the SAME run identity (the dedup key's own trailing timestamp
+                # segment) before carrying: only that combination is evidence
+                # loss for a run already open, never a genuinely new failure.
+                local this_run_key this_ts_suffix loose_prefix
+                this_run_key=$(timer_failure_dedup_key "$unit" "$result" "$driver" "$ts_raw")
+                this_ts_suffix="${this_run_key##*-}"
+                loose_prefix="boxhealth-critical-timerfail-$(printf '%s-%s-' "$unit" "${result:-unknown}" | tr ' /:' '___')"
+                carried=$(printf '%s\n' "$prior_keys" | awk -v p="$loose_prefix" -v suf="-${this_ts_suffix}" \
+                    'index($0, p) == 1 && substr($0, length($0) - length(suf) + 1) == suf { print; exit }')
+                ;;
+        esac
+    fi
+
     if [ -n "$carried" ]; then
         printf '%s' "$carried"
     else
@@ -3356,12 +3450,6 @@ while IFS= read -r _tf_line; do
     case "$_tf_active" in
         activating|active|reloading|deactivating)
             _tf_key=$(alerted_timer_key "$_tf_unit") ;;
-        *)
-            if [ -n "$_tf_svc" ]; then
-                _tf_result=$(systemctl show "$_tf_svc" -p Result --value 2>/dev/null)
-                _tf_ts=$(systemctl show "$_tf_svc" -p InactiveExitTimestamp --value 2>/dev/null)
-            fi
-            ;;
     esac
     # The EPISODE key, not the run key — see timer_failure_episode_key for the
     # five-CRITICAL/five-RESOLVED hour-by-hour flap that made this necessary.
@@ -3370,13 +3458,30 @@ while IFS= read -r _tf_line; do
     # alerted_state_write on the way out), so every unit in this loop sees the
     # same prior set.
     #
-    # DRIVER comes off the line itself (timer_failure_line_driver), not a
-    # fresh systemctl/journalctl read — the same "run in flight at publish
-    # time" hazard the comment above governs for Result and
-    # InactiveExitTimestamp applies identically to a re-derived driver, and
-    # the line's own text is what was actually published (alpha-engine-config-
-    # I10237).
+    # DRIVER, Result and the failing run's timestamp all come off the line
+    # itself (timer_failure_line_driver / _line_result / _line_started), never
+    # a fresh systemctl/journalctl read — the run this line describes can have
+    # finished or advanced by the time this loop reaches it, seconds to
+    # minutes later, and a live read then describes a DIFFERENT run than the
+    # line's own prose (alpha-engine-config-I10237, I10613).
     _tf_driver=$(timer_failure_line_driver "$_tf_line")
+    if [ -z "$_tf_key" ]; then
+        _tf_result=$(timer_failure_line_result "$_tf_line")
+        _tf_ts=$(timer_failure_line_started "$_tf_line")
+    fi
+    # A line whose parsed Result is `success`, or that failed to parse at all,
+    # describes a run that is no longer failing (or was never one this
+    # function generated) — never publish it. Measured 2026-09-13: exactly
+    # this shape produced a "timer job failing" CRITICAL keyed on
+    # Result=success for a 3-minute credential blip that had already cleared.
+    if [ -z "$_tf_key" ]; then
+        case "$_tf_result" in
+            ""|success)
+                echo "box_health: dropping stale timer-failure line for ${_tf_unit:-unknown} — parsed result='${_tf_result:-<unparseable>}', not the failure it once was: $_tf_line" >&2
+                continue
+                ;;
+        esac
+    fi
     [ -n "$_tf_key" ] || _tf_key=$(timer_failure_episode_key \
         "$_tf_unit" "$_tf_result" "$_tf_driver" "$_tf_ts" "$(alerted_state_prior | cut -f1)")
     publish_problems critical 43200 "health alert" "$_tf_line" "$_tf_key"

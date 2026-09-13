@@ -193,6 +193,13 @@ LIFECYCLE_FUNCTIONS = (
     # (alpha-engine-config-I10237) — the loop below depends on this being
     # sourced, or every episode key silently falls back to "unclassified".
     "timer_failure_line_driver",
+    # Result and the failing run's own timestamp are ALSO read back off the
+    # published line, not re-derived from a live systemctl read
+    # (alpha-engine-config-I10613) — omitting these leaves both undefined
+    # under the harness, so the publish loop below would error out silently
+    # (empty KEY, no page) rather than exercising the real fix.
+    "timer_failure_line_result",
+    "timer_failure_line_started",
     "timer_failure_dedup_key",
     "alerted_timer_key",
     # The episode wrapper, not just the run key: without it the harness would
