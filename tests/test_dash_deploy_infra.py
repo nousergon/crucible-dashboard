@@ -407,6 +407,14 @@ class TestInfraShellTests:
         # standing, which is the worse failure of the two.
         self._run("test_box_health_alert_lifecycle.sh")
 
+    def test_box_hygiene_vacuum_args(self):
+        # Guards journald_effective_value() in box_hygiene.sh
+        # (alpha-engine-config-I10612): the weekly vacuum used to be a
+        # hardcoded --vacuum-size=100M, which became the only thing cutting
+        # the journal down once a real retention floor was installed
+        # elsewhere — it threw away 626MB of history on 2026-09-13.
+        self._run("test_box_hygiene_vacuum_args.sh")
+
     def test_deploy_auto_revert(self):
         # T1-3: health checks existed but nothing rolled the box back, so a bad
         # merge left it broken until a human noticed (config-I5250 gap 3).
