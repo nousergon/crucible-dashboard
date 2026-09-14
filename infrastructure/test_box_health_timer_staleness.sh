@@ -42,11 +42,12 @@ eval "$(awk '/^timer_failure_line_driver\(\) \{/,/^\}/' "$TARGET_SCRIPT")"
 eval "$(awk '/^timer_failure_line_result\(\) \{/,/^\}/' "$TARGET_SCRIPT")"
 eval "$(awk '/^timer_failure_line_started\(\) \{/,/^\}/' "$TARGET_SCRIPT")"
 eval "$(awk '/^timer_failure_dedup_key\(\) \{/,/^\}/' "$TARGET_SCRIPT")"
+eval "$(awk '/^timer_failure_pinned_driver\(\) \{/,/^\}/' "$TARGET_SCRIPT")"
 eval "$(awk '/^timer_failure_episode_key\(\) \{/,/^\}/' "$TARGET_SCRIPT")"
 
 for fn in human_age classify_timer_staleness timer_failure_line_driver \
     timer_failure_line_result timer_failure_line_started \
-    timer_failure_dedup_key timer_failure_episode_key; do
+    timer_failure_dedup_key timer_failure_pinned_driver timer_failure_episode_key; do
     if ! declare -F "$fn" >/dev/null; then
         echo "FAIL - $fn() not found in box_health.sh (extraction failed)"
         exit 1
@@ -465,6 +466,79 @@ if [ "$new_run_no_carry" != "$prior_real" ]; then
     echo "ok   - unattributed-no-journal-record for a DIFFERENT run (different timestamp) opens its own episode"
 else
     echo "FAIL - I10237 REGRESSION: a genuinely new, evidence-free run was folded into the prior episode"
+    FAILURES=$((FAILURES + 1))
+fi
+
+echo "== timer_failure_pinned_driver: pin at first classification, reuse per run, alpha-engine-config-I10723 =="
+#
+# THE GENERAL DEFECT the episode-key carry above only patches downstream: the
+# PUBLISHED LABEL itself is re-derived from live journal evidence on every
+# poll, so a reader watching one standing failure sees its cause CHANGE mid-
+# episode even on a tick that never re-pages. Pinning at the source removes
+# the flap entirely rather than only suppressing the duplicate page.
+PIN_UNIT="router-degraded-mode-drill.timer"
+PIN_TS="Mon 2026-09-08 10:30:29 UTC"
+pin_key=$(timer_failure_dedup_key "$PIN_UNIT" "exit-code" "upstream-unreachable" "$PIN_TS")
+pin_row=$(printf '%s\tcritical\ttimer job failing: %s (last run result=exit-code, driver=upstream-unreachable)' \
+    "$pin_key" "$PIN_UNIT")
+
+pinned=$(timer_failure_pinned_driver "$PIN_UNIT" "exit-code" "$PIN_TS" "$pin_row")
+if [ "$pinned" = "upstream-unreachable" ]; then
+    echo "ok   - a later poll of the SAME run reuses the first-classified driver"
+else
+    echo "FAIL - got [$pinned], expected [upstream-unreachable]"
+    FAILURES=$((FAILURES + 1))
+fi
+
+# The journal for this exact run has since been vacuumed (I10612): a fresh
+# classification right now would say unattributed-no-journal-record. The pin
+# must win regardless -- the caller never even needs to ask.
+pin_ep_before=$(timer_failure_episode_key "$PIN_UNIT" "exit-code" "$pinned" "$PIN_TS" "")
+pin_ep_after=$(timer_failure_episode_key "$PIN_UNIT" "exit-code" "$pinned" "$PIN_TS" "$pin_ep_before")
+if [ "$pin_ep_after" = "$pin_ep_before" ]; then
+    echo "ok   - reusing the pinned driver never opens a new episode for the unchanged run"
+else
+    echo "FAIL - pinned reuse still opened a new episode: [$pin_ep_before] vs [$pin_ep_after]"
+    FAILURES=$((FAILURES + 1))
+fi
+
+# A genuinely NEW failing run (a different InactiveExitTimestamp -- the timer
+# fired again) must NOT inherit the pin: only a new run re-derives.
+new_run_ts="Tue 2026-09-15 10:30:29 UTC"
+pin_new_run=$(timer_failure_pinned_driver "$PIN_UNIT" "exit-code" "$new_run_ts" "$pin_row")
+if [ -z "$pin_new_run" ]; then
+    echo "ok   - a genuinely new run (different InactiveExitTimestamp) is not pinned -- re-derives"
+else
+    echo "FAIL - a new run inherited the old run's pinned driver: [$pin_new_run]"
+    FAILURES=$((FAILURES + 1))
+fi
+
+# A different unit, or a different Result, must not match either -- same
+# guard as timer_failure_episode_key's own prefix, restated here because this
+# is a separate lookup with its own loose-prefix matching.
+pin_other_unit=$(timer_failure_pinned_driver "box-hygiene.timer" "exit-code" "$PIN_TS" "$pin_row")
+if [ -z "$pin_other_unit" ]; then
+    echo "ok   - another unit's row is never mistaken for this unit's pin"
+else
+    echo "FAIL - cross-unit match: [$pin_other_unit]"
+    FAILURES=$((FAILURES + 1))
+fi
+
+pin_other_result=$(timer_failure_pinned_driver "$PIN_UNIT" "timeout" "$PIN_TS" "$pin_row")
+if [ -z "$pin_other_result" ]; then
+    echo "ok   - a different Result for the same unit/timestamp is never mistaken for this pin"
+else
+    echo "FAIL - cross-Result match: [$pin_other_result]"
+    FAILURES=$((FAILURES + 1))
+fi
+
+# No prior state at all (first poll of a brand-new episode) -- empty, so the
+# caller classifies fresh, exactly the pre-existing behaviour.
+pin_no_prior=$(timer_failure_pinned_driver "$PIN_UNIT" "exit-code" "$PIN_TS" "")
+if [ -z "$pin_no_prior" ]; then
+    echo "ok   - no prior state means no pin -- the first poll of an episode still classifies"
+else
+    echo "FAIL - a pin materialised with no prior rows at all: [$pin_no_prior]"
     FAILURES=$((FAILURES + 1))
 fi
 

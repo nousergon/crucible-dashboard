@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import shlex
 
-from tests.box_health_helpers import run_lifecycle
+from tests.box_health_helpers import function_source, run_lifecycle
 
 UNIT = "metron-deploy-drift.timer"
 DRIVER = "upstream-unreachable"
@@ -195,6 +195,130 @@ class TestDifferentDriverIsANewEpisodeEvenUnderTheSameResult:
             "Result, did not page -- I10237 is not fixed"
         )
         assert run.page_state(key_907) == "opened"
+
+
+class TestDriverIsPinnedPerEpisode:
+    """alpha-engine-config-I10723, through the SHIPPED publish path.
+
+    The measured sequence: router-degraded-mode-drill.timer failing since
+    2026-09-08 10:30:29 (epoch 1788863429) was labelled `upstream-unreachable`
+    on 09-08/09-09, then `unattributed-no-journal-record` on 09-13 after
+    box_hygiene.sh's vacuum removed the run's own journal (I10612) -- one
+    unchanged failure, relabelled. The episode-key carry
+    (TestOneEpisodeOnePage's cousin, alpha-engine-config-I10612/I10613)
+    already stops that from opening a second episode; it does not stop the
+    PUBLISHED LABEL itself from changing mid-episode, which is what this
+    class pins down. Here the label is simulated the way the real timer loop
+    builds it: `timer_failure_pinned_driver` is asked first, and only an empty
+    answer falls through to a fresh classification.
+    """
+
+    UNIT3 = "router-degraded-mode-drill.timer"
+    TS = "Mon 2026-09-08 10:30:29 UTC"
+    REAL_DRIVER = "upstream-unreachable"
+    DECAYED_DRIVER = "unattributed-no-journal-record"
+
+    def _finding(self, driver: str) -> str:
+        return f"timer job failing: {self.UNIT3} (last run result=exit-code, driver={driver})"
+
+    def test_a_decayed_evidence_poll_keeps_the_first_label_and_pages_once(self):
+        """Poll 1 classifies for real; poll 2's journal has since been
+        vacuumed and would classify DECAYED_DRIVER if asked -- but the loop
+        asks `timer_failure_pinned_driver` first, gets the pinned real driver
+        back, and never even builds the decayed label."""
+        tmp = __import__("pathlib").Path(_tmp())
+        real_finding = self._finding(self.REAL_DRIVER)
+        first = "\n".join([
+            f'_key=$(timer_failure_episode_key "{self.UNIT3}" "exit-code" '
+            f'"{self.REAL_DRIVER}" "{self.TS}" "$(alerted_state_prior | cut -f1)")',
+            f'publish_problems critical 43200 "health alert" {shlex.quote(real_finding)} "$_key"',
+            'ALERTED_NOW="${ALERTED_NOW%$\'\\n\'}"',
+            'publish_clears "$(alerted_state_prior)" "$ALERTED_NOW"',
+            'alerted_state_write "$ALERTED_NOW"',
+            'printf "KEY=%s\\n" "$_key"',
+        ])
+        run1 = run_lifecycle(first, tmp)
+        key1 = _key_of(run1)
+        assert key1 in run1.channel_pages, "the first (real) classification did not page"
+
+        # Poll 2: same run, journal now decayed. The loop asks the pin FIRST.
+        second = "\n".join([
+            f'_pinned=$(timer_failure_pinned_driver "{self.UNIT3}" "exit-code" '
+            f'"{self.TS}" "$(alerted_state_prior)")',
+            # What a fresh classification would say right now, proving the
+            # pin -- not luck -- is what keeps the label real.
+            f'_fresh="{self.DECAYED_DRIVER}"',
+            '_driver="${_pinned:-$_fresh}"',
+            f'_line="timer job failing: {self.UNIT3} (last run result=exit-code, driver=${{_driver}})"',
+            f'_key=$(timer_failure_episode_key "{self.UNIT3}" "exit-code" "$_driver" '
+            f'"{self.TS}" "$(alerted_state_prior | cut -f1)")',
+            'publish_problems critical 43200 "health alert" "$_line" "$_key"',
+            'ALERTED_NOW="${ALERTED_NOW%$\'\\n\'}"',
+            'publish_clears "$(alerted_state_prior)" "$ALERTED_NOW"',
+            'alerted_state_write "$ALERTED_NOW"',
+            'printf "PINNED=%s\\n" "$_pinned"',
+            'printf "LINE=%s\\n" "$_line"',
+            'printf "KEY=%s\\n" "$_key"',
+        ])
+        run2 = run_lifecycle(second, tmp)
+        pinned = next(ln[7:] for ln in run2.proc.stdout.splitlines() if ln.startswith("PINNED="))
+        line = next(ln[5:] for ln in run2.proc.stdout.splitlines() if ln.startswith("LINE="))
+        key2 = _key_of(run2)
+
+        assert pinned == self.REAL_DRIVER, (
+            f"the pin did not reuse the first classification: got {pinned!r}"
+        )
+        assert self.DECAYED_DRIVER not in line, (
+            f"the published label decayed even though the pin was available: {line!r}"
+        )
+        assert self.REAL_DRIVER in line, f"the pinned label is missing from the published line: {line!r}"
+        assert key2 == key1, "a decayed-evidence poll of the SAME run opened a new episode"
+        assert run2.page_state(key2) == "still_open", "a decayed-evidence poll re-opened the episode"
+        assert run2.channel_clears == {}, "a decayed-evidence poll of a standing failure emitted a RESOLVED"
+
+    def test_a_new_failing_epoch_is_not_pinned_and_reclassifies(self):
+        """A genuinely new run (a different InactiveExitTimestamp -- the
+        timer fired again) must NOT inherit the old run's pinned driver, and
+        must page as a new episode."""
+        tmp = __import__("pathlib").Path(_tmp())
+        new_ts = "Tue 2026-09-15 10:30:29 UTC"
+        # Seed prior state with the FIRST run's row directly (no need to run a
+        # full tick first -- this test is only about the second, new run).
+        first_key = self._first_key(tmp)
+        seeded_row = f"{first_key}\tcritical\t{self._finding(self.REAL_DRIVER)}"
+        body = "\n".join([
+            f'printf %s {shlex.quote(seeded_row)} > "$ALERTED_STATE"',
+            f'_pinned=$(timer_failure_pinned_driver "{self.UNIT3}" "exit-code" '
+            f'"{new_ts}" "$(alerted_state_prior)")',
+            f'_fresh="{self.DECAYED_DRIVER}"',
+            '_driver="${_pinned:-$_fresh}"',
+            f'_key=$(timer_failure_episode_key "{self.UNIT3}" "exit-code" "$_driver" '
+            f'"{new_ts}" "$(alerted_state_prior | cut -f1)")',
+            f'_line="timer job failing: {self.UNIT3} (last run result=exit-code, driver=${{_driver}})"',
+            'publish_problems critical 43200 "health alert" "$_line" "$_key"',
+            'ALERTED_NOW="${ALERTED_NOW%$\'\\n\'}"',
+            'publish_clears "$(alerted_state_prior)" "$ALERTED_NOW"',
+            'alerted_state_write "$ALERTED_NOW"',
+            'printf "PINNED=%s\\n" "$_pinned"',
+            'printf "KEY=%s\\n" "$_key"',
+        ])
+        run = run_lifecycle(body, tmp)
+        pinned = next((ln[7:] for ln in run.proc.stdout.splitlines() if ln.startswith("PINNED=")), "")
+        key = _key_of(run)
+        assert pinned == "", f"a genuinely new run inherited the old run's pin: {pinned!r}"
+        assert key != first_key, "the new run's episode was folded into the old run's episode"
+        assert key in run.channel_pages, "a genuinely new failing run did not page"
+        assert run.page_state(key) == "opened"
+
+    def _first_key(self, tmp) -> str:
+        import subprocess as _sp
+        script = "\n".join([
+            function_source("timer_failure_dedup_key"),
+            f'timer_failure_dedup_key "{self.UNIT3}" "exit-code" "{self.REAL_DRIVER}" "{self.TS}"',
+        ])
+        r = _sp.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
+        assert r.returncode == 0, r.stderr
+        return r.stdout.strip()
 
 
 class TestUnreadableStateFailsOpen:

@@ -1159,6 +1159,74 @@ timer_failure_dedup_key() {
         "$(printf '%s-%s-%s-%s' "$unit" "${result:-unknown}" "${driver:-unclassified}" "${ts_epoch:-$ts_raw}" | tr ' /:' '___')"
 }
 
+# timer_failure_pinned_driver UNIT RESULT TS_RAW PRIOR_ROWS
+#
+# The driver already PUBLISHED for THIS SAME failing run, if PRIOR_ROWS (the
+# alerted-state file's own rows, `key<TAB>severity<TAB>message`) already has
+# one -- so a later poll of an UNCHANGED run reuses it instead of asking
+# `timer_failure_driver` to re-classify from whatever journal evidence
+# happens to still exist right now (alpha-engine-config-I10723).
+#
+# WHY THIS SITS UPSTREAM OF timer_failure_episode_key's OWN evidence-loss
+# carry (alpha-engine-config-I10612/I10613). That fix stops a decayed
+# `unattributed*` reclassification from OPENING A NEW EPISODE -- it patches
+# the dedup IDENTITY, after the fact, and only in the one direction evidence
+# is known to decay (a real attribution collapsing to a null one). It does
+# not stop the PUBLISHED MESSAGE from showing the decayed label: the finding
+# line is built from a freshly re-derived driver before the episode key ever
+# sees it, so a reader of the channel history for one standing failure sees
+# its cause CHANGE mid-episode even on a tick that correctly never re-paged
+# (measured live: router-degraded-mode-drill.timer's 2026-09-08 10:30:29
+# failure read `driver=upstream-unreachable` on 09-08/09-09 and
+# `driver=unattributed-no-journal-record` on 09-13, one unchanged failure).
+# And that fix protects only the real-to-null direction; any OTHER evidence
+# source that can legitimately go stale between polls is still exposed to
+# the same relabeling.
+#
+# WHY PINNING UNCONDITIONALLY (not just real-to-null) IS SAFE. A run's own
+# identity is (unit, Result, InactiveExitTimestamp) -- the same three fields
+# timer_failure_dedup_key already keys on -- and that identity names ONE
+# execution whose journal can only ever SHRINK between polls (rotation,
+# vacuum), never grow or change content. So it cannot legitimately produce a
+# second, DIFFERENT real cause for the same run: once classified, it stays
+# classified. A genuinely different fault always carries a different
+# InactiveExitTimestamp -- the timer had to fire again to produce it -- which
+# is exactly the "different run, no carry, re-derive" case below and is what
+# keeps this pinning from undoing alpha-engine-config-I10237 (two DIFFERENT
+# runs of llm-capability-probe.service, two different timestamps, both still
+# re-derive their own driver).
+#
+# READ OFF THE PUBLISHED MESSAGE TEXT (field 3), not off the key: the key's
+# driver segment is not reliably splittable back out (driver labels contain
+# hyphens, e.g. import-or-dependency-broken), while the message text already
+# carries an unambiguous `driver=X` token via timer_failure_line_driver --
+# the same read-it-back-off-the-line treatment the publish loop already uses
+# for the identical reason (alpha-engine-config-I10237/I10613).
+#
+# Matched with the same loose-prefix-plus-timestamp-suffix technique
+# timer_failure_episode_key uses for its own carry, because it is answering
+# the identical question here: "does PRIOR_ROWS describe the SAME run this
+# poll is looking at" -- deliberately never keyed on driver, since the driver
+# is exactly the value being looked up. Empty (no match) means "no prior
+# classification of this run exists" -- the caller re-derives from
+# `timer_failure_driver` exactly as before, which covers both a genuinely new
+# run and the first poll of a brand-new episode.
+#
+# Pure function of its arguments (PRIOR_ROWS is passed in, not read here), so
+# it is testable without systemd or a state file -- see
+# test_box_health_timer_staleness.sh.
+timer_failure_pinned_driver() {
+    local unit="$1" result="$2" ts_raw="$3" prior_rows="$4"
+    local this_run_key this_ts_suffix loose_prefix line
+    this_run_key=$(timer_failure_dedup_key "$unit" "$result" "unclassified" "$ts_raw")
+    this_ts_suffix="${this_run_key##*-}"
+    loose_prefix="boxhealth-critical-timerfail-$(printf '%s-%s-' "$unit" "${result:-unknown}" | tr ' /:' '___')"
+    line=$(printf '%s\n' "$prior_rows" | awk -F'\t' -v p="$loose_prefix" -v suf="-${this_ts_suffix}" \
+        'index($1, p) == 1 && substr($1, length($1) - length(suf) + 1) == suf { print $3; exit }')
+    [ -n "$line" ] || return 0
+    timer_failure_line_driver "$line"
+}
+
 # timer_failure_episode_key UNIT RESULT DRIVER INACTIVE_EXIT_RAW PRIOR_KEYS
 #
 # The identity of a failure EPISODE — a maximal run of consecutive failures of
@@ -2786,28 +2854,39 @@ snapshot_problems() {
         # contract publish_verdict and publish_unalerted keep, and for the same
         # reason (principles.md section 7: a field that appears only on the bad
         # path is unobserved, not clean).
+        #
+        # PINNED per failing run, not re-derived every tick
+        # (alpha-engine-config-I10723) — see timer_failure_pinned_driver.
         exec_status=""; journal_tail=""; driver="none"
         if [ -n "$svc" ] && [ -n "$result" ] && [ "$result" != "success" ]; then
-            exec_status=$(systemctl show "$svc" -p ExecMainStatus --value 2>/dev/null)
-            # Scoped to the FAILING RUN, not to "the last 40 lines of this
-            # unit ever". Two reasons, and the second is load-bearing:
-            # correctness (an older, unrelated traceback must not attribute
-            # today's failure) and STABILITY — `inactive_exit_raw` does not
-            # move until the unit runs again, so the same window is read on
-            # every tick and the label cannot flap under a byte-exact
-            # confirm-on-retry intersection.
-            if command -v journalctl >/dev/null 2>&1; then
-                _jargs=(-u "$svc" -n 40 --no-pager -o cat)
-                [ -n "$inactive_exit_raw" ] && _jargs+=(--since "$inactive_exit_raw")
-                journal_tail=$(journalctl "${_jargs[@]}" 2>/dev/null)
-            else
-                # Distinct from "the unit left no journal record". One is a
-                # finding about the unit, the other about this box's tooling,
-                # and collapsing them would let a broken probe read as evidence.
-                journal_tail=""
-                echo "watchdog: journalctl unavailable — timer failure drivers cannot be attributed"
+            # PIN, don't re-derive, when this is a poll of an ALREADY-CLASSIFIED
+            # run (alpha-engine-config-I10723). timer_failure_pinned_driver
+            # answers empty for a genuinely new run (or the first poll of a new
+            # episode), in which case this falls through to the journal read
+            # exactly as before.
+            driver=$(timer_failure_pinned_driver "$t" "$result" "$inactive_exit_raw" "$(alerted_state_prior)")
+            if [ -z "$driver" ]; then
+                exec_status=$(systemctl show "$svc" -p ExecMainStatus --value 2>/dev/null)
+                # Scoped to the FAILING RUN, not to "the last 40 lines of this
+                # unit ever". Two reasons, and the second is load-bearing:
+                # correctness (an older, unrelated traceback must not attribute
+                # today's failure) and STABILITY — `inactive_exit_raw` does not
+                # move until the unit runs again, so the same window is read on
+                # every tick and the label cannot flap under a byte-exact
+                # confirm-on-retry intersection.
+                if command -v journalctl >/dev/null 2>&1; then
+                    _jargs=(-u "$svc" -n 40 --no-pager -o cat)
+                    [ -n "$inactive_exit_raw" ] && _jargs+=(--since "$inactive_exit_raw")
+                    journal_tail=$(journalctl "${_jargs[@]}" 2>/dev/null)
+                else
+                    # Distinct from "the unit left no journal record". One is a
+                    # finding about the unit, the other about this box's tooling,
+                    # and collapsing them would let a broken probe read as evidence.
+                    journal_tail=""
+                    echo "watchdog: journalctl unavailable — timer failure drivers cannot be attributed"
+                fi
+                driver=$(timer_failure_driver "$result" "$exec_status" "$journal_tail")
             fi
-            driver=$(timer_failure_driver "$result" "$exec_status" "$journal_tail")
         fi
         printf 'box_health: timer driver: unit=%s service=%s result=%s status=%s driver=%s\n' \
                "$t" "${svc:-none}" "${result:-unknown}" "${exec_status:-na}" "$driver" >&2
@@ -2867,15 +2946,21 @@ snapshot_problems() {
             [ -n "$fu" ] || continue
             [ "$(unit_is_covered "$fu" "${SERVICES[*]}" "$covered_timer_svcs")" = "no" ] || continue
             fu_result=$(systemctl show "$fu" -p Result --value 2>/dev/null)
-            fu_status=$(systemctl show "$fu" -p ExecMainStatus --value 2>/dev/null)
             fu_exit=$(systemctl show "$fu" -p InactiveExitTimestamp --value 2>/dev/null)
-            fu_journal=""
-            if command -v journalctl >/dev/null 2>&1; then
-                _jargs=(-u "$fu" -n 40 --no-pager -o cat)
-                [ -n "$fu_exit" ] && _jargs+=(--since "$fu_exit")
-                fu_journal=$(journalctl "${_jargs[@]}" 2>/dev/null)
+            # PIN, don't re-derive, for a poll of an already-classified run --
+            # same reasoning and same helper as the timer-job-failing path
+            # above (alpha-engine-config-I10723).
+            fu_status=""; fu_journal=""
+            fu_driver=$(timer_failure_pinned_driver "$fu" "${fu_result:-unknown}" "$fu_exit" "$(alerted_state_prior)")
+            if [ -z "$fu_driver" ]; then
+                fu_status=$(systemctl show "$fu" -p ExecMainStatus --value 2>/dev/null)
+                if command -v journalctl >/dev/null 2>&1; then
+                    _jargs=(-u "$fu" -n 40 --no-pager -o cat)
+                    [ -n "$fu_exit" ] && _jargs+=(--since "$fu_exit")
+                    fu_journal=$(journalctl "${_jargs[@]}" 2>/dev/null)
+                fi
+                fu_driver=$(timer_failure_driver "${fu_result:-unknown}" "$fu_status" "$fu_journal")
             fi
-            fu_driver=$(timer_failure_driver "${fu_result:-unknown}" "$fu_status" "$fu_journal")
             printf 'box_health: failed-unit backstop: unit=%s result=%s status=%s driver=%s\n' \
                    "$fu" "${fu_result:-unknown}" "${fu_status:-na}" "$fu_driver" >&2
             # Same shape as `timer job failing:` on purpose — driver first, then
