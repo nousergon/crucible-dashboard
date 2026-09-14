@@ -310,8 +310,12 @@ class TestLibVersionPin:
             "nousergon_lib import alias still works via the shim)"
         )
         assert "@main" not in text, "nousergon-lib must be pinned to a tag, not @main"
-        assert "@v0.124.116" in text, (
-            "nousergon-lib must be pinned to a released tag (I7301/I9329): "
-            "LibPinDriftCheck reads requirements.in and sha_pinned degrades "
-            "every weekly-SF run."
+        import re
+
+        pins = re.findall(r"nousergon-lib[^\n@]*@(\S+)", text)
+        assert pins and all(re.fullmatch(r"v\d+\.\d+\.\d+", p) for p in pins), (
+            "nousergon-lib must be pinned to a released vX.Y.Z tag (I7301/I9329): "
+            "LibPinDriftCheck reads requirements.in and sha_pinned degrades every "
+            f"weekly-SF run; found {pins!r}. Asserting the SHAPE rather than one "
+            "literal version keeps this guard from failing on every legitimate bump."
         )
