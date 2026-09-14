@@ -201,6 +201,11 @@ LIFECYCLE_FUNCTIONS = (
     "timer_failure_line_result",
     "timer_failure_line_started",
     "timer_failure_dedup_key",
+    # Pins a failing run's driver to its first classification instead of
+    # re-deriving it from possibly-decayed evidence on every poll
+    # (alpha-engine-config-I10723) — must be sourced before the harness
+    # simulates a tick that relies on it.
+    "timer_failure_pinned_driver",
     "alerted_timer_key",
     # The episode wrapper, not just the run key: without it the harness would
     # load the half that #787 replaced and prove nothing about what ships.
