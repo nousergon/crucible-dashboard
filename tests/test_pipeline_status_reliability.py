@@ -28,6 +28,11 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from nousergon_lib.pipeline_status.registry import (  # noqa: E402
+    stage_order_for,
+    undefined_spine_stages,
+)
+
 from loaders.pipeline_status_loader import (  # noqa: E402
     RELIABILITY_STAGE_ORDER,
     ReliabilityResult,
@@ -254,9 +259,67 @@ def test_every_declared_stage_exists_in_the_live_definition(sf_name: str, filena
             )
         pytest.skip(message)
     known = _all_state_names(json.loads(path.read_text())["States"])
-    declared = RELIABILITY_STAGE_ORDER[sf_name]
-    missing = sorted(s for s in declared if s not in known)
+    missing = _undefined_stages(sf_name, known)
     assert not missing, f"{sf_name}: stage order names states no definition has: {missing}"
+
+
+def _undefined_stages(sf_name: str, known: set[str]) -> list[str]:
+    """Declared stages the definition lacks, EXCLUDING stages nousergon-lib
+    marks ``PENDING_DEFINITION_STAGES``.
+
+    This test reads nousergon-data ``main``, and the stage order comes from the
+    PINNED library. A new stage is declared in the library before its state
+    lands, so without the pending marker a pin bump here and the state's PR in
+    nousergon-data each wait on the other's ``main`` — measured 2026-09-14,
+    crucible-dashboard-PR860 vs nousergon-data-PR1702 (alpha-engine-config-I10762).
+
+    A stage still marked pending after its state HAS landed is deliberately
+    NOT a failure here: nousergon-data (the definition owner) fails on that in
+    its own contract test. Failing on it from this side would re-create the
+    deadlock in the other direction.
+    """
+    assert tuple(RELIABILITY_STAGE_ORDER[sf_name]) == stage_order_for(sf_name), (
+        f"{sf_name}: RELIABILITY_STAGE_ORDER diverged from the library spine; "
+        f"undefined_spine_stages would grade a different list than the loader uses"
+    )
+    return sorted(undefined_spine_stages(sf_name, known))
+
+
+# ── Both merge orders (alpha-engine-config-I10762) ───────────────────────────
+# Mutation tests: patch the library registry to simulate the mirror PR's view.
+
+_EOD = "ne-postclose-trading-pipeline"
+_NEW = "LaunchSomeNewDailySpot"
+
+
+def _declare(monkeypatch, *, pending: bool) -> set[str]:
+    from nousergon_lib.pipeline_status import registry
+
+    base = set(registry.PIPELINE_STAGE_ORDER[_EOD]) | {"MarketHoursBlocked"}
+    order = dict(registry.PIPELINE_STAGE_ORDER)
+    order[_EOD] = (*order[_EOD], _NEW)
+    monkeypatch.setattr(registry, "PIPELINE_STAGE_ORDER", order)
+    marks = {k: dict(v) for k, v in registry.PENDING_DEFINITION_STAGES.items()}
+    if pending:
+        marks[_EOD][_NEW] = "alpha-engine-config-I10762 (test fixture)"
+    monkeypatch.setattr(registry, "PENDING_DEFINITION_STAGES", marks)
+    monkeypatch.setitem(RELIABILITY_STAGE_ORDER, _EOD, order[_EOD])
+    return base
+
+
+def test_pin_bump_before_the_state_lands_is_not_red_when_the_stage_is_pending(monkeypatch):
+    base = _declare(monkeypatch, pending=True)
+    assert _undefined_stages(_EOD, base) == []
+
+
+def test_pin_bump_before_the_state_lands_is_red_without_a_marker(monkeypatch):
+    base = _declare(monkeypatch, pending=False)
+    assert _undefined_stages(_EOD, base) == [_NEW]
+
+
+def test_state_landing_before_the_marker_clears_is_not_red_here(monkeypatch):
+    base = _declare(monkeypatch, pending=True)
+    assert _undefined_stages(_EOD, base | {_NEW}) == []
 
 
 def test_every_pipeline_has_a_stage_order():
