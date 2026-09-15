@@ -208,15 +208,29 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        # Existence is asked of the Cloudflare REST API for this ONE project, not inferred
+        # by grepping wrangler's human-readable table with stderr discarded. The grep form
+        # read "absent" whenever the listing failed, truncated or reformatted, then tried to
+        # create a project that already existed (code 8000002) and failed the deploy before
+        # any D1 migration or Pages upload ran (crucible-dashboard run 35023744395,
+        # 2026-09-15). 200 = exists; 404 = create; anything else = fail loud with the body.
         run: |
+          set -euo pipefail
           proj="${{ matrix.project }}"
-          if npx --yes wrangler@3.90.0 pages project list 2>/dev/null \
-              | grep -qE "(^|[[:space:]])${proj}([[:space:]]|$)"; then
-            echo "Cloudflare Pages project ${proj} already exists — nothing to do."
-          else
-            echo "Creating Cloudflare Pages project ${proj} (Direct Upload, prod branch main)."
-            npx --yes wrangler@3.90.0 pages project create "${proj}" --production-branch=main
-          fi
+          url="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/pages/projects/${proj}"
+          code=$(curl -sS -o /tmp/pages_project.json -w '%{http_code}' \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" "$url")
+          case "$code" in
+            200)
+              echo "Cloudflare Pages project ${proj} already exists — nothing to do." ;;
+            404)
+              echo "Creating Cloudflare Pages project ${proj} (Direct Upload, prod branch main)."
+              npx --yes wrangler@3.90.0 pages project create "${proj}" --production-branch=main ;;
+            *)
+              echo "::error::Cloudflare API returned HTTP ${code} checking Pages project ${proj}"
+              head -c 600 /tmp/pages_project.json || true
+              exit 1 ;;
+          esac
 
       # D1 schema migrations — metron only (the only site with a D1 binding today).
       # `wrangler d1 migrations apply` tracks what's already applied in its own
@@ -231,7 +245,10 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-        run: npx --yes wrangler@3.90.0 d1 migrations apply metron-waitlist --remote
+        # wrangler 3.90.0 exits 1 with no error on `d1 migrations apply` against this Pages
+        # project config, before any API call (reproduced locally 2026-09-15; failed run
+        # 35023744395 attempt 2). wrangler 4 reads the same wrangler.toml and reaches the API.
+        run: npx --yes wrangler@4.132.0 d1 migrations apply metron-waitlist --remote
 
       - name: Deploy to Cloudflare Pages (production)
         if: matrix.changed == 'true'
