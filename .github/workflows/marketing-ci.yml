@@ -77,6 +77,12 @@ jobs:
       - name: Type check + build (astro check && astro build)
         run: npm run build
 
+      # Pages Functions tests (metron-ops-I305) — only marketing-metron has a test
+      # script today; other sites have no functions/ logic to unit-test.
+      - name: Test Pages Functions (marketing-metron only)
+        if: matrix.site == 'marketing-metron'
+        run: npm test
+
       - name: Verify sitemap emitted
         run: |
           test -f dist/sitemap-index.xml \
