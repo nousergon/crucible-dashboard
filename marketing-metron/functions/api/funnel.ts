@@ -31,18 +31,23 @@ interface FunnelRow {
 
 const DEFAULT_DAYS = 30;
 const MAX_DAYS = 90;
-const NOT_FOUND = new Response("Not found.", { status: 404 });
+// Built per request: the Workers runtime rejects constructing a Response during
+// global-scope evaluation ("Disallowed operation called within global scope"), and a
+// shared Response object would also hand out an already-consumed body.
+function notFound(): Response {
+  return new Response("Not found.", { status: 404 });
+}
 
 export async function onRequestGet(context: RequestContext): Promise<Response> {
   const { request, env } = context;
 
   if (!env.FUNNEL_READ_TOKEN) {
-    return NOT_FOUND;
+    return notFound();
   }
 
   const auth = request.headers.get("authorization") ?? "";
   if (auth !== `Bearer ${env.FUNNEL_READ_TOKEN}`) {
-    return NOT_FOUND;
+    return notFound();
   }
 
   const url = new URL(request.url);
