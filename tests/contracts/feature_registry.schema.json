@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "nousergon-data/contracts/feature_registry.schema.json",
+  "title": "Feature catalog registry (features/registry.json, D12)",
+  "description": "Producer: features/registry.py::generate_registry_json/upload_registry, a serialization of CATALOG (list[FeatureEntry]). Consumer: crucible-dashboard views/13_Feature_Store.py::_load_registry (data-collector plan P-07, alpha-engine-config-I10870, D12). The per-COLUMN contract for features/{date}/*.parquet remains features/registry.py::CATALOG <-> features/SCHEMA.md §3 (tests/test_schema_contract.py) — this schema covers only the SEPARATE S3-published registry.json artifact the dashboard actually GETs, which had no versioned JSON Schema of its own before this PR.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["features"],
+  "properties": {
+    "features": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["name", "group", "description"],
+        "properties": {
+          "name": { "type": "string" },
+          "group": { "type": "string", "description": "technical | macro | interaction | alternative | fundamental" },
+          "description": { "type": "string" },
+          "dtype": { "type": "string" },
+          "source": { "type": "string" },
+          "refresh": { "type": "string" },
+          "per_ticker": { "type": "boolean" },
+          "compute": { "type": "string" },
+          "units": { "type": "string" },
+          "formula": { "type": "string" },
+          "consumers": { "type": "string" },
+          "display_order": { "type": ["integer", "number"] }
+        }
+      }
+    }
+  }
+}
