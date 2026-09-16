@@ -16,6 +16,27 @@ import { describe, expect, it } from "vitest";
 
 const SOURCE = readFileSync(path.join(__dirname, "..", "src", "pages", "index.astro"), "utf8");
 
+// Remove comments before linting the copy. Done by scan-to-fixpoint rather than a single
+// regex pass: a `replace(/<!--[\s\S]*?-->/g, "")` leaves a `<!--` behind whenever
+// comments nest or a delimiter is split, which CodeQL flags as incomplete multi-character
+// sanitization (js/incomplete-multi-character-sanitization) — the same defect whether or
+// not the output is rendered. Looping until no opener remains has no such residue.
+function stripComments(src: string): string {
+  let out = src;
+  for (;;) {
+    const start = out.indexOf("<!--");
+    if (start === -1) break;
+    const end = out.indexOf("-->", start + 4);
+    // An unterminated comment swallows the rest of the file, which is what a browser
+    // would do with it too.
+    out = end === -1 ? out.slice(0, start) : out.slice(0, start) + out.slice(end + 3);
+  }
+  return out
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith("//"))
+    .join("\n");
+}
+
 describe("landing page copy", () => {
   it("carries the three positioning claims (metron.md §1 / §3g.1)", () => {
     expect(SOURCE).toContain(
@@ -50,9 +71,10 @@ describe("landing page copy", () => {
     ];
     // Comments explain what is deliberately ABSENT, so they name the very phrases this
     // check forbids — strip them and lint the copy that actually ships.
-    const body = SOURCE.replace(/<!--[\s\S]*?-->/g, "")
-      .replace(/^\s*\/\/.*$/gm, "")
-      .replace(/Portfolio analytics &mdash; not investment advice\./g, "");
+    const body = stripComments(SOURCE).replace(
+      /Portfolio analytics &mdash; not investment advice\./g,
+      ""
+    );
     for (const re of forbidden) {
       expect(body, `landing copy must not match ${re}`).not.toMatch(re);
     }
