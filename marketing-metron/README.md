@@ -73,6 +73,13 @@ row per UTC day in `funnel_daily`:
 - **email_sent** / **email_failed** — bumped by `functions/api/waitlist.ts`, keyed on the
   Resend response status (2xx vs not).
 
+A metric that has **never** recorded an event reports `measured: false` with a null
+total and a reason — never `0`. A counter nobody wired up and a counter with nothing to
+count are indistinguishable from the outside, so the endpoint refuses to render the
+first as the second. Once a metric has any lifetime record, a zero inside the requested
+window is a real zero and is reported as one. A failed read answers **503** with the
+same not-measured shape (metron-ops-I305 deliverable 4).
+
 Read them with `GET /api/funnel` (`functions/api/funnel.ts`), bearer-token protected:
 
 ```sh
@@ -82,6 +89,28 @@ npx wrangler pages secret put FUNNEL_READ_TOKEN
 curl -H "authorization: Bearer $FUNNEL_READ_TOKEN" \
   "https://metron.nousergon.ai/api/funnel?days=30"
 ```
+
+## Demo video
+
+The landing page renders the scripted 60-second walkthrough from
+`public/demo/metron-demo.mp4` (optional poster: `public/demo/metron-demo-poster.jpg`).
+The section is rendered **only when the file exists** — a `<video>` pointing at a missing
+asset is a broken player on the product's front door — and the build logs a warning when
+it does not, so its absence is loud rather than silent.
+
+The recording is made by script, not by hand, from the `metron` repo
+(`metron/web/demo/record.ts`, metron-ops-I305 deliverable 2):
+
+```sh
+# In the metron repo, against an authenticated build. 390x844, currency mask ON.
+BASE_URL=<owner build origin> METRON_STORAGE_STATE=<playwright storage state json> \
+  npm --prefix web run demo:record       # -> metron/web/demo/out/metron-demo.webm
+ffmpeg -i metron-demo.webm -c:v libx264 -pix_fmt yuv420p metron-demo.mp4
+```
+
+Then commit `metron-demo.mp4` to `marketing-metron/public/demo/` here; merging to `main`
+deploys it. The recorder refuses to finish if any page still shows a currency amount
+while the mask is on, so a leaked balance cannot reach the published file.
 
 ## Analytics (Cloudflare Web Analytics)
 
