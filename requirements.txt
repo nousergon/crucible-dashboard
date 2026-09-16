@@ -6,7 +6,7 @@ annotated-doc==0.0.5
     # via fastapi
 annotated-types==0.8.0
     # via pydantic
-anyio==4.15.1
+anyio==4.14.2
     # via
     #   httpx
     #   httpx2
@@ -19,12 +19,14 @@ attrs==26.1.0
     #   referencing
 beautifulsoup4==4.15.0
     # via yfinance
-boto3==1.43.93
+blinker==1.9.0
+    # via streamlit
+boto3==1.43.83
     # via
     #   -r requirements.in
     #   krepis
     #   nousergon-lib
-botocore==1.43.93
+botocore==1.43.83
     # via
     #   boto3
     #   s3transfer
@@ -46,11 +48,11 @@ click==8.5.0
     #   uvicorn
 cryptography==50.0.1
     # via pyjwt
-curl-cffi==0.16.3
+curl-cffi==0.16.2
     # via yfinance
 fastapi==0.141.1
     # via -r requirements.in
-flow-doctor==0.16.4
+flow-doctor==0.16.2
     # via
     #   -r requirements.in
     #   krepis
@@ -81,7 +83,7 @@ jinja2==3.1.6
     # via
     #   altair
     #   pydeck
-jiter==0.17.0
+jiter==0.16.0
     # via openai
 jmespath==1.1.0
     # via
@@ -91,29 +93,29 @@ jsonschema==4.26.0
     # via altair
 jsonschema-specifications==2025.9.1
     # via jsonschema
-krepis[flow-doctor, openai]==0.59.61
+krepis[flow-doctor, openai]==0.59.54
     # via
     #   -r requirements.in
     #   nousergon-lib
-lxml==6.1.3
+lxml==6.1.2
     # via yfinance
 markupsafe==3.0.3
     # via jinja2
 multitasking==0.0.13
     # via yfinance
-narwhals==2.26.0
+narwhals==2.25.0
     # via
     #   altair
     #   plotly
-nousergon-lib[flow-doctor, github-app] @ git+https://github.com/nousergon/nousergon-lib@c57275a80eef05eb0861407b55526c10b686bb0c
+nousergon-lib[flow-doctor, github-app] @ git+https://github.com/nousergon/nousergon-lib@v0.124.126
     # via -r requirements.in
-numpy==2.5.3
+numpy==2.5.2
     # via
     #   pandas
     #   pydeck
     #   streamlit
     #   yfinance
-openai==3.13.0
+openai==3.6.0
     # via krepis
 packaging==26.3
     # via
@@ -125,15 +127,15 @@ pandas==3.0.5
     #   -r requirements.in
     #   streamlit
     #   yfinance
-peewee==4.5.1
+peewee==4.4.0
     # via yfinance
 pillow==12.3.0
     # via streamlit
-platformdirs==4.11.8
+platformdirs==4.11.5
     # via yfinance
 plotly==7.0.0
     # via -r requirements.in
-protobuf==7.36.1
+protobuf==7.36.0
     # via
     #   streamlit
     #   yfinance
@@ -155,7 +157,7 @@ pydantic-settings==2.15.0
     # via flow-doctor
 pydeck==0.9.3
     # via streamlit
-pyjwt[crypto]==2.14.0
+pyjwt[crypto]==2.13.0
     # via nousergon-lib
 python-dateutil==2.9.0.post0
     # via
@@ -203,7 +205,7 @@ starlette==1.6.0
     # via
     #   fastapi
     #   streamlit
-streamlit==1.63.0
+streamlit==1.62.0
     # via
     #   -r requirements.in
     #   streamlit-calendar
@@ -239,7 +241,7 @@ urllib3==2.7.0
     # via
     #   botocore
     #   requests
-uvicorn==0.53.0
+uvicorn==0.52.4
     # via
     #   -r requirements.in
     #   streamlit

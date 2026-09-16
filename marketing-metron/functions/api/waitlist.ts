@@ -1,7 +1,7 @@
 // POST /api/waitlist — Metron beta waitlist capture (Cloudflare Pages Function).
 //
 // Writes one row per email to the D1 database bound as WAITLIST_DB (see wrangler.toml
-// + schema.sql). Idempotent: re-submitting the same address is a no-op (INSERT OR
+// + migrations/). Idempotent: re-submitting the same address is a no-op (INSERT OR
 // IGNORE on the email primary key).
 //
 // On a NEW signup, sends a "you're on the list" confirmation email via the Resend
@@ -15,24 +15,15 @@
 //     DB-only, exactly as before (no third-party call, privacy posture preserved).
 //   - REST API, not the Node SDK — this runs in the Cloudflare Workers runtime.
 //
-// Types are declared locally (just the D1 surface used) so the file type-checks under
-// the Astro frontend tsconfig without pulling Workers-runtime libs into the DOM-typed
-// program; wrangler compiles it for the Workers runtime at deploy.
+// Two OPTIONAL fields (metron-ops-I305 deliverable 3, segment options per Brian ruling
+// 2026-09-15): `segment` ("Which describes you?", a fixed allowlist — an unknown value
+// is a 400, a missing one stores NULL) and `currentTool` ("What do you use today to
+// check your portfolio?", free text <=500 chars, stored as `current_tool`). Every
+// signup and email send also bumps a same-day funnel counter (functions/_lib/d1.ts) —
+// new vs duplicate submit, and email sent vs failed — so Stage A exit can quote the
+// funnel from one GET /api/funnel call.
 
-interface D1Result {
-  success: boolean;
-  // INSERT OR IGNORE → meta.changes is 1 on a new row, 0 when the email already existed.
-  meta?: { changes?: number };
-}
-
-interface D1PreparedStatement {
-  bind(...values: unknown[]): D1PreparedStatement;
-  run(): Promise<D1Result>;
-}
-
-interface D1Database {
-  prepare(query: string): D1PreparedStatement;
-}
+import { bumpFunnel, json, type D1Database } from "../_lib/d1";
 
 interface Env {
   WAITLIST_DB: D1Database;
@@ -49,17 +40,20 @@ interface RequestContext {
 // Conservative email shape check — the real validation is "we successfully email you".
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const MAX_EMAIL_LEN = 254; // RFC 5321 local+domain ceiling
+const MAX_CURRENT_TOOL_LEN = 500;
+
+// "Which describes you?" — fixed allowlist (Brian ruling 2026-09-15, metron-ops-I305).
+// Stable slugs stored in D1; the landing page <select> values must match these exactly.
+const SEGMENTS = ["fire", "active_investor", "index_investor", "day_trader", "other"] as const;
+type Segment = (typeof SEGMENTS)[number];
+
+function isSegment(value: unknown): value is Segment {
+  return typeof value === "string" && (SEGMENTS as readonly string[]).includes(value);
+}
 
 // Sender on the Resend-verified nousergon.ai domain (standing decision, metron-ops#70).
 const FROM_ADDRESS = "Metron <no-reply@nousergon.ai>";
 const CONFIRMATION_SUBJECT = "You're on the Metron beta waitlist";
-
-function json(body: Record<string, unknown>, status: number): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json; charset=utf-8" },
-  });
-}
 
 // Plain-text + minimal HTML confirmation. Claims-disciplined, no dates promised —
 // just "you're on the list, we'll email when a spot opens", matching the landing copy.
@@ -87,9 +81,10 @@ function confirmationBody(): { text: string; html: string } {
   return { text, html };
 }
 
-// Best-effort confirmation send. Returns nothing useful and throws nothing the caller
-// must handle — failures are swallowed (logged) so a Resend outage can't break signups.
-async function sendConfirmation(apiKey: string, to: string): Promise<void> {
+// Best-effort confirmation send. Returns whether Resend accepted it (2xx) so the caller
+// can bump the right funnel counter; throws nothing the caller must handle — failures
+// are swallowed (logged) so a Resend outage can't break signups.
+async function sendConfirmation(apiKey: string, to: string): Promise<boolean> {
   const { text, html } = confirmationBody();
   try {
     const resp = await fetch("https://api.resend.com/emails", {
@@ -110,16 +105,25 @@ async function sendConfirmation(apiKey: string, to: string): Promise<void> {
       // Surface the reason in logs (wrangler tail) without leaking it to the caller.
       const detail = await resp.text().catch(() => "");
       console.error(`waitlist confirmation email failed: ${resp.status} ${detail}`);
+      return false;
     }
+    return true;
   } catch (err) {
     console.error("waitlist confirmation email threw:", err);
+    return false;
   }
 }
 
 export async function onRequestPost(context: RequestContext): Promise<Response> {
   const { request, env } = context;
 
-  let payload: { email?: unknown; website?: unknown; source?: unknown };
+  let payload: {
+    email?: unknown;
+    website?: unknown;
+    source?: unknown;
+    segment?: unknown;
+    currentTool?: unknown;
+  };
   try {
     payload = await request.json();
   } catch {
@@ -127,7 +131,8 @@ export async function onRequestPost(context: RequestContext): Promise<Response> 
   }
 
   // Honeypot: bots fill the hidden "website" field. Pretend success (200) so we don't
-  // teach a scraper what tripped it, but store nothing.
+  // teach a scraper what tripped it, but store nothing (and don't count it in the
+  // funnel — it isn't a real submit attempt).
   if (typeof payload.website === "string" && payload.website.trim() !== "") {
     return json({ ok: true }, 200);
   }
@@ -139,12 +144,32 @@ export async function onRequestPost(context: RequestContext): Promise<Response> 
 
   const source = typeof payload.source === "string" ? payload.source.slice(0, 64) : "landing";
 
+  // segment: optional. Present-but-unknown is a 400 (never silently coerced to
+  // "other" or dropped); absent stores NULL.
+  let segment: Segment | null = null;
+  if (payload.segment !== undefined && payload.segment !== null && payload.segment !== "") {
+    if (!isSegment(payload.segment)) {
+      return json({ error: "Unrecognized selection for 'Which describes you?'." }, 400);
+    }
+    segment = payload.segment;
+  }
+
+  // currentTool: optional free text, capped at MAX_CURRENT_TOOL_LEN.
+  let currentTool: string | null = null;
+  if (typeof payload.currentTool === "string") {
+    const trimmed = payload.currentTool.trim();
+    if (trimmed.length > MAX_CURRENT_TOOL_LEN) {
+      return json({ error: "That answer is too long (500 characters max)." }, 400);
+    }
+    currentTool = trimmed === "" ? null : trimmed;
+  }
+
   let isNewSignup = false;
   try {
     const result = await env.WAITLIST_DB.prepare(
-      "INSERT OR IGNORE INTO waitlist (email, source) VALUES (?, ?)",
+      "INSERT OR IGNORE INTO waitlist (email, source, segment, current_tool) VALUES (?, ?, ?, ?)",
     )
-      .bind(email, source)
+      .bind(email, source, segment, currentTool)
       .run();
     // changes === 1 → a row was inserted (new signup); 0 → the email already existed.
     isNewSignup = (result.meta?.changes ?? 0) > 0;
@@ -153,10 +178,13 @@ export async function onRequestPost(context: RequestContext): Promise<Response> 
     return json({ error: "Couldn't save your signup — please try again." }, 500);
   }
 
+  await bumpFunnel(env.WAITLIST_DB, isNewSignup ? "waitlist_new" : "waitlist_dup");
+
   // Best-effort confirmation, new signups only. Awaited so the email is sent before the
   // Worker is allowed to terminate, but its failure can't change the 200 we return.
   if (isNewSignup && env.RESEND_API_KEY) {
-    await sendConfirmation(env.RESEND_API_KEY, email);
+    const sent = await sendConfirmation(env.RESEND_API_KEY, email);
+    await bumpFunnel(env.WAITLIST_DB, sent ? "email_sent" : "email_failed");
   }
 
   return json({ ok: true }, 200);

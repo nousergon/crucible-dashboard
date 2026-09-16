@@ -13,6 +13,7 @@
     "format": "biome format --write .",
     "format:check": "biome format .",
     "lint": "biome lint .",
+    "test": "vitest run",
     "astro": "astro"
   },
   "dependencies": {
@@ -25,7 +26,8 @@
     "@astrojs/check": "^0.9.10",
     "@biomejs/biome": "^2.5.12",
     "hugo-extended": "^0.165.0",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.11"
   },
   "overrides": {
     "vite": "8.1.5",

@@ -25,16 +25,26 @@ npm run lint     # biome (src/ only)
 
 The form POSTs to `functions/api/waitlist.ts` (a Pages Function) which inserts one row per
 email into the D1 database **`metron-waitlist`** (bound as `WAITLIST_DB` in `wrangler.toml`).
-Idempotent — re-submits are `INSERT OR IGNORE` on the email PK. Schema in `schema.sql`.
+Idempotent — re-submits are `INSERT OR IGNORE` on the email PK. Two fields are optional:
+`segment` ("Which describes you?" — `fire` / `active_investor` / `index_investor` /
+`day_trader` / `other`; an unrecognized value is a 400, a missing one stores `NULL`) and
+`currentTool` (free text, <=500 chars, stored as `current_tool`).
+
+Schema lives in `migrations/` (applied via `wrangler d1 migrations apply`, tracked so
+re-running is a no-op); `schema.sql` is a read-only consolidated reference, not the
+source of truth — see its header.
 
 ```sh
-# One-time (already done): create the DB + apply the schema.
+# One-time (already done): create the DB.
 npx wrangler d1 create metron-waitlist
-npx wrangler d1 execute metron-waitlist --remote --file=./schema.sql
+
+# Apply migrations (deploy-marketing.yml does this automatically on every push to main
+# that touches this directory — see its "Apply D1 migrations" step):
+npx wrangler d1 migrations apply metron-waitlist --remote
 
 # Read / export signups:
 npx wrangler d1 execute metron-waitlist --remote \
-  --command "SELECT email, datetime(created_at,'unixepoch') AS joined, source FROM waitlist ORDER BY created_at DESC"
+  --command "SELECT email, datetime(created_at,'unixepoch') AS joined, source, segment, current_tool FROM waitlist ORDER BY created_at DESC"
 ```
 
 ### Confirmation email (Resend)
@@ -51,6 +61,28 @@ re-submits don't re-send). The send is **opt-in by config**: it fires only when 
 npx wrangler pages secret put RESEND_API_KEY
 ```
 
+## Funnel counters (metron-ops-I305)
+
+No third-party tracker, no cookies, no IP storage — three server-side D1 counters, one
+row per UTC day in `funnel_daily`:
+
+- **visits** — bumped by `functions/_middleware.ts` on every `GET /` (root landing page
+  only; assets, `/dash`, `/api/*` pass through uncounted).
+- **waitlist_new** / **waitlist_dup** — bumped by `functions/api/waitlist.ts`, keyed on
+  whether the `INSERT OR IGNORE` actually inserted a row.
+- **email_sent** / **email_failed** — bumped by `functions/api/waitlist.ts`, keyed on the
+  Resend response status (2xx vs not).
+
+Read them with `GET /api/funnel` (`functions/api/funnel.ts`), bearer-token protected:
+
+```sh
+# One-time: bind the read token as a Pages secret. Unset -> the route 404s.
+npx wrangler pages secret put FUNNEL_READ_TOKEN
+
+curl -H "authorization: Bearer $FUNNEL_READ_TOKEN" \
+  "https://metron.nousergon.ai/api/funnel?days=30"
+```
+
 ## Analytics (Cloudflare Web Analytics)
 
 Privacy-first, no cookies, no third-party tracker. The beacon is injected only when
@@ -61,11 +93,18 @@ Privacy-first, no cookies, no third-party tracker. The beacon is injected only w
 
 ## Deploy
 
-`nousergon-metron` is a **direct-upload** Pages project (no Git provider) — **merging to
-`main` does NOT deploy it.** `wrangler.toml` carries the project name, D1 binding, and
-build-output dir, so a deploy is:
+`nousergon-metron` is a **direct-upload** Pages project (no Git provider integration —
+Cloudflare's own git-push-to-deploy is not what ships this). **Deploy is automated in
+`.github/workflows/deploy-marketing.yml`: pushing to `main` with a change under this
+directory builds, applies D1 migrations, and runs `wrangler pages deploy` for you** —
+merging the PR is the whole deploy (corrected 2026-09-15: this doc previously said
+merging does NOT deploy; that was true before deploy-marketing.yml existed and is no
+longer true — see that workflow's header for the outage that made a repo-committed
+deploy step the standard). Manual deploy (only for the migration/deploy pipeline itself
+being down) is still:
 
 ```sh
 PUBLIC_CF_ANALYTICS_TOKEN=<token> npm run build
+npx wrangler d1 migrations apply metron-waitlist --remote
 npx wrangler pages deploy            # reads wrangler.toml (project, dist/, functions/, D1)
 ```

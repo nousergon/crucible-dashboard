@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "nousergon-data/contracts/news_article_row.schema.json",
+  "title": "One row of data/news_articles_daily/{run_id}_articles.parquet (schema_version 1, D36)",
+  "description": "Producer: data/derived/news_articles.py::NewsArticleRecord / articles_build_and_write (collectors/daily_news.py::collect). Consumer: crucible-dashboard views/Daily_News.py, which reads tickers_json, sources_json, published_at, lm_sentiment, event_count off every row via loaders/s3_loader.py::load_news_articles (a plain pd.read_parquet). Validated per ROW (post df.reset_index().to_dict('records')), mirroring the staging_daily_closes contract precedent (data-collector plan P-07, alpha-engine-config-I10870, D36).",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "article_fingerprint", "aggregate_date", "schema_version", "title", "url",
+    "tickers_json", "published_at", "primary_source", "lm_sentiment", "event_count"
+  ],
+  "properties": {
+    "article_fingerprint": { "type": "string" },
+    "aggregate_date": { "type": "string", "description": "YYYY-MM-DD (post-parquet-round-trip may serialize as a Timestamp string)" },
+    "schema_version": { "const": 1 },
+    "title": { "type": "string" },
+    "url": { "type": "string" },
+    "tickers_json": { "type": "string", "description": "JSON-encoded list of tickers; dashboard json.loads()s this" },
+    "n_tickers": { "type": ["integer", "number"] },
+    "primary_source": { "type": "string" },
+    "sources_json": { "type": "string", "description": "JSON-encoded list of source slugs; dashboard json.loads()s this" },
+    "n_sources": { "type": ["integer", "number"] },
+    "trust_weight_max": { "type": "number" },
+    "published_at": { "type": "string" },
+    "body_excerpt": { "type": "string" },
+    "authors_json": { "type": "string" },
+    "tags_json": { "type": "string" },
+    "lm_sentiment": { "type": "number", "description": "Loughran-McDonald composite in [-1, +1]" },
+    "lm_positive_words": { "type": ["integer", "number"] },
+    "lm_negative_words": { "type": ["integer", "number"] },
+    "lm_uncertainty_words": { "type": ["integer", "number"] },
+    "event_count": { "type": ["integer", "number"] },
+    "event_severity_max": { "type": "number" },
+    "event_categories": { "type": "string" },
+    "top_event_description": { "type": "string" }
+  }
+}

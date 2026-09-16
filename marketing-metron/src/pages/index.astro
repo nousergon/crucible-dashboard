@@ -140,34 +140,66 @@ const jsonLd = {
           <!-- Waitlist capture -->
           <form
             id="waitlist-form"
-            class="mt-8 w-full max-w-md flex flex-col sm:flex-row gap-2"
+            class="mt-8 w-full max-w-md flex flex-col gap-2"
             novalidate
           >
-            <label for="email" class="sr-only">Email address</label>
-            <input
-              id="email"
-              name="email"
-              type="email"
-              required
-              autocomplete="email"
-              placeholder="you@example.com"
-              class="flex-1 rounded-md border border-white/15 bg-white/5 px-4 py-2.5 text-sm text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-sky-400/70 focus:bg-white/[0.07]"
-            />
-            <!-- Honeypot: bots fill this; humans never see it. Submissions with it set are dropped. -->
-            <input
-              type="text"
-              name="website"
-              tabindex="-1"
-              autocomplete="off"
-              class="hidden"
-              aria-hidden="true"
-            />
-            <button
-              type="submit"
-              class="shrink-0 rounded-md bg-sky-500 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-sky-400 disabled:opacity-50"
+            <div class="flex flex-col sm:flex-row gap-2">
+              <label for="email" class="sr-only">Email address</label>
+              <input
+                id="email"
+                name="email"
+                type="email"
+                required
+                autocomplete="email"
+                placeholder="you@example.com"
+                class="flex-1 rounded-md border border-white/15 bg-white/5 px-4 py-2.5 text-sm text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-sky-400/70 focus:bg-white/[0.07]"
+              />
+              <!-- Honeypot: bots fill this; humans never see it. Submissions with it set are dropped. -->
+              <input
+                type="text"
+                name="website"
+                tabindex="-1"
+                autocomplete="off"
+                class="hidden"
+                aria-hidden="true"
+              />
+              <button
+                type="submit"
+                class="shrink-0 rounded-md bg-sky-500 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-sky-400 disabled:opacity-50"
+              >
+                Join the beta
+              </button>
+            </div>
+
+            <!-- Optional segment field — never blocks a submit, never required. -->
+            <label for="segment" class="mt-1 text-xs text-zinc-500">
+              Which describes you? <span class="text-zinc-600">(optional)</span>
+            </label>
+            <select
+              id="segment"
+              name="segment"
+              class="w-full rounded-md border border-white/15 bg-white/5 px-3 py-2 text-sm text-zinc-100 outline-none transition focus:border-sky-400/70 focus:bg-white/[0.07]"
             >
-              Join the beta
-            </button>
+              <option value="">Prefer not to say</option>
+              <option value="fire">Planning to retire early (FIRE)</option>
+              <option value="active_investor">Active investor — I pick and manage my own holdings</option>
+              <option value="index_investor">Long-term index investor</option>
+              <option value="day_trader">Day trader</option>
+              <option value="other">Other</option>
+            </select>
+
+            <!-- Optional free text — never required. -->
+            <label for="current-tool" class="mt-1 text-xs text-zinc-500">
+              What do you use today to check your portfolio? <span class="text-zinc-600">(optional)</span>
+            </label>
+            <input
+              id="current-tool"
+              name="currentTool"
+              type="text"
+              maxlength="500"
+              placeholder="Spreadsheet, broker app, another tool…"
+              class="w-full rounded-md border border-white/15 bg-white/5 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-sky-400/70 focus:bg-white/[0.07]"
+            />
           </form>
           <p id="waitlist-msg" class="mt-3 text-xs min-h-[1rem]" role="status" aria-live="polite"></p>
           <p class="mt-1 text-[11px] text-zinc-500">
@@ -248,11 +280,20 @@ const jsonLd = {
         }
         if (button) button.disabled = true;
         setMsg('', true);
+        const segment = String(data.get('segment') ?? '').trim();
+        const currentTool = String(data.get('currentTool') ?? '').trim();
         try {
           const res = await fetch('/api/waitlist', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email, website: data.get('website') ?? '' }),
+            body: JSON.stringify({
+              email,
+              website: data.get('website') ?? '',
+              // Optional fields — omitted (not sent as empty strings) so the function's
+              // "absent -> NULL" path is what an unanswered field takes.
+              ...(segment ? { segment } : {}),
+              ...(currentTool ? { currentTool } : {}),
+            }),
           });
           if (res.ok) {
             form.reset();

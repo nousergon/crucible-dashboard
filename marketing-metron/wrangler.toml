@@ -7,7 +7,11 @@ pages_build_output_dir = "./dist"
 
 # Waitlist store — bound as env.WAITLIST_DB in functions/api/waitlist.ts.
 # database_id is the live `metron-waitlist` D1 (region WNAM).
+# migrations_dir: schema changes are tracked SQL files, applied via
+# `wrangler d1 migrations apply metron-waitlist --remote` — see migrations/ and
+# .github/workflows/deploy-marketing.yml (runs this before every deploy).
 [[d1_databases]]
 binding = "WAITLIST_DB"
 database_name = "metron-waitlist"
 database_id = "90604c67-5415-4f85-831b-54cdc3667088"
+migrations_dir = "migrations"
