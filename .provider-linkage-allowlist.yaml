@@ -57,27 +57,27 @@ entries:
 
   # -- `dist` class, enforcement flip (alpha-engine-config-I10225) --
 
-  - path: requirements.in
-    pattern: "openai:dist"
-    reason: >-
-      `krepis[openai]>=0.59.53` -- the `openai` extra is krepis's OWN declared
-      transport dependency for the router edge's OpenAI-compatible wire
-      (krepis.llm.LLMClient), pulled in through the router package, not a
-      free-standing pin. views/36_Claude_Code_Usage.py and live/
-      morning_brief.py's Phase-2 brief both reach it exclusively via
-      krepis.router.resolve_group_spec / krepis.llm.LLMClient -- no module in
-      this repo imports `openai` directly (measured: no `import openai` /
-      `from openai` hit outside krepis's own installed package).
-    expires: "2026-12-07"
-    tracking: alpha-engine-config-I10225
+  # The `requirements.in` entry that sat here cleared `krepis[openai]>=...`
+  # -- the ROUTER package's own transport extra, and the only `dist` match in
+  # that file. nousergon-lib-PR422 (alpha-engine-config-I11017) made that a
+  # property of the guard rather than of this file: a `dist` match falling
+  # inside a requirement spec whose PACKAGE is the router is no longer a
+  # finding anywhere in the fleet. Verified 2026-09-17 with the merged guard.
   - path: requirements.txt
     pattern: "openai:dist"
     reason: >-
-      Two lines: `krepis[flow-doctor, openai]==0.59.53` (the pinned resolve
-      of the requirements.in extra above) and `openai==3.6.0` annotated
-      "# via krepis" by pip-compile -- a TRANSITIVE resolve of krepis's own
-      `[openai]` extra, not a direct pin this repo added. Same router-bound
-      reasoning as the requirements.in entry: no call site in this repo
-      constructs `openai.OpenAI(...)` directly.
+      `openai==3.14.1`, annotated "# via krepis" by pip-compile -- the
+      TRANSITIVE resolve of krepis's own `[openai]` extra onto its OWN line
+      in the compiled output, not a pin this repo added. It needs an entry
+      where `requirements.in` no longer does, and the difference is the point:
+      the guard's narrowing (nousergon-lib-PR422, alpha-engine-config-I11017)
+      exempts only a match INSIDE the router's requirement spec. A provider
+      distribution resolved onto a line of its own is exactly the blind spot
+      the `dist` class was built to close (alpha-engine-config-I7723 -- the
+      anthropic SDK sat in the trading box's venv for three months with no
+      call site), so it stays graded, and stays cleared here on the fact that
+      no call site in this repo constructs `openai.OpenAI(...)`: views/
+      36_Claude_Code_Usage.py and live/morning_brief.py both reach the model
+      exclusively via krepis.router.resolve_group_spec / krepis.llm.LLMClient.
     expires: "2026-12-07"
     tracking: alpha-engine-config-I10225
