@@ -48,9 +48,123 @@ for _gsl in "$(dirname "${BASH_SOURCE[0]}")/lib/git-sync-lock.sh" \
 done
 unset _gsl
 
-LOG="/var/log/boot-pull.log"
+# AE_BOOT_PULL_LOG exists so tests can source this file and exercise
+# sync_repo_to_main() (defined below) without needing write access to
+# /var/log — mirrors crucible-executor's infrastructure/boot-pull.sh.
+LOG="${AE_BOOT_PULL_LOG:-/var/log/boot-pull.log}"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$LOG"; }
+
+# ── Transient-remote signature + credential-erase helpers (config-I10950) ──
+# Pure, side-effect-scoped helpers used by sync_repo_to_main() below. Defined
+# here (before any side-effecting code) so tests can source this file with
+# AE_BOOT_PULL_LIB_ONLY=1 and exercise them without touching /home/ec2-user
+# or invoking the real credential helper.
+#
+# A box reboot found /home/ec2-user/alpha-engine-config and
+# /home/ec2-user/telos-ops FAIL at 2026-09-17 04:42 UTC on a credential-cache
+# miss that re-minted a token GitHub then answered "Repository not found" for
+# exactly that one run — claude-code-config and metron-ops hit the identical
+# cache-miss branch in the SAME run and succeeded, and the very next
+# scheduled run (61 minutes later) pulled all 18 roster checkouts cleanly.
+# Nothing in the per-checkout pull loop absorbed that minute.
+#
+# crucible-executor's boot-pull.sh already retries a failed `main` fetch ONCE
+# (its sync_repo_to_main, "retrying main once" in its log) — but for a
+# DIFFERENT failure class: a ref compare-and-swap race against a concurrent
+# writer on the SAME box, which a bare unconditional retry absorbs because
+# the racing writer has usually finished by the second attempt. That
+# mechanism is deliberately NOT reused here rather than layered beside it: it
+# retries every failure exactly once with no credential re-mint, which on
+# THIS box's failure class would just replay the same bad cached token. This
+# is a second, narrower mechanism: a named set of remote-transient
+# signatures, a bounded 3-attempt/5s-then-10s backoff, and a credential-cache
+# invalidation the CAS-race retry has no reason to need. The two ARE
+# reconcilable if this class ever needs to run there too — the CAS-race retry
+# is a strict subset of this one (attempt 1 of a class-matched retry with an
+# empty signature list) — but folding them now would make this script's
+# fetch depend on crucible-executor's, which is out of scope here.
+#
+# Deliberately NOT a blanket retry: a genuinely diverged history, a dirty
+# tree (exit 3 below), or a missing branch must keep failing on the first
+# attempt, exactly as before this change — retrying those would hide a real
+# defect behind a delay instead of surfacing it.
+_BOOT_PULL_TRANSIENT_SIGNATURES=(
+    'Repository not found'
+    'Authentication failed'
+    'could not read Username'
+    'The requested URL returned error: 5'
+    'Could not resolve host'
+    'Failed to connect'
+    'Connection timed out'
+    'RPC failed'
+    'early EOF'
+    'remote end hung up'
+    'unable to access'
+)
+
+# _boot_pull_transient_signature <fetch/merge output> — echoes the first
+# matching signature and returns 0, or returns 1 if nothing matched (this is
+# not a class believed to clear on its own, so the caller must not retry).
+_boot_pull_transient_signature() {
+    local text="$1" sig
+    for sig in "${_BOOT_PULL_TRANSIENT_SIGNATURES[@]}"; do
+        if grep -qF "$sig" <<<"$text"; then
+            printf '%s' "$sig"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# _boot_pull_repo_slug <checkout-dir> — echoes "owner/repo" from the
+# checkout's OWN origin remote. The directory name is NOT the repo slug
+# (/home/ec2-user/alpha-engine-data is nousergon/nousergon-data,
+# /home/ec2-user/alpha-engine-dashboard is nousergon/crucible-dashboard) —
+# deriving the credential-cache key from the directory would erase the wrong
+# (or no) cache entry.
+_boot_pull_repo_slug() {
+    local url
+    url=$(git -C "$1" remote get-url origin 2>/dev/null) || return 1
+    [ -n "$url" ] || return 1
+    printf '%s' "$url" | sed -E 's#^(https://github\.com/|git@github\.com:)##; s#\.git/?$##'
+}
+
+# _boot_pull_erase_credential <checkout-dir> — invalidates that repo's cached
+# GitHub App token before a retry, so the retry re-mints a token instead of
+# the credential helper serving the same (possibly bad) one back from cache.
+# Runs AS the checkout's owner — the helper's cache is per-user. A missing
+# helper binary or an unresolvable origin remote is logged and SKIPPED, never
+# failed: this step exists to help a retry succeed, and must never itself
+# turn a retryable failure into a hard one.
+_boot_pull_erase_credential() {
+    local repo="$1" helper slug owner erase_input
+    helper="${AE_CRED_HELPER:-/usr/local/bin/git-credential-nousergon-app}"
+    if [ ! -x "$helper" ]; then
+        log "SKIP credential erase for $repo — $helper missing or not executable"
+        return 0
+    fi
+    if ! slug=$(_boot_pull_repo_slug "$repo"); then
+        log "WARN could not resolve repo slug for $repo from its origin remote — skipping credential erase"
+        return 0
+    fi
+    owner=$(stat -c '%U' "$repo" 2>/dev/null || stat -f '%Su' "$repo" 2>/dev/null || echo "")
+    erase_input=$(printf 'protocol=https\nhost=github.com\npath=%s\n\n' "$slug")
+    if [ -n "$owner" ] && [ "$owner" != "$(id -un)" ]; then
+        if printf '%s' "$erase_input" | sudo -u "$owner" "$helper" erase >> "$LOG" 2>&1; then
+            log "OK   erased cached credential for $slug ($repo) as $owner"
+        else
+            log "WARN credential erase for $slug ($repo) failed as $owner — retry proceeds anyway"
+        fi
+    else
+        if printf '%s' "$erase_input" | "$helper" erase >> "$LOG" 2>&1; then
+            log "OK   erased cached credential for $slug ($repo)"
+        else
+            log "WARN credential erase for $slug ($repo) failed — retry proceeds anyway"
+        fi
+    fi
+    return 0
+}
 
 log "=== boot-pull started ==="
 
@@ -172,6 +286,105 @@ else
     fi
 fi
 
+# sync_repo_to_main <checkout-dir> — fetch + fast-forward-only merge to
+# origin/main, judged the same way the inline block it replaces was:
+#
+#   0  clean fast-forward (possibly after a retry)
+#   3  refused because a TRACKED file is dirty — never retried, exactly as
+#      before this change (alpha-engine-config-I10260's own contract)
+#   1  any other failure (diverged history, network/auth) — retried ONLY
+#      when the output matches a named transient-remote signature, bounded
+#      to 3 attempts total with a 5s-then-10s backoff and a credential-cache
+#      erase before each retry (alpha-engine-config-I10950)
+#
+# Per-checkout flock (config incident 2026-08-27 20:07 UTC, see
+# infrastructure/lib/git-sync-lock.sh): this loop is one of several
+# unsynchronised writers against $repo (deploy.yml,
+# substrate_health_check_daily.sh also touch alpha-engine-dashboard), and a
+# fetch is itself a git WRITE — it mutates the remote-tracking ref — so it
+# must take the lock too, not just the merge.
+#
+# `git reset --hard` was replaced with fetch + `merge --ff-only`
+# (alpha-engine-config-I10260): reset --hard discards whatever a dirty
+# working tree holds with no record of what was lost.
+#
+# THE MERGE IS ATTEMPTED, NOT PRE-EMPTED. The first shape of this check
+# refused any tree where `git status --porcelain` printed anything and, on
+# its first run (2026-09-13 15:39 UTC), graded 10 of 19 checkouts "dirty" and
+# paged the operator chat — every one of them held only files the box WRITES
+# INTO ITS CHECKOUTS BY DESIGN (the SSM-rendered config.yaml, a .venv, a
+# sqlite file, __pycache__) and every one would have fast-forwarded cleanly.
+# git already knows exactly which local change a fast-forward would
+# overwrite, and refuses only then; that refusal is the finding. It is
+# reported as dirty-tree (exit 3) when a TRACKED file is modified, and as a
+# plain failure otherwise (diverged local commits, a network error) — both
+# need a human, and boot-pull never guesses which by discarding history.
+sync_repo_to_main() {
+    local repo="$1"
+    local max_attempts=3
+    local attempt=1
+    local repo_lock out rc sig backoff
+
+    repo_lock="$(git_sync_lock_path "$repo")"
+
+    while :; do
+        out=$(flock -w "$GIT_SYNC_LOCK_WAIT" "$repo_lock" bash -c '
+            set -e
+            cd "$1"
+            git fetch origin
+            if ! git merge --ff-only origin/main; then
+                if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+                    exit 3
+                fi
+                exit 1
+            fi
+        ' _ "$repo" 2>&1)
+        rc=$?
+        printf '%s\n' "$out" >> "$LOG"
+
+        if [ "$rc" -eq 0 ]; then
+            if [ "$attempt" -gt 1 ]; then
+                log "OK   $repo — recovered on attempt $attempt/$max_attempts after transient '$sig'"
+            fi
+            return 0
+        fi
+
+        if [ "$rc" -eq 3 ]; then
+            # Dirty tree — never a transient-remote condition, never retried.
+            return 3
+        fi
+
+        if ! sig=$(_boot_pull_transient_signature "$out"); then
+            log "FAIL $repo — attempt $attempt/$max_attempts, fetch/fast-forward failed with no known transient signature — not retrying"
+            return 1
+        fi
+
+        if [ "$attempt" -ge "$max_attempts" ]; then
+            log "FAIL $repo — attempt $attempt/$max_attempts exhausted retrying transient class '$sig'"
+            return 1
+        fi
+
+        # AE_BOOT_PULL_RETRY_BACKOFF_{1,2} exist so tests can drive this to
+        # 0s instead of sleeping 5s/10s per case; production never sets them.
+        backoff="${AE_BOOT_PULL_RETRY_BACKOFF_1:-5}"
+        [ "$attempt" -gt 1 ] && backoff="${AE_BOOT_PULL_RETRY_BACKOFF_2:-10}"
+        log "RETRY $repo — attempt $attempt/$max_attempts failed matching transient class '$sig'; erasing cached credential and retrying in ${backoff}s"
+        _boot_pull_erase_credential "$repo"
+        sleep "$backoff"
+        attempt=$((attempt + 1))
+    done
+}
+
+# Tests source this file for sync_repo_to_main() and its helpers (defined
+# above) and must not execute the boot sequence below (SSM reads, sudo,
+# systemctl, the actual REPOS pull). Everything above this line is pure
+# definition or accumulation state; nothing below is safe to run outside the
+# box. Guards here rather than higher up so sync_repo_to_main can still see
+# GIT_SYNC_LOCK_WAIT / git_sync_lock_path (sourced at the top of this file).
+if [ "${AE_BOOT_PULL_LIB_ONLY:-0}" = "1" ]; then
+    return 0 2>/dev/null || exit 0
+fi
+
 for repo in "${REPOS[@]}"; do
     if [ ! -d "$repo/.git" ]; then
         log "SKIP $repo (not cloned)"
@@ -181,40 +394,7 @@ for repo in "${REPOS[@]}"; do
     log "Pulling $repo ..."
     cd "$repo"
     PREV_SHA=$(git rev-parse HEAD 2>/dev/null || echo "none")
-    # Per-checkout flock (config incident 2026-08-27 20:07 UTC, see
-    # infrastructure/lib/git-sync-lock.sh): this loop is one of several
-    # unsynchronised writers against $repo (deploy.yml,
-    # substrate_health_check_daily.sh also touch alpha-engine-dashboard),
-    # and a fetch is itself a git WRITE — it mutates the remote-tracking
-    # ref — so it must take the lock too, not just the merge.
-    #
-    # `git reset --hard` was replaced with fetch + `merge --ff-only`
-    # (alpha-engine-config-I10260): reset --hard discards whatever a dirty
-    # working tree holds with no record of what was lost.
-    #
-    # THE MERGE IS ATTEMPTED, NOT PRE-EMPTED. The first shape of this check
-    # refused any tree where `git status --porcelain` printed anything and,
-    # on its first run (2026-09-13 15:39 UTC), graded 10 of 19 checkouts
-    # "dirty" and paged the operator chat — every one of them held only
-    # files the box WRITES INTO ITS CHECKOUTS BY DESIGN (the SSM-rendered
-    # config.yaml, a .venv, a sqlite file, __pycache__) and every one would
-    # have fast-forwarded cleanly. git already knows exactly which local
-    # change a fast-forward would overwrite, and refuses only then; that
-    # refusal is the finding. It is reported as dirty-tree (exit 3,
-    # distinguished below) when a TRACKED file is modified, and as a plain
-    # failure otherwise (diverged local commits, a network error) — both
-    # need a human, and boot-pull never guesses which by discarding history.
-    _repo_lock="$(git_sync_lock_path "$repo")"
-    if flock -w "$GIT_SYNC_LOCK_WAIT" "$_repo_lock" bash -c '
-        set -e
-        git fetch origin
-        if ! git merge --ff-only origin/main; then
-            if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
-                exit 3
-            fi
-            exit 1
-        fi
-    ' >> "$LOG" 2>&1; then
+    if sync_repo_to_main "$repo"; then
         NEW_SHA=$(git rev-parse HEAD 2>/dev/null || echo "none")
         log "OK   $repo — $(git log --oneline -1)"
         if [ "$PREV_SHA" != "$NEW_SHA" ]; then

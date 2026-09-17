@@ -52,17 +52,28 @@ def _strip_comments(text: str) -> str:
 
 
 def _pull_loop_block() -> str:
-    """The `for repo in "${REPOS[@]}"; do ... done` loop body, CODE ONLY
-    (comments stripped — this section's own explanatory comments mention
-    `reset --hard` and `exit 3` by name, which would otherwise false-positive
-    the assertions below). Found by its unindented closing `done` — the loop
-    contains its own nested `for`/`done` (the pip-install disk-guard loop),
-    so the FIRST `done` after the opening line is the wrong one."""
+    """`sync_repo_to_main()` (the fetch/merge/dirty-check decision,
+    alpha-engine-config-I10950) through the `for repo in "${REPOS[@]}"; do
+    ... done` loop that calls it, CODE ONLY (comments stripped — this
+    section's own explanatory comments mention `reset --hard` and `exit 3`
+    by name, which would otherwise false-positive the assertions below).
+
+    The merge/dirty-check logic that used to be inline in the loop was
+    extracted into sync_repo_to_main() so it can be retried on a bounded,
+    named transient-remote signature without duplicating the git commands
+    (alpha-engine-config-I10950) — mirroring crucible-executor's boot-pull.sh
+    shape. Starting the slice at the function definition, not the loop,
+    keeps every assertion below valid against the relocated text.
+
+    Found by its unindented closing `done` — the loop contains its own
+    nested `for`/`done` (the pip-install disk-guard loop), so the FIRST
+    `done` after the opening line is the wrong one."""
     text = _strip_comments(_src())
-    start = text.index('for repo in "${REPOS[@]}"')
-    m = re.search(r"^done$", text[start:], re.MULTILINE)
+    start = text.index("sync_repo_to_main() {")
+    loop_start = text.index('for repo in "${REPOS[@]}"', start)
+    m = re.search(r"^done$", text[loop_start:], re.MULTILINE)
     assert m, "no unindented closing `done` found for the REPOS pull loop"
-    return text[start:start + m.end()]
+    return text[start:loop_start + m.end()]
 
 
 class TestRosterDerivesRepos:
