@@ -45,6 +45,79 @@ describe("GET /api/funnel", () => {
     ]);
   });
 
+  // metron-ops-I305 deliverable 4: absence must render as NOT-MEASURED, never as zero.
+  it("reports a never-recorded metric as not-measured, not as zero", async () => {
+    const db = new FakeD1();
+    db.funnel.set("2026-09-14", {
+      day: "2026-09-14",
+      visits: 10,
+      waitlist_new: 0,
+      waitlist_dup: 0,
+      email_sent: 0,
+      email_failed: 0,
+    });
+    const env = { WAITLIST_DB: db, FUNNEL_READ_TOKEN: "secret" };
+    const res = await onRequestGet({ request: req({ authorization: "Bearer secret" }), env });
+    const body = (await res.json()) as {
+      metrics: Record<string, { measured: boolean; window_total: number | null; reason?: string }>;
+    };
+
+    expect(body.metrics.visits).toMatchObject({ measured: true, window_total: 10, lifetime_total: 10 });
+    // Never recorded -> null + a reason, so nobody quotes "0 waitlist submits" from a
+    // counter that may simply never have been wired up.
+    expect(body.metrics.waitlist_new.measured).toBe(false);
+    expect(body.metrics.waitlist_new.window_total).toBeNull();
+    expect(body.metrics.waitlist_new.reason).toMatch(/has ever been recorded/);
+    expect(body.metrics.email_sent.measured).toBe(false);
+  });
+
+  it("reports a real zero inside the window once the metric has any lifetime record", async () => {
+    const db = new FakeD1();
+    db.funnel.set("2026-01-02", {
+      day: "2026-01-02",
+      visits: 3,
+      waitlist_new: 1,
+      waitlist_dup: 0,
+      email_sent: 1,
+      email_failed: 0,
+    });
+    db.funnel.set("2026-09-14", {
+      day: "2026-09-14",
+      visits: 5,
+      waitlist_new: 0,
+      waitlist_dup: 0,
+      email_sent: 0,
+      email_failed: 0,
+    });
+    const env = { WAITLIST_DB: db, FUNNEL_READ_TOKEN: "secret" };
+    const res = await onRequestGet({
+      request: req({ authorization: "Bearer secret" }, "?days=1"),
+      env,
+    });
+    const body = (await res.json()) as {
+      window_days: number;
+      metrics: Record<string, { measured: boolean; window_total: number | null; lifetime_total: number | null; first_recorded: string | null }>;
+    };
+
+    expect(body.window_days).toBe(1);
+    expect(body.metrics.waitlist_new).toEqual({
+      measured: true,
+      window_total: 0, // a genuine zero: the counter has recorded before
+      lifetime_total: 1,
+      first_recorded: "2026-01-02",
+    });
+  });
+
+  it("answers 503 not-measured when the read fails — never a body that reads as zero", async () => {
+    const db = new FakeD1();
+    db.failNext = true;
+    const env = { WAITLIST_DB: db, FUNNEL_READ_TOKEN: "secret" };
+    const res = await onRequestGet({ request: req({ authorization: "Bearer secret" }), env });
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { ok: boolean; measured: boolean; status: string };
+    expect(body).toMatchObject({ ok: false, measured: false, status: "not-measured" });
+  });
+
   it("caps the days parameter at MAX_DAYS(90) without erroring", async () => {
     const db = new FakeD1();
     const env = { WAITLIST_DB: db, FUNNEL_READ_TOKEN: "secret" };
