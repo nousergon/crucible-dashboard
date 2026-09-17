@@ -1,4 +1,5 @@
 ---
+import { existsSync } from 'node:fs';
 import metronLogo from '../assets/nous-ergon-metron-logo.webp';
 import '../styles/global.css';
 
@@ -11,6 +12,32 @@ const description =
 // build time via PUBLIC_CF_ANALYTICS_TOKEN; the beacon is omitted when unset so a
 // missing token never ships a broken script. See README for provisioning.
 const analyticsToken = import.meta.env.PUBLIC_CF_ANALYTICS_TOKEN;
+
+// The three claims, taken verbatim in substance from the positioning doc
+// (nous-ergon-ops/business/product-positioning/metron.md §1 and §3g.1) so the landing
+// page and the positioning cannot drift. Each is descriptive of what the product does
+// today. Deliberately NOT here (metron-ops-I305 gotchas): deploy cash / new-cash
+// allocation, which is L2-shaped and owner-build-only until ruling R2, and any live
+// price, which stays off unauthenticated surfaces until ruling R3.
+const claims = [
+  'One screen, on your phone, that answers everything you would actually check about your portfolio.',
+  'Your brokerage UI tells you what you hold; Metron tells you what it means.',
+  'Attribution, factor risk and lot-level tax are one tap behind it.',
+];
+
+// The scripted demo recording (metron-ops-I305 deliverable 2, recorded by
+// `metron/web/demo/record.ts` at 390x844 with the currency mask on). Rendered only when
+// the asset is actually committed: a <video> pointing at a missing file is a broken
+// player on the product's front door. Absence is loud at build time rather than silent.
+const demoVideo = '/demo/metron-demo.mp4';
+const demoPoster = '/demo/metron-demo-poster.jpg';
+const hasDemoVideo = existsSync(new URL(`../../public${demoVideo}`, import.meta.url));
+const hasDemoPoster = existsSync(new URL(`../../public${demoPoster}`, import.meta.url));
+if (!hasDemoVideo) {
+  console.warn(
+    `[marketing-metron] no demo recording at public${demoVideo} — the landing page ships without the video section. Record it with \`npm --prefix web run demo:record\` in the metron repo, convert to mp4, and commit it here.`
+  );
+}
 
 // The descriptive core the private beta delivers today (broker-sourced — no licensed
 // market-data feed required). Every item is something the product computes now.
@@ -137,6 +164,18 @@ const jsonLd = {
             accounts &mdash; read-only.
           </p>
 
+          <!-- The three claims (positioning metron.md §1 / §3g.1). -->
+          <ul class="mt-6 w-full max-w-xl space-y-2 text-left">
+            {
+              claims.map((claim) => (
+                <li class="flex gap-2.5 text-sm text-zinc-300 leading-relaxed">
+                  <span aria-hidden="true" class="mt-[7px] h-1 w-1 shrink-0 rounded-full bg-sky-400" />
+                  <span>{claim}</span>
+                </li>
+              ))
+            }
+          </ul>
+
           <!-- Waitlist capture -->
           <form
             id="waitlist-form"
@@ -207,6 +246,33 @@ const jsonLd = {
           </p>
         </div>
       </section>
+
+      <!-- The scripted 60-second walkthrough. Rendered only when the asset exists. -->
+      {
+        hasDemoVideo && (
+          <section class="px-6 py-12 border-t border-white/10">
+            <div class="max-w-4xl mx-auto flex flex-col items-center">
+              <h2 class="text-xs font-semibold uppercase tracking-[0.18em] text-sky-400 text-center">
+                Sixty seconds, on a phone
+              </h2>
+              <video
+                class="mt-8 w-full max-w-[340px] rounded-xl border border-white/10 bg-black"
+                controls
+                playsinline
+                preload="metadata"
+                poster={hasDemoPoster ? demoPoster : undefined}
+              >
+                <source src={demoVideo} type="video/mp4" />
+                Your browser cannot play this recording.
+              </video>
+              <p class="mt-4 text-center text-xs text-zinc-500 max-w-xl">
+                A recording of a real session. Account values in it are shown as percentages of the
+                portfolio, not dollars.
+              </p>
+            </div>
+          </section>
+        )
+      }
 
       <!-- What the beta delivers -->
       <section class="px-6 py-12 border-t border-white/10">
