@@ -45,10 +45,23 @@ export function utcDay(now: Date = new Date()): string {
   return now.toISOString().slice(0, 10);
 }
 
-// Funnel counters, one row per UTC day (see ../../migrations/0002_*.sql). A fixed
-// allowlist of upsert statements — never interpolate a caller-supplied column name
-// into SQL.
-export type FunnelMetric = "visits" | "waitlist_new" | "waitlist_dup" | "email_sent" | "email_failed";
+// Funnel counters, one row per UTC day (see ../../migrations/0002_*.sql,
+// ../../migrations/0003_delivery_events.sql). A fixed allowlist of upsert statements —
+// never interpolate a caller-supplied column name into SQL.
+//
+// email_sent/email_failed (waitlist.ts) record what Resend's REST API answered on send
+// (send-accepted). email_delivered/email_bounced (resend-webhook.ts, metron-ops-I332)
+// record what Resend's delivery webhook later reported — a different fact: a message
+// can be send-accepted and never delivered, or delivered well after the send count was
+// bumped.
+export type FunnelMetric =
+  | "visits"
+  | "waitlist_new"
+  | "waitlist_dup"
+  | "email_sent"
+  | "email_failed"
+  | "email_delivered"
+  | "email_bounced";
 
 const FUNNEL_UPSERT: Record<FunnelMetric, string> = {
   visits:
@@ -61,6 +74,10 @@ const FUNNEL_UPSERT: Record<FunnelMetric, string> = {
     "INSERT INTO funnel_daily (day, email_sent) VALUES (?, 1) ON CONFLICT(day) DO UPDATE SET email_sent = email_sent + 1",
   email_failed:
     "INSERT INTO funnel_daily (day, email_failed) VALUES (?, 1) ON CONFLICT(day) DO UPDATE SET email_failed = email_failed + 1",
+  email_delivered:
+    "INSERT INTO funnel_daily (day, email_delivered) VALUES (?, 1) ON CONFLICT(day) DO UPDATE SET email_delivered = email_delivered + 1",
+  email_bounced:
+    "INSERT INTO funnel_daily (day, email_bounced) VALUES (?, 1) ON CONFLICT(day) DO UPDATE SET email_bounced = email_bounced + 1",
 };
 
 // Best-effort counter bump — funnel counting must never break the request it's counting
@@ -76,4 +93,50 @@ export async function bumpFunnel(
   } catch (err) {
     console.error(`funnel counter bump failed (${metric}):`, err);
   }
+}
+
+// Records the Resend message id returned by a confirmation send, so a later delivery
+// webhook (keyed on that id, never on our email address) can find the row it belongs
+// to (metron-ops-I332 deliverable 5). Best-effort, same posture as bumpFunnel — losing
+// this write only degrades attribution, it never changes whether the signup succeeded.
+export async function recordMessageId(db: D1Database, email: string, messageId: string): Promise<void> {
+  try {
+    await db.prepare("UPDATE waitlist SET resend_message_id = ? WHERE email = ?").bind(messageId, email).run();
+  } catch (err) {
+    console.error("recording resend_message_id failed:", err);
+  }
+}
+
+export type DeliveryStatus = "delivered" | "bounced" | "complained" | "delivery_delayed";
+
+// Applies a verified delivery-webhook event to the waitlist row it names (by
+// resend_message_id), NOT best-effort: a delivery event that fails to persist must
+// raise, not disappear — the row this call could not find or could not write is
+// returned to the caller, which decides how to surface it (never a silent swallow on
+// a PRODUCER of the delivery record itself).
+export async function recordDeliveryEvent(
+  db: D1Database,
+  messageId: string,
+  status: DeliveryStatus,
+  eventId: string,
+  recordedAt: number,
+): Promise<{ matched: boolean }> {
+  const result = await db
+    .prepare(
+      "UPDATE waitlist SET delivery_status = ?, delivery_event_id = ?, delivered_at = ? WHERE resend_message_id = ?",
+    )
+    .bind(status, eventId, recordedAt, messageId)
+    .run();
+  return { matched: (result.meta?.changes ?? 0) > 0 };
+}
+
+// Idempotency guard: Resend (via Svix) may redeliver the same webhook event. Returns
+// true the first time an event_id is seen (caller should apply it), false on a
+// redelivery (caller returns 200 without reapplying — never a double funnel bump).
+export async function markWebhookEventProcessed(db: D1Database, eventId: string, eventType: string): Promise<boolean> {
+  const result = await db
+    .prepare("INSERT OR IGNORE INTO processed_webhook_events (event_id, event_type) VALUES (?, ?)")
+    .bind(eventId, eventType)
+    .run();
+  return (result.meta?.changes ?? 0) > 0;
 }
