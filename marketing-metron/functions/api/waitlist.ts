@@ -23,7 +23,7 @@
 // new vs duplicate submit, and email sent vs failed — so Stage A exit can quote the
 // funnel from one GET /api/funnel call.
 
-import { bumpFunnel, json, type D1Database } from "../_lib/d1";
+import { bumpFunnel, json, recordMessageId, type D1Database } from "../_lib/d1";
 
 interface Env {
   WAITLIST_DB: D1Database;
@@ -82,9 +82,11 @@ function confirmationBody(): { text: string; html: string } {
 }
 
 // Best-effort confirmation send. Returns whether Resend accepted it (2xx) so the caller
-// can bump the right funnel counter; throws nothing the caller must handle — failures
-// are swallowed (logged) so a Resend outage can't break signups.
-async function sendConfirmation(apiKey: string, to: string): Promise<boolean> {
+// can bump the right funnel counter, plus the Resend message id (metron-ops-I332) so a
+// later delivery webhook can be attributed back to this signup; throws nothing the
+// caller must handle — failures are swallowed (logged) so a Resend outage can't break
+// signups.
+async function sendConfirmation(apiKey: string, to: string): Promise<{ sent: boolean; messageId: string | null }> {
   const { text, html } = confirmationBody();
   try {
     const resp = await fetch("https://api.resend.com/emails", {
@@ -105,12 +107,18 @@ async function sendConfirmation(apiKey: string, to: string): Promise<boolean> {
       // Surface the reason in logs (wrangler tail) without leaking it to the caller.
       const detail = await resp.text().catch(() => "");
       console.error(`waitlist confirmation email failed: ${resp.status} ${detail}`);
-      return false;
+      return { sent: false, messageId: null };
     }
-    return true;
+    // Resend's create-email response is { id: "<message-id>" } on 2xx. A malformed body
+    // (id missing) still counts as sent (Resend accepted it) — it just can't be
+    // attributed to a later delivery event, same degraded posture as any other
+    // best-effort attribution loss.
+    const body = await resp.json().catch(() => null as { id?: unknown } | null);
+    const messageId = body && typeof body.id === "string" ? body.id : null;
+    return { sent: true, messageId };
   } catch (err) {
     console.error("waitlist confirmation email threw:", err);
-    return false;
+    return { sent: false, messageId: null };
   }
 }
 
@@ -183,8 +191,11 @@ export async function onRequestPost(context: RequestContext): Promise<Response> 
   // Best-effort confirmation, new signups only. Awaited so the email is sent before the
   // Worker is allowed to terminate, but its failure can't change the 200 we return.
   if (isNewSignup && env.RESEND_API_KEY) {
-    const sent = await sendConfirmation(env.RESEND_API_KEY, email);
+    const { sent, messageId } = await sendConfirmation(env.RESEND_API_KEY, email);
     await bumpFunnel(env.WAITLIST_DB, sent ? "email_sent" : "email_failed");
+    if (sent && messageId) {
+      await recordMessageId(env.WAITLIST_DB, email, messageId);
+    }
   }
 
   return json({ ok: true }, 200);

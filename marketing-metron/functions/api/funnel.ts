@@ -35,11 +35,23 @@ interface FunnelRow {
   waitlist_dup: number;
   email_sent: number;
   email_failed: number;
+  // metron-ops-I332: send-accepted (above) is a different fact from delivered — a
+  // message can be send-accepted and never delivered.
+  email_delivered: number;
+  email_bounced: number;
 }
 
 type Metric = Exclude<keyof FunnelRow, "day">;
 
-const METRICS: Metric[] = ["visits", "waitlist_new", "waitlist_dup", "email_sent", "email_failed"];
+const METRICS: Metric[] = [
+  "visits",
+  "waitlist_new",
+  "waitlist_dup",
+  "email_sent",
+  "email_failed",
+  "email_delivered",
+  "email_bounced",
+];
 
 const DEFAULT_DAYS = 30;
 const MAX_DAYS = 90;
@@ -111,7 +123,8 @@ export async function onRequestGet(context: RequestContext): Promise<Response> {
     // per UTC day, so reading it whole is cheap and lets "never recorded" be told apart
     // from "zero in this window" without a second round trip.
     const result = await env.WAITLIST_DB.prepare(
-      `SELECT day, visits, waitlist_new, waitlist_dup, email_sent, email_failed
+      `SELECT day, visits, waitlist_new, waitlist_dup, email_sent, email_failed,
+              email_delivered, email_bounced
        FROM funnel_daily
        ORDER BY day DESC
        LIMIT ?`

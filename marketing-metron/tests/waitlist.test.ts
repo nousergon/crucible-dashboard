@@ -107,6 +107,17 @@ describe("POST /api/waitlist", () => {
     expect(db.funnel.get(today)?.email_failed).toBe(1);
   });
 
+  it("stores the Resend message id on the waitlist row (metron-ops-I332 attribution)", async () => {
+    (fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(
+      new Response(JSON.stringify({ id: "msg_returned_by_resend" }), { status: 200 }),
+    );
+    await onRequestPost({
+      request: req({ email: "i@example.com" }),
+      env: { WAITLIST_DB: db, RESEND_API_KEY: "test-key" },
+    });
+    expect(db.waitlist.get("i@example.com")?.resend_message_id).toBe("msg_returned_by_resend");
+  });
+
   it("does not send or count email on a duplicate submit", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);

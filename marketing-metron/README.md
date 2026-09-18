@@ -61,17 +61,48 @@ re-submits don't re-send). The send is **opt-in by config**: it fires only when 
 npx wrangler pages secret put RESEND_API_KEY
 ```
 
-## Funnel counters (metron-ops-I305)
+### Delivery events (Resend webhook, metron-ops-I332)
 
-No third-party tracker, no cookies, no IP storage — three server-side D1 counters, one
-row per UTC day in `funnel_daily`:
+`email_sent` above is **send-accepted** (Resend's REST API answered 2xx), not delivered —
+a message it later bounced, or a recipient's provider dropped, still counts as sent. The
+Resend message id from the send call is stored on the waitlist row
+(`resend_message_id`); `functions/api/resend-webhook.ts` receives Resend's delivery
+webhook (Svix-signed: `svix-id` / `svix-timestamp` / `svix-signature` headers, verified
+against `RESEND_WEBHOOK_SECRET` before anything is recorded — an unverified POST is
+never trusted) and applies `email.delivered` / `email.bounced` events to that row
+(`delivery_status`, the quotable `delivery_event_id`, `delivered_at`), plus
+`email.complained` / `email.delivery_delayed` (recorded for audit, no counter). A
+redelivered event (same `svix-id`) is a no-op via `processed_webhook_events`.
+
+```sh
+# One-time: bind the webhook signing secret as a Pages secret. Unset -> the route 404s
+# (same posture as FUNNEL_READ_TOKEN above).
+npx wrangler pages secret put RESEND_WEBHOOK_SECRET
+
+# One-time: in the Resend dashboard, add an endpoint pointed at
+# https://metron.nousergon.ai/api/resend-webhook subscribed to email.delivered,
+# email.bounced, email.complained, email.delivery_delayed — copy its signing secret
+# into the command above.
+```
+
+A waitlist row whose confirmation email never gets a delivery event keeps
+`delivery_status` NULL indefinitely — distinguishable from `'bounced'`, never inferred
+as delivered.
+
+## Funnel counters (metron-ops-I305, metron-ops-I332)
+
+No third-party tracker, no cookies, no IP storage — server-side D1 counters, one row per
+UTC day in `funnel_daily`:
 
 - **visits** — bumped by `functions/_middleware.ts` on every `GET /` (root landing page
   only; assets, `/dash`, `/api/*` pass through uncounted).
 - **waitlist_new** / **waitlist_dup** — bumped by `functions/api/waitlist.ts`, keyed on
   whether the `INSERT OR IGNORE` actually inserted a row.
 - **email_sent** / **email_failed** — bumped by `functions/api/waitlist.ts`, keyed on the
-  Resend response status (2xx vs not).
+  Resend response status (2xx vs not) — send-accepted, not delivered.
+- **email_delivered** / **email_bounced** — bumped by `functions/api/resend-webhook.ts`
+  from Resend's delivery webhook — a different fact from `email_sent`/`email_failed`
+  (see "Delivery events" above).
 
 A metric that has **never** recorded an event reports `measured: false` with a null
 total and a reason — never `0`. A counter nobody wired up and a counter with nothing to

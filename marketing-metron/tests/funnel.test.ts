@@ -34,6 +34,8 @@ describe("GET /api/funnel", () => {
       waitlist_dup: 1,
       email_sent: 2,
       email_failed: 0,
+      email_delivered: 0,
+      email_bounced: 0,
     });
     const env = { WAITLIST_DB: db, FUNNEL_READ_TOKEN: "secret" };
     const res = await onRequestGet({ request: req({ authorization: "Bearer secret" }), env });
@@ -41,7 +43,7 @@ describe("GET /api/funnel", () => {
     const body = (await res.json()) as { ok: boolean; days: Array<{ day: string; visits: number }> };
     expect(body.ok).toBe(true);
     expect(body.days).toEqual([
-      { day: "2026-09-14", visits: 10, waitlist_new: 2, waitlist_dup: 1, email_sent: 2, email_failed: 0 },
+      { day: "2026-09-14", visits: 10, waitlist_new: 2, waitlist_dup: 1, email_sent: 2, email_failed: 0, email_delivered: 0, email_bounced: 0 },
     ]);
   });
 
@@ -55,6 +57,8 @@ describe("GET /api/funnel", () => {
       waitlist_dup: 0,
       email_sent: 0,
       email_failed: 0,
+      email_delivered: 0,
+      email_bounced: 0,
     });
     const env = { WAITLIST_DB: db, FUNNEL_READ_TOKEN: "secret" };
     const res = await onRequestGet({ request: req({ authorization: "Bearer secret" }), env });
@@ -80,6 +84,8 @@ describe("GET /api/funnel", () => {
       waitlist_dup: 0,
       email_sent: 1,
       email_failed: 0,
+      email_delivered: 0,
+      email_bounced: 0,
     });
     db.funnel.set("2026-09-14", {
       day: "2026-09-14",
@@ -88,6 +94,8 @@ describe("GET /api/funnel", () => {
       waitlist_dup: 0,
       email_sent: 0,
       email_failed: 0,
+      email_delivered: 0,
+      email_bounced: 0,
     });
     const env = { WAITLIST_DB: db, FUNNEL_READ_TOKEN: "secret" };
     const res = await onRequestGet({
