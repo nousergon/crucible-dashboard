@@ -274,7 +274,14 @@ krepis[openai]>=0.59.54
 # included — sat merged-but-not-live on the box. The class is closed in the
 # same PR: infrastructure/check_lib_ref_parity.sh now fails CI when this
 # line's VCS ref and the lock's disagree.
-nousergon-lib[flow-doctor,github_app] @ git+https://github.com/nousergon/nousergon-lib@v0.124.126
+# v0.124.138 (alpha-engine-config-I11106, nousergon-lib-PR427): registers the
+# weekly SF's PublishModelZooUnservableNotice in pipeline_status.registry.
+# THIS repo's copy of test_pipeline_status_registry_drift runs against
+# nousergon-data's CANDIDATE SF definitions as a required check on that
+# repo's PRs, resolving the registry from the pin installed HERE — so this
+# pin gates whether a new SF state can land in nousergon-data at all
+# (nousergon-data-PR1814 was red on exactly this).
+nousergon-lib[flow-doctor,github_app] @ git+https://github.com/nousergon/nousergon-lib@v0.124.138
 
 # crucible-dash-api (config#1973 phase 9-B): read-only FastAPI over the
 # results view-model, consumed same-box by the /dash Next.js frontend.
