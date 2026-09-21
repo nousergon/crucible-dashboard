@@ -287,6 +287,24 @@ krepis[openai]>=0.59.64
 # repo's PRs, resolving the registry from the pin installed HERE — so this
 # pin gates whether a new SF state can land in nousergon-data at all
 # (nousergon-data-PR1814 was red on exactly this).
+#
+# PENDING BUMP (alpha-engine-config-I11267): nousergon-lib-PR430 adds
+# RETIRING_DEFINITION_STAGES + the WaitForCollectionManifests pending entry
+# this PR's tests/test_pipeline_status_reliability.py additions need — CI
+# green, ready for review, awaiting Brian's merge, not yet auto-tagged. This
+# PR is deliberately opened before that tag exists: dropping the retiring
+# stages from the registry now (instead of just declaring them) would redden
+# this repo's registry-drift tests for the whole pre-cutover window, so the
+# library change had to land first, and this consumer follows immediately.
+# THE LINE TO UPDATE once nousergon-lib-PR430 merges and auto-tags: change
+# `@v0.124.138` below to the new tag (requirements.txt's matching line too,
+# then `uv pip compile requirements.in --python-platform
+# x86_64-unknown-linux-gnu --no-strip-extras --python "$(cat .python-version)"
+# --output-file requirements.txt` to regenerate the lock — see
+# infrastructure/check_lock_reproducible.sh for the exact flags). Until then
+# this pin stays v0.124.138 and the two pipeline-status test files' new
+# RETIRING_DEFINITION_STAGES-dependent tests are RED BY DESIGN (named in the
+# PR body/comment), not a defect in this change.
 nousergon-lib[flow-doctor,github_app] @ git+https://github.com/nousergon/nousergon-lib@v0.124.138
 
 # crucible-dash-api (config#1973 phase 9-B): read-only FastAPI over the
