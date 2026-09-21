@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "nousergon-data/contracts/fundamentals_snapshot.schema.json",
+  "title": "Weekly fundamentals snapshot (archive/fundamentals/{date}.json, D10)",
+  "description": "Producer: collectors/fundamentals.py::collect (Finnhub /stock/metric?metric=all, DataPhase1 weekly). The published artifact is a flat object keyed by ticker; each value is the per-ticker fundamentals row, same shape whether real (`_fetch_single_ticker`) or the NEUTRAL sentinel used for tickers Finnhub returns nothing usable for. Consumer: crucible-dashboard health_checker.py (`archive/fundamentals/` freshness check, THRESHOLDS['fundamentals']=100) and crucible-research agents/sector_teams/quant_tools.py (v1, retiring). data-collector plan P-07, alpha-engine-config-I10873, D10.",
+  "type": "object",
+  "additionalProperties": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "pe_ratio",
+      "pb_ratio",
+      "debt_to_equity",
+      "revenue_growth_yoy",
+      "fcf_yield",
+      "gross_margin",
+      "roe",
+      "current_ratio",
+      "revenue_growth_3y",
+      "eps_growth_3y",
+      "payout_ratio",
+      "dividend_yield",
+      "capex_growth_5y",
+      "market_cap_raw"
+    ],
+    "properties": {
+      "pe_ratio": {
+        "type": "number"
+      },
+      "pb_ratio": {
+        "type": "number"
+      },
+      "debt_to_equity": {
+        "type": "number"
+      },
+      "revenue_growth_yoy": {
+        "type": "number",
+        "description": "decimal fraction (Finnhub percent-point / 100)"
+      },
+      "fcf_yield": {
+        "type": "number",
+        "description": "1 / (P/FCF); 0.0 when P/FCF missing or non-positive"
+      },
+      "gross_margin": {
+        "type": "number",
+        "description": "decimal fraction"
+      },
+      "roe": {
+        "type": "number",
+        "description": "decimal fraction"
+      },
+      "current_ratio": {
+        "type": "number"
+      },
+      "revenue_growth_3y": {
+        "type": "number",
+        "description": "decimal fraction, 3y CAGR"
+      },
+      "eps_growth_3y": {
+        "type": "number",
+        "description": "decimal fraction, 3y CAGR"
+      },
+      "payout_ratio": {
+        "type": "number",
+        "description": "decimal fraction, clipped above 2"
+      },
+      "dividend_yield": {
+        "type": "number",
+        "description": "decimal fraction, clipped at 0.20"
+      },
+      "capex_growth_5y": {
+        "type": "number",
+        "description": "decimal fraction, capexCagr5Y"
+      },
+      "market_cap_raw": {
+        "type": "number",
+        "minimum": 0,
+        "description": "raw units, un-normalized; 0.0 when missing or non-positive (feature engineer log() guard maps 0.0 -> NaN)"
+      }
+    }
+  },
+  "x-key-pattern": "archive/fundamentals/{date}.json"
+}

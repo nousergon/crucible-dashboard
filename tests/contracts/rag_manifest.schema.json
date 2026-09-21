@@ -1,0 +1,180 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "nousergon-data/contracts/rag_manifest.schema.json",
+  "title": "RAG corpus manifest (rag/manifest/{date}.json + latest.json, D16)",
+  "description": "Producer: rag/pipelines/emit_manifest.py::build_manifest (weekly RAG ingestion, step 5-adjacent aggregation over the pgvector corpus). Consumer: crucible-dashboard loaders/s3_loader.py::load_rag_manifest (reads rag/manifest/latest.json; the presentation layer never queries pgvector directly, per the module's own docstring). data-collector plan P-07, alpha-engine-config-I10873, D16.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "generated_at",
+    "schema_version",
+    "totals",
+    "by_source",
+    "by_ticker_coverage",
+    "embedding",
+    "ingestion"
+  ],
+  "properties": {
+    "generated_at": {
+      "type": "string",
+      "description": "ISO-8601 UTC",
+      "x-provenance": true
+    },
+    "schema_version": {
+      "type": "string"
+    },
+    "totals": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "documents",
+        "chunks",
+        "tickers"
+      ],
+      "properties": {
+        "documents": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "chunks": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tickers": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "by_source": {
+      "type": "object",
+      "description": "Keyed by doc_type (10-K, 10-Q, 8-K, earnings_transcript, thesis, ...)",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "documents",
+          "tickers",
+          "chunks"
+        ],
+        "properties": {
+          "documents": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "tickers": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "chunks": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "by_ticker_coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tickers_with_any_doc",
+        "p25_docs_per_ticker",
+        "p50_docs_per_ticker",
+        "p75_docs_per_ticker"
+      ],
+      "properties": {
+        "tickers_with_any_doc": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "p25_docs_per_ticker": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "p50_docs_per_ticker": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "p75_docs_per_ticker": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "embedding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "model",
+        "dimension"
+      ],
+      "properties": {
+        "model": {
+          "type": "string"
+        },
+        "dimension": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "ingestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "last_run_ts",
+        "by_source_last_ts",
+        "by_date_source"
+      ],
+      "properties": {
+        "last_run_ts": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "by_source_last_ts": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "by_date_source": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "date",
+              "doc_type",
+              "documents",
+              "chunks"
+            ],
+            "properties": {
+              "date": {
+                "type": "string"
+              },
+              "doc_type": {
+                "type": "string"
+              },
+              "documents": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "chunks": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "x-key-pattern": [
+    "rag/manifest/{date}.json",
+    "rag/manifest/latest.json",
+    "rag/filing_changes/",
+    "health/rag_ingestion_progress/{date}.json"
+  ]
+}
