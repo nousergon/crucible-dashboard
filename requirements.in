@@ -294,7 +294,18 @@ krepis[openai]>=0.59.64
 # registry entries across all three pipelines' spines. Verified in the tag
 # via `gh api repos/nousergon/nousergon-lib/contents/.../registry.py?ref=
 # v0.124.143` before this bump — RETIRING_DEFINITION_STAGES present.
-nousergon-lib[flow-doctor,github_app] @ git+https://github.com/nousergon/nousergon-lib@v0.124.143
+#
+# v0.124.147 (nousergon-lib-PR436 + PR437, one bump covering both): registers
+# PublishWeeklyPreflightBlindSpotNotice (nousergon-data-PR1856 — the weekly
+# preflight reports an honest blind-spot verdict instead of OK) AND
+# PublishCostCoverageGap + PublishDirectorSubStatusDegraded (nousergon-data-
+# PR1859). nousergon-data's sf-stage-consumer-guard.yml checks out
+# crucible-dashboard's main branch and installs its requirements, so both PRs' own
+# consumer-guard checks stay red until this pin moves — same merge-order rule
+# as I11267 (library, then dashboard, then nousergon-data). Verified via
+# `gh api repos/nousergon/nousergon-lib/contents/.../registry.py?ref=
+# v0.124.147` before this bump — all three names present.
+nousergon-lib[flow-doctor,github_app] @ git+https://github.com/nousergon/nousergon-lib@v0.124.147
 
 # crucible-dash-api (config#1973 phase 9-B): read-only FastAPI over the
 # results view-model, consumed same-box by the /dash Next.js frontend.
