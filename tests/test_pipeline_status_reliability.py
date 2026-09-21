@@ -29,6 +29,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from nousergon_lib.pipeline_status.registry import (  # noqa: E402
+    ArtifactReason,
     stage_order_for,
     undefined_spine_stages,
 )
@@ -327,3 +328,62 @@ def test_every_pipeline_has_a_stage_order():
     loses its progress column without saying anything."""
     assert set(RELIABILITY_STAGE_ORDER) == set(_SF_FILES)
     assert all(RELIABILITY_STAGE_ORDER.values()), "an empty spine is not a spine"
+
+
+# ── Both merge orders, REMOVE direction (alpha-engine-config-I11267) ─────────
+# Mirror of the ADD-direction mutation tests above, for RETIRING_DEFINITION_STAGES.
+# A synthetic stage name is used (never a real retiring stage) so these tests
+# exercise the mechanism independently of which real stages are retiring today.
+
+_OLD = "LaunchSomeOldDailySpot"
+
+
+def _retire(monkeypatch, *, retiring: bool) -> set[str]:
+    from nousergon_lib.pipeline_status import registry
+
+    base = set(registry.PIPELINE_STAGE_ORDER[_EOD]) | {"MarketHoursBlocked", _OLD}
+    order = dict(registry.PIPELINE_STAGE_ORDER)
+    order[_EOD] = (*order[_EOD], _OLD)
+    monkeypatch.setattr(registry, "PIPELINE_STAGE_ORDER", order)
+    pages = dict(registry.STATE_TO_ARCHIVE_PAGE)
+    pages[_OLD] = ArtifactReason(reason="test fixture — retiring stage's kept registry entry")
+    monkeypatch.setattr(registry, "STATE_TO_ARCHIVE_PAGE", pages)
+    marks = {k: dict(v) for k, v in registry.RETIRING_DEFINITION_STAGES.items()}
+    if retiring:
+        marks[_EOD][_OLD] = "alpha-engine-config-I11267 (test fixture)"
+    monkeypatch.setattr(registry, "RETIRING_DEFINITION_STAGES", marks)
+    monkeypatch.setitem(RELIABILITY_STAGE_ORDER, _EOD, order[_EOD])
+    return base - {_OLD}
+
+
+def test_definition_still_has_it_is_not_red_while_retiring(monkeypatch):
+    """Pre-cutover: nousergon-data main still defines the retiring state."""
+    base = _retire(monkeypatch, retiring=True)
+    assert _undefined_stages(_EOD, base | {_OLD}) == []
+
+
+def test_definition_dropped_it_is_red_without_a_marker(monkeypatch):
+    """The RED proof: without the marker, a dropped stage fails the existence
+    check exactly like any other undeclared state."""
+    base = _retire(monkeypatch, retiring=False)
+    assert _undefined_stages(_EOD, base) == [_OLD]
+
+
+def test_definition_dropped_it_is_not_red_while_retiring(monkeypatch):
+    """Post-cutover: the cutover PR removed the state from the ASL."""
+    base = _retire(monkeypatch, retiring=True)
+    assert _undefined_stages(_EOD, base) == []
+
+
+def test_every_retiring_stage_still_has_a_registry_entry():
+    """A retiring stage with NO registry entry fails — RETIRING_DEFINITION_STAGES
+    exists precisely so the entry is KEPT, never dropped, while the definition
+    still has the state."""
+    from nousergon_lib.pipeline_status import registry
+
+    for pipeline, entries in registry.RETIRING_DEFINITION_STAGES.items():
+        for stage in entries:
+            assert stage in registry.STATE_TO_ARCHIVE_PAGE, (
+                f"{pipeline}:{stage} is marked retiring but has no "
+                f"STATE_TO_ARCHIVE_PAGE entry"
+            )
