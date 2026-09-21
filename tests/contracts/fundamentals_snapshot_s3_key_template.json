@@ -1,0 +1,7 @@
+{
+  "$comment": "Consumer pin for D10 (data-collector plan P-07, alpha-engine-config-I10934). health_checker.py's `fundamentals` freshness check (`_find_latest_prefix` over `archive/fundamentals/`) reads ONLY the object key's embedded date; it never GETs the object body (measured: health_checker.py has no `get_object`/`_fetch_s3_json` call for this prefix). Pinning `contracts/fundamentals_snapshot.schema.json` here would pin the wrong half of the contract -- a body change cannot break this consumer, but a change to the S3 object-key template or its date format can. This file byte-copies the template nousergon-data declares as the producer's write target, so producer drift on THAT shape is the thing this pin protects against.",
+  "source": "nousergon-data/registry.d/units/D10-fundamentals.yaml `writes` (also `contracts/fundamentals_snapshot.schema.json`'s own `x-key-pattern`)",
+  "object_key_template": "archive/fundamentals/{date}.json",
+  "date_format": "YYYY-MM-DD",
+  "producer": "collectors/fundamentals.py::collect"
+}
