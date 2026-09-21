@@ -287,7 +287,14 @@ krepis[openai]>=0.59.64
 # repo's PRs, resolving the registry from the pin installed HERE — so this
 # pin gates whether a new SF state can land in nousergon-data at all
 # (nousergon-data-PR1814 was red on exactly this).
-nousergon-lib[flow-doctor,github_app] @ git+https://github.com/nousergon/nousergon-lib@v0.124.138
+#
+# v0.124.143 (alpha-engine-config-I11267, nousergon-lib-PR430): adds
+# RETIRING_DEFINITION_STAGES (mirror of PENDING_DEFINITION_STAGES for the
+# REMOVE direction) + declares WaitForCollectionManifests PENDING with full
+# registry entries across all three pipelines' spines. Verified in the tag
+# via `gh api repos/nousergon/nousergon-lib/contents/.../registry.py?ref=
+# v0.124.143` before this bump — RETIRING_DEFINITION_STAGES present.
+nousergon-lib[flow-doctor,github_app] @ git+https://github.com/nousergon/nousergon-lib@v0.124.143
 
 # crucible-dash-api (config#1973 phase 9-B): read-only FastAPI over the
 # results view-model, consumed same-box by the /dash Next.js frontend.
