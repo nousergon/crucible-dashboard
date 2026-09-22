@@ -88,6 +88,43 @@ def test_allocations_dropped_renders_error(page_mod):
     assert st.error.called
 
 
+def test_optimizer_unavailable_renders_error(page_mod):
+    """The 2026-09-22 state (alpha-engine-config-I11370).
+
+    The optimizer owned the book and produced no solve. Before schema 1.5.0
+    this arrived as `no_rebalance_at_target` and rendered as calm blue
+    alongside the words "Valid HOLD, not a fault".
+    """
+    mod, st = page_mod
+    st = _banner_state(mod, st, {
+        "book_status": {
+            "state": "optimizer_unavailable",
+            "headline": "Book HELD — the optimizer produced no usable solve.",
+            "optimizer_solved": False,
+            "optimizer_failure": "TurnoverBudgetError",
+            "turnover_one_way": None, "rebalance_band_pct": None,
+            "dispersion": {},
+        }
+    })
+    assert st.error.called
+    assert not st.info.called and not st.success.called
+
+
+def test_an_unknown_state_is_never_rendered_as_calm(page_mod):
+    """A producer state this consumer has not been taught yet.
+
+    The old default renderer was ``st.info``, so a new state arrived looking
+    healthy — the same shape of failure as the banner it renders.
+    """
+    mod, st = page_mod
+    st = _banner_state(mod, st, {
+        "book_status": {"state": "some_future_state",
+                        "headline": "something new", "dispersion": {}}
+    })
+    assert st.warning.called
+    assert not st.info.called and not st.success.called
+
+
 def test_absent_book_status_renders_nothing(page_mod):
     # Pre-1.3.0 artifact → no banner (graceful pre-producer-merge degrade).
     mod, st = page_mod
@@ -114,3 +151,57 @@ def test_chain_str_tags_pricing_source(page_mod):
     # Legacy/absent pricing_source → no tag, no crash.
     assert mod._chain_str([{"stage": "position_sizer", "result": "x"}]) \
         == "position_sizer:x"
+
+
+def _rationale_payload(state):
+    """A 2026-09-22-shaped artifact: 1 held name, 2 ENTER signals that got no
+    optimizer view and so land in `no_action_unknown` by construction."""
+    return {
+        "book_status": {
+            "state": state,
+            "headline": "…",
+            "optimizer_solved": state != "optimizer_unavailable",
+            "dispersion": {},
+        },
+        "summary": {"n_considered": 3, "n_held": 1},
+        "market_regime": "neutral",
+        "signal_date": "2026-09-18",
+        "prediction_date": "2026-09-22",
+        "run_id": "2609221300",
+        "tickers": [
+            {"ticker": "ANF", "terminal_state": "held", "held": True},
+            {"ticker": "COIN", "terminal_state": "no_action_unknown"},
+            {"ticker": "DELL", "terminal_state": "no_action_unknown"},
+        ],
+    }
+
+
+def test_unknown_warning_is_suppressed_when_the_optimizer_was_unavailable(page_mod):
+    """One fact, told once (alpha-engine-config-I11370).
+
+    With no optimizer view, EVERY ENTER signal lands in `no_action_unknown` —
+    `_classify_no_action` returns it whenever `opt_view` is absent. Repeating
+    it per-ticker under a banner that already says the optimizer produced
+    nothing makes one fault look like two, and the second one looks like a
+    per-name anomaly.
+    """
+    mod, st = page_mod
+    st.reset_mock()
+    mod._render_rationale(_rationale_payload("optimizer_unavailable"))
+    warned = " ".join(str(c) for c in st.warning.call_args_list)
+    assert "unknown" not in warned
+    assert st.error.called, "the banner itself still renders as an error"
+
+
+def test_the_unknown_warning_still_fires_when_the_optimizer_DID_run(page_mod):
+    """The suppression is scoped to the one state that explains it.
+
+    An unknown no-action state on a day the optimizer solved is a real
+    per-ticker anomaly and must keep its warning.
+    """
+    mod, st = page_mod
+    st.reset_mock()
+    mod._render_rationale(_rationale_payload("rebalanced"))
+    warned = " ".join(str(c) for c in st.warning.call_args_list)
+    assert "unknown" in warned
+    assert "COIN" in warned and "DELL" in warned

@@ -227,18 +227,30 @@ def _render_book_status_banner(payload: dict) -> None:
     (the per-ticker ERROR banner below still covers the dropped-allocation
     case for older artifacts), so this page is safe ahead of the producer
     merge.
+
+    Schema 1.5.0 adds ``optimizer_unavailable`` (crucible-executor-PR570):
+    the optimizer owned the book and produced no usable solve, so the
+    planner held it. Until that state existed this page showed the 2026-09-22
+    held book as *"the optimizer solved optimal ... Valid HOLD, not a
+    fault"*, directly above a warning naming six tickers in an unknown
+    state.
     """
     bs = payload.get("book_status")
     if not isinstance(bs, dict):
         return
     state = bs.get("state")
     headline = bs.get("headline") or state or "—"
+    # An UNKNOWN state renders as an error, not as calm blue. The old default
+    # was st.info, so a producer state this consumer had not been taught yet
+    # arrived looking healthy — the same failure as the banner itself
+    # (alpha-engine-config-I11370).
     renderer = {
         "allocations_dropped": st.error,
+        "optimizer_unavailable": st.error,
         "hold_book_safeguard": st.warning,
         "rebalanced": st.success,
         "no_rebalance_at_target": st.info,
-    }.get(state, st.info)
+    }.get(state, st.warning)
     renderer(f"**{headline}**")
 
     # Dispersion sub-line — what made a low-conviction day low-conviction.
@@ -335,7 +347,17 @@ def _render_rationale(payload: dict) -> None:
             f"(likely a price-resolve failure). Check the executor log + the "
             f"`AlphaEngine/Executor/optimizer_target_dropped` CloudWatch alarm."
         )
-    if _unknown:
+    # When the optimizer never produced a solve, EVERY ENTER signal lands in
+    # `no_action_unknown` by construction — `_classify_no_action` returns it
+    # whenever there is no optimizer view. Repeating it per-ticker under a
+    # banner that already says so makes one fact look like two problems, and
+    # the second one looks like a per-name anomaly (I11370). The names stay
+    # visible in the decision-chain table below either way.
+    _optimizer_unavailable = (
+        isinstance(payload.get("book_status"), dict)
+        and payload["book_status"].get("state") == "optimizer_unavailable"
+    )
+    if _unknown and not _optimizer_unavailable:
         st.warning(
             f"{len(_unknown)} ticker(s) in **unknown** no-action state "
             f"(investigate): {', '.join(_unknown)}."
