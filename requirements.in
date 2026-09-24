@@ -120,7 +120,14 @@ yfinance>=1.7.0
 # stage-coverage CLI takes --not-applicable-reason, so a stage whose own guard
 # skipped this run records COVERED_NO_OUTPUT instead of a false WHOLLY STALE.
 # nousergon-data's spot launchers run `krepis.stage_coverage` on this venv.
-krepis[openai]>=0.59.69
+#
+# Floor raised to 0.59.70 (alpha-engine-config-I11521, krepis-PR235):
+# stage_coverage resolves a producer-chosen `*` path segment by LIST instead
+# of HEADing the literal key, so PredictorTraining's predictor_oos_rows_dated/
+# _latest rows stop reading MISSING. crucible-predictor's
+# spot_predictor_training.sh runs `krepis.stage_coverage` on THIS venv
+# (LIB_PYTHON on the weekly spot launcher), not on its own pins.
+krepis[openai]>=0.59.70
 # nousergon-lib (renamed from alpha-engine-lib at v0.60.0) provides
 # setup_logging used by app.py + health_checker.py
 # to attach the FlowDoctorHandler when FLOW_DOCTOR_ENABLED=1, the
