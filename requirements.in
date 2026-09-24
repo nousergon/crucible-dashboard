@@ -317,7 +317,18 @@ krepis[openai]>=0.59.70
 # as I11267 (library, then dashboard, then nousergon-data). Verified via
 # `gh api repos/nousergon/nousergon-lib/contents/.../registry.py?ref=
 # v0.124.147` before this bump — all three names present.
-nousergon-lib[flow-doctor,github_app] @ git+https://github.com/nousergon/nousergon-lib@v0.124.147
+#
+# v0.124.154 (alpha-engine-config-I11312, nousergon-lib-PR446): registers
+# the weekly SF's observe-mode on-spot preflight states —
+# WeeklyPreflightOnSpot, PublishWeeklyPreflightOnSpotNotice, and the
+# WaitForWeeklyPreflightOnSpot -> WeeklyPreflightOnSpot rollup
+# (nousergon-data-PR1914). Same merge-order rule as I11267: that PR's
+# consumer-guard check stays red until this pin moves. Verified in the tag
+# (registry.py at v0.124.154) before this bump — all three names present.
+# Everything else in v0.124.148..154 is additive or outside this repo's
+# imports (arena promotion statistic, cost_gate grading, run_manifest's
+# optional reason_truncated_bytes); no dependency changes.
+nousergon-lib[flow-doctor,github_app] @ git+https://github.com/nousergon/nousergon-lib@v0.124.154
 
 # crucible-dash-api (config#1973 phase 9-B): read-only FastAPI over the
 # results view-model, consumed same-box by the /dash Next.js frontend.
