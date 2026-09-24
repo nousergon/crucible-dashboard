@@ -328,7 +328,21 @@ krepis[openai]>=0.59.70
 # Everything else in v0.124.148..154 is additive or outside this repo's
 # imports (arena promotion statistic, cost_gate grading, run_manifest's
 # optional reason_truncated_bytes); no dependency changes.
-nousergon-lib[flow-doctor,github_app] @ git+https://github.com/nousergon/nousergon-lib@v0.124.154
+#
+# v0.124.155 (alpha-engine-config-I11267 / I11269, nousergon-lib-PR448): adds
+# WAIT_GROUPING["WaitForCollectionManifests"] = "WaitForCollectionManifests"
+# (a spine Task, not a poll companion, so it rolls up into itself).
+# nousergon-data-PR1930 (the decoupled data cutover) adds that state to all
+# three SFs, and this repo's test_wait_companions_in_json_are_in_wait_grouping
+# requires every WaitFor* state to be a WAIT_GROUPING key, so that PR's
+# sf-stage-consumer-guard stays red until this pin moves. Same merge-order
+# rule as I11267: library, then dashboard, then nousergon-data. Verified in
+# the tag (registry.py at v0.124.155) before this bump. v0.124.154..155 is
+# that one change; no dependency changes. Do NOT move this pin to the later
+# R2 release (nousergon-lib-PR449) until PR1930 has merged: R2's spine names
+# WaitForCollectionManifests unmarked, which nousergon-data main lacks until
+# then, and test_every_declared_stage_exists_in_the_live_definition goes red.
+nousergon-lib[flow-doctor,github_app] @ git+https://github.com/nousergon/nousergon-lib@v0.124.155
 
 # crucible-dash-api (config#1973 phase 9-B): read-only FastAPI over the
 # results view-model, consumed same-box by the /dash Next.js frontend.
