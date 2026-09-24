@@ -115,7 +115,12 @@ yfinance>=1.7.0
 # banner without RSS corroboration, and record_llm_call degrades an unpriced
 # cost record to cost_source="unpriced" instead of dropping it on
 # PriceCardLookupError.
-krepis[openai]>=0.59.64
+#
+# Floor raised to 0.59.69 (alpha-engine-config-I11474, krepis-PR234): the
+# stage-coverage CLI takes --not-applicable-reason, so a stage whose own guard
+# skipped this run records COVERED_NO_OUTPUT instead of a false WHOLLY STALE.
+# nousergon-data's spot launchers run `krepis.stage_coverage` on this venv.
+krepis[openai]>=0.59.69
 # nousergon-lib (renamed from alpha-engine-lib at v0.60.0) provides
 # setup_logging used by app.py + health_checker.py
 # to attach the FlowDoctorHandler when FLOW_DOCTOR_ENABLED=1, the
