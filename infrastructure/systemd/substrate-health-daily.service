@@ -17,9 +17,10 @@ WorkingDirectory=/home/ec2-user/alpha-engine-dashboard
 ExecStart=/home/ec2-user/alpha-engine-dashboard/infrastructure/substrate_health_check_daily.sh
 StandardOutput=journal
 StandardError=journal
-# Mirrors the SF's executionTimeout=180s script budget; extra headroom since
-# there's no separate SSM delivery-timeout layer bounding this path.
-TimeoutStartSec=300
+# The script's bounded wait for the postclose completion marker (18:30 ->
+# 23:30 ET, 18000 s; alpha-engine-config-I11581) plus the original 300 s check
+# budget (the SF's executionTimeout=180s, with headroom).
+TimeoutStartSec=18300
 RemainAfterExit=no
 # config#2954: /var/log/ itself isn't writable by User=ec2-user. systemd
 # creates+owns /var/log/substrate-health-daily/ for this unit's lifetime
