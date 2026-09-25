@@ -15,7 +15,7 @@
 # lock at all —
 #   - /home/ec2-user/alpha-engine-dashboard: .github/workflows/deploy.yml
 #     (SSM, on merge), infrastructure/boot-pull.sh (daily timer),
-#     infrastructure/substrate_health_check_daily.sh (Mon-Fri 22:30 UTC
+#     infrastructure/substrate_health_check_daily.sh (Mon-Fri evening
 #     health check).
 #   - /home/ec2-user/morning-signal: morning-signal-pull.service,
 #     morning-signal.service, morning-signal-bakeoff.service,

@@ -51,7 +51,7 @@ systemctl enable substrate-health-daily.service
 systemctl enable --now substrate-health-daily.timer
 
 echo ""
-echo "substrate-health-daily installed and enabled (Mon-Fri 22:30 UTC)."
+echo "substrate-health-daily installed and enabled (Mon-Fri 18:30 America/New_York, waits for postclose completion)."
 echo "  Verify:       systemctl list-timers substrate-health-daily.timer"
 echo "  Run now:      sudo systemctl start substrate-health-daily.service"
 echo "  Test paging:  sudo systemctl start alert-on-failure@substrate-health-daily.service.service"
