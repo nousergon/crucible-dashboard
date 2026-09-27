@@ -1,36 +1,46 @@
 {
-  "generated_at": "2026-09-19T11:40:00.040464+00:00",
+  "generated_at": "2026-09-26T10:43:05.078698+00:00",
   "schema_version": "1.1.0",
   "totals": {
-    "documents": 85574,
-    "chunks": 344026,
-    "tickers": 2138
+    "documents": 91271,
+    "chunks": 353205,
+    "tickers": 2202
   },
   "by_source": {
     "10-K": {
-      "documents": 1523,
-      "tickers": 786,
-      "chunks": 46825
+      "documents": 1553,
+      "tickers": 798,
+      "chunks": 49287
     },
     "10-Q": {
-      "documents": 5775,
-      "tickers": 906,
-      "chunks": 187843
+      "documents": 5789,
+      "tickers": 908,
+      "chunks": 188146
     },
     "13F": {
-      "documents": 79,
-      "tickers": 79,
-      "chunks": 79
+      "documents": 88,
+      "tickers": 88,
+      "chunks": 88
+    },
+    "20-F": {
+      "documents": 12,
+      "tickers": 6,
+      "chunks": 676
+    },
+    "40-F": {
+      "documents": 4,
+      "tickers": 2,
+      "chunks": 26
     },
     "8-K": {
-      "documents": 11750,
-      "tickers": 918,
-      "chunks": 42459
+      "documents": 11772,
+      "tickers": 919,
+      "chunks": 42556
     },
     "news": {
-      "documents": 65441,
-      "tickers": 2132,
-      "chunks": 65441
+      "documents": 71047,
+      "tickers": 2196,
+      "chunks": 71047
     },
     "thesis_news": {
       "documents": 221,
@@ -54,9 +64,9 @@
     }
   },
   "by_ticker_coverage": {
-    "tickers_with_any_doc": 2138,
+    "tickers_with_any_doc": 2202,
     "p25_docs_per_ticker": 1,
-    "p50_docs_per_ticker": 9,
+    "p50_docs_per_ticker": 7,
     "p75_docs_per_ticker": 34
   },
   "embedding": {
@@ -64,19 +74,111 @@
     "dimension": 512
   },
   "ingestion": {
-    "last_run_ts": "2026-09-19T11:35:31.388435+00:00",
+    "last_run_ts": "2026-09-25T23:35:45.308707+00:00",
     "by_source_last_ts": {
-      "10-K": "2026-09-19T11:25:15.363704+00:00",
-      "10-Q": "2026-09-19T11:25:58.603266+00:00",
-      "13F": "2026-09-19T11:35:31.388435+00:00",
-      "8-K": "2026-09-19T11:27:25.362724+00:00",
-      "news": "2026-09-19T11:23:53.273504+00:00",
+      "10-K": "2026-09-25T23:34:33.636562+00:00",
+      "10-Q": "2026-09-25T23:34:06.717741+00:00",
+      "13F": "2026-09-24T00:50:39.129124+00:00",
+      "20-F": "2026-09-25T23:34:45.712088+00:00",
+      "40-F": "2026-09-25T23:32:18.335590+00:00",
+      "8-K": "2026-09-25T23:35:45.308707+00:00",
+      "news": "2026-09-25T12:39:19.334368+00:00",
       "thesis_news": "2026-03-31T17:51:46.445317+00:00",
       "thesis_research": "2026-03-31T17:51:48.547672+00:00",
       "thesis_score": "2026-03-31T17:57:51.654055+00:00",
       "thesis_signal": "2026-07-18T19:08:51.828606+00:00"
     },
     "by_date_source": [
+      {
+        "date": "2026-09-25",
+        "doc_type": "10-K",
+        "documents": 28,
+        "chunks": 2294
+      },
+      {
+        "date": "2026-09-25",
+        "doc_type": "10-Q",
+        "documents": 5,
+        "chunks": 147
+      },
+      {
+        "date": "2026-09-25",
+        "doc_type": "20-F",
+        "documents": 12,
+        "chunks": 676
+      },
+      {
+        "date": "2026-09-25",
+        "doc_type": "40-F",
+        "documents": 4,
+        "chunks": 26
+      },
+      {
+        "date": "2026-09-25",
+        "doc_type": "8-K",
+        "documents": 5,
+        "chunks": 15
+      },
+      {
+        "date": "2026-09-25",
+        "doc_type": "news",
+        "documents": 1133,
+        "chunks": 1133
+      },
+      {
+        "date": "2026-09-24",
+        "doc_type": "10-K",
+        "documents": 2,
+        "chunks": 168
+      },
+      {
+        "date": "2026-09-24",
+        "doc_type": "10-Q",
+        "documents": 9,
+        "chunks": 156
+      },
+      {
+        "date": "2026-09-24",
+        "doc_type": "13F",
+        "documents": 9,
+        "chunks": 9
+      },
+      {
+        "date": "2026-09-24",
+        "doc_type": "8-K",
+        "documents": 17,
+        "chunks": 82
+      },
+      {
+        "date": "2026-09-24",
+        "doc_type": "news",
+        "documents": 1139,
+        "chunks": 1139
+      },
+      {
+        "date": "2026-09-23",
+        "doc_type": "news",
+        "documents": 1256,
+        "chunks": 1256
+      },
+      {
+        "date": "2026-09-22",
+        "doc_type": "news",
+        "documents": 1199,
+        "chunks": 1199
+      },
+      {
+        "date": "2026-09-21",
+        "doc_type": "news",
+        "documents": 618,
+        "chunks": 618
+      },
+      {
+        "date": "2026-09-20",
+        "doc_type": "news",
+        "documents": 261,
+        "chunks": 261
+      },
       {
         "date": "2026-09-19",
         "doc_type": "10-K",
