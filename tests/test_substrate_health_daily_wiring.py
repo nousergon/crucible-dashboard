@@ -10,6 +10,7 @@ run being invisible (no OnFailure= alerting path existed at all).
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -95,3 +96,60 @@ class TestFailureAlerting:
         src = _INSTALLER.read_text()
         assert "alert-on-failure@.service" in src
         assert "alert_on_failure.sh" in src
+
+
+_TIMER = _INFRA / "systemd" / "substrate-health-daily.timer"
+
+
+class TestOrderedAfterThePostclosePipeline:
+    """alpha-engine-config-I11581: the check runs after the postclose pipeline
+    FINISHES, not at a clock time that used to be after it.
+
+    The daily transparency rows (`pnl_attribution` from EOD reconcile,
+    `trade_execution_lineage`, `risk_events`, `data_quality`) are written by
+    `ne-postclose-trading-pipeline`. After the decoupled data cutover
+    (nousergon-data#1930) that pipeline waits for `ne-data-collection-eod`
+    (18:15 ET, worst case 20:55 ET) before reconcile, so it ends around
+    20:30 ET instead of ~17:45 ET. At the old fixed 22:30 UTC (18:30 EDT /
+    17:30 EST) every cycle's check would grade the PREVIOUS day's rows.
+    """
+
+    _MARKER = "_sf_completion/ne-postclose-trading-pipeline/"
+
+    def _code_lines(self) -> list[str]:
+        return [
+            line.strip()
+            for line in _SCRIPT.read_text().splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        ]
+
+    def test_the_script_waits_on_the_postclose_completion_marker(self):
+        lines = self._code_lines()
+        marker_at = next((i for i, line in enumerate(lines) if self._MARKER in line), None)
+        check_at = next(i for i, line in enumerate(lines) if "-m nousergon_lib.transparency" in line)
+        assert marker_at is not None, "the script never reads the postclose completion marker"
+        assert marker_at < check_at, "the marker is read after the check has already run"
+
+    def test_the_run_date_is_the_new_york_date_not_the_box_utc_date(self):
+        """The marker is keyed by the pipeline's `run_date`, a New York
+        trading date; the box runs in UTC."""
+        src = _SCRIPT.read_text()
+        assert 'RUN_DATE="$(TZ=America/New_York date +%F)"' in src
+        assert self._MARKER + "${RUN_DATE}.json" in src
+
+    def test_the_wait_is_bounded_and_the_service_outlives_it(self):
+        src = _SCRIPT.read_text()
+        match = re.search(r'WAIT_UNTIL_ET="\$\{SUBSTRATE_HEALTH_WAIT_UNTIL_ET:-(\d\d):(\d\d)\}"', src)
+        assert match, "no bounded wait deadline in the script"
+        wait_until = int(match.group(1)) * 60 + int(match.group(2))
+
+        timer = _TIMER.read_text()
+        fire = re.search(r"^OnCalendar=Mon\.\.Fri \*-\*-\* (\d\d):(\d\d):00 America/New_York$", timer, re.M)
+        assert fire, "the timer is not declared in America/New_York"
+        fires = int(fire.group(1)) * 60 + int(fire.group(2))
+        assert fires < wait_until < 24 * 60, "the wait must end after the fire and before New York midnight"
+
+        timeout = re.search(r"^TimeoutStartSec=(\d+)$", _SERVICE.read_text(), re.M)
+        assert timeout, "the service declares no TimeoutStartSec"
+        # The whole wait, plus the original 300 s budget for the check itself.
+        assert int(timeout.group(1)) >= (wait_until - fires) * 60 + 300

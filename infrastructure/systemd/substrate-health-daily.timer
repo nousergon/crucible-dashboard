@@ -1,15 +1,20 @@
 [Unit]
-Description=Daily substrate health check — 22:30 UTC Mon-Fri, after postclose (ne-postclose-trading-pipeline) normally completes
+Description=Daily substrate health check — Mon-Fri 18:30 America/New_York, then waits for ne-postclose-trading-pipeline's completion marker
 # NO Requires=<unit>.service here (alpha-engine-config-I9000) — Requires= in a
 # timer's [Unit] is a START dependency, so `enable --now <timer>` in an
 # installer also starts the service. Binding is by `Unit=`/same basename.
 
 [Timer]
 Unit=substrate-health-daily.service
-# 22:30 UTC Mon-Fri (~14:30/15:30 PT depending on DST) — reconcile normally
-# finishes well before this (daemon shutdown ~1:00 PM PT triggers postclose),
-# so daily-cadence transparency rows exist by the time this runs.
-OnCalendar=Mon..Fri *-*-* 22:30:00 UTC
+# 18:30 America/New_York Mon-Fri — the START of a bounded wait, not the time
+# the check runs. substrate_health_check_daily.sh polls for the postclose
+# pipeline's completion marker and runs the check once it lands (or at 23:30
+# ET, whichever is first). This was a fixed 22:30 UTC on the belief that
+# postclose "normally finishes well before this"; the data cutover
+# (nousergon-data#1930, alpha-engine-config-I11581) moved postclose's end to
+# ~20:30 ET, so ordering is now against the pipeline itself. Declared in New
+# York time so the wait window does not move an hour at each DST change.
+OnCalendar=Mon..Fri *-*-* 18:30:00 America/New_York
 Persistent=true
 RandomizedDelaySec=0
 

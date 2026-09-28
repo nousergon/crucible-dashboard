@@ -1151,7 +1151,8 @@ timers:
           the week entirely — 8d catches the second consecutive skip
   - unit: substrate-health-daily.timer
     max_staleness: 4d
-    note: Mon-Fri 22:30 UTC; Fri->Mon is a 3-day gap by design
+    note: Mon-Fri 18:30 America/New_York (then waits up to 23:30 ET for postclose
+          completion); Fri->Mon is a 3-day gap by design
   - unit: box-state-backup.timer
     max_staleness: 26h
     note: nightly 03:40 UTC + up to 5min randomized delay; a skipped run leaves a real gap in the backup history
