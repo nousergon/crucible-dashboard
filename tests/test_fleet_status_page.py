@@ -415,7 +415,9 @@ class TestPipelineSnapshots:
         monkeypatch.setattr(fsl, "read_pipeline_state_with_fallback", _fake)
         fsl._pipeline_snapshots()
         by_key = dict(zip(fsl._PIPELINES, (f for _, f in seen_filters)))
-        assert len(seen_filters) == 4
+        # 4 → 5: the post-close reconcile machine (nousergon-data-PR1996).
+        assert len(seen_filters) == 5
+        assert "postclose_reconcile" in by_key
         for key, role_filter in by_key.items():
             assert "smoke" not in role_filter
             assert "shell-run" not in role_filter
@@ -481,8 +483,10 @@ class TestUnrecognizedRoleScan:
         )
         found = fsl._unrecognized_roles()
         # One entry per STATE MACHINE, not per row — weekly and
-        # weekly_exercise share an ARN and must not double-report.
-        assert len(found) == 3
+        # weekly_exercise share an ARN and must not double-report. Four state
+        # machines since the post-close split (nousergon-data-PR1996).
+        assert len(found) == 4
+        assert "ne-postclose-reconcile-pipeline" in {sm for sm, _, _ in found}
         assert {r for _, r, _ in found} == {"exercise-v2"}
         assert "ne-weekly-freshness-pipeline" in {sm for sm, _, _ in found}
 
