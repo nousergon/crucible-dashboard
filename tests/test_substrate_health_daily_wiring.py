@@ -102,19 +102,27 @@ _TIMER = _INFRA / "systemd" / "substrate-health-daily.timer"
 
 
 class TestOrderedAfterThePostclosePipeline:
-    """alpha-engine-config-I11581: the check runs after the postclose pipeline
+    """alpha-engine-config-I11581: the check runs after the EOD reconcile
     FINISHES, not at a clock time that used to be after it.
 
     The daily transparency rows (`pnl_attribution` from EOD reconcile,
     `trade_execution_lineage`, `risk_events`, `data_quality`) are written by
-    `ne-postclose-trading-pipeline`. After the decoupled data cutover
-    (nousergon-data#1930) that pipeline waits for `ne-data-collection-eod`
-    (18:15 ET, worst case 20:55 ET) before reconcile, so it ends around
-    20:30 ET instead of ~17:45 ET. At the old fixed 22:30 UTC (18:30 EDT /
-    17:30 EST) every cycle's check would grade the PREVIOUS day's rows.
+    the EOD reconcile. After the decoupled data cutover (nousergon-data#1930)
+    the reconcile waits for `ne-data-collection-eod` (18:15 ET, worst case
+    20:55 ET), so it ends around 20:30 ET instead of ~17:45 ET. At the old
+    fixed 22:30 UTC (18:30 EDT / 17:30 EST) every cycle's check would grade
+    the PREVIOUS day's rows.
+
+    nousergon-data-PR1996 then split the reconcile into its own machine,
+    `ne-postclose-reconcile-pipeline`; the post-close machine's marker now
+    lands ~16:20 ET, BEFORE the reconcile. So the marker that gates the check
+    is the reconcile machine's (`_MARKER`), and the post-close marker is only
+    honoured while the deployed post-close definition still runs the
+    reconcile itself.
     """
 
-    _MARKER = "_sf_completion/ne-postclose-trading-pipeline/"
+    _MARKER = "_sf_completion/ne-postclose-reconcile-pipeline/"
+    _PRESPLIT_MARKER = "_sf_completion/ne-postclose-trading-pipeline/"
 
     def _code_lines(self) -> list[str]:
         return [
@@ -123,11 +131,11 @@ class TestOrderedAfterThePostclosePipeline:
             if line.strip() and not line.strip().startswith("#")
         ]
 
-    def test_the_script_waits_on_the_postclose_completion_marker(self):
+    def test_the_script_waits_on_the_reconcile_completion_marker(self):
         lines = self._code_lines()
         marker_at = next((i for i, line in enumerate(lines) if self._MARKER in line), None)
         check_at = next(i for i, line in enumerate(lines) if "-m nousergon_lib.transparency" in line)
-        assert marker_at is not None, "the script never reads the postclose completion marker"
+        assert marker_at is not None, "the script never reads the reconcile completion marker"
         assert marker_at < check_at, "the marker is read after the check has already run"
 
     def test_the_run_date_is_the_new_york_date_not_the_box_utc_date(self):
@@ -153,3 +161,46 @@ class TestOrderedAfterThePostclosePipeline:
         assert timeout, "the service declares no TimeoutStartSec"
         # The whole wait, plus the original 300 s budget for the check itself.
         assert int(timeout.group(1)) >= (wait_until - fires) * 60 + 300
+
+    def test_the_presplit_postclose_marker_is_only_accepted_behind_the_definition_probe(self):
+        """The post-close marker lands ~16:20 ET once PR1996 is deployed. It
+        may release the wait ONLY when the deployed post-close definition
+        still contains EODReconcile — never on its own."""
+        src = _SCRIPT.read_text()
+        assert 'PRESPLIT_POSTCLOSE_MARKER="' + self._PRESPLIT_MARKER + '${RUN_DATE}.json"' in src
+        uses = [
+            line for line in self._code_lines()
+            if "probe_marker" in line and "$PRESPLIT_POSTCLOSE_MARKER" in line
+        ]
+        assert uses, "the pre-split marker is never probed"
+        for line in uses:
+            assert line.startswith("if postclose_is_presplit && probe_marker"), (
+                f"the pre-split postclose marker is probed without the definition "
+                f"guard in front of it: {line!r}"
+            )
+
+    def test_the_definition_probe_reads_the_deployed_postclose_definition(self):
+        """The discriminator is the definition nousergon-data's deploy uploads
+        (contract sf_definition_s3-1.0.0), matched on the STATE KEY, not on a
+        bare name that a Next or Comment could also carry."""
+        src = _SCRIPT.read_text()
+        assert 'POSTCLOSE_DEFINITION_KEY="infrastructure/step_function_eod.json"' in src
+        assert "grep -q '\"EODReconcile\"[[:space:]]*:'" in src
+
+    def test_the_definition_is_not_piped_into_grep_q_under_pipefail(self):
+        """`aws s3 cp ... - | grep -q` under `set -o pipefail` reports FAILURE
+        on a match (grep exits first and SIGPIPEs the download), which would
+        silently disable the pre-split branch."""
+        single_pipe = re.compile(r"(?<!\|)\|(?!\|)")  # `|`, not `||`
+        for line in self._code_lines():
+            if "aws s3 cp" in line:
+                assert not single_pipe.search(line.split("aws s3 cp", 1)[1]), line
+
+    def test_the_discriminator_matches_the_state_key_only(self):
+        """Pin the regex against both definition shapes it must separate."""
+        pattern = re.compile(r'"EODReconcile"[ \t\r\n]*:')
+        presplit = '{"States": {"CaptureSnapshot": {"Next": "EODReconcile"}, "EODReconcile": {"Type": "Task"}}}'
+        split = '{"States": {"CaptureSnapshot": {"Next": "CheckDegradedOutcome"}}, "Comment": "EODReconcile moved"}'
+        assert pattern.search(presplit)
+        assert not pattern.search(split)
+        assert not pattern.search('{"States": {"X": {"Next": "EODReconcile"}}}')

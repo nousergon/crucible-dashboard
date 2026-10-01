@@ -18,46 +18,92 @@
 # observability surface, same as it was as an SF Task.
 set -eo pipefail
 
-# ── Wait for the postclose pipeline to FINISH (alpha-engine-config-I11581) ──
+# ── Wait for the post-close RECONCILE to FINISH (alpha-engine-config-I11581, I11269) ──
 #
 # The daily rows this checks (`pnl_attribution` from EOD reconcile,
-# `trade_execution_lineage`, `risk_events`, `data_quality`) are written by
-# ne-postclose-trading-pipeline. The timer used to fire at a fixed 22:30 UTC on
-# the belief that postclose "normally completes" by then. The decoupled data
-# cutover (nousergon-data#1930) made that pipeline wait for
-# ne-data-collection-eod (18:15 ET, derived worst case 20:55 ET, I11363) before
-# reconcile, so it now ends around 20:30 ET — after the old fire, which would
-# grade the PREVIOUS cycle's rows every day.
+# `trade_execution_lineage`, `risk_events`, `data_quality`) are written by the
+# EOD reconcile. The timer used to fire at a fixed 22:30 UTC on the belief that
+# postclose "normally completes" by then. The decoupled data cutover
+# (nousergon-data#1930) made the reconcile wait for ne-data-collection-eod
+# (18:15 ET, derived worst case 20:55 ET, I11363), so it now ends around
+# 20:30 ET — after the old fire, which would grade the PREVIOUS cycle's rows
+# every day.
 #
-# So this waits on the pipeline's own completion marker, written by
-# WriteCompletionMarkerNormal / WriteCompletionMarkerDegraded immediately
-# before its success terminals, keyed by the pipeline's `run_date` — the New
-# York trading date, not the box's UTC date. The wait is BOUNDED: at
-# WAIT_UNTIL_ET the check runs anyway against whatever is published and says
-# so, because a postclose run that never finished pages from its own
-# HandleFailure and the per-row staleness this check measures is exactly the
-# evidence an operator then needs. 23:30 ET keeps the whole wait inside one
-# New York date and ahead of the pipeline's own 8h TimeoutSeconds (~00:00 ET
-# from its ~16:00 ET start). A holiday runs out the wait and checks, as before.
+# So this waits on a completion marker, written by WriteCompletionMarkerNormal /
+# WriteCompletionMarkerDegraded immediately before a success terminal, keyed by
+# the pipeline's `run_date` — the New York trading date, not the box's UTC date.
+#
+# WHICH marker depends on which definition is deployed (nousergon-data-PR1996):
+#
+#   - SPLIT (after PR1996 deploys): the reconcile lives in its own machine,
+#     ne-postclose-reconcile-pipeline, and ONLY its marker means the rows are
+#     written. ne-postclose-trading-pipeline's marker now lands ~16:20 ET,
+#     BEFORE the reconcile — accepting it would grade the previous cycle again.
+#   - PRE-SPLIT (before PR1996 deploys): no reconcile machine exists, and
+#     ne-postclose-trading-pipeline's marker lands after its own EODReconcile.
+#
+# The two markers have identical bodies, so the discriminator is the deployed
+# post-close DEFINITION itself: nousergon-data's deploy-infrastructure.sh
+# uploads exactly the bytes it deploys to s3://alpha-engine-research/
+# infrastructure/step_function_eod.json (contract sf_definition_s3-1.0.0). The
+# post-close marker is accepted ONLY while that definition still contains an
+# `EODReconcile` state. Anything else — split deployed, object unreadable,
+# probe fault — requires the reconcile marker, so the failure direction is
+# "later", never "grades pre-reconcile rows". Re-read every poll, so a deploy
+# mid-wait is honoured. Once the split is verified live, the pre-split branch
+# is dead and is removed (alpha-engine-config-I11269 follow-up).
+#
+# The wait is BOUNDED: at WAIT_UNTIL_ET the check runs anyway against whatever
+# is published and says so, because a reconcile that never finished pages from
+# its own HandleFailure and the per-row staleness this check measures is
+# exactly the evidence an operator then needs. 23:30 ET keeps the whole wait
+# inside one New York date. A holiday runs out the wait and checks, as before.
 RUN_DATE="$(TZ=America/New_York date +%F)"
-COMPLETION_MARKER="_sf_completion/ne-postclose-trading-pipeline/${RUN_DATE}.json"
+RECONCILE_MARKER="_sf_completion/ne-postclose-reconcile-pipeline/${RUN_DATE}.json"
+PRESPLIT_POSTCLOSE_MARKER="_sf_completion/ne-postclose-trading-pipeline/${RUN_DATE}.json"
+POSTCLOSE_DEFINITION_KEY="infrastructure/step_function_eod.json"
 WAIT_UNTIL_ET="${SUBSTRATE_HEALTH_WAIT_UNTIL_ET:-23:30}"
 POLL_SECONDS=300
 WAIT_DEADLINE_EPOCH="$(TZ=America/New_York date -d "$RUN_DATE $WAIT_UNTIL_ET" +%s)"
+
+# 0 = the marker is present. 1 = absent (404). 2 = probe fault, printed so a
+# permissions or network problem is not read as a slow pipeline.
+probe_marker() {
+  local key="$1" err
+  if err="$(aws s3api head-object --bucket alpha-engine-research --key "$key" 2>&1 >/dev/null)"; then
+    return 0
+  fi
+  case "$err" in
+    *"Not Found"*|*"(404)"*) return 1 ;;
+    *) echo "completion probe FAULT on $key (still waiting): $err" >&2; return 2 ;;
+  esac
+}
+
+# True only on positive evidence that the deployed post-close definition still
+# runs the reconcile itself (the pre-split shape).
+# Read into a variable, never piped straight into `grep -q`: under pipefail,
+# grep exiting on its first match SIGPIPEs the download, and the pipeline would
+# report failure on exactly the input that matched.
+postclose_is_presplit() {
+  local definition
+  definition="$(aws s3 cp "s3://alpha-engine-research/$POSTCLOSE_DEFINITION_KEY" - 2>/dev/null)" || return 1
+  grep -q '"EODReconcile"[[:space:]]*:' <<<"$definition"
+}
+
 while true; do
-  if probe_err="$(aws s3api head-object --bucket alpha-engine-research --key "$COMPLETION_MARKER" 2>&1 >/dev/null)"; then
-    echo "postclose completion marker present: s3://alpha-engine-research/$COMPLETION_MARKER"
+  if probe_marker "$RECONCILE_MARKER"; then
+    echo "reconcile completion marker present: s3://alpha-engine-research/$RECONCILE_MARKER"
     break
   fi
-  # A 404 is "not finished yet". Anything else is a probe fault, printed every
-  # poll so a permissions or network problem is not read as a slow pipeline.
-  case "$probe_err" in
-    *"Not Found"*|*"(404)"*) ;;
-    *) echo "postclose completion probe FAULT (still waiting): $probe_err" >&2 ;;
-  esac
+  if postclose_is_presplit && probe_marker "$PRESPLIT_POSTCLOSE_MARKER"; then
+    echo "post-close split not deployed yet (s3://alpha-engine-research/$POSTCLOSE_DEFINITION_KEY" \
+         "still defines EODReconcile); pre-split postclose completion marker present:" \
+         "s3://alpha-engine-research/$PRESPLIT_POSTCLOSE_MARKER"
+    break
+  fi
   if [ "$(date +%s)" -ge "$WAIT_DEADLINE_EPOCH" ]; then
-    echo "WARNING: no postclose completion marker for $RUN_DATE by $WAIT_UNTIL_ET ET" \
-         "(s3://alpha-engine-research/$COMPLETION_MARKER) — checking the rows as published." >&2
+    echo "WARNING: no reconcile completion marker for $RUN_DATE by $WAIT_UNTIL_ET ET" \
+         "(s3://alpha-engine-research/$RECONCILE_MARKER) — checking the rows as published." >&2
     break
   fi
   sleep "$POLL_SECONDS"
