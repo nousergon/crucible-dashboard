@@ -191,9 +191,10 @@ class TestOrderedAfterThePostclosePipeline:
         """`aws s3 cp ... - | grep -q` under `set -o pipefail` reports FAILURE
         on a match (grep exits first and SIGPIPEs the download), which would
         silently disable the pre-split branch."""
+        single_pipe = re.compile(r"(?<!\|)\|(?!\|)")  # `|`, not `||`
         for line in self._code_lines():
             if "aws s3 cp" in line:
-                assert "|" not in line.split("aws s3 cp", 1)[1], line
+                assert not single_pipe.search(line.split("aws s3 cp", 1)[1]), line
 
     def test_the_discriminator_matches_the_state_key_only(self):
         """Pin the regex against both definition shapes it must separate."""

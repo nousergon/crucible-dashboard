@@ -483,8 +483,10 @@ class TestUnrecognizedRoleScan:
         )
         found = fsl._unrecognized_roles()
         # One entry per STATE MACHINE, not per row — weekly and
-        # weekly_exercise share an ARN and must not double-report.
-        assert len(found) == 3
+        # weekly_exercise share an ARN and must not double-report. Four state
+        # machines since the post-close split (nousergon-data-PR1996).
+        assert len(found) == 4
+        assert "ne-postclose-reconcile-pipeline" in {sm for sm, _, _ in found}
         assert {r for _, r, _ in found} == {"exercise-v2"}
         assert "ne-weekly-freshness-pipeline" in {sm for sm, _, _ in found}
 
