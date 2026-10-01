@@ -9,8 +9,8 @@ Phase 1 (lib substrate `nousergon_lib.pipeline_status` v0.28.1) merged
 What this page shows
 ====================
 
-Three sections — Weekly Freshness / Pre-open Trading / Post-close Trading —
-each backed by the most-recent execution of that state machine via
+Four sections — Weekly Freshness / Pre-open Trading / Post-close Trading /
+Post-close Reconcile — each backed by the most-recent execution of that state machine via
 ``read_pipeline_state``.
 For each pipeline:
 
@@ -85,12 +85,15 @@ def _arn_for(sf_name: str) -> str:
 
 
 # Stable order: Weekly Freshness first (it's the headline weekly run), then
-# Pre-open Trading (daily cadence), then Post-close Trading (post-market
-# reconciliation).
+# Pre-open Trading (daily cadence), then Post-close Trading (the snapshot right
+# after the close), then Post-close Reconcile (the collector-dependent half of
+# the post-close run, split into its own machine by nousergon-data-PR1996:
+# readiness wait, EOD reconcile / heal loop, box stop, exercise launch).
 _SF_ORDER: list[str] = [
     "ne-weekly-freshness-pipeline",
     "ne-preopen-trading-pipeline",
     "ne-postclose-trading-pipeline",
+    "ne-postclose-reconcile-pipeline",
 ]
 _ALL_ARNS: list[str] = [_arn_for(n) for n in _SF_ORDER]
 
@@ -104,6 +107,9 @@ _CANONICAL_ROLE_BY_SF: dict[str, str] = {
     "ne-weekly-freshness-pipeline": "weekly",
     "ne-preopen-trading-pipeline": "daily",
     "ne-postclose-trading-pipeline": "eod",
+    # nousergon-data-PR1996: alpha-engine-eod-backstop starts the reconcile
+    # machine with the same pipeline_role the post-close run carries.
+    "ne-postclose-reconcile-pipeline": "eod",
 }
 
 

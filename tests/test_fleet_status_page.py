@@ -415,7 +415,9 @@ class TestPipelineSnapshots:
         monkeypatch.setattr(fsl, "read_pipeline_state_with_fallback", _fake)
         fsl._pipeline_snapshots()
         by_key = dict(zip(fsl._PIPELINES, (f for _, f in seen_filters)))
-        assert len(seen_filters) == 4
+        # 4 → 5: the post-close reconcile machine (nousergon-data-PR1996).
+        assert len(seen_filters) == 5
+        assert "postclose_reconcile" in by_key
         for key, role_filter in by_key.items():
             assert "smoke" not in role_filter
             assert "shell-run" not in role_filter

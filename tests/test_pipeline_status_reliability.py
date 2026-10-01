@@ -202,7 +202,35 @@ _SF_FILES = {
     "ne-weekly-freshness-pipeline": "step_function.json",
     "ne-preopen-trading-pipeline": "step_function_daily.json",
     "ne-postclose-trading-pipeline": "step_function_eod.json",
+    # nousergon-data-PR1996 split the post-close run; the collector-dependent
+    # half is its own machine (alpha-engine-config-I11269 follow-up).
+    "ne-postclose-reconcile-pipeline": "step_function_eod_reconcile.json",
 }
+
+#: TRANSITIONAL (nousergon-data-PR1996). Until that PR merges, nousergon-data
+#: ``main`` has no ``step_function_eod_reconcile.json``: the reconcile machine's
+#: states still live, unrenamed, inside the post-close definition. This test
+#: reads ``main`` with the PINNED library, and nousergon-data's
+#: sf-stage-consumer-guard runs it against PR1996's candidate definitions, so
+#: without this each side would wait on the other's ``main`` (the
+#: alpha-engine-config-I10762 deadlock, one level up: a new PIPELINE rather than
+#: a new stage). It applies ONLY when the reconcile file is absent AND the
+#: post-close definition still defines ``EODReconcile`` — positive evidence of
+#: the pre-split shape — and then grades the reconcile spine against the
+#: definition that really runs those states today. A present reconcile file is
+#: always graded as itself. Remove once PR1996 is on nousergon-data ``main``.
+_PRESPLIT_HOME = {"step_function_eod_reconcile.json": "step_function_eod.json"}
+
+
+def _definition_path(filename: str) -> Path:
+    path = _DATA_INFRA / filename
+    home = _PRESPLIT_HOME.get(filename)
+    if path.exists() or home is None or not (_DATA_INFRA / home).exists():
+        return path
+    presplit = json.loads((_DATA_INFRA / home).read_text())
+    if "EODReconcile" in _all_state_names(presplit["States"]):
+        return _DATA_INFRA / home
+    return path
 
 # alpha-engine-config-I7605: this previously hardcoded a bare sibling-checkout
 # path with no SF_DEFS_DIR override and no CI-hard-fail guard, unlike
@@ -245,7 +273,7 @@ def test_every_declared_stage_exists_in_the_live_definition(sf_name: str, filena
     `ModelZooRotation` — names no definition had — and order nothing on the
     weekly side for months (alpha-engine-config-I6857).
     """
-    path = _DATA_INFRA / filename
+    path = _definition_path(filename)
     if not path.exists():
         message = (
             f"{path} not present. CI checks the data repo out and sets "
