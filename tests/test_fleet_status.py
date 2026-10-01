@@ -285,6 +285,53 @@ class TestPipelines:
             started_at=TRADING_MID - timedelta(days=1)))
         assert s.dot == GRAY
 
+    # nousergon-data-PR1996: the reconcile machine is event-started after
+    # ne-data-collection-eod, with a 02:15 UTC backstop — so its start
+    # routinely crosses midnight UTC and must be anchored to the last
+    # COMPLETED session, never to "today (UTC)".
+    def _reconcile(self, snap, now, prev_close):
+        return resolve_pipeline("postclose_reconcile", _inputs(
+            now=now, pipelines={"postclose_reconcile": snap},
+            prev_session_close_utc=prev_close))
+
+    def test_reconcile_started_after_midnight_utc_is_on_schedule(self):
+        prev_close = datetime(2026, 7, 6, 20, 0, tzinfo=timezone.utc)  # Mon close
+        now = datetime(2026, 7, 7, 3, 0, tzinfo=timezone.utc)  # past due (02:30)
+        s = self._reconcile(PipelineSnapshot(
+            status="SUCCEEDED", verdict="COMPLETE", role="eod",
+            started_at=prev_close + timedelta(hours=4, minutes=55),  # 00:55 UTC Tue
+            stopped_at=prev_close + timedelta(hours=5, minutes=30)), now, prev_close)
+        assert s.component_id == "pipeline_postclose_reconcile"
+        assert s.dot == GRAY
+        assert "overdue" not in s.reason
+
+    def test_reconcile_overdue_once_the_backstop_has_had_its_chance(self):
+        prev_close = datetime(2026, 7, 6, 20, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 7, 7, 3, 0, tzinfo=timezone.utc)
+        s = self._reconcile(PipelineSnapshot(
+            status="SUCCEEDED", verdict="COMPLETE", role="eod",
+            started_at=prev_close - timedelta(days=1, hours=-4),
+            stopped_at=prev_close - timedelta(days=1, hours=-5)), now, prev_close)
+        assert s.dot == YELLOW
+        assert "overdue" in s.reason
+
+    def test_reconcile_not_yet_due_before_the_backstop(self):
+        prev_close = datetime(2026, 7, 6, 20, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 7, 7, 1, 0, tzinfo=timezone.utc)  # before 02:30
+        s = self._reconcile(PipelineSnapshot(
+            status="SUCCEEDED", verdict="COMPLETE", role="eod",
+            started_at=prev_close - timedelta(days=1, hours=-4)), now, prev_close)
+        assert s.dot == GRAY
+
+    def test_failed_reconcile_is_red(self):
+        prev_close = datetime(2026, 7, 6, 20, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 7, 7, 3, 0, tzinfo=timezone.utc)
+        s = self._reconcile(PipelineSnapshot(
+            status="FAILED", verdict="FAILED", role="eod",
+            started_at=prev_close + timedelta(hours=4),
+            stopped_at=prev_close + timedelta(hours=4, minutes=20)), now, prev_close)
+        assert s.dot == RED
+
     def test_yellow_unavailable(self):
         s = _pipe("preopen", PipelineSnapshot(status="UNAVAILABLE", error="throttled"))
         assert s.dot == YELLOW
@@ -491,9 +538,11 @@ class TestWeeklyExerciseRun:
             snap, PipelineSnapshot(status="NO_EXECUTIONS")).reason
 
     def test_exercise_overdue_is_anchored_to_the_last_session_close(self):
-        # Mon 2026-07-06 close (20:00 UTC) + 2h postclose + 2h margin ⇒ the
-        # exercise run for Monday's session is due by Tue 00:00 UTC. At
-        # TRADING_MID (Tue 15:00 UTC) that deadline is long past.
+        # Mon 2026-07-06 close (20:00 UTC) + 6h30m reconcile due + 2h margin
+        # ⇒ the exercise run for Monday's session is due by Tue 04:30 UTC (it
+        # is launched by the reconcile machine's tail since
+        # nousergon-data-PR1996). At TRADING_MID (Tue 15:00 UTC) that
+        # deadline is long past.
         prev_close = datetime(2026, 7, 6, 20, 0, tzinfo=timezone.utc)
 
         def _ex(snap):
@@ -828,10 +877,14 @@ class TestResolveFleet:
         # is how a status page stops being readable. `fleet_checks` is ONE
         # rolled-up row for every scheduled check precisely to keep that
         # number from growing per check.
+        # 16 → 17 (nousergon-data-PR1996): `pipeline_postclose_reconcile` —
+        # the post-close run split into two state machines, and the
+        # collector-dependent half (the one that writes eod_pnl) needs its
+        # own verdict rather than hiding behind the ~16:20 ET post-close one.
         statuses = resolve_fleet(_inputs())
-        assert len(statuses) == 16
+        assert len(statuses) == 17
         assert {s.group for s in statuses} <= set(GROUP_ORDER)
-        assert len({s.component_id for s in statuses}) == 16
+        assert len({s.component_id for s in statuses}) == 17
 
     def test_worst_dot_severity_order(self):
         statuses = resolve_fleet(_inputs(trading_instance_state="stopped"))

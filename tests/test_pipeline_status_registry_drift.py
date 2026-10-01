@@ -104,7 +104,34 @@ _SF_JSON_FILES = [
     ("Saturday", _SIBLING_DATA_REPO / "infrastructure" / "step_function.json"),
     ("Weekday", _SIBLING_DATA_REPO / "infrastructure" / "step_function_daily.json"),
     ("EOD", _SIBLING_DATA_REPO / "infrastructure" / "step_function_eod.json"),
+    # nousergon-data-PR1996: the collector-dependent half of the post-close
+    # run, split into ne-postclose-reconcile-pipeline.
+    (
+        "EOD reconcile",
+        _SIBLING_DATA_REPO / "infrastructure" / "step_function_eod_reconcile.json",
+    ),
 ]
+
+#: TRANSITIONAL (nousergon-data-PR1996) — same rule, and same reason, as
+#: ``_PRESPLIT_HOME`` in test_pipeline_status_reliability.py: until PR1996 is on
+#: nousergon-data ``main`` the reconcile states live in the post-close
+#: definition. Used ONLY when the reconcile file is absent AND the post-close
+#: definition still defines ``EODReconcile``; a present file is always walked
+#: as itself. Remove once PR1996 is on ``main``.
+_PRESPLIT_HOME = {
+    "step_function_eod_reconcile.json": "step_function_eod.json",
+}
+
+
+def _definition_path(json_path: Path) -> Path:
+    home = _PRESPLIT_HOME.get(json_path.name)
+    if json_path.exists() or home is None:
+        return json_path
+    presplit = json_path.with_name(home)
+    if not presplit.exists():
+        return json_path
+    states = json.loads(presplit.read_text()).get("States", {})
+    return presplit if "EODReconcile" in states else json_path
 
 
 # Polling Wait companions use ``getCommandInvocation`` — never substantive.
@@ -147,6 +174,7 @@ def test_every_substantive_state_has_registry_entry(label, json_path):
     visible-but-degraded. Fix: add the new state name + ArchivePageRef or
     ArtifactReason to ``nousergon_lib.pipeline_status.registry`` and
     bump the lib version."""
+    json_path = _definition_path(json_path)
     _require_definitions(label, json_path)
 
     substantive = _all_substantive_states(json_path)
@@ -173,6 +201,7 @@ def test_wait_companions_in_json_are_in_wait_grouping(label, json_path):
     """Every state named ``WaitFor*`` in the SF JSON must appear in
     WAIT_GROUPING — otherwise the Wait state would render as its own row
     instead of rolling into its parent."""
+    json_path = _definition_path(json_path)
     _require_definitions(label, json_path)
 
     sf = json.loads(json_path.read_text())
