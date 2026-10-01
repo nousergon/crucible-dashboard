@@ -87,9 +87,20 @@ DAEMON_STALE_S = 300.0
 DAEMON_OPEN_GRACE = timedelta(minutes=5)
 # Post-close pipeline expected complete by close + this.
 POSTCLOSE_DUE_LAG = timedelta(hours=2)
-# The daily exercise run is LAUNCHED by postclose's last state, so it can
-# only be overdue once postclose itself is past due plus a margin for the
-# postclose run's own duration (config#5489).
+# The post-close RECONCILE machine (nousergon-data-PR1996) has no cron of its
+# own: alpha-engine-eod-backstop starts it when ne-data-collection-eod reaches
+# a terminal state (cron'd 18:15 ET; the workloads the reconcile reads finish
+# by 20:55 ET worst case), and a 02:15 UTC TUE-SAT backstop starts it if that
+# event never fires. So it is overdue only once the backstop has had its
+# chance: close + 6h30m is 02:30 UTC after a 16:00 EDT close (20:00 UTC) —
+# 15 min past the backstop — and 03:30 UTC in winter. Anchored to the most
+# recently COMPLETED session, like the exercise row, because the start
+# routinely crosses midnight UTC.
+RECONCILE_START_DUE_LAG = timedelta(hours=6, minutes=30)
+# The daily exercise run is LAUNCHED by the reconcile machine's tail since the
+# post-close split (nousergon-data-PR1996; before it, by postclose's last
+# state), so it can only be overdue once the reconcile is past due plus a
+# margin for the reconcile run's own duration (config#5489).
 EXERCISE_LAUNCH_MARGIN = timedelta(hours=2)
 # Freshness-monitor Lambda runs every 15 min.
 FRESHNESS_HEARTBEAT_STALE_S = 25 * 60.0
@@ -143,7 +154,8 @@ RECOVERY_PIPELINE_ROLES = frozenset({"watch-rerun", "recovery"})
 FAST_PATH_RERUN_NAME_PREFIX = "fast-path-rerun-"
 
 # The daily EXERCISE run (config#5489, Brian ruling 2026-07-29):
-# ne-postclose's ``LaunchWeeklyExerciseRun`` fires the FULL weekly pipeline
+# ``LaunchWeeklyExerciseRun`` (on ne-postclose-reconcile since
+# nousergon-data-PR1996, on ne-postclose before it) fires the FULL weekly pipeline
 # after every trading day's postclose with ``pipeline_role="exercise"``, so
 # the pipeline gets ~5 iteration cycles a week instead of 1 while its bugs
 # are worked out (measured: 11 of the last 60 executions reached a
@@ -281,7 +293,8 @@ class FleetInputs:
     live_service_ok: Optional[bool] = None  # None ⇒ probe n/a (off-box dev)
     # Daemon heartbeat: age (s) of intraday/nav.json; None ⇒ artifact absent.
     intraday_nav_age_s: Optional[float] = None
-    # Pipelines keyed weekly|weekly_exercise|preopen|postclose.
+    # Pipelines keyed weekly|weekly_exercise|preopen|postclose|
+    # postclose_reconcile.
     pipelines: dict = field(default_factory=dict)
     # (state_machine, role, started_at_iso) for each recent execution whose
     # ``pipeline_role`` is a non-empty value OUTSIDE KNOWN_PIPELINE_ROLES.
@@ -555,9 +568,20 @@ def _pipeline_expectation(key: str, inp: FleetInputs) -> tuple[bool, Optional[da
         _, close_utc = market_hours_utc(now)
         due = close_utc + POSTCLOSE_DUE_LAG
         return now >= due, due
+    if key == "postclose_reconcile":
+        # Event-started, with a 02:15 UTC backstop (see
+        # RECONCILE_START_DUE_LAG): anchored to the last COMPLETED session,
+        # because its start crosses midnight UTC. ``None`` degrades to
+        # not-expected, as for the exercise row below.
+        if inp.prev_session_close_utc is None:
+            return False, None
+        due = inp.prev_session_close_utc + RECONCILE_START_DUE_LAG
+        return now >= due, due
     if key == "weekly_exercise":
-        # Chained off the END of postclose (config#5489) rather than a cron,
-        # so its deadline is postclose's own due plus a run margin —
+        # Chained off the END of the reconcile machine (config#5489; the
+        # post-close machine's end before nousergon-data-PR1996) rather than
+        # a cron, so its deadline is the reconcile's own due plus a run
+        # margin —
         # anchored to the most recently COMPLETED session, not to "today".
         # Anchoring on today's close would put the deadline at or past
         # midnight UTC, and the same-UTC-day "did it run" comparison then
@@ -568,7 +592,9 @@ def _pipeline_expectation(key: str, inp: FleetInputs) -> tuple[bool, Optional[da
         if inp.prev_session_close_utc is None:
             return False, None
         due = (
-            inp.prev_session_close_utc + POSTCLOSE_DUE_LAG + EXERCISE_LAUNCH_MARGIN
+            inp.prev_session_close_utc
+            + RECONCILE_START_DUE_LAG
+            + EXERCISE_LAUNCH_MARGIN
         )
         return now >= due, due
     return False, None
@@ -579,15 +605,19 @@ _PIPELINE_LABELS = {
     "weekly_exercise": "Weekly pipeline — daily EXERCISE run",
     "preopen": "Pre-open pipeline (ne-preopen-trading)",
     "postclose": "Post-close pipeline (ne-postclose-trading)",
+    "postclose_reconcile": "Post-close reconcile pipeline (ne-postclose-reconcile)",
 }
 
 # Human-readable cadence, surfaced in the idle reason string so a ⚪ dot
 # reads as "on schedule" rather than "unexplained inactivity".
 _PIPELINE_CADENCE = {
     "weekly": "runs weekly, Sat 09:00 UTC",
-    "weekly_exercise": "runs every trading day, chained off postclose",
+    "weekly_exercise": "runs every trading day, chained off the post-close reconcile",
     "preopen": "runs weekdays, 12:45 UTC",
     "postclose": "runs weekdays, ~market close + 2h",
+    "postclose_reconcile": (
+        "runs weekdays after ne-data-collection-eod finishes; 02:15 UTC backstop"
+    ),
 }
 
 # Dot a FAILED cycle earns, per pipeline. The exercise cadence is a
@@ -673,7 +703,7 @@ def _resolve_pipeline(key: str, inp: FleetInputs) -> ComponentStatus:
         )
 
     expected, due = _pipeline_expectation(key, inp)
-    if key == "weekly_exercise":
+    if key in ("weekly_exercise", "postclose_reconcile"):
         # Same anchor as the deadline: "did the run for the session that
         # just closed happen", not "did anything happen today (UTC)".
         ran_today = (
@@ -1195,6 +1225,7 @@ def resolve_fleet(inp: FleetInputs) -> list[ComponentStatus]:
         resolve_pipeline("weekly_exercise", inp),
         resolve_pipeline("preopen", inp),
         resolve_pipeline("postclose", inp),
+        resolve_pipeline("postclose_reconcile", inp),
         resolve_pipeline_role_coverage(inp),
         resolve_groomer(inp),
         resolve_sf_watch(inp),
