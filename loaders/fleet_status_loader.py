@@ -115,6 +115,14 @@ _PIPELINES: dict[str, tuple[str, frozenset]] = {
         "ne-postclose-trading-pipeline",
         frozenset({"eod"}) | RECOVERY_PIPELINE_ROLES,
     ),
+    # nousergon-data-PR1996 split the post-close run: the collector-dependent
+    # half (readiness wait, EOD reconcile / heal loop, box stop, exercise
+    # launch) is its own machine, started with pipeline_role "eod" when
+    # ne-data-collection-eod reaches a terminal state.
+    "postclose_reconcile": (
+        "ne-postclose-reconcile-pipeline",
+        frozenset({"eod"}) | RECOVERY_PIPELINE_ROLES,
+    ),
     "weekly_exercise": ("ne-weekly-freshness-pipeline", EXERCISE_PIPELINE_ROLES),
 }
 
@@ -314,7 +322,8 @@ def _pipeline_snapshots() -> dict[str, PipelineSnapshot]:
 def _prev_session_close_utc(now: datetime) -> datetime | None:
     """Close (UTC) of the most recently COMPLETED NYSE session.
 
-    The exercise run is launched by postclose, so "should it have run by
+    The exercise run (and the post-close reconcile machine that launches it,
+    nousergon-data-PR1996) hang off the close, so "should it have run by
     now" hangs off the last session that actually closed — walking back
     over weekends and holidays instead of assuming yesterday (config#5489).
     Returns None if no closed session is found in the lookback window; the
