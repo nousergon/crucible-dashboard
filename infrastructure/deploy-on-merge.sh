@@ -786,7 +786,12 @@ INFRA="$REPO_DIR/infrastructure"
 STAMP_DIR="/etc/alpha-engine/installer-stamps"
 
 ROUTED_INSTALLERS=(
-  "install-boot-pull.sh|files|systemd/boot-pull.service:/etc/systemd/system/boot-pull.service,systemd/boot-pull.timer:/etc/systemd/system/boot-pull.timer"
+  # The launcher pair is load-bearing for the I8734 cutover, not just drift:
+  # an OLD boot-pull.sh mid-run when this commit merges copies the new unit
+  # (ExecStart=/usr/local/sbin/boot-pull-launcher.sh) without installing the
+  # launcher, leaving the unit files matching — only this pair re-runs the
+  # installer then (alpha-engine-config-I8734).
+  "install-boot-pull.sh|files|boot-pull-launcher.sh:/usr/local/sbin/boot-pull-launcher.sh,systemd/boot-pull.service:/etc/systemd/system/boot-pull.service,systemd/boot-pull.timer:/etc/systemd/system/boot-pull.timer"
   "install-scan-unlisted-state.sh|files|systemd/scan-unlisted-state.service:/etc/systemd/system/scan-unlisted-state.service,systemd/scan-unlisted-state.timer:/etc/systemd/system/scan-unlisted-state.timer"
   "install-substrate-health-daily.sh|files|systemd/substrate-health-daily.service:/etc/systemd/system/substrate-health-daily.service,systemd/substrate-health-daily.timer:/etc/systemd/system/substrate-health-daily.timer,systemd/alert-on-failure@.service:/etc/systemd/system/alert-on-failure@.service"
   # STAMP, not files, and the reason is not obvious: the installer writes its

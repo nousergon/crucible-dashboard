@@ -9,7 +9,14 @@ User=ec2-user
 # /var/lib/boot-pull for last-pull-shas, created and owned for User= by systemd —
 # the first hourly run (2026-09-13 15:39 UTC) could not mkdir it as ec2-user.
 StateDirectory=boot-pull
-ExecStart=/home/ec2-user/alpha-engine-dashboard/infrastructure/boot-pull.sh
+# alpha-engine-config-I8734: ExecStart MUST point outside the synced
+# alpha-engine-dashboard checkout, which boot-pull.sh fast-forwards (and on a
+# failed health gate, resets) while it runs. The launcher is installed to
+# /usr/local/sbin by install-boot-pull.sh and by boot-pull.sh itself BEFORE
+# either copies this unit; boot-pull.sh will not copy this unit while the
+# launcher is missing. It snapshots boot-pull.sh from origin/main to a path
+# outside the tree and execs the snapshot.
+ExecStart=/usr/local/sbin/boot-pull-launcher.sh
 TimeoutStartSec=300
 RemainAfterExit=no
 # Ensure the script sees a sane PATH (includes pip, git, aws)

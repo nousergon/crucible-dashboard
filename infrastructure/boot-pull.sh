@@ -375,6 +375,26 @@ sync_repo_to_main() {
     done
 }
 
+# ── boot-pull.service's out-of-tree exec target (alpha-engine-config-I8734) ──
+# boot-pull.service ExecStarts $LAUNCHER_DST, an installed copy of
+# $LAUNCHER_SRC outside the checkout this script syncs. The install and the
+# guard that uses boot_pull_unit_installable sit just before the unit sync
+# below. AE_BOOT_PULL_LAUNCHER_DST exists for the test suite only; the unit
+# sets nothing.
+LAUNCHER_SRC="/home/ec2-user/alpha-engine-dashboard/infrastructure/boot-pull-launcher.sh"
+LAUNCHER_DST="${AE_BOOT_PULL_LAUNCHER_DST:-/usr/local/sbin/boot-pull-launcher.sh}"
+
+# boot_pull_unit_installable <unit-file> — 0 unless <unit-file> is a
+# boot-pull.service whose ExecStart is $LAUNCHER_DST and $LAUNCHER_DST is not
+# an executable file. Copying such a unit would leave boot-pull unable to
+# start, with nothing left to repair it.
+boot_pull_unit_installable() {
+    local unit="$1"
+    [ "$(basename "$unit")" = "boot-pull.service" ] || return 0
+    grep -qxF "ExecStart=$LAUNCHER_DST" "$unit" || return 0
+    [ -x "$LAUNCHER_DST" ]
+}
+
 # Tests source this file for sync_repo_to_main() and its helpers (defined
 # above) and must not execute the boot sequence below (SSM reads, sudo,
 # systemctl, the actual REPOS pull). Everything above this line is pure
@@ -544,6 +564,40 @@ if ! fetch_config_from_ssm /alpha-engine/dashboard/live-config.yaml \
     FAILED_REPOS+=("ssm:live-config.yaml")
 fi
 
+# ── Self-heal boot-pull-launcher.sh at /usr/local/sbin (BEFORE the unit sync) ─
+# alpha-engine-config-I8734. boot-pull.service ExecStarts $LAUNCHER_DST, a copy
+# of the in-repo launcher OUTSIDE the checkout this script syncs. Two artifacts
+# (unit + exec target), and the unit sync below copies the unit on every run —
+# so the target must be in place first. A unit whose ExecStart names a missing
+# file fails 203/EXEC every hour, and this script, the thing that would repair
+# it, is what stops running (trading box, 2026-08-28..31, crucible-executor-
+# PR519). The unit sync below therefore also refuses to install that unit
+# while the launcher is not installed and executable
+# (boot_pull_unit_installable), keeping the installed in-tree ExecStart
+# startable until the next run retries.
+#
+# Byte-compare, not existence: a stale launcher from an older commit is
+# repaired too. Mode/owner match install-boot-pull.sh. Runs every time, not
+# gated on whether this run's pull moved anything.
+# (LAUNCHER_SRC / LAUNCHER_DST / boot_pull_unit_installable are defined above
+# the AE_BOOT_PULL_LIB_ONLY guard so tests can exercise the guard directly.)
+if [ -f "$LAUNCHER_SRC" ]; then
+    if [ ! -x "$LAUNCHER_DST" ] || ! cmp -s "$LAUNCHER_SRC" "$LAUNCHER_DST"; then
+        if sudo install -m 0755 -o root -g root "$LAUNCHER_SRC" "$LAUNCHER_DST" >> "$LOG" 2>&1 \
+           && [ -x "$LAUNCHER_DST" ]; then
+            log "OK   boot-pull-launcher: installed $LAUNCHER_DST (src=$LAUNCHER_SRC)"
+        else
+            log "FAIL boot-pull-launcher: install of $LAUNCHER_DST failed"
+            PULL_FAILURES=$((PULL_FAILURES + 1))
+            FAILED_REPOS+=("boot-pull-launcher (install)")
+        fi
+    else
+        log "OK   boot-pull-launcher: $LAUNCHER_DST matches repo"
+    fi
+else
+    log "WARN boot-pull-launcher: source $LAUNCHER_SRC not found — skipping (the repo pull above already reports an incomplete checkout)"
+fi
+
 # ── Sync systemd unit files from dashboard repo ─────────────────────────────
 # The source of truth for unit files is the repo. This reloads systemd and
 # restarts any service whose unit file actually changed, so drift between
@@ -554,6 +608,14 @@ if [ -d "$SYSTEMD_SRC" ]; then
     for unit in "$SYSTEMD_SRC"/*.service "$SYSTEMD_SRC"/*.timer; do
         [ -f "$unit" ] || continue
         name=$(basename "$unit")
+        if ! boot_pull_unit_installable "$unit"; then
+            if ! diff -q "$unit" "/etc/systemd/system/$name" >/dev/null 2>&1; then
+                log "FAIL SYNC $name held back — its ExecStart names $LAUNCHER_DST, which is not installed and executable; keeping the installed unit so boot-pull can still start (retried next run)"
+                PULL_FAILURES=$((PULL_FAILURES + 1))
+                FAILED_REPOS+=("boot-pull.service (launcher missing)")
+            fi
+            continue
+        fi
         if [ -f "/etc/systemd/system/$name" ]; then
             if ! diff -q "$unit" "/etc/systemd/system/$name" >/dev/null 2>&1; then
                 sudo cp "$unit" "/etc/systemd/system/$name"
@@ -729,6 +791,10 @@ if [ -n "$FAILED_UNITS" ]; then
     for unit in "$SYSTEMD_SRC"/*.service "$SYSTEMD_SRC"/*.timer; do
         [ -f "$unit" ] || continue
         name=$(basename "$unit")
+        if ! boot_pull_unit_installable "$unit"; then
+            log "WARN REVERT-SYNC $name held back — its ExecStart names $LAUNCHER_DST, which is not installed and executable"
+            continue
+        fi
         if [ -f "/etc/systemd/system/$name" ] && ! diff -q "$unit" "/etc/systemd/system/$name" >/dev/null 2>&1; then
             sudo cp "$unit" "/etc/systemd/system/$name"
             log "REVERT-SYNC $name"
