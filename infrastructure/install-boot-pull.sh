@@ -18,6 +18,8 @@
 set -euo pipefail
 
 SCRIPT="/home/ec2-user/alpha-engine-dashboard/infrastructure/boot-pull.sh"
+LAUNCHER_SRC="/home/ec2-user/alpha-engine-dashboard/infrastructure/boot-pull-launcher.sh"
+LAUNCHER_DST="/usr/local/sbin/boot-pull-launcher.sh"
 SYSTEMD_SRC="/home/ec2-user/alpha-engine-dashboard/infrastructure/systemd"
 LOG="/var/log/boot-pull.log"
 
@@ -39,6 +41,18 @@ chown ec2-user:ec2-user "$LOG"
 
 # Ensure script is executable
 chmod +x "$SCRIPT"
+
+# alpha-engine-config-I8734: boot-pull.service ExecStarts the launcher at
+# $LAUNCHER_DST, OUTSIDE the checkout boot-pull.sh syncs. Install it BEFORE the
+# unit that names it, and prove it is executable — a unit copied over a
+# missing launcher fails 203/EXEC every hour with nothing left to repair it.
+# set -e stops here on failure, so the unit copy below never runs.
+install -m 0755 -o root -g root "$LAUNCHER_SRC" "$LAUNCHER_DST"
+if [ ! -x "$LAUNCHER_DST" ]; then
+    echo "ERROR: $LAUNCHER_DST is not executable after install — not installing boot-pull.service" >&2
+    exit 1
+fi
+echo "Installed $LAUNCHER_DST"
 
 # Copy unit files from the repo to systemd
 for unit in boot-pull.service boot-pull.timer; do
