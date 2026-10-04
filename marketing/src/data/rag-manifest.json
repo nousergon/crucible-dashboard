@@ -1,10 +1,10 @@
 {
-  "generated_at": "2026-09-26T10:43:05.078698+00:00",
+  "generated_at": "2026-10-03T12:17:34.861677+00:00",
   "schema_version": "1.1.0",
   "totals": {
-    "documents": 91271,
-    "chunks": 353205,
-    "tickers": 2202
+    "documents": 98340,
+    "chunks": 360316,
+    "tickers": 2276
   },
   "by_source": {
     "10-K": {
@@ -18,9 +18,9 @@
       "chunks": 188146
     },
     "13F": {
-      "documents": 88,
-      "tickers": 88,
-      "chunks": 88
+      "documents": 90,
+      "tickers": 90,
+      "chunks": 90
     },
     "20-F": {
       "documents": 12,
@@ -33,14 +33,14 @@
       "chunks": 26
     },
     "8-K": {
-      "documents": 11772,
+      "documents": 11785,
       "tickers": 919,
-      "chunks": 42556
+      "chunks": 42611
     },
     "news": {
-      "documents": 71047,
-      "tickers": 2196,
-      "chunks": 71047
+      "documents": 78101,
+      "tickers": 2270,
+      "chunks": 78101
     },
     "thesis_news": {
       "documents": 221,
@@ -64,9 +64,9 @@
     }
   },
   "by_ticker_coverage": {
-    "tickers_with_any_doc": 2202,
+    "tickers_with_any_doc": 2276,
     "p25_docs_per_ticker": 1,
-    "p50_docs_per_ticker": 7,
+    "p50_docs_per_ticker": 6,
     "p75_docs_per_ticker": 34
   },
   "embedding": {
@@ -74,21 +74,81 @@
     "dimension": 512
   },
   "ingestion": {
-    "last_run_ts": "2026-09-25T23:35:45.308707+00:00",
+    "last_run_ts": "2026-10-03T12:12:40.883108+00:00",
     "by_source_last_ts": {
       "10-K": "2026-09-25T23:34:33.636562+00:00",
       "10-Q": "2026-09-25T23:34:06.717741+00:00",
-      "13F": "2026-09-24T00:50:39.129124+00:00",
+      "13F": "2026-10-03T12:12:40.883108+00:00",
       "20-F": "2026-09-25T23:34:45.712088+00:00",
       "40-F": "2026-09-25T23:32:18.335590+00:00",
-      "8-K": "2026-09-25T23:35:45.308707+00:00",
-      "news": "2026-09-25T12:39:19.334368+00:00",
+      "8-K": "2026-10-03T12:08:38.180610+00:00",
+      "news": "2026-10-03T11:24:05.816095+00:00",
       "thesis_news": "2026-03-31T17:51:46.445317+00:00",
       "thesis_research": "2026-03-31T17:51:48.547672+00:00",
       "thesis_score": "2026-03-31T17:57:51.654055+00:00",
       "thesis_signal": "2026-07-18T19:08:51.828606+00:00"
     },
     "by_date_source": [
+      {
+        "date": "2026-10-03",
+        "doc_type": "13F",
+        "documents": 2,
+        "chunks": 2
+      },
+      {
+        "date": "2026-10-03",
+        "doc_type": "8-K",
+        "documents": 13,
+        "chunks": 55
+      },
+      {
+        "date": "2026-10-03",
+        "doc_type": "news",
+        "documents": 746,
+        "chunks": 746
+      },
+      {
+        "date": "2026-10-02",
+        "doc_type": "news",
+        "documents": 1274,
+        "chunks": 1274
+      },
+      {
+        "date": "2026-10-01",
+        "doc_type": "news",
+        "documents": 1335,
+        "chunks": 1335
+      },
+      {
+        "date": "2026-09-30",
+        "doc_type": "news",
+        "documents": 1155,
+        "chunks": 1155
+      },
+      {
+        "date": "2026-09-29",
+        "doc_type": "news",
+        "documents": 990,
+        "chunks": 990
+      },
+      {
+        "date": "2026-09-28",
+        "doc_type": "news",
+        "documents": 629,
+        "chunks": 629
+      },
+      {
+        "date": "2026-09-27",
+        "doc_type": "news",
+        "documents": 347,
+        "chunks": 347
+      },
+      {
+        "date": "2026-09-26",
+        "doc_type": "news",
+        "documents": 578,
+        "chunks": 578
+      },
       {
         "date": "2026-09-25",
         "doc_type": "10-K",
