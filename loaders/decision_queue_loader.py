@@ -95,7 +95,8 @@ BACKLOG_REPOS = [
     "nousergon/alpha-engine-config", "nousergon/metron-ops",
     "nousergon/vires-ops", "nousergon/telos-ops",
     "nousergon/claude-code-config", "nousergon/nousergon-console",
-    "nousergon/oiax", "nousergon/scannerctl"
+    "nousergon/oiax", "nousergon/scannerctl",
+    "nousergon/evidence-review"
 ]
 # Fallback used ONLY when live org enumeration (GET /orgs/nousergon/repos) fails
 # — never the primary path. Still a declared mirror of the roster's `code` role:
@@ -117,7 +118,7 @@ _CODE_REPOS_FALLBACK = [
     "nousergon/nousergon-data",
     "nousergon/nousergon-lib", "nousergon/nousergon-docs",
     "nousergon/metron", "nousergon/vires", "nousergon/telos",
-    "nousergon/scannerctl"
+    "nousergon/scannerctl", "nousergon/evidence-review"
 ]
 # Exported as CODE_REPOS for backward compatibility with tests importing the
 # name — it is now a function, not a list. Tests that asserted set equality

@@ -102,6 +102,12 @@ class TestScopeContract:
         # and can no longer accept PRs, so symposion is no longer mirrored.
         assert "nousergon/symposion" not in fallback
 
+    def test_evidence_review_is_appended_to_both_mirrors(self):
+        # alpha-engine-config-I11991: enrolled in both roles, appended last.
+        tail = ["nousergon/scannerctl", "nousergon/evidence-review"]
+        assert BACKLOG_REPOS[-2:] == tail
+        assert dq_module._CODE_REPOS_FALLBACK[-2:] == tail
+
     def test_only_human_gates(self):
         # config#2431: widened to include gate:device — equally human-only
         # (no S3/API check substitutes for physically validating hardware).
