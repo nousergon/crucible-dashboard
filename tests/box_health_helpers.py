@@ -221,6 +221,7 @@ LIFECYCLE_FUNCTIONS = (
     "publish_clears",
     "publish_channel_clear",
     "console_route_fallback",
+    "journal_gauge",
     "publish_unpublished_clears",
     "finalize_alert_lifecycle",
 )
@@ -321,10 +322,19 @@ class LifecycleRun:
 
     @property
     def clears_unpublished(self):
-        """The value published to the health_clears_unpublished series."""
-        for m in self.metrics:
-            if "health_clears_unpublished" in m:
-                return int(re.search(r"Value=(\d+)", m).group(1))
+        """The value recorded for the health_clears_unpublished gauge.
+
+        A journal line since 2026-10-09 (``journal_gauge``,
+        alpha-engine-config-I11792 M1), no longer a CloudWatch series; the
+        contract — recorded on every run, zero included — is unchanged.
+        """
+        assert not any("health_clears_unpublished" in m for m in self.metrics), (
+            "health_clears_unpublished went back to CloudWatch without an alarm"
+        )
+        for line in (self.proc.stderr or "").splitlines():
+            m = re.search(r"box_health: gauge health_clears_unpublished=(\d+)", line)
+            if m:
+                return int(m.group(1))
         raise AssertionError(
             "health_clears_unpublished was not published at all. A gauge that "
             "only appears when it is non-zero cannot be told from a dead emitter."

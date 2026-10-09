@@ -54,7 +54,7 @@ systemctl enable --now emit-service-memory.timer
 echo "==> priming the per-service memory series (first run proves it can read budget.yaml)"
 systemctl start emit-service-memory.service || {
     echo "emit-service-memory.service failed on first run -- investigate before" >&2
-    echo "trusting the ServiceMemoryMiB metric; check that budget.yaml is" >&2
+    echo "trusting the per-service memory record; check that budget.yaml is" >&2
     echo "readable at the path the script defaults to" >&2
     exit 1; }
 
@@ -66,6 +66,8 @@ echo "  journalctl -u emit-oom-metric.service -n 5 --no-pager"
 echo "  journalctl -u emit-service-memory.service -n 5 --no-pager"
 echo
 echo "Metrics appear in namespace AlphaEngine/Host within ~5 min:"
-echo "  mem_available_percent, mem_used_percent, mem_available,"
-echo "  swap_used_percent, disk used_percent, OOMKills, OOMKillsTotal,"
-echo "  ServiceMemoryMiB (per Unit), ServiceMemoryTotalMiB"
+echo "  mem_available_percent, swap_used_percent, disk used_percent,"
+echo "  OOMKills, OOMKillsTotal"
+echo "Per-service memory is RECORDED every 5 min (journal + S3"
+echo "  s3://alpha-engine-research/dashboard/box/service-memory/<day>.jsonl) and"
+echo "  published as ServiceMemoryMiB / ServiceMemoryTotalMiB only on a T1-8 breach."

@@ -1,13 +1,14 @@
 [Unit]
-Description=Publish per-service anon+swap to CloudWatch (alpha-engine-config-I7804)
+Description=Record per-service anon+swap (journal + S3); publish to CloudWatch on a T1-8 breach (alpha-engine-config-I7804, I11792)
 Documentation=https://github.com/nousergon/nous-ergon-ops/blob/main/policies/shared-application-host-policy.md
 After=network-online.target
 Wants=network-online.target
 
 # X-InstallMayStart: DELIBERATELY started by install-cloudwatch-agent-config.sh
 # — the first run is the only cheap place to prove the collector can still read
-# budget.yaml after that file's shape changes. No paid API, one CloudWatch
-# datapoint (alpha-engine-config-I9000).
+# budget.yaml after that file's shape changes. No paid API: one S3 PUT, and
+# CloudWatch only if the box is over its T1-8 line (alpha-engine-config-I9000,
+# I11792).
 X-InstallMayStart=yes
 [Service]
 Type=oneshot
@@ -16,6 +17,9 @@ User=root
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 Environment=AWS_REGION=us-east-1
 TimeoutStartSec=60
+# Local day files for the S3 upload (alpha-engine-config-I11792 M2); the
+# script prunes anything older than three days.
+StateDirectory=emit-service-memory
 
 # Same reasoning as emit-oom-metric.service: a publisher whose own failure is
 # unnoticed is the defect it exists to detect elsewhere on this box (I4509).
