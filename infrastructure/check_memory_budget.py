@@ -98,7 +98,8 @@ _SUFFIX = {"K": 1024, "M": 1024**2, "G": 1024**3}
 # A service pinned at 96% of its memory cap is a finding; a service using 400MB
 # is a number." §8.1 requires it RENDERED, and until this existed none of it
 # reached a console surface -- it travelled as a Telegram page and a journal
-# line, plus AlphaEngine/Box::health_problems, which is deliberately a bare
+# line, plus box_health.sh's health_problems gauge (a journal line since
+# 2026-10-09, alpha-engine-config-I11792), which is deliberately a bare
 # count and cannot name a unit.
 #
 # This does NOT re-implement any detection. Every input below is already

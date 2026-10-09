@@ -530,7 +530,7 @@ def test_the_replay_is_wired_into_the_problem_stream():
 def test_the_gauge_is_withheld_when_the_graph_was_not_read():
     """`no data` is never rendered as green (principles.md §7). Publishing 0 on a
     failed scan is exactly that rendering."""
-    i = BOX_HEALTH.index("timers_with_install_start_dependency")
+    i = BOX_HEALTH.index("journal_gauge timers_with_install_start_dependency")
     guard = BOX_HEALTH.rindex('if [ "$INSTALL_START_DEP_MEASURED" -eq 1 ]; then', 0, i)
     assert guard < i
 
@@ -540,7 +540,7 @@ def test_the_gauge_is_published_before_the_all_healthy_exit():
     the bottom of the script. A gauge that only exists on unhealthy runs cannot
     be told from a dead emitter — which is precisely what this check is about, so
     it may not have that shape itself."""
-    gauge_at = BOX_HEALTH.index("timers_with_install_start_dependency")
+    gauge_at = BOX_HEALTH.index("journal_gauge timers_with_install_start_dependency")
     first_exit_at = BOX_HEALTH.index("confirmed=$(snapshot_problems)")
     assert gauge_at < first_exit_at
 

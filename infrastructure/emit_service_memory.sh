@@ -1,5 +1,21 @@
 #!/bin/bash
-# emit_service_memory.sh — publish per-service anon+swap to CloudWatch.
+# emit_service_memory.sh — record per-service anon+swap every run; publish it
+# to CloudWatch only when the total reaches the T1-8 line.
+#
+# WHERE THE SERIES LIVES (alpha-engine-config-I11792 M2, Brian "Full plan"
+# ruling 2026-10-09; runbook clause SAH-5-T1-8-per-service-series as amended
+# the same day). Every run writes ONE JSON record — every budgeted unit
+# including explicit zeros, the total, MemTotal and the T1-8 line — to:
+#   1. stdout, i.e. the journal (`journalctl -u emit-service-memory.service`);
+#   2. s3://alpha-engine-research/dashboard/box/service-memory/<UTC day>.jsonl,
+#      the day's file re-uploaded whole each run (fail LOUD if that fails).
+# CloudWatch gets the per-unit `ServiceMemoryMiB` and `ServiceMemoryTotalMiB`
+# points ONLY on a run whose total is at or above `max_steady_state_fraction`
+# x MemTotal — the line check_memory_budget.py's T1-8 bound uses. Custom
+# metrics bill per hour that has data, so eighteen always-on series cost
+# ~$5.40/month to graph a steady state nothing alarmed on; on-breach they cost
+# only the hours the box is in breach, and a breach still has its per-service
+# breakdown beside it in CloudWatch, which is the clause's purpose.
 #
 # WHY THIS EXISTS
 # ---------------
@@ -60,6 +76,12 @@ set -uo pipefail
 NAMESPACE="AlphaEngine/Host"
 REGION="us-east-1"
 CGROUP_ROOT="/sys/fs/cgroup/system.slice"
+MEMINFO="${MEMINFO_FILE:-/proc/meminfo}"
+# systemd's StateDirectory= (emit-service-memory.service) creates this.
+STATE_DIR="${STATE_DIRECTORY:-/var/lib/emit-service-memory}"
+S3_PREFIX="${SERVICE_MEMORY_S3_PREFIX:-s3://alpha-engine-research/dashboard/box/service-memory}"
+# Local day files kept on the box; S3 holds the record.
+KEEP_DAYS=3
 BUDGET="${BUDGET_FILE:-/home/ec2-user/alpha-engine-dashboard/infrastructure/systemd/resource-limits/budget.yaml}"
 
 # The unit list comes from budget.yaml so this collector and the budget check
@@ -135,12 +157,31 @@ unit_mib() {
     echo $(( (anon + swap) / 1048576 ))
 }
 
+# The T1-8 line, from the SAME two inputs check_memory_budget.py evaluates:
+# budget.yaml's `max_steady_state_fraction` and MemTotal from /proc/meminfo.
+# Unreadable is NOT "below the line": the run publishes to CloudWatch (more
+# data, never less) and exits non-zero so the journal and the unit's failed
+# state say why.
+rc=0
+FRACTION=$(awk -F: '/^max_steady_state_fraction:/{gsub(/[[:space:]]|#.*/, "", $2); print $2; exit}' "$BUDGET" 2>/dev/null)
+MEM_TOTAL_MIB=$(awk '/^MemTotal:/{print int($2 / 1024); exit}' "$MEMINFO" 2>/dev/null)
+LINE_MIB=""
+if [[ "$FRACTION" =~ ^0?\.[0-9]+$|^1(\.0+)?$ ]] && [[ "$MEM_TOTAL_MIB" =~ ^[0-9]+$ ]] && (( MEM_TOTAL_MIB > 0 )); then
+    LINE_MIB=$(awk -v f="$FRACTION" -v m="$MEM_TOTAL_MIB" 'BEGIN{printf "%d", f * m}')
+else
+    echo "emit_service_memory: cannot derive the T1-8 line (max_steady_state_fraction=${FRACTION:-unreadable}," \
+         "MemTotal=${MEM_TOTAL_MIB:-unreadable} MiB) -- publishing to CloudWatch this run and failing" >&2
+    rc=1
+fi
+
 METRIC_DATA=()
+UNITS_JSON=""
 TOTAL_MIB=0
 for unit in "${UNITS[@]}"; do
     mib=$(unit_mib "$unit")
     TOTAL_MIB=$(( TOTAL_MIB + mib ))
     METRIC_DATA+=("MetricName=ServiceMemoryMiB,Value=${mib},Unit=Megabytes,Dimensions=[{Name=Unit,Value=${unit}}]")
+    UNITS_JSON+="${UNITS_JSON:+,}\"${unit}\":${mib}"
 done
 
 # The sum, as its own series. It is the number check_memory_budget.py's
@@ -148,22 +189,55 @@ done
 # components is what makes a breach readable without re-deriving it.
 METRIC_DATA+=("MetricName=ServiceMemoryTotalMiB,Value=${TOTAL_MIB},Unit=Megabytes,Dimensions=[{Name=InstanceId,Value=${INSTANCE_ID}}]")
 
-# put-metric-data caps at 1000 metrics per call and this is ~20, but batch
-# anyway so adding units later cannot silently start truncating.
-rc=0
-for ((i = 0; i < ${#METRIC_DATA[@]}; i += 20)); do
-    if ! aws cloudwatch put-metric-data \
-            --region "$REGION" \
-            --namespace "$NAMESPACE" \
-            --metric-data "${METRIC_DATA[@]:i:20}"
-    then
-        echo "emit_service_memory: put-metric-data FAILED for batch at index $i" >&2
+BREACH=false
+if [[ -z "$LINE_MIB" ]] || (( TOTAL_MIB >= LINE_MIB )); then
+    BREACH=true
+fi
+
+TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+DAY=${TS:0:10}
+RECORD="{\"ts\":\"${TS}\",\"instance_id\":\"${INSTANCE_ID}\",\"total_mib\":${TOTAL_MIB},\"mem_total_mib\":${MEM_TOTAL_MIB:-null},\"max_steady_state_fraction\":${FRACTION:-null},\"t1_8_line_mib\":${LINE_MIB:-null},\"at_or_over_t1_8\":${BREACH},\"units\":{${UNITS_JSON}}}"
+
+# 1. The journal. Always, and first: it is the record that survives every
+#    later failure in this script.
+echo "$RECORD"
+
+# 2. S3. The day file is appended locally and re-uploaded whole, so one
+#    object per UTC day holds every 5-minute record (288 PUTs/day, ~$0.04/mo).
+if mkdir -p "$STATE_DIR" && printf '%s\n' "$RECORD" >> "$STATE_DIR/${DAY}.jsonl"; then
+    if ! aws s3 cp --region "$REGION" --only-show-errors \
+            "$STATE_DIR/${DAY}.jsonl" "${S3_PREFIX}/${DAY}.jsonl"; then
+        echo "emit_service_memory: S3 upload FAILED for ${S3_PREFIX}/${DAY}.jsonl" >&2
         rc=1
     fi
-done
+    find "$STATE_DIR" -maxdepth 1 -name '*.jsonl' -mtime +"$KEEP_DAYS" -delete 2>/dev/null || true
+else
+    echo "emit_service_memory: could not append to ${STATE_DIR}/${DAY}.jsonl" >&2
+    rc=1
+fi
+
+# 3. CloudWatch, on breach only.
+if [[ "$BREACH" == true ]]; then
+    # put-metric-data caps at 1000 metrics per call and this is ~20, but batch
+    # anyway so adding units later cannot silently start truncating.
+    for ((i = 0; i < ${#METRIC_DATA[@]}; i += 20)); do
+        if ! aws cloudwatch put-metric-data \
+                --region "$REGION" \
+                --namespace "$NAMESPACE" \
+                --metric-data "${METRIC_DATA[@]:i:20}"
+        then
+            echo "emit_service_memory: put-metric-data FAILED for batch at index $i" >&2
+            rc=1
+        fi
+    done
+fi
 
 if (( rc != 0 )); then
     exit 1
 fi
 
-echo "emit_service_memory: published ${#UNITS[@]} unit(s), total ${TOTAL_MIB} MiB"
+if [[ "$BREACH" == true ]]; then
+    echo "emit_service_memory: ${#UNITS[@]} unit(s), total ${TOTAL_MIB} MiB >= T1-8 line ${LINE_MIB} MiB -- recorded and PUBLISHED to CloudWatch"
+else
+    echo "emit_service_memory: ${#UNITS[@]} unit(s), total ${TOTAL_MIB} MiB < T1-8 line ${LINE_MIB} MiB -- recorded (journal + S3), not published"
+fi

@@ -1121,8 +1121,10 @@ timers:
     note: >-
       Every 5 min (OnBootSec=3min, OnUnitActiveSec=5min, Persistent=true). 4x the
       cadence, matching emit-oom-metric above. This is the producer of the
-      per-service `AlphaEngine/Host ServiceMemoryMiB{Unit}` series that T1-8
-      depends on to name WHICH service is responsible for a working-set breach —
+      per-service anon+swap record (journal + s3://alpha-engine-research/
+      dashboard/box/service-memory/, and `AlphaEngine/Host ServiceMemoryMiB{Unit}`
+      on CloudWatch only while over the T1-8 line, since 2026-10-09 per
+      alpha-engine-config-I11792) that T1-8 depends on to name WHICH service is responsible for a working-set breach —
       so a stop here is not a lost metric, it is the loss of the only thing that
       makes a T1-8 finding actionable. Installed 2026-08-20 by
       install-cloudwatch-agent-config.sh with no row here, which is why
