@@ -27,7 +27,7 @@
     "@biomejs/biome": "^2.5.15",
     "hugo-extended": "^0.167.0",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.11"
+    "vitest": "^5.0.0"
   },
   "overrides": {
     "vite": "8.1.5",
