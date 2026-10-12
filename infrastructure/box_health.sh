@@ -309,18 +309,40 @@ root_disk_pct() {
 # broken to publish (disk full, agent dead, instance stopped) still pages. This
 # is the independent channel for the 2026-07-11 class where disk-full killed
 # SSM while the instance pinged Online (config#2227).
+#
+# mem_available_mb left CloudWatch 2026-10-09 (alpha-engine-config-I11792 M1):
+# no alarm, dashboard or reader consumed it, and the box's memory story is
+# told by check_memory_budget.py and emit_service_memory.sh's record. It is
+# still written to the journal every tick by journal_gauge below.
 emit_metrics() {
     local disk_pct mem_avail_mb
     disk_pct=$(root_disk_pct)
     mem_avail_mb=$(awk '/^MemAvailable:/{printf "%d", $2/1024}' /proc/meminfo)
+    journal_gauge mem_available_mb "${mem_avail_mb:-0}"
     # Swallowed failure mode: transient CW/credential error on a metrics-only
     # publish. The health checks below must still run; the recording surface is
     # the journal line here PLUS the alarm's missing-data breach if it persists.
     aws cloudwatch put-metric-data --namespace "AlphaEngine/Box" \
         --metric-data \
         "MetricName=disk_used_percent,Dimensions=[{Name=InstanceId,Value=${INSTANCE_ID}}],Value=${disk_pct:-0},Unit=Percent" \
-        "MetricName=mem_available_mb,Dimensions=[{Name=InstanceId,Value=${INSTANCE_ID}}],Value=${mem_avail_mb:-0},Unit=Megabytes" \
         2>&1 | head -1 | sed 's/^/box_health: metric publish failed: /' >&2 || true
+}
+
+# journal_gauge NAME VALUE — record a gauge in the journal ONLY.
+#
+# alpha-engine-config-I11792 M1 (Brian "Full plan" ruling 2026-10-09). Five
+# AlphaEngine/Box gauges — mem_available_mb, health_problems,
+# health_clears_unpublished, timers_with_install_start_dependency and
+# timers_without_deadman — were always-on CloudWatch custom metrics at
+# $0.30/month each that NO alarm read. Each keeps its exact contract here —
+# published on the same paths, zero included, withheld under the same
+# conditions — on the journal (`journalctl -u box-health.service | grep
+# 'box_health: gauge '`), which costs nothing. The ALARMED box series
+# (disk_used_percent, health_problems_unalerted) are unchanged. To put one
+# back on CloudWatch, alarm it in nous-ergon-ops in the same change.
+# stderr, not stdout: some callers run inside command substitution.
+journal_gauge() {
+    echo "box_health: gauge ${1}=${2:-0}" >&2
 }
 
 # classify_identity — decide whether ONE unit's User=/Group= makes it
@@ -1569,11 +1591,12 @@ emit_hygiene_envelope() {
 # would make both layers wrong in the same way when the source is wrong. This
 # layer answers one question the other cannot: "is the watchdog finding
 # anything, regardless of whether it can tell me about it?"
+#
+# Journal-only since 2026-10-09 (journal_gauge, alpha-engine-config-I11792):
+# the independent channel it was built to be is health_problems_unalerted
+# below, which IS on CloudWatch and IS alarmed.
 publish_verdict() {
-    aws cloudwatch put-metric-data --namespace "AlphaEngine/Box" \
-        --metric-data \
-        "MetricName=health_problems,Dimensions=[{Name=InstanceId,Value=${INSTANCE_ID}}],Value=${1:-0},Unit=Count" \
-        2>&1 | head -1 | sed 's/^/box_health: verdict publish failed: /' >&2 || true
+    journal_gauge health_problems "${1:-0}"
 }
 
 # UNALERTED_CRITICALS — how many critical problem LINES this run found and then
@@ -2062,11 +2085,9 @@ console_route_fallback() {
 # terminator visible. Zero is published too, on every run: a gauge that only
 # appears when it is non-zero cannot be distinguished from a dead emitter, and
 # this file already refuses that shape for publish_verdict.
+# Journal-only since 2026-10-09 (journal_gauge, alpha-engine-config-I11792).
 publish_unpublished_clears() {
-    aws cloudwatch put-metric-data --namespace "AlphaEngine/Box" \
-        --metric-data \
-        "MetricName=health_clears_unpublished,Dimensions=[{Name=InstanceId,Value=${INSTANCE_ID}}],Value=${1:-0},Unit=Count" \
-        2>&1 | head -1 | sed 's/^/box_health: clears-unpublished publish failed: /' >&2 || true
+    journal_gauge health_clears_unpublished "${1:-0}"
 }
 
 # finalize_alert_lifecycle — diff, emit the clears, persist the new prior.
@@ -3145,11 +3166,10 @@ install_start_dependency_scan
 # on the same run. Swallowed failure mode: a transient CloudWatch/credential
 # error on a metrics-only publish — recorded on the journal line below plus the
 # missing-data breach if it persists, exactly as emit_metrics does.
+# Journal-only since 2026-10-09 (journal_gauge, alpha-engine-config-I11792).
 if [ "$INSTALL_START_DEP_MEASURED" -eq 1 ]; then
-    aws cloudwatch put-metric-data --namespace "AlphaEngine/Box" \
-        --metric-data \
-        "MetricName=timers_with_install_start_dependency,Dimensions=[{Name=InstanceId,Value=${INSTANCE_ID}}],Value=$(printf '%s' "$INSTALL_START_DEP_FINDINGS" | grep -c 'timer start-dependency:' || true),Unit=Count" \
-        2>&1 | head -1 | sed 's/^/box_health: start-dependency publish failed: /' >&2 || true
+    journal_gauge timers_with_install_start_dependency \
+        "$(printf '%s' "$INSTALL_START_DEP_FINDINGS" | grep -c 'timer start-dependency:' || true)"
 fi
 
 # Per-unit memory headroom onto the console surface (config-I5863).
@@ -3415,10 +3435,9 @@ publish_verdict "$(printf '%s' "$criticals" | grep -c . || true)"
 # graph instead of only appending prose nobody reads. Swallowed failure mode:
 # same as the other metric publishes — journal line plus the alarm's
 # missing-data breach if it persists.
-aws cloudwatch put-metric-data --namespace "AlphaEngine/Box" \
-    --metric-data \
-    "MetricName=timers_without_deadman,Dimensions=[{Name=InstanceId,Value=${INSTANCE_ID}}],Value=$(printf '%s' "$notices" | grep -c 'timer has no dead-man threshold' || true),Unit=Count" \
-    2>&1 | head -1 | sed 's/^/box_health: timer-coverage publish failed: /' >&2 || true
+# Journal-only since 2026-10-09 (journal_gauge, alpha-engine-config-I11792).
+journal_gauge timers_without_deadman \
+    "$(printf '%s' "$notices" | grep -c 'timer has no dead-man threshold' || true)"
 
 # publish_problems SEVERITY DEDUP_MIN PREFIX LINES [DKEY_OVERRIDE] [DESTINATION]
 # One path for both tiers so they cannot drift apart in formatting, dedup

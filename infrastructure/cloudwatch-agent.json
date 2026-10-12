@@ -19,7 +19,11 @@
     "Alarms were migrated in the same change.",
     "",
     "Install:  sudo ./infrastructure/install-cloudwatch-agent-config.sh",
-    "Policy:   nous-ergon-ops/policies/shared-application-host-policy.md T0-3"
+    "Policy:   nous-ergon-ops/policies/shared-application-host-policy.md T0-3",
+    "",
+    "2026-10-09 (alpha-engine-config-I11792 M1): mem_available and mem_used_percent",
+    "dropped. Nothing alarmed on or read either; mem_available_percent carries the",
+    "same fact and is the one the memory alarms watch."
   ],
   "agent": {
     "metrics_collection_interval": 60,
@@ -33,9 +37,7 @@
     "metrics_collected": {
       "mem": {
         "measurement": [
-          "mem_available_percent",
-          "mem_available",
-          "mem_used_percent"
+          "mem_available_percent"
         ],
         "metrics_collection_interval": 60
       },
