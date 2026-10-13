@@ -54,6 +54,21 @@ trap 'rm -f "$OUT"' EXIT
 echo "Recompiling requirements.in under Python ${LOCK_PYVER} with --upgrade..."
 lockfile_compile "$OUT" --upgrade --quiet
 
+# uv resolves the `nousergon-lib ... @vX.Y.Z` tag in requirements.in to the
+# commit SHA it points at. check_lib_ref_parity.sh requires the two files to
+# carry the SAME ref string, so a raw SHA in the lock against the tag in
+# requirements.in fails lockfile-reproducible and tests/test_lock_guard_lib_ref.py
+# on every produced PR (crucible-dashboard#938, 2026-10-12). requirements.in is
+# the hand-authored source of truth for the lib pin, so write ITS ref back into
+# the lock line; the resolved package set is unchanged.
+LIB_PIN_RE='^nousergon-lib(\[[^]]*\])? @ git\+'
+IN_REF="$(grep -E "$LIB_PIN_RE" "$ROOT/requirements.in" | head -n1 | sed -E 's/[[:space:]]*#.*$//; s/.*@//')"
+if [[ -z "$IN_REF" ]]; then
+    echo "FAIL: requirements.in carries no nousergon-lib git pin with an @ref." >&2
+    exit 1
+fi
+sed -E -i "/$LIB_PIN_RE/ s|@[^@[:space:]]+\$|@${IN_REF}|" "$OUT"
+
 if diff -q "$ROOT/requirements.txt" "$OUT" >/dev/null; then
     echo "UPGRADE_LOCK_RESULT changed=false"
     exit 0

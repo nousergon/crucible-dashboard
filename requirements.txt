@@ -19,12 +19,12 @@ attrs==26.1.0
     #   referencing
 beautifulsoup4==4.15.0
     # via yfinance
-boto3==1.43.111
+boto3==1.43.112
     # via
     #   -r requirements.in
     #   krepis
     #   nousergon-lib
-botocore==1.43.111
+botocore==1.43.112
     # via
     #   boto3
     #   s3transfer
@@ -105,7 +105,7 @@ narwhals==2.27.1
     # via
     #   altair
     #   plotly
-nousergon-lib[flow-doctor, github-app] @ git+https://github.com/nousergon/nousergon-lib@6aeb9f99ea103d58ee7b024b8afa952ec98c357b
+nousergon-lib[flow-doctor, github-app] @ git+https://github.com/nousergon/nousergon-lib@v0.124.170
     # via -r requirements.in
 numpy==2.5.4
     # via
@@ -213,7 +213,7 @@ streamlit-calendar==1.4.0
     # via -r requirements.in
 toml==0.10.2
     # via streamlit
-truststore==0.10.4
+truststore==0.10.5
     # via
     #   httpcore2
     #   httpx2
