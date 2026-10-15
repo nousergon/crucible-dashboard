@@ -4,7 +4,11 @@ Loads eval artifacts from S3 and shapes them into a long-format
 DataFrame the quality-trend page can pivot:
 
   | eval_date | judged_agent_id | criterion | score | judge_model |
-  | rubric_id | rubric_version  | run_id    | overall_reasoning   |
+  | judge_served_model | rubric_id | rubric_version | run_id |
+  | overall_reasoning |
+
+``judge_model`` is the judge TIER key; ``judge_served_model`` is the model
+that graded (alpha-engine-config-I11484, see :func:`served_grader`).
 
 Eval artifacts live under ``decision_artifacts/_eval/`` in one of two
 layouts (config#793 dual-layout tolerance — mirrors
@@ -39,6 +43,7 @@ from typing import Any
 import pandas as pd
 
 from loaders.cache import cached
+from loaders.judge_identity import served_grader
 from loaders.s3_loader import (
     _fetch_s3_json,
     _research_bucket,
@@ -176,6 +181,7 @@ def _explode_eval_artifact(artifact: dict[str, Any], eval_date: str) -> list[dic
     """One row per (artifact, dimension) — long format for plotting."""
     rows: list[dict] = []
     judge_model = artifact.get("judge_model", "")
+    judge_served_model = served_grader(artifact)
     judged_agent_id = artifact.get("judged_agent_id", "")
     rubric_id = artifact.get("rubric_id", "")
     rubric_version = artifact.get("rubric_version", "")
@@ -189,6 +195,7 @@ def _explode_eval_artifact(artifact: dict[str, Any], eval_date: str) -> list[dic
             "score": dim.get("score"),
             "reasoning": dim.get("reasoning", ""),
             "judge_model": judge_model,
+            "judge_served_model": judge_served_model,
             "rubric_id": rubric_id,
             "rubric_version": rubric_version,
             "run_id": run_id,
@@ -272,7 +279,7 @@ def load_eval_artifacts(
 
     columns = [
         "eval_date", "judged_agent_id", "criterion", "score",
-        "reasoning", "judge_model", "rubric_id", "rubric_version",
+        "reasoning", "judge_model", "judge_served_model", "rubric_id", "rubric_version",
         "run_id", "overall_reasoning",
     ]
     if not rows:

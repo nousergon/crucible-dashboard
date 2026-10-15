@@ -1,0 +1,819 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "nousergon-data/contracts/features_parquet.schema.json",
+  "title": "Feature snapshot columns (features/{date}/{group}.parquet, D31/D50)",
+  "description": "GENERATED from features/registry.py::CATALOG by features/gen_parquet_contract.py -- do not hand-edit; regenerate with `python3 features/gen_parquet_contract.py --write`. One trading day's snapshot as {group: [row, ...]}: each property is one features/{date}/{group}.parquet file and each item one parquet row (DataFrame.to_dict('records'), NaN as null). Producer: features/writer.py::snapshot_group_frames (D31 daily, D50 settled regrade). Consumers pin a copy: crucible-research scoring/factor_scoring.py and crucible-dashboard views/13_Feature_Store.py (alpha-engine-config-I10793). features/registry.json is a SEPARATE artifact with its own contract, contracts/feature_registry.schema.json.",
+  "type": "object",
+  "minProperties": 1,
+  "additionalProperties": false,
+  "properties": {
+    "technical": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/technical"
+      }
+    },
+    "macro": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/macro"
+      }
+    },
+    "interaction": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/interaction"
+      }
+    },
+    "alternative": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/alternative"
+      }
+    },
+    "fundamental": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/fundamental"
+      }
+    },
+    "factor_loading": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/factor_loading"
+      }
+    }
+  },
+  "$defs": {
+    "technical": {
+      "type": "object",
+      "description": "One row of features/{date}/technical.parquet.",
+      "required": [
+        "ticker",
+        "date"
+      ],
+      "properties": {
+        "ticker": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Ticker symbol (one row per ticker)."
+        },
+        "date": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "description": "The snapshot's trading day, YYYY-MM-DD (the {date} path segment)."
+        },
+        "rsi_14": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "RSI(14), range 0-100"
+        },
+        "macd_cross": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "+1 bullish / -1 bearish / 0 no cross (last 3 days)"
+        },
+        "macd_above_zero": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "1 if MACD line > 0, else 0"
+        },
+        "macd_line_last": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "MACD line value (fast EMA - slow EMA)"
+        },
+        "price_vs_ma50": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Close / SMA(50) ratio"
+        },
+        "price_vs_ma200": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Close / SMA(200) ratio"
+        },
+        "momentum_20d": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "20-day price return"
+        },
+        "avg_volume_20d": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Predictor input: 20-day avg volume / per-ticker global mean (relative liquidity ratio, ~1.0 typical). See features/SCHEMA.md for the bare-name == normalized convention."
+        },
+        "avg_volume_20d_raw": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Research scanner input: 20-day avg volume in raw shares. Absolute-liquidity gate consumer (MIN_AVG_VOLUME=500_000). The _raw suffix encodes units per features/SCHEMA.md."
+        },
+        "dist_from_52w_high": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "(Close - 52w high) / 52w high"
+        },
+        "momentum_5d": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "5-day price return"
+        },
+        "rel_volume_ratio": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Today volume / 20-day avg volume"
+        },
+        "return_vs_spy_5d": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "5-day stock return minus SPY return"
+        },
+        "dist_from_52w_low": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "(Close - 52w low) / 52w low"
+        },
+        "vol_ratio_10_60": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "10-day vol / 60-day vol"
+        },
+        "bollinger_pct": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Position within Bollinger Bands (0-1)"
+        },
+        "sector_vs_spy_5d": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "5-day sector ETF return minus SPY return"
+        },
+        "sector_vs_spy_10d": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "10-day sector ETF return minus SPY return"
+        },
+        "sector_vs_spy_20d": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "20-day sector ETF return minus SPY return"
+        },
+        "sub_sector_vs_benchmark_5d": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "5-day sub-sector benchmark ETF (SMH/IGV/…) return minus SPY return; falls back to sector ETF for unmapped sub-industries (config#934)"
+        },
+        "sub_sector_vs_benchmark_10d": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "10-day sub-sector benchmark ETF (SMH/IGV/…) return minus SPY return; falls back to sector ETF for unmapped sub-industries (config#934)"
+        },
+        "sub_sector_vs_benchmark_20d": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "20-day sub-sector benchmark ETF (SMH/IGV/…) return minus SPY return; falls back to sector ETF for unmapped sub-industries (config#934)"
+        },
+        "price_accel": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Momentum acceleration (5d mom - 20d mom)"
+        },
+        "ema_cross_8_21": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "EMA(8) / EMA(21) ratio"
+        },
+        "atr_14_pct": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "ATR(14) / Close, normalized volatility"
+        },
+        "realized_vol_20d": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "20-day annualized return std dev"
+        },
+        "realized_vol_63d": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "63-day (3-month) annualized return std dev — slower vol regime than 20d, pairs as vol-term-structure"
+        },
+        "volume_trend": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "5-day avg volume / 20-day avg volume"
+        },
+        "obv_slope_10d": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "OBV linear regression slope over 10 days"
+        },
+        "rsi_slope_5d": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "5-day RSI slope"
+        },
+        "volume_price_div": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "sign(volume_trend-1) * sign(momentum_5d)"
+        },
+        "vwap_divergence_pct": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "(Close - VWAP) / VWAP, decimal pct — NaN when VWAP is unavailable (yfinance-fallback rows, Polygon outage windows)"
+        },
+        "cmf_20_ratio": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Chaikin Money Flow (20d): rolling_sum(money_flow_multiplier * Volume, 20) / rolling_sum(Volume, 20). Bounded ~[-1, 1] dimensionless ratio; High==Low guarded to NaN."
+        },
+        "return_60d": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "60-day price return (Close_t / Close_{t-60} - 1)"
+        },
+        "return_120d": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "120-day price return (Close_t / Close_{t-120} - 1)"
+        },
+        "overnight_return_5d": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "5d sum of overnight returns (Open_t vs Close_{t-1})"
+        },
+        "intraday_return_5d": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "5d sum of intraday returns (Close_t vs Open_t)"
+        },
+        "dist_from_5d_high": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "(Close - 5d rolling max High) / 5d rolling max High"
+        },
+        "dist_from_20d_high": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "(Close - 20d rolling max High) / 20d rolling max High"
+        },
+        "beta_60d": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "60d rolling regression slope of stock log-returns vs SPY log-returns (systematic market exposure)"
+        },
+        "idio_vol_60d": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "60d residual vol after removing beta exposure; std × sqrt(252) (idiosyncratic risk)"
+        },
+        "vol_of_vol_30d": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "30d rolling stdev of realized_vol_20d (stability of vol regime)"
+        },
+        "max_drawdown_60d": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Worst peak-to-trough drawdown within trailing 60d window (non-positive decimal pct)"
+        },
+        "residual_momentum_ratio": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Vol-scaled cumulative residual (idiosyncratic) log-return over the 12-1 skip-month window: ∑resid_ret[t-252,t-21] / (σ_resid·√231) — an information ratio (Blitz/Hanauer residual momentum)"
+        },
+        "mom_12_1_pct": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "12-1 skip-month raw price momentum: close.shift(21)/close.shift(252) - 1 (classic momentum factor, skips the recent-month reversal)"
+        },
+        "sector_mom_pct": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "The ticker's sector-ETF own 12-1 skip-month momentum (GKX industry momentum — absolute, distinct from sector_vs_spy_* relative features)"
+        },
+        "factor_momentum_ratio": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Factor-momentum tilt (Gupta-Kelly): per date, dot the ticker's cross-sectionally z-scored factor loadings with each factor's trailing 12-1 long-short return momentum — Σ_f zscore(loading) × factor_mom. Dimensionless projection; backward-only (loadings at t × factor momentum through t-skip)"
+        }
+      },
+      "additionalProperties": false
+    },
+    "macro": {
+      "type": "object",
+      "description": "One row of features/{date}/macro.parquet.",
+      "required": [
+        "date"
+      ],
+      "properties": {
+        "date": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "description": "The snapshot's trading day, YYYY-MM-DD (the {date} path segment)."
+        },
+        "vix_level": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "VIX / 20 (normalized around long-run avg)"
+        },
+        "yield_10y": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "10Y Treasury yield normalized to 0-1"
+        },
+        "yield_curve_slope": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "10Y - 2Y spread, normalized"
+        },
+        "gold_mom_5d": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "5-day gold (GLD) momentum"
+        },
+        "oil_mom_5d": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "5-day oil (USO) momentum"
+        },
+        "vix_term_slope": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "VIX spot vs VIX3M term structure slope, normalized"
+        },
+        "xsect_dispersion": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Cross-sectional std dev of daily returns across universe"
+        },
+        "hy_oas_credit_spread_pct": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "ICE BofA US HY Index OAS (FRED BAMLH0A0HYM2), percent. License-gated to 2023+ on FRED; falls back to neutral 0.0 when unavailable."
+        }
+      },
+      "additionalProperties": false
+    },
+    "interaction": {
+      "type": "object",
+      "description": "One row of features/{date}/interaction.parquet.",
+      "required": [
+        "ticker",
+        "date"
+      ],
+      "properties": {
+        "ticker": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Ticker symbol (one row per ticker)."
+        },
+        "date": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "description": "The snapshot's trading day, YYYY-MM-DD (the {date} path segment)."
+        },
+        "mom5d_x_vix": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "momentum_5d * VIX regime indicator"
+        },
+        "rsi_x_vix": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "RSI deviation from 50 * VIX regime"
+        },
+        "sector_x_trend": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Sector-relative return * price trend"
+        },
+        "atr_x_vix": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "ATR * VIX regime indicator"
+        },
+        "vol_trend_x_vix": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Volume trend * VIX regime indicator"
+        }
+      },
+      "additionalProperties": false
+    },
+    "alternative": {
+      "type": "object",
+      "description": "One row of features/{date}/alternative.parquet.",
+      "required": [
+        "ticker",
+        "date"
+      ],
+      "properties": {
+        "ticker": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Ticker symbol (one row per ticker)."
+        },
+        "date": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "description": "The snapshot's trading day, YYYY-MM-DD (the {date} path segment)."
+        },
+        "earnings_surprise_pct": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Most recent quarterly EPS surprise %"
+        },
+        "days_since_earnings": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Days since last earnings (0-1, capped 90d)"
+        },
+        "eps_revision_4w": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "4-week cumulative EPS revision %"
+        },
+        "revision_streak": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Consecutive weeks of same-direction revisions"
+        },
+        "put_call_ratio": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Log-transformed put/call OI ratio"
+        },
+        "iv_rank": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "IV percentile rank (0-1)"
+        },
+        "iv_vs_rv": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Implied vol / realized vol ratio"
+        }
+      },
+      "additionalProperties": false
+    },
+    "fundamental": {
+      "type": "object",
+      "description": "One row of features/{date}/fundamental.parquet.",
+      "required": [
+        "ticker",
+        "date"
+      ],
+      "properties": {
+        "ticker": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Ticker symbol (one row per ticker)."
+        },
+        "date": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "description": "The snapshot's trading day, YYYY-MM-DD (the {date} path segment)."
+        },
+        "pe_ratio": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Trailing P/E ratio, normalized (PE / 30)"
+        },
+        "pb_ratio": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Price-to-book ratio, normalized (PB / 5)"
+        },
+        "debt_to_equity": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Total debt / total equity, normalized (D/E / 2)"
+        },
+        "revenue_growth_yoy": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Year-over-year revenue growth (decimal)"
+        },
+        "fcf_yield": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Free cash flow / market cap (decimal)"
+        },
+        "gross_margin": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Gross profit / revenue (0-1)"
+        },
+        "roe": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Return on equity (decimal)"
+        },
+        "current_ratio": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Current assets / current liabilities, normalized (CR / 3)"
+        },
+        "revenue_growth_3y": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "3-year revenue CAGR (decimal); Growth pillar input"
+        },
+        "eps_growth_3y": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "3-year EPS CAGR (decimal); Growth pillar input"
+        },
+        "payout_ratio": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "TTM dividends / net income (0-2 clipped); Stewardship pillar input — retention rate = 1 - payout drives reinvestment"
+        },
+        "dividend_yield": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Indicated annual dividend yield (decimal, 0-0.2 clipped); Stewardship pillar input"
+        },
+        "capex_growth_5y": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "5-year CAPEX growth (decimal); Stewardship pillar input — reinvestment intensity proxy"
+        },
+        "market_cap_raw": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Raw market capitalization (absolute units, un-normalized) surfaced from Finnhub marketCapitalization. Base input to the Barra SIZE factor loading (size_zscore)."
+        }
+      },
+      "additionalProperties": false
+    },
+    "factor_loading": {
+      "type": "object",
+      "description": "One row of features/{date}/factor_loading.parquet.",
+      "required": [
+        "ticker",
+        "date"
+      ],
+      "properties": {
+        "ticker": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Ticker symbol (one row per ticker)."
+        },
+        "date": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "description": "The snapshot's trading day, YYYY-MM-DD (the {date} path segment)."
+        },
+        "momentum_20d_zscore": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Cross-sectional z-score of momentum_20d (winsorized ±3σ). Barra MOMENTUM (short-horizon) loading."
+        },
+        "return_60d_zscore": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Cross-sectional z-score of return_60d (winsorized ±3σ). Barra MOMENTUM (medium-horizon) loading."
+        },
+        "mom_12_1_pct_zscore": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Cross-sectional z-score of mom_12_1_pct (winsorized ±3σ). Barra MOMENTUM (long-horizon / RSTR) loading — trailing 12-month return excluding the most recent month, the horizon the Jegadeesh-Titman momentum premium is defined over."
+        },
+        "beta_60d_zscore": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Cross-sectional z-score of beta_60d (winsorized ±3σ). Barra BETA loading (market sensitivity)."
+        },
+        "idio_vol_60d_zscore": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Cross-sectional z-score of idio_vol_60d (winsorized ±3σ). Barra RESVOL loading (residual / idiosyncratic risk)."
+        },
+        "realized_vol_63d_zscore": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Cross-sectional z-score of realized_vol_63d (winsorized ±3σ). Barra VOLATILITY loading (total realized risk)."
+        },
+        "dist_from_52w_high_zscore": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Cross-sectional z-score of dist_from_52w_high (winsorized ±3σ). Proximity-to-high / reversal-risk loading."
+        },
+        "pe_ratio_zscore": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Cross-sectional z-score of pe_ratio (winsorized ±3σ). Barra VALUE loading (proxy via 1/PE direction)."
+        },
+        "roe_zscore": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Cross-sectional z-score of roe (winsorized ±3σ). Barra QUALITY / profitability loading."
+        },
+        "size_zscore": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Cross-sectional z-score of log(market_cap_raw) (winsorized ±3σ). Barra SIZE loading (config#1142) — completes the institutional Barra factor set."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "x-generated-from": "features/registry.py::CATALOG",
+  "x-settling-bar": {
+    "basis": "key_date",
+    "rationale": "Ticker-indexed and dated by the path segment, same shape as staging/daily_closes: every indicator in features/{date}/*.parquet reads the last bar, so on a same-day run the whole file is a derivation of the unsettled session (24,961 technical / 3,328 interaction / 508 alternative / 4 macro breaches measured on 2026-09-21). Graded as settling only when the key names the report's trading_day (alpha-engine-config-I11351)."
+  },
+  "x-key-pattern": [
+    "features/{date}/technical.parquet",
+    "features/{date}/fundamental.parquet",
+    "features/{date}/interaction.parquet",
+    "features/{date}/macro.parquet",
+    "features/{date}/alternative.parquet",
+    "features/{date}/*.parquet"
+  ]
+}
