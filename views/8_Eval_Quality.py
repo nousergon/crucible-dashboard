@@ -34,6 +34,7 @@ from loaders.eval_loader import (
     save_calibration_review,
     save_spotcheck_flag,
 )
+from loaders.judge_identity import grader_label, served_grader
 from loaders.s3_loader import load_latest_provenance_grounding
 
 
@@ -75,7 +76,7 @@ if judge_filter != "both":
     df = df[df["judge_model"] == judge_filter]
 
 if df.empty:
-    st.warning(f"No eval artifacts for judge model `{judge_filter}` in window.")
+    st.warning(f"No eval artifacts for judge tier `{judge_filter}` in window.")
     st.stop()
 
 
@@ -130,7 +131,7 @@ with tab_trend:
                 line_dash="judge_model" if judge_filter == "both" else None,
                 markers=True,
                 title=f"{agent}",
-                hover_data=["judge_model", "rubric_version", "reasoning"],
+                hover_data=["judge_model", "judge_served_model", "rubric_version", "reasoning"],
             )
             fig.update_yaxes(range=[0.5, 5.5], dtick=1)
             # Visual reference at the 4-week-mean alarm threshold.
@@ -349,6 +350,7 @@ with tab_spotcheck:
             rubric_id = art.get("rubric_id", "—")
             rubric_version = art.get("rubric_version", "—")
             judge_model = art.get("judge_model", "—")
+            judge_served = served_grader(art)
             eval_date = art["_eval_date"]
             dim_scores = art.get("dimension_scores") or []
             overall_reasoning = art.get("overall_reasoning", "")
@@ -361,7 +363,8 @@ with tab_spotcheck:
 
             with st.expander(
                 f"**{agent_id}** · {eval_date} · `{rubric_id}` v{rubric_version} "
-                f"· judge `{judge_model}` · mean score {mean_label}/5",
+                f"· judge tier `{judge_model}` · graded by "
+                f"`{grader_label(judge_model, judge_served)}` · mean score {mean_label}/5",
                 expanded=False,
             ):
                 left, right = st.columns(2)
@@ -422,6 +425,7 @@ with tab_spotcheck:
                         "run_id": _art.get("run_id"),
                         "rubric_id": _art.get("rubric_id"),
                         "judge_model": _art.get("judge_model"),
+                        "judge_served_model": served_grader(_art),
                         "verdict": verdict,
                         "note": st.session_state.get(_note_key) or None,
                         "source_eval_s3_key": _art.get("_s3_key"),
@@ -487,6 +491,7 @@ with tab_calibrate:
             rubric_id = art.get("rubric_id", "—")
             rubric_version = art.get("rubric_version", "—")
             judge_model = art.get("judge_model", "—")
+            judge_served = served_grader(art)
             eval_date = art["_eval_date"]
             dim_scores = art.get("dimension_scores") or []
 
@@ -536,6 +541,7 @@ with tab_calibrate:
                             "rubric_id": rubric_id,
                             "rubric_version": rubric_version,
                             "judge_model": judge_model,
+                            "judge_served_model": judge_served,
                             "reviewer": "operator",
                             "per_dimension": per_dimension,
                             "source_eval_s3_key": art.get("_s3_key"),
@@ -573,7 +579,7 @@ with tab_data:
     st.dataframe(
         table[[
             "eval_date", "judged_agent_id", "criterion", "score",
-            "judge_model", "rubric_version", "reasoning",
+            "judge_model", "judge_served_model", "rubric_version", "reasoning",
         ]],
         use_container_width=True,
         hide_index=True,
