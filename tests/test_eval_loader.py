@@ -102,6 +102,22 @@ class TestExplodeEvalArtifact:
         assert len(rows) == 1
         assert rows[0]["judge_model"] == ""
         assert rows[0]["rubric_version"] == ""
+        assert rows[0]["judge_served_model"] is None
+
+    def test_served_model_is_the_router_resolved_model(self):
+        # alpha-engine-config-I11484: the tier key and the grader are
+        # different facts. The 2026-10-10 records carry both.
+        artifact = _eval_artifact_payload(judge_model="claude-sonnet-4-6")
+        artifact["judge_request_model"] = "low-deepseek-v4-flash-tools"
+        artifact["judge_resolved_model"] = "deepseek-v4-flash"
+        rows = _explode_eval_artifact(artifact, "2026-10-10")
+        assert {r["judge_model"] for r in rows} == {"claude-sonnet-4-6"}
+        assert {r["judge_served_model"] for r in rows} == {"deepseek-v4-flash"}
+
+    def test_served_model_never_falls_back_to_the_tier(self):
+        artifact = _eval_artifact_payload(judge_model="claude-haiku-4-5")
+        rows = _explode_eval_artifact(artifact, "2026-05-09")
+        assert all(r["judge_served_model"] is None for r in rows)
 
 
 # ── load_eval_artifacts ───────────────────────────────────────────────────
@@ -176,7 +192,7 @@ class TestLoadEvalArtifacts:
         # plot specs without conditionals on schema.
         assert set(df.columns) >= {
             "eval_date", "judged_agent_id", "criterion", "score",
-            "judge_model", "rubric_version",
+            "judge_model", "judge_served_model", "rubric_version",
         }
 
     def test_happy_path_one_artifact_one_date(self, mock_s3):
