@@ -105,7 +105,7 @@ narwhals==2.27.1
     # via
     #   altair
     #   plotly
-nousergon-lib[flow-doctor, github-app] @ git+https://github.com/nousergon/nousergon-lib@v0.124.170
+nousergon-lib[flow-doctor, github-app] @ git+https://github.com/nousergon/nousergon-lib@v0.124.175
     # via -r requirements.in
 numpy==2.5.4
     # via
