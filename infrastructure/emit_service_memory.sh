@@ -1,21 +1,28 @@
 #!/bin/bash
-# emit_service_memory.sh — record per-service anon+swap every run; publish it
-# to CloudWatch only when the total reaches the T1-8 line.
+# emit_service_memory.sh — record per-service anon+swap every run; publish
+# only the TOTAL to CloudWatch, and only when it reaches the T1-8 line.
 #
-# WHERE THE SERIES LIVES (alpha-engine-config-I11792 M2, Brian "Full plan"
-# ruling 2026-10-09; runbook clause SAH-5-T1-8-per-service-series as amended
-# the same day). Every run writes ONE JSON record — every budgeted unit
-# including explicit zeros, the total, MemTotal and the T1-8 line — to:
+# WHERE THE SERIES LIVES (runbook clause SAH-5-T1-8-per-service-series, as
+# amended by Brian's 2026-10-15 "Cut redundant" ruling, alpha-engine-config-
+# I11792). Every run writes ONE JSON record — every budgeted unit including
+# explicit zeros, the total, MemTotal and the T1-8 line — to:
 #   1. stdout, i.e. the journal (`journalctl -u emit-service-memory.service`);
 #   2. s3://alpha-engine-research/dashboard/box/service-memory/<UTC day>.jsonl,
 #      the day's file re-uploaded whole each run (fail LOUD if that fails).
-# CloudWatch gets the per-unit `ServiceMemoryMiB` and `ServiceMemoryTotalMiB`
-# points ONLY on a run whose total is at or above `max_steady_state_fraction`
-# x MemTotal — the line check_memory_budget.py's T1-8 bound uses. Custom
-# metrics bill per hour that has data, so eighteen always-on series cost
-# ~$5.40/month to graph a steady state nothing alarmed on; on-breach they cost
-# only the hours the box is in breach, and a breach still has its per-service
-# breakdown beside it in CloudWatch, which is the clause's purpose.
+# That record is where a breach is attributed to a service. CloudWatch gets
+# `ServiceMemoryTotalMiB` ONLY, on a run whose total is at or above
+# `max_steady_state_fraction` x MemTotal — the line check_memory_budget.py's
+# T1-8 bound uses.
+#
+# WHY THE PER-UNIT `ServiceMemoryMiB{Unit}` SERIES ARE NO LONGER PUBLISHED.
+# The 2026-10-09 amendment (M2) published them "only on breach" to save
+# ~$5.40/month. It saved nothing: the box has been in STANDING T1-8 breach
+# (total 1.9-2.6 GB against a ~1.9 GB line), so all 336 of 336 hours measured
+# 2026-10-01 -> 10-15 published, and the 16 per-unit series were ~$4.80 of the
+# ~$7.30/month custom-metric bill. Nothing alarmed on them and no surface read
+# them; they duplicated, value for value, the five-minute record above. The
+# total stays in CloudWatch because it is the number the T1-8 bound is
+# evaluated against and the one that can carry an alarm.
 #
 # WHY THIS EXISTS
 # ---------------
@@ -52,18 +59,11 @@
 # is the same definition `check_memory_budget.py` uses for its working-set
 # bound, so the series here and that check's verdict cannot disagree.
 #
-# ONE DIMENSION, NOT TWO
-# ----------------------
-# Dimensioned by Unit only, in a namespace already scoped to this box's
-# metrics. Adding InstanceId would double the metric count for a single-box
-# fact and make every future graph carry a constant. If a second host ever
-# publishes here, add the dimension then — with a reason.
-#
 # EVERY UNIT, EVERY RUN, INCLUDING THE QUIET ONES
 # -----------------------------------------------
 # Units are read from budget.yaml's coverage manifest, not from whatever is
-# currently running, and a unit that is absent publishes 0 rather than
-# nothing. A service that stopped must be visibly zero: a metric that simply
+# currently running, and a unit that is absent records 0 rather than
+# nothing. A service that stopped must be visibly zero: a series that simply
 # ceases is indistinguishable from a dead publisher (observability-policy
 # §7.4a), and "the memory freed up" and "the collector broke" are the two
 # readings we would most need to tell apart.
@@ -177,16 +177,16 @@ fi
 METRIC_DATA=()
 UNITS_JSON=""
 TOTAL_MIB=0
+# Per-unit values go to the record ONLY (journal + S3); see the header.
 for unit in "${UNITS[@]}"; do
     mib=$(unit_mib "$unit")
     TOTAL_MIB=$(( TOTAL_MIB + mib ))
-    METRIC_DATA+=("MetricName=ServiceMemoryMiB,Value=${mib},Unit=Megabytes,Dimensions=[{Name=Unit,Value=${unit}}]")
     UNITS_JSON+="${UNITS_JSON:+,}\"${unit}\":${mib}"
 done
 
-# The sum, as its own series. It is the number check_memory_budget.py's
-# working-set bound is evaluated against, so having it graphed next to its
-# components is what makes a breach readable without re-deriving it.
+# The sum, as the one CloudWatch series. It is the number
+# check_memory_budget.py's working-set bound is evaluated against; the
+# per-service breakdown behind any breach hour is in that hour's S3 records.
 METRIC_DATA+=("MetricName=ServiceMemoryTotalMiB,Value=${TOTAL_MIB},Unit=Megabytes,Dimensions=[{Name=InstanceId,Value=${INSTANCE_ID}}]")
 
 BREACH=false
@@ -216,10 +216,10 @@ else
     rc=1
 fi
 
-# 3. CloudWatch, on breach only.
+# 3. CloudWatch, on breach only — the total, nothing per unit.
 if [[ "$BREACH" == true ]]; then
-    # put-metric-data caps at 1000 metrics per call and this is ~20, but batch
-    # anyway so adding units later cannot silently start truncating.
+    # One metric today; the batching stays so a future series added to
+    # METRIC_DATA cannot silently start truncating at the 1000-per-call cap.
     for ((i = 0; i < ${#METRIC_DATA[@]}; i += 20)); do
         if ! aws cloudwatch put-metric-data \
                 --region "$REGION" \
@@ -237,7 +237,7 @@ if (( rc != 0 )); then
 fi
 
 if [[ "$BREACH" == true ]]; then
-    echo "emit_service_memory: ${#UNITS[@]} unit(s), total ${TOTAL_MIB} MiB >= T1-8 line ${LINE_MIB} MiB -- recorded and PUBLISHED to CloudWatch"
+    echo "emit_service_memory: ${#UNITS[@]} unit(s), total ${TOTAL_MIB} MiB >= T1-8 line ${LINE_MIB} MiB -- recorded (journal + S3), total PUBLISHED to CloudWatch"
 else
     echo "emit_service_memory: ${#UNITS[@]} unit(s), total ${TOTAL_MIB} MiB < T1-8 line ${LINE_MIB} MiB -- recorded (journal + S3), not published"
 fi

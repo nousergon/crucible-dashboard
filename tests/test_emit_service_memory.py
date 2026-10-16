@@ -30,8 +30,11 @@ series to something that looks alive while answering the wrong question:
 Since 2026-10-09 (alpha-engine-config-I11792 M2, runbook clause
 SAH-5-T1-8-per-service-series as amended) the series is RECORDED every run
 (journal + S3) and PUBLISHED to CloudWatch only when the total reaches the
-T1-8 line. The three properties above hold for the record; `TestOnBreachOnly`
-pins the new routing.
+T1-8 line. Since 2026-10-15 (Brian's "Cut redundant" ruling, same issue and
+clause) only the TOTAL is published there: the 16 per-unit series duplicated
+the record value for value and the box's standing T1-8 breach meant "on
+breach" was every hour. The three properties above hold for the record, so
+they are asserted against the record; `TestOnBreachOnly` pins the routing.
 """
 
 import json
@@ -153,9 +156,9 @@ class TestMeasurementIsUncensored:
             present={"litellm-proxy.service": (700 * MB, 269 * MB)},
         )
         assert proc.returncode == 0, proc.stderr
-        assert "Value=969," in calls, (
+        assert _record(proc)["units"]["litellm-proxy.service"] == 969, (
             "expected anon+swap = 969 MiB; a value of 700 means swap was "
-            f"dropped and the reading is censored.\n{calls}"
+            f"dropped and the reading is censored.\n{proc.stdout}"
         )
 
     def test_swap_only_service_is_not_reported_as_zero(self, tmp_path):
@@ -165,23 +168,22 @@ class TestMeasurementIsUncensored:
             present={"a.service": (0, 300 * MB)},
         )
         assert proc.returncode == 0, proc.stderr
-        assert "Value=300," in calls
+        assert _record(proc)["units"]["a.service"] == 300
 
 
 @pytest.mark.skipif(not SCRIPT.exists(), reason="collector not present")
 class TestEveryUnitEveryRun:
-    def test_a_stopped_unit_publishes_zero_rather_than_nothing(self, tmp_path):
+    def test_a_stopped_unit_records_zero_rather_than_nothing(self, tmp_path):
         """A series that stops is indistinguishable from a dead publisher."""
-        proc, calls = _harness(
+        proc, _ = _harness(
             tmp_path,
             units=["running.service", "stopped.service"],
             present={"running.service": (100 * MB, 0)},
         )
         assert proc.returncode == 0, proc.stderr
-        assert "Name=Unit,Value=stopped.service" in calls, (
-            "a unit with no cgroup must still publish, as zero:\n" + calls
+        assert _record(proc)["units"].get("stopped.service") == 0, (
+            "a unit with no cgroup must still be recorded, as zero:\n" + proc.stdout
         )
-        assert "MetricName=ServiceMemoryMiB,Value=0,Unit=Megabytes,Dimensions=[{Name=Unit,Value=stopped.service}]" in calls
 
     def test_total_is_published_and_is_the_sum(self, tmp_path):
         proc, calls = _harness(
@@ -197,14 +199,15 @@ class TestEveryUnitEveryRun:
     def test_units_come_from_the_services_block_only(self, tmp_path):
         """budget.yaml also carries a `timers:` block of OS plumbing. Publishing
         a 5-minute gauge of dbus's memory is paid-for noise."""
-        _, calls = _harness(
+        proc, calls = _harness(
             tmp_path,
             units=["real.service"],
             present={"real.service": (10 * MB, 0)},
             mem_total_mib=10,
         )
-        assert "Name=Unit,Value=real.service" in calls
+        assert set(_record(proc)["units"]) == {"real.service"}
         assert "dbus.service" not in calls
+        assert "dbus.service" not in proc.stdout
 
 
 @pytest.mark.skipif(not SCRIPT.exists(), reason="collector not present")
@@ -347,16 +350,23 @@ class TestOnBreachOnly:
         assert rec["t1_8_line_mib"] == 2000
         assert rec["at_or_over_t1_8"] is False
 
-    def test_at_or_over_the_line_publishes_every_unit_and_the_total(self, tmp_path):
+    def test_at_or_over_the_line_publishes_the_total_only(self, tmp_path):
+        """2026-10-15 ruling: per-unit values live in the record, never in
+        CloudWatch, breach or not. The total is the one published series."""
         proc, calls = _harness(
             tmp_path, units=["a.service", "stopped.service"],
             present={"a.service": (2000 * MB, 0)}, mem_total_mib=4000,
         )
         assert proc.returncode == 0, proc.stderr
-        assert "Name=Unit,Value=a.service" in calls
-        assert "MetricName=ServiceMemoryMiB,Value=0,Unit=Megabytes,Dimensions=[{Name=Unit,Value=stopped.service}]" in calls
         assert "MetricName=ServiceMemoryTotalMiB,Value=2000," in calls
-        assert _record(proc)["at_or_over_t1_8"] is True
+        assert "ServiceMemoryMiB" not in calls, (
+            "a per-unit CloudWatch series came back; it duplicates the S3 "
+            f"record and was retired by alpha-engine-config-I11792:\n{calls}"
+        )
+        assert "Name=Unit," not in calls
+        rec = _record(proc)
+        assert rec["at_or_over_t1_8"] is True
+        assert rec["units"] == {"a.service": 2000, "stopped.service": 0}
 
     def test_every_run_uploads_the_day_file_to_s3(self, tmp_path):
         proc, calls = _harness(
