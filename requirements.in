@@ -127,7 +127,14 @@ yfinance>=1.7.0
 # _latest rows stop reading MISSING. crucible-predictor's
 # spot_predictor_training.sh runs `krepis.stage_coverage` on THIS venv
 # (LIB_PYTHON on the weekly spot launcher), not on its own pins.
-krepis[openai]>=0.59.70
+#
+# Floor raised to 0.59.75 (alpha-engine-config-I11570, krepis-PR249):
+# `krepis.spot_bootstrap render --pin-sha CHECKOUT=SHA` checks a spot worker's
+# checkout out at the SF execution's pinned commit instead of the branch tip.
+# crucible-backtester's spot launchers render the worker bootstrap on THIS venv
+# (LIB_PYTHON) and pass --pin-sha whenever the execution has a code pin; an
+# older krepis rejects the flag, so the floor must land before they adopt it.
+krepis[openai]>=0.59.75
 # nousergon-lib (renamed from alpha-engine-lib at v0.60.0) provides
 # setup_logging used by app.py + health_checker.py
 # to attach the FlowDoctorHandler when FLOW_DOCTOR_ENABLED=1, the
