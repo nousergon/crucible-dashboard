@@ -105,22 +105,24 @@ CALLSITE_ID = "dashboard-morning-brief"
 # `trace_capture` field of the `dashboard-morning-brief` LLM_CALLSITE_REGISTRY
 # row.
 #
-# UNDECLARED, ON PURPOSE. Whether this call site keeps `full` traces (prompt,
-# output and bodies under llm_traces/v1/blobs/) or `hash_only` (hashes, usage,
-# route, timing, no bodies) is Brian's ruling, pending on
-# alpha-engine-config-I12312. It is not decided here. Declaring it is a
-# one-line change to this constant plus the registry row; the tests already
-# cover all three values.
+# DECLARED `hash_only` (Brian's ruling C on alpha-engine-config-I12312,
+# 2026-10-18). Hashes, usage, route, timing and citations are kept; prompt and
+# output bodies are not, because the brief's inputs include
+# `top_event_descriptions` from the news producer and whether its vendor terms
+# allow retaining derived excerpts is unverified. The ruling promotes this
+# call site to `full` once a one-line vendor-terms check confirms they may be
+# stored. That promotion is a one-line change to this constant plus the
+# registry row, and it also needs a `blobs/` write grant on the dashboard role.
 #
-# Why the level is passed explicitly even while undeclared: left unset, krepis
-# traces at `full` the moment KREPIS_TRACE_SINK_* appears in this process's
-# environment (a box-wide env rollout for metron-api, say) and it also obeys
-# KREPIS_TRACE_CAPTURE. That would make the capture level an accident of the
-# environment instead of a reviewed decision. So until this constant names a
-# level, the call site passes `off`, which is also what it does live today: no
-# trace sink is configured on the dashboard box. A configured sink with no
-# declared level is logged at WARNING, so the gap is visible rather than silent.
-TRACE_CAPTURE: Optional[str] = None
+# Why the level is passed explicitly: left unset, krepis traces at `full` the
+# moment KREPIS_TRACE_SINK_* appears in this process's environment (a box-wide
+# env rollout for metron-api, say) and it also obeys KREPIS_TRACE_CAPTURE.
+# That would make the capture level an accident of the environment instead of
+# a reviewed decision. With no sink configured, the call site passes `off`,
+# which is what it does live today: no trace sink is configured on the
+# dashboard box. If the constant is ever reset to None (undeclared), a
+# configured sink is logged at WARNING and not traced, so the gap is visible.
+TRACE_CAPTURE: Optional[str] = "hash_only"
 TRACE_CAPTURE_LEVELS = ("full", "hash_only", "off")
 TRACE_SINK_ENV_VARS = ("KREPIS_TRACE_SINK_BUCKET", "KREPIS_TRACE_SINK_PREFIX")
 
@@ -149,7 +151,7 @@ def trace_capture_level() -> str:
         logger.warning(
             "[morning_brief] a krepis trace sink is configured but callsite "
             "%s declares no trace_capture level, so this call is not traced "
-            "(alpha-engine-config-I12312: the level is pending a ruling)",
+            "(alpha-engine-config-I12312)",
             CALLSITE_ID,
         )
         return "off"
