@@ -30,6 +30,8 @@ Covered (post alpha-engine-config-I6367/I7879 router migration, 2026-08-20):
 from __future__ import annotations
 
 import importlib.util
+import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -427,3 +429,201 @@ class TestKillSwitch:
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+# ── trace capture (alpha-engine-config-I12312) ─────────────────────────────
+#
+# The call site always passes an explicit `trace_capture=` to LLMClient and
+# never leaves the level to krepis's environment default. Which level this
+# call site keeps (`full` vs `hash_only`) is pending Brian's ruling on
+# alpha-engine-config-I12312, so `TRACE_CAPTURE` ships as None (undeclared →
+# `off`). These tests cover every value the constant can take, so declaring
+# the ruling is a one-line change that is already tested.
+
+_SINK_ENV = {
+    "KREPIS_TRACE_SINK_BUCKET": "test-bucket",
+    "KREPIS_TRACE_SINK_PREFIX": "llm_traces/v1",
+}
+_BRIEF_TEXT = "Macro lead: risk-off.\n- AAPL: supplier news"
+
+
+def _text_transport(calls):
+    """A fake openai transport answering every completion with _BRIEF_TEXT."""
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(
+                choices=[SimpleNamespace(
+                    message=SimpleNamespace(content=_BRIEF_TEXT)
+                )],
+                model=kwargs["model"],
+                usage=None,
+            )
+
+    class FakeClient:
+        def __init__(self):
+            self.chat = SimpleNamespace(completions=FakeCompletions())
+
+    return lambda spec, api_key: FakeClient()
+
+
+@pytest.fixture
+def trace_env(monkeypatch):
+    """Route krepis's process-default trace sink to memory and count flushes.
+
+    Only the default sink's SOURCE is faked: LLMClient, its trace_capture
+    handling and build_trace_record all run for real.
+    """
+    from krepis import trace_sink as _ts
+
+    sink = _ts.InMemoryTraceSink()
+    real_default = _ts.default_trace_sink_from_env
+    flushes = []
+
+    def fake_default(*, s3_client=None):
+        bucket = os.environ.get(_ts.BUCKET_ENV_VAR, "").strip()
+        prefix = os.environ.get(_ts.PREFIX_ENV_VAR, "").strip()
+        if bool(bucket) != bool(prefix):
+            # krepis's own half-configured check, unchanged: it raises.
+            return real_default(s3_client=s3_client)
+        return sink if bucket else None
+
+    monkeypatch.setattr(_ts, "default_trace_sink_from_env", fake_default)
+    monkeypatch.setattr(
+        _ts, "flush_default_trace_sink", lambda: flushes.append(1) or 0
+    )
+    for name in (*_SINK_ENV, "KREPIS_TRACE_CAPTURE"):
+        monkeypatch.delenv(name, raising=False)
+    return SimpleNamespace(sink=sink, flushes=flushes)
+
+
+def _set_sink_env(monkeypatch, **only):
+    for name, value in (only or _SINK_ENV).items():
+        monkeypatch.setenv(name, value)
+
+
+def _generate(monkeypatch, mb, calls):
+    _patch_router(monkeypatch)
+    return mb.generate_morning_brief(
+        _snap(), [{"ticker": "AAPL", "n_articles": 3,
+                   "top_event_descriptions": "supplier guidance cut"}],
+        client_factory=_text_transport(calls),
+    )
+
+
+class TestTraceCapture:
+    def test_ships_undeclared_pending_the_ruling(self):
+        # Declaring a level is Brian's call (alpha-engine-config-I12312).
+        # When it is made, this test changes in the same PR as the constant
+        # and the registry row, so the decision is visible in review.
+        mb = _morning_brief()
+        assert mb.TRACE_CAPTURE is None
+        assert mb.TRACE_CAPTURE in (None, *mb.TRACE_CAPTURE_LEVELS)
+        assert mb.TRACE_CAPTURE_LEVELS == ("full", "hash_only", "off")
+
+    def test_no_sink_configured_is_off_and_untraced(self, monkeypatch, trace_env):
+        mb = _morning_brief()
+        calls = []
+        assert mb.trace_capture_level() == "off"
+        assert _generate(monkeypatch, mb, calls) == _BRIEF_TEXT
+        assert trace_env.sink.rows == []
+        assert trace_env.flushes == []
+
+    def test_sink_configured_but_undeclared_is_off_and_warns(
+        self, monkeypatch, trace_env, caplog
+    ):
+        # The case the explicit level exists for: an env rollout must not
+        # turn on krepis's `full` default for a call site nobody declared.
+        mb = _morning_brief()
+        _set_sink_env(monkeypatch)
+        monkeypatch.setenv("KREPIS_TRACE_CAPTURE", "full")
+        calls = []
+        with caplog.at_level("WARNING"):
+            assert _generate(monkeypatch, mb, calls) == _BRIEF_TEXT
+        assert len(calls) == 1
+        assert trace_env.sink.rows == []
+        assert trace_env.sink.blobs == {}
+        assert trace_env.flushes == []
+        assert any(
+            "declares no trace_capture level" in r.message
+            and "dashboard-morning-brief" in r.message
+            for r in caplog.records
+        )
+
+    def test_declared_level_without_a_sink_is_off(self, monkeypatch, trace_env):
+        # krepis refuses a declared full/hash_only with no sink at
+        # construction; the call site must not trip that on a box with no
+        # trace env, which is every box today.
+        mb = _morning_brief()
+        monkeypatch.setattr(mb, "TRACE_CAPTURE", "full")
+        calls = []
+        assert mb.trace_capture_level() == "off"
+        assert _generate(monkeypatch, mb, calls) == _BRIEF_TEXT
+        assert trace_env.sink.rows == []
+
+    def test_hash_only_writes_a_row_with_no_bodies(self, monkeypatch, trace_env):
+        mb = _morning_brief()
+        monkeypatch.setattr(mb, "TRACE_CAPTURE", "hash_only")
+        _set_sink_env(monkeypatch)
+        calls = []
+        assert _generate(monkeypatch, mb, calls) == _BRIEF_TEXT
+        assert len(trace_env.sink.rows) == 1
+        row = trace_env.sink.rows[0]
+        dumped = json.dumps(row)
+        assert "dashboard-morning-brief" in dumped
+        for body_text in ("supplier guidance cut", "risk-off", "LEAD WITH THE MACRO"):
+            assert body_text not in dumped
+        assert trace_env.sink.blobs == {}
+        assert trace_env.flushes == [1]
+
+    def test_full_stores_bodies(self, monkeypatch, trace_env):
+        # The control: proves the hash_only assertions above would bite.
+        mb = _morning_brief()
+        monkeypatch.setattr(mb, "TRACE_CAPTURE", "full")
+        _set_sink_env(monkeypatch)
+        calls = []
+        assert _generate(monkeypatch, mb, calls) == _BRIEF_TEXT
+        assert len(trace_env.sink.rows) == 1
+        bodies = b"".join(b.data for b in trace_env.sink.blobs.values())
+        assert b"supplier guidance cut" in bodies
+        assert b"risk-off" in bodies
+        assert trace_env.flushes == [1]
+
+    def test_declared_off_with_a_sink_is_untraced(self, monkeypatch, trace_env):
+        mb = _morning_brief()
+        monkeypatch.setattr(mb, "TRACE_CAPTURE", "off")
+        _set_sink_env(monkeypatch)
+        calls = []
+        assert _generate(monkeypatch, mb, calls) == _BRIEF_TEXT
+        assert trace_env.sink.rows == []
+        assert trace_env.flushes == []
+
+    def test_half_configured_sink_fails_soft_before_spend(
+        self, monkeypatch, trace_env, caplog
+    ):
+        mb = _morning_brief()
+        monkeypatch.setattr(mb, "TRACE_CAPTURE", "hash_only")
+        _set_sink_env(monkeypatch, KREPIS_TRACE_SINK_BUCKET="test-bucket")
+        calls = []
+        with caplog.at_level("WARNING"):
+            assert _generate(monkeypatch, mb, calls) is None
+        assert calls == []  # refused at construction: nothing was sent
+        assert any("TraceSinkConfigError" in r.message for r in caplog.records)
+
+    def test_every_llmclient_construction_passes_trace_capture(self):
+        """AST guard: no LLMClient(...) in this module leaves the level to
+        krepis's environment default."""
+        import ast
+
+        tree = ast.parse((_LIVE / "morning_brief.py").read_text())
+        ctors = [
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.Call)
+            and getattr(n.func, "id", getattr(n.func, "attr", None)) == "LLMClient"
+        ]
+        assert ctors, "expected at least one LLMClient construction"
+        for call in ctors:
+            assert "trace_capture" in {k.arg for k in call.keywords}, (
+                f"LLMClient(...) at line {call.lineno} passes no trace_capture="
+            )
