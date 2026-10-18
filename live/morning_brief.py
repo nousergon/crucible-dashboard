@@ -46,6 +46,7 @@ key is held here.
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime
 from typing import Optional
 
@@ -94,9 +95,84 @@ _MAX_TOKENS = 2400
 # Cost-attribution join key for this call site (krepis >= 0.23 requires it).
 # Every LLM call from here emits a cost row stamped with this literal; the
 # matching row in alpha-engine-config/private-docs/LLM_CALLSITE_REGISTRY.yaml
-# should carry the same value as its `id` — the two are a lockstep pair
-# (registry row pending, config#I5206 coverage is rolling out repo by repo).
+# carries the same value as its `id` — the two are a lockstep pair (row added
+# 2026-10-15, alpha-engine-config-I12312).
 CALLSITE_ID = "dashboard-morning-brief"
+
+# Call-trace capture level (alpha-engine-config-I12312; nous-ergon-ops
+# llm-platform-policy § Call trace record). The value is exactly what this call
+# site passes as ``krepis.llm.LLMClient(trace_capture=)``, and it must match the
+# `trace_capture` field of the `dashboard-morning-brief` LLM_CALLSITE_REGISTRY
+# row.
+#
+# UNDECLARED, ON PURPOSE. Whether this call site keeps `full` traces (prompt,
+# output and bodies under llm_traces/v1/blobs/) or `hash_only` (hashes, usage,
+# route, timing, no bodies) is Brian's ruling, pending on
+# alpha-engine-config-I12312. It is not decided here. Declaring it is a
+# one-line change to this constant plus the registry row; the tests already
+# cover all three values.
+#
+# Why the level is passed explicitly even while undeclared: left unset, krepis
+# traces at `full` the moment KREPIS_TRACE_SINK_* appears in this process's
+# environment (a box-wide env rollout for metron-api, say) and it also obeys
+# KREPIS_TRACE_CAPTURE. That would make the capture level an accident of the
+# environment instead of a reviewed decision. So until this constant names a
+# level, the call site passes `off`, which is also what it does live today: no
+# trace sink is configured on the dashboard box. A configured sink with no
+# declared level is logged at WARNING, so the gap is visible rather than silent.
+TRACE_CAPTURE: Optional[str] = None
+TRACE_CAPTURE_LEVELS = ("full", "hash_only", "off")
+TRACE_SINK_ENV_VARS = ("KREPIS_TRACE_SINK_BUCKET", "KREPIS_TRACE_SINK_PREFIX")
+
+
+def _trace_sink_configured() -> bool:
+    return any(os.environ.get(name, "").strip() for name in TRACE_SINK_ENV_VARS)
+
+
+def trace_capture_level() -> str:
+    """The ``trace_capture=`` this call site passes to ``krepis.llm.LLMClient``.
+
+    Never ``None``, so the level is never left to krepis's environment default.
+
+      * no trace sink configured -> ``off`` (krepis refuses, at construction,
+        a declared capture that writes nowhere);
+      * a sink configured and :data:`TRACE_CAPTURE` declared -> that level;
+      * a sink configured and nothing declared -> ``off``, with a WARNING.
+
+    A half-configured sink (one variable without the other) is still refused
+    by krepis's own config check before any spend, and an unknown level is
+    refused by ``LLMClient``; the caller's fail-soft path logs either.
+    """
+    if not _trace_sink_configured():
+        return "off"
+    if TRACE_CAPTURE is None:
+        logger.warning(
+            "[morning_brief] a krepis trace sink is configured but callsite "
+            "%s declares no trace_capture level, so this call is not traced "
+            "(alpha-engine-config-I12312: the level is pending a ruling)",
+            CALLSITE_ID,
+        )
+        return "off"
+    return TRACE_CAPTURE
+
+
+def _flush_traces() -> None:
+    """Flush the process-default krepis trace sink after a traced call.
+
+    The dashboard is a long-running Streamlit process: without this the sink
+    holds rows until 200 accumulate or the process exits, so a brief's trace
+    could sit unwritten for days and a freshness check would read a live call
+    site as dead. krepis's flush never raises; the guard is for an import
+    failure, since a telemetry fault must not take the brief down.
+    """
+    try:
+        from krepis import trace_sink as _trace_sink
+
+        _trace_sink.flush_default_trace_sink()
+    except Exception as e:  # noqa: BLE001 — telemetry never fails the brief
+        logger.warning(
+            "[morning_brief] trace flush failed (%s: %s)", type(e).__name__, e,
+        )
 
 
 # ── Config: kill switch + cadence overrides ────────────────────────────────
@@ -269,12 +345,14 @@ def generate_morning_brief(
             route.get("route"),
         )
 
+    trace_capture = trace_capture_level()
     try:
         client = LLMClient(
             spec,
             api_key=api_key,
             client_factory=client_factory,
             callsite_id=CALLSITE_ID,
+            trace_capture=trace_capture,
         )
         result = client.complete(
             system=_SYSTEM_PROMPT,
@@ -289,6 +367,9 @@ def generate_morning_brief(
             type(e).__name__, e,
         )
         return None
+    finally:
+        if trace_capture != "off":
+            _flush_traces()
 
 
 # ── The rerun-driven entry point ───────────────────────────────────────────
