@@ -434,11 +434,11 @@ if __name__ == "__main__":  # pragma: no cover
 # ── trace capture (alpha-engine-config-I12312) ─────────────────────────────
 #
 # The call site always passes an explicit `trace_capture=` to LLMClient and
-# never leaves the level to krepis's environment default. Which level this
-# call site keeps (`full` vs `hash_only`) is pending Brian's ruling on
-# alpha-engine-config-I12312, so `TRACE_CAPTURE` ships as None (undeclared →
-# `off`). These tests cover every value the constant can take, so declaring
-# the ruling is a one-line change that is already tested.
+# never leaves the level to krepis's environment default. Brian's ruling C on
+# alpha-engine-config-I12312 (2026-10-18) declares `hash_only` until a
+# vendor-terms check clears the news excerpts for `full`. These tests cover
+# every value the constant can take, so the promotion is a one-line change
+# that is already tested.
 
 _SINK_ENV = {
     "KREPIS_TRACE_SINK_BUCKET": "test-bucket",
@@ -513,13 +513,14 @@ def _generate(monkeypatch, mb, calls):
 
 
 class TestTraceCapture:
-    def test_ships_undeclared_pending_the_ruling(self):
-        # Declaring a level is Brian's call (alpha-engine-config-I12312).
-        # When it is made, this test changes in the same PR as the constant
-        # and the registry row, so the decision is visible in review.
+    def test_ships_hash_only_per_ruling_c(self):
+        # Brian's ruling C (alpha-engine-config-I12312, 2026-10-18):
+        # `hash_only` until the vendor-terms check, then `full`. The
+        # promotion changes this test in the same PR as the constant and the
+        # registry row, so the decision is visible in review.
         mb = _morning_brief()
-        assert mb.TRACE_CAPTURE is None
-        assert mb.TRACE_CAPTURE in (None, *mb.TRACE_CAPTURE_LEVELS)
+        assert mb.TRACE_CAPTURE == "hash_only"
+        assert mb.TRACE_CAPTURE in mb.TRACE_CAPTURE_LEVELS
         assert mb.TRACE_CAPTURE_LEVELS == ("full", "hash_only", "off")
 
     def test_no_sink_configured_is_off_and_untraced(self, monkeypatch, trace_env):
@@ -536,6 +537,7 @@ class TestTraceCapture:
         # The case the explicit level exists for: an env rollout must not
         # turn on krepis's `full` default for a call site nobody declared.
         mb = _morning_brief()
+        monkeypatch.setattr(mb, "TRACE_CAPTURE", None)
         _set_sink_env(monkeypatch)
         monkeypatch.setenv("KREPIS_TRACE_CAPTURE", "full")
         calls = []
