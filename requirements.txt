@@ -28,7 +28,7 @@ botocore==1.43.114
     # via
     #   boto3
     #   s3transfer
-certifi==2026.10.18
+certifi==2026.10.19
     # via
     #   curl-cffi
     #   httpcore
@@ -127,7 +127,7 @@ pandas==3.0.6
     #   yfinance
 peewee==4.5.3
     # via yfinance
-pillow==12.3.0
+pillow==13.0.0
     # via streamlit
 platformdirs==4.13.5
     # via yfinance
@@ -203,7 +203,7 @@ starlette==1.9.0
     # via
     #   fastapi
     #   streamlit
-streamlit==1.66.0
+streamlit==1.66.1
     # via
     #   -r requirements.in
     #   streamlit-calendar
