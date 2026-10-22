@@ -1,5 +1,15 @@
 streamlit>=1.62.0
 pandas>=2.0
+# <26: pyarrow 26.0.0 (2026-10-09) refuses to import under NumPy 1.x, and the
+# weekly-freshness spot box runs `pip install 'numpy<2'` AFTER this file when
+# it builds this venv (nousergon-data weekly-freshness-spot-dispatcher). With
+# 26.0.0 locked, `import pyarrow` failed there, every parquet read in the
+# transparency inventory failed, and WeeklySubstrateHealthCheck sent rehearsal
+# rehearsal-2026-10-21-1 to DegradedRun (alpha-engine-config-I12351). Same cap,
+# same reason, as nousergon-data#2128 and Brian's ruling #25 (2026-10-14:
+# hold pyarrow <26). Lift it only in the same change that removes the spot
+# boxes' numpy<2 pins (alpha-engine-config-I12318).
+pyarrow>=25.0.1,<26
 plotly>=5.18
 # setuptools floor for PYSEC-2026-3447 (newly disclosed; CI's pip-audit gate
 # started failing 2026-07-14 against the default 79.0.1 bundled by the
