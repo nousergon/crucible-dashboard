@@ -137,8 +137,10 @@ protobuf==7.36.2
     # via
     #   streamlit
     #   yfinance
-pyarrow==26.0.0
-    # via streamlit
+pyarrow==25.0.1
+    # via
+    #   -r requirements.in
+    #   streamlit
 pycparser==3.11
     # via cffi
 pydantic==2.14.1
