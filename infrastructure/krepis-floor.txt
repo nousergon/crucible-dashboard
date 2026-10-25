@@ -64,6 +64,7 @@
 #   publish  --state/--identity-key                0.59.26  (krepis#178)
 #   clear    (subcommand)                          0.59.26  (krepis#178)
 #   clear    --message/--identity-key/--source     0.59.26  (krepis#178)
+#   clear    --no-sns                              0.59.26  (krepis#178; I8748)
 #
 # Both 0.59.26 surfaces are capability-probed at the call site as well
 # (krepis_supports_clear, krepis_supports_publish_lifecycle), so a box running

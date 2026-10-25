@@ -1991,10 +1991,20 @@ publish_channel_clear() {
         echo "box_health: clear DUE but installed krepis has no publish_clear (bump the krepis pin) — key=$key" >&2
         return 1
     fi
+    # --no-sns (alpha-engine-config-I8748, Brian's option (a), 2026-08-31): a
+    # clear reports a condition that has ENDED, which is not an issue, so it
+    # goes to the Telegram channel (silent; publish_clear forces that) and the
+    # console, never to SNS/email. The PAGE in publish_page keeps SNS. Nothing
+    # is suppressed: the terminator is still sent, still keyed on the page's
+    # identity_key, and a send that reaches nobody still counts toward
+    # health_clears_unpublished. krepis has carried `clear --no-sns` since
+    # publish_clear itself landed (v0.59.26), so krepis_clear_supported above
+    # already covers it.
     if ! "$ALERT_PY" -m krepis.alerts clear \
         --message "$msg" \
         --identity-key "$key" \
-        --source box-health </dev/null; then
+        --source box-health \
+        --no-sns </dev/null; then
         echo "box_health: clear publish failed for key=$key" >&2
         return 1
     fi
