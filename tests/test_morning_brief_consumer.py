@@ -629,3 +629,71 @@ class TestTraceCapture:
             assert "trace_capture" in {k.arg for k in call.keywords}, (
                 f"LLMClient(...) at line {call.lineno} passes no trace_capture="
             )
+
+
+# ── typed citations (alpha-engine-config-I12312) ───────────────────────────
+
+
+class TestBriefSources:
+    _NEWS = [
+        {"ticker": "AAPL", "n_articles": 3, "aggregate_date": "2026-06-18",
+         "event_categories": "earnings", "top_event_descriptions": "beat"},
+        {"ticker": "MSFT", "n_articles": 1, "aggregate_date": "2026-06-18"},
+    ]
+
+    def test_every_input_is_a_typed_source_located_at_its_offsets(self):
+        import hashlib
+
+        mb = _morning_brief()
+        user, rendered = mb._prompt_and_sources(_snap(), self._NEWS)
+        assert rendered.text == user
+        cids = [s.block.cid for s in rendered.sources]
+        assert cids == ["market", "news1", "news2"]
+        kinds = {s.block.cid: s.block.kind for s in rendered.sources}
+        assert kinds == {"market": "metric", "news1": "artifact", "news2": "artifact"}
+        for s in rendered.sources:
+            sent = user[s.char_start:s.char_end]
+            assert sent == s.block.text
+            assert s.content_sha256 == hashlib.sha256(sent.encode("utf-8")).hexdigest()
+        by = {s.block.cid: s.block for s in rendered.sources}
+        assert by["news1"].source_id == "data/news_aggregates_daily/2026-06-18#AAPL"
+        assert "AAPL: 3 articles" in by["news1"].text and "beat" in by["news1"].text
+        assert "S&P 500 (SPY) day return: -1.20%" in by["market"].text
+
+    def test_no_news_still_cites_the_snapshot(self):
+        mb = _morning_brief()
+        user, rendered = mb._prompt_and_sources(_snap(), [])
+        assert [s.block.cid for s in rendered.sources] == ["market"]
+        assert user.endswith("Per-holding news today: (no holdings news available)")
+
+    def test_the_cited_prompt_carries_the_same_inputs_as_the_plain_one(self):
+        mb = _morning_brief()
+        cited, _ = mb._prompt_and_sources(_snap(), self._NEWS)
+        plain = mb._build_prompt(_snap(), self._NEWS)
+        for line in plain.splitlines():
+            assert line in cited.splitlines()
+
+    def test_the_call_passes_sources_and_falls_back_without_them(self, monkeypatch):
+        mb = _morning_brief()
+        _patch_router(monkeypatch)
+        calls = []
+
+        class FakeLLMClient:
+            def __init__(self, spec, **kw):
+                pass
+
+            def complete(self, **kw):
+                calls.append(kw)
+                return SimpleNamespace(text="brief")
+
+        import krepis.llm as kl
+        monkeypatch.setattr(kl, "LLMClient", FakeLLMClient)
+        assert mb.generate_morning_brief(_snap(), self._NEWS) == "brief"
+        assert calls[-1]["sources"].text == calls[-1]["user_content"]
+
+        def boom(*a, **k):
+            raise ValueError("render")
+        monkeypatch.setattr(mb, "_prompt_and_sources", boom)
+        assert mb.generate_morning_brief(_snap(), self._NEWS) == "brief"
+        assert calls[-1]["sources"] is None
+        assert calls[-1]["user_content"] == mb._build_prompt(_snap(), self._NEWS)

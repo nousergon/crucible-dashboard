@@ -53,7 +53,7 @@ from typing import Optional
 import streamlit as st
 from zoneinfo import ZoneInfo
 
-from loaders.daily_news import load_daily_news_rows, top_holdings_news
+from loaders.daily_news import DAILY_NEWS_PREFIX, load_daily_news_rows, top_holdings_news
 from loaders.market_snapshot import capture_market_snapshot
 from loaders.s3_loader import load_config
 from morning_brief_cadence import (
@@ -234,32 +234,98 @@ def _save_state(state: BriefState) -> None:
 
 # ── The LLM call (krepis model router, `low` group) ─────────────────────────
 
-def _build_prompt(snapshot: MarketSnapshot, holdings_news: list[dict]) -> str:
-    """Assemble the user prompt: macro snapshot first, then holdings news."""
+def _macro_text(snapshot: MarketSnapshot) -> str:
     def _fmt_pp(v):
         return f"{v:+.2f}%" if v is not None else "n/a"
 
-    macro = (
-        "Broad-market snapshot (intraday, today):\n"
+    return (
         f"  S&P 500 (SPY) day return: {_fmt_pp(snapshot.spy_day_return_pp)}\n"
         f"  Nasdaq-100 (QQQ) day return: {_fmt_pp(snapshot.qqq_day_return_pp)}\n"
-        f"  VIX level: {snapshot.vix if snapshot.vix is not None else 'n/a'}\n"
+        f"  VIX level: {snapshot.vix if snapshot.vix is not None else 'n/a'}"
     )
+
+
+def _news_line(r: dict) -> str:
+    tkr = r.get("ticker", "?")
+    sent = r.get("lm_sentiment_trusted_mean")
+    if sent is None:
+        sent = r.get("lm_sentiment_mean")
+    cats = r.get("event_categories") or ""
+    desc = r.get("top_event_descriptions") or ""
+    n = r.get("n_articles") or 0
+    return f"  {tkr}: {n} articles, sentiment {sent}, events [{cats}] {desc}".rstrip()
+
+
+def _prompt_and_sources(snapshot: MarketSnapshot, holdings_news: list[dict]):
+    """The user prompt and its typed citations (alpha-engine-config-I12312).
+
+    Each input the brief is built from becomes one ``krepis.llm_trace`` source
+    block: the SPY/QQQ/VIX snapshot as a ``metric`` source, and each holding's
+    news-aggregate row as an ``artifact`` source keyed by its
+    ``news_aggregates_daily`` date and ticker. Each block is rendered by
+    ``krepis.llm_trace.render_sources`` (so the model sees
+    ``<source cid="...">`` around each input) and located exactly once in the
+    prompt, so the trace's ``citations[]`` carry the sha256 of the exact text
+    sent and its offsets. The call site is ``hash_only``: the trace keeps the
+    hashes and offsets, never the text.
+
+    Returns ``(user_content, RenderedSources)``; ``RenderedSources.text`` is the
+    whole prompt, so ``LLMClient.complete(sources=...)`` binds at base 0.
+    """
+    from krepis.llm_trace import RenderedSource, RenderedSources, render_sources
+
+    macro = render_sources([{
+        "cid": "market",
+        "kind": "metric",
+        "source_id": f"market_snapshot/{snapshot.ts.isoformat()}",
+        "text": _macro_text(snapshot),
+        "meta": {"tickers": ["SPY", "QQQ", "^VIX"]},
+    }])
+    sections = [macro]
+    user = "Broad-market snapshot (intraday, today):\n" + macro.text + "\n\n"
     if holdings_news:
-        lines = []
-        for r in holdings_news:
-            tkr = r.get("ticker", "?")
-            sent = r.get("lm_sentiment_trusted_mean")
-            if sent is None:
-                sent = r.get("lm_sentiment_mean")
-            cats = r.get("event_categories") or ""
-            desc = r.get("top_event_descriptions") or ""
-            n = r.get("n_articles") or 0
-            lines.append(
-                f"  {tkr}: {n} articles, sentiment {sent}, "
-                f"events [{cats}] {desc}".rstrip()
+        blocks = []
+        for i, r in enumerate(holdings_news):
+            tkr = str(r.get("ticker", "?"))
+            day = r.get("aggregate_date")
+            day = day.isoformat() if hasattr(day, "isoformat") else (str(day) if day else "latest")
+            blocks.append({
+                "cid": f"news{i + 1}",
+                "kind": "artifact",
+                "source_id": f"{DAILY_NEWS_PREFIX}/{day}#{tkr}",
+                "text": _news_line(r),
+                "version": day,
+                "meta": {"ticker": tkr},
+            })
+        news = render_sources(blocks, separator="\n")
+        sections.append(news)
+        user += "Per-holding news today:\n" + news.text
+    else:
+        user += "Per-holding news today: (no holdings news available)"
+
+    located = []
+    for section in sections:
+        if user.count(section.text) != 1:
+            raise ValueError("morning brief: a source section is not located exactly once")
+        base = user.index(section.text)
+        located.extend(
+            RenderedSource(
+                block=s.block,
+                content_sha256=s.content_sha256,
+                char_start=base + s.char_start,
+                char_end=base + s.char_end,
             )
-        holdings = "Per-holding news today:\n" + "\n".join(lines)
+            for s in section.sources
+        )
+    return user, RenderedSources(text=user, sources=tuple(located))
+
+
+def _build_prompt(snapshot: MarketSnapshot, holdings_news: list[dict]) -> str:
+    """The prompt WITHOUT source blocks: what is sent if the source renderer
+    fails, so a citation problem never costs the brief."""
+    macro = "Broad-market snapshot (intraday, today):\n" + _macro_text(snapshot) + "\n"
+    if holdings_news:
+        holdings = "Per-holding news today:\n" + "\n".join(_news_line(r) for r in holdings_news)
     else:
         holdings = "Per-holding news today: (no holdings news available)"
     return macro + "\n" + holdings
@@ -356,10 +422,19 @@ def generate_morning_brief(
             callsite_id=CALLSITE_ID,
             trace_capture=trace_capture,
         )
+        try:
+            user_content, sources = _prompt_and_sources(snapshot, holdings_news)
+        except Exception as e:  # noqa: BLE001 — a citation failure never costs the brief
+            logger.warning(
+                "[morning_brief] source rendering failed (%s: %s); sending the "
+                "plain prompt with no sources=", type(e).__name__, e,
+            )
+            user_content, sources = _build_prompt(snapshot, holdings_news), None
         result = client.complete(
             system=_SYSTEM_PROMPT,
-            user_content=_build_prompt(snapshot, holdings_news),
+            user_content=user_content,
             max_tokens=_MAX_TOKENS,
+            sources=sources,
         )
         text = (result.text or "").strip()
         return text or None
