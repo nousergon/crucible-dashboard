@@ -863,3 +863,24 @@ def test_the_docstring_no_longer_claims_the_drain_is_dead():
         "it silently is how the same measurement gets re-made every month -- "
         "but it may not be left standing as fact."
     )
+
+
+class TestAClearNeverReachesEmail:
+    """alpha-engine-config-I8748, ruled (a) on 2026-08-31: a box-health
+    RESOLVED goes to the Telegram channel and the console, not to SNS/email.
+    The page keeps SNS. The two call sites must not drift into each other."""
+
+    def test_the_channel_clear_skips_sns_and_the_page_does_not(self, tmp_path):
+        opened, resolved = _open_then_resolve(_OPEN_CRITICAL_TIMER, tmp_path)
+        pages = opened._sub("publish")
+        clears = resolved._sub("clear")
+        assert pages and clears, "scenario must exercise both call sites"
+        assert all("--no-sns" not in c for c in pages), (
+            "a page lost SNS: the email copy of a live condition is still owed"
+        )
+        assert all("--no-sns" in c for c in clears), (
+            "a clear went to SNS/email: a condition that ended is not an issue"
+        )
+        # Routing, not suppression: the terminator is still sent and counted.
+        assert resolved.channel_clears
+        assert resolved.clears_unpublished == 0
