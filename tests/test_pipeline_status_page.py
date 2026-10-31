@@ -32,6 +32,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
+# Rendering the page runs its top level, which calls AWS. Refuse every AWS call,
+# as CI does by having no credentials (alpha-engine-config-I11531).
+pytestmark = pytest.mark.usefixtures("no_live_aws")
+
 REPO_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
