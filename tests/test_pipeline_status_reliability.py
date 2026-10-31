@@ -26,6 +26,10 @@ from unittest.mock import patch
 
 import pytest
 
+# Rendering the page runs its top level, which calls AWS. Refuse every AWS call,
+# as CI does by having no credentials (alpha-engine-config-I11531).
+pytestmark = pytest.mark.usefixtures("no_live_aws")
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from nousergon_lib.pipeline_status.registry import (  # noqa: E402

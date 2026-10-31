@@ -41,3 +41,25 @@ def _isolate_secrets_from_ssm(monkeypatch):
     clear_cache()
     yield
     clear_cache()
+
+
+@pytest.fixture
+def no_live_aws(monkeypatch):
+    """Make every botocore API call fail fast with ``NoCredentialsError``.
+
+    This is what CI already sees, because CI has no AWS credentials. A test
+    that renders a page whose top level calls AWS (``views/25_Pipeline_Status.py``
+    pages Step Functions execution history for the reliability expander) would
+    otherwise reach the network wherever credentials exist, an agent sandbox or
+    a laptop: it hangs, or reads live data (alpha-engine-config-I11531). Opt in
+    per module with ``pytestmark = pytest.mark.usefixtures("no_live_aws")``.
+    Not autouse: it replaces ``BaseClient._make_api_call``, which botocore's
+    ``Stubber`` and moto both rely on.
+    """
+    from botocore.client import BaseClient
+    from botocore.exceptions import NoCredentialsError
+
+    def _refuse(self, operation_name, api_params):
+        raise NoCredentialsError()
+
+    monkeypatch.setattr(BaseClient, "_make_api_call", _refuse)
