@@ -256,7 +256,21 @@ services:
     port: 8501
     memory_high: 420M
     memory_max: 450M
+    memory_swap_max: 128M
     note: >-
+      2026-10-31 (alpha-engine-config-I7445): memory_swap_max 128M added; the
+      RAM caps are unchanged. MemoryMax bounds RAM only, so this unit's
+      runaways were parking in the BOX's swap. Measured from
+      dashboard/box/service-memory (anon+swap, 5-min): normally 55 MiB, with
+      steps to 526 MiB (10-14 13:35Z, ~15.5 h), 525 MiB (10-16 13:41Z, ~1 h)
+      and 938 MiB (10-28 17:40Z to 10-29 02:50Z, ~9 h). The last put ~490 MB in
+      swap, more than twice MemoryMax, and box swap_used_percent peaked at 98.6%
+      while metron-refresh was being OOM-killed (I12814). 128M still contains
+      the two ~525 MiB episodes (450 + 128 = 578). A 938-class runaway is now
+      killed and restarted inside its own cgroup (OOMPolicy=stop,
+      Restart=always) instead of filling swap that every other unit reclaims
+      into. This is a tightening; raise it only from a measured anon+swap reading.
+
       2026-08-16: THE SOAK ANSWERED, AND THE ANSWER IS THAT THREE OF THE FOUR
       RAISES BELOW WERE SIZED ON THE WRONG QUANTITY. Measured on the box:
       current 411 MiB / 420M soft (98%, peak 421, reported CENSORED) of which
