@@ -78,14 +78,17 @@ class TestScopeContract:
         assert BACKLOG_REPOS, "the backlog role can never be empty"
         assert len(BACKLOG_REPOS) == len(set(BACKLOG_REPOS)), "duplicate entries"
         assert all(r.startswith("nousergon/") for r in BACKLOG_REPOS)
-        # The four original backlog repos must still be present and first —
-        # order is semantic (groom_driver builds a priority index from it).
-        assert BACKLOG_REPOS[:4] == [
+        # The original backlog repos still on the roster must be present and
+        # first; order is semantic (groom_driver builds a priority index from it).
+        assert BACKLOG_REPOS[:3] == [
             "nousergon/alpha-engine-config",
             "nousergon/metron-ops",
             "nousergon/vires-ops",
-            "nousergon/telos-ops",
         ]
+        # telos and telos-ops are paused until 2027-01-04 (Brian 2026-10-31,
+        # alpha-engine-config-I12982): their roster roles dropped to [], so
+        # this mirror must not carry them either.
+        assert "nousergon/telos-ops" not in BACKLOG_REPOS
         # symposion#39 carried triage:session for 33 days partly because this
         # list omitted it. Brian archived nousergon/symposion 2026-08-24
         # (no near-term development, re-enablable later) — its roster roles
@@ -607,10 +610,11 @@ class TestCodeReposContract:
             "nousergon/crucible-evaluator", "nousergon/nousergon-lib",
             "nousergon/nousergon-docs", "nousergon/metron",
             "nousergon/vires", "nousergon/vires-ops",
-            "nousergon/telos", "nousergon/telos-ops",
             "nousergon/nous-ergon-ops",
         }
         assert "nousergon/symposion" not in repos
+        # telos and telos-ops are paused until 2027-01-04 (I12982).
+        assert not repos & {"nousergon/telos", "nousergon/telos-ops"}
 
     def test_card_component_shows_pr_vs_issue_badge(self):
         src = (REPO_ROOT / "components" / "gate_queue_card.py").read_text()

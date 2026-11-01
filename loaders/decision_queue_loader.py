@@ -93,7 +93,7 @@ logger = logging.getLogger(__name__)
 # here in the same change.
 BACKLOG_REPOS = [
     "nousergon/alpha-engine-config", "nousergon/metron-ops",
-    "nousergon/vires-ops", "nousergon/telos-ops",
+    "nousergon/vires-ops",
     "nousergon/claude-code-config", "nousergon/nousergon-console",
     "nousergon/oiax", "nousergon/scannerctl",
     "nousergon/evidence-review"
@@ -107,7 +107,7 @@ BACKLOG_REPOS = [
 # the dashboard (separate repo/deploy surface) has its own _list_org_repos().
 _CODE_REPOS_FALLBACK = [
     "nousergon/alpha-engine-config", "nousergon/metron-ops",
-    "nousergon/vires-ops", "nousergon/telos-ops",
+    "nousergon/vires-ops",
     "nousergon/claude-code-config", "nousergon/nous-ergon-ops",
     "nousergon/nousergon-console", "nousergon/oiax",
     "nousergon/nousergon-groomer", "nousergon/crucible",
@@ -117,7 +117,7 @@ _CODE_REPOS_FALLBACK = [
     "nousergon/crucible-evaluator",
     "nousergon/nousergon-data",
     "nousergon/nousergon-lib", "nousergon/nousergon-docs",
-    "nousergon/metron", "nousergon/vires", "nousergon/telos",
+    "nousergon/metron", "nousergon/vires",
     "nousergon/scannerctl", "nousergon/evidence-review"
 ]
 # Exported as CODE_REPOS for backward compatibility with tests importing the
