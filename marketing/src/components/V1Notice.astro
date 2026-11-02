@@ -1,0 +1,20 @@
+---
+/**
+ * Marks a page as describing the v1 Alpha Engine, not Crucible v2
+ * (alpha-engine-config-I13021). The page body keeps its v1 content as a
+ * record; this notice is what stops it reading as the present tense.
+ */
+import { HISTORY } from '../data/v2-evidence';
+---
+
+<aside
+  class="rounded-lg border border-amber-500/30 bg-white/[0.03] px-5 py-3 mb-8 text-sm text-zinc-300 leading-relaxed"
+  aria-label="Historical page"
+>
+  <span class="text-xs font-semibold uppercase tracking-wider text-amber-300">Historical &mdash; v1</span>
+  <span class="block mt-1">
+    This page describes the v1 Alpha Engine, not the current Crucible v2 harness. Its six-sector-team
+    research graph was retired on {HISTORY.sixTeamRetired}, and v2 (planned {HISTORY.v2PlanDated}) replaces
+    the rest. For the current design, see the <a class="text-sky-400 hover:text-sky-300 transition" href="/#how-it-works">home page</a>.
+  </span>
+</aside>
