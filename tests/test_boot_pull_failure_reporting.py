@@ -116,3 +116,65 @@ class TestNoResurrectedFlowDoctorInit:
             f"ConfigError. Either hydrate every referenced var or use a "
             f"mechanism that resolves its own secrets."
         )
+
+
+class TestHelperCheckReasonReachesTheAlert:
+    """alpha-engine-config-I13105: on 2026-11-02 the `--check` failed twice
+    and the alert said only `auth:helper-check-failed ... See
+    /var/log/boot-pull.log`, a file nothing off the box can read. The helper's
+    own last stderr line (which names the failing step and never carries a
+    token) now rides in the alert BODY, while the dedup key stays the
+    FAILED_REPOS set it always was."""
+
+    @staticmethod
+    def _auth_block() -> str:
+        text = BOOT_PULL.read_text()
+        start = text.index('AUTH_CHECK_DETAIL=""')
+        end = text.index("unset _cred_check_out")
+        return text[start:end + len("unset _cred_check_out")]
+
+    def _run(self, tmp_path, helper_body: str):
+        import subprocess
+
+        helper = tmp_path / "fake-helper"
+        helper.write_text("#!/usr/bin/env bash\n" + helper_body + "\n")
+        helper.chmod(0o755)
+        log = tmp_path / "boot-pull.log"
+        script = (
+            "set -uo pipefail\n"
+            f'LOG="{log}"\n'
+            'log() { echo "$*" >> "$LOG"; }\n'
+            "PULL_FAILURES=0\nFAILED_REPOS=()\n"
+            f'CRED_HELPER="{helper}"\n'
+            + self._auth_block()
+            + '\nprintf "%s|%s|%s" "$PULL_FAILURES" "${FAILED_REPOS[*]}" "$AUTH_CHECK_DETAIL"\n'
+        )
+        res = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+        assert res.returncode == 0, res.stderr
+        return res.stdout, log.read_text()
+
+    def test_failed_check_records_the_helpers_reason(self, tmp_path):
+        out, log = self._run(
+            tmp_path,
+            'echo "git-credential-nousergon-app: token cache MISS for repo=nous-ergon-ops: no cached entry" >&2\n'
+            'echo "git-credential-nousergon-app: cannot read /alpha-engine/groom/github_app_id" >&2\n'
+            "exit 1",
+        )
+        failures, repos, detail = out.split("|", 2)
+        assert failures == "1"
+        assert repos == "auth:helper-check-failed"
+        assert detail == "git-credential-nousergon-app: cannot read /alpha-engine/groom/github_app_id"
+        assert "token cache MISS" in log  # full helper output still lands in the log
+        assert "FAIL" in log and "cannot read /alpha-engine/groom/github_app_id" in log
+
+    def test_passing_check_sets_no_detail(self, tmp_path):
+        out, log = self._run(tmp_path, 'echo "git-credential-nousergon-app: OK — minted"; exit 0')
+        assert out == "0||"
+        assert "OK — minted" in log
+
+    def test_detail_is_in_the_message_not_the_dedup_key(self):
+        block = _failure_block()
+        msg_line = next(l for l in block.splitlines() if "--message" in l)
+        assert "${AUTH_CHECK_DETAIL:+" in msg_line
+        dkey_line = next(l for l in block.splitlines() if l.strip().startswith("_dkey="))
+        assert "AUTH_CHECK_DETAIL" not in dkey_line

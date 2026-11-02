@@ -219,17 +219,30 @@ fi
 # push onto PULL_FAILURES/FAILED_REPOS and let the existing end-of-script
 # alert + non-zero exit surface it. No second reporting mechanism.
 CRED_HELPER="/usr/local/bin/git-credential-nousergon-app"
+# The helper's own reason for a failed --check, carried into the alert BODY
+# (alpha-engine-config-I13105). On 2026-11-02 08:40Z and 09:40Z the check
+# failed and the alert said only "auth:helper-check-failed ... See
+# /var/log/boot-pull.log" — a file nothing off the box can read, so the triage
+# stalled on a box read. The helper's stderr names the failing step (SSM read,
+# temp file, JWT sign, or the mint's HTTP status) and never carries a token or
+# key. It goes in the message only, never in FAILED_REPOS, so the dedup key
+# below is unchanged.
+AUTH_CHECK_DETAIL=""
 if [ ! -x "$CRED_HELPER" ]; then
     log "FAIL $CRED_HELPER missing or not executable — box cannot authenticate to GitHub for any private-repo pull below"
     PULL_FAILURES=$((PULL_FAILURES + 1))
     FAILED_REPOS+=("auth:helper-missing")
-elif ! "$CRED_HELPER" --check nous-ergon-ops >> "$LOG" 2>&1; then
-    log "FAIL $CRED_HELPER --check nous-ergon-ops failed — box cannot mint a usable GitHub App installation token"
+elif ! _cred_check_out="$("$CRED_HELPER" --check nous-ergon-ops 2>&1)"; then
+    printf '%s\n' "$_cred_check_out" >> "$LOG"
+    AUTH_CHECK_DETAIL="$(printf '%s\n' "$_cred_check_out" | grep -v '^[[:space:]]*$' | tail -n 1 | cut -c1-300)"
+    log "FAIL $CRED_HELPER --check nous-ergon-ops failed — box cannot mint a usable GitHub App installation token: ${AUTH_CHECK_DETAIL:-<helper printed nothing>}"
     PULL_FAILURES=$((PULL_FAILURES + 1))
     FAILED_REPOS+=("auth:helper-check-failed")
 else
+    printf '%s\n' "$_cred_check_out" >> "$LOG"
     log "OK   $CRED_HELPER --check nous-ergon-ops"
 fi
+unset _cred_check_out
 
 # ── The declared checkout roster (alpha-engine-config-I10260) ──────────────
 # Repos the micro needs at runtime, DERIVED from checkout-roster.json rather
@@ -896,7 +909,7 @@ if [ "$PULL_FAILURES" -gt 0 ]; then
         # failing changes the key and pages immediately.
         _dkey="boot-pull-$(printf '%s' "${FAILED_REPOS[*]}" | tr ' /' '__' | cut -c1-72)"
         "$ALERT_PY" -m krepis.alerts publish \
-            --message "boot-pull FAILED on $(hostname): ${PULL_FAILURES} repo(s) could not be updated — ${FAILED_REPOS[*]}. The box may be running stale code. See /var/log/boot-pull.log." \
+            --message "boot-pull FAILED on $(hostname): ${PULL_FAILURES} repo(s) could not be updated — ${FAILED_REPOS[*]}.${AUTH_CHECK_DETAIL:+ Credential helper said: ${AUTH_CHECK_DETAIL}.} The box may be running stale code. See /var/log/boot-pull.log." \
             --severity error \
             --source boot-pull \
             --dedup-key "$_dkey" \
