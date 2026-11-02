@@ -1,70 +1,135 @@
 ---
 import Base from '../layouts/Base.astro';
-import PhaseIndicator from '../components/PhaseIndicator.astro';
+import {
+  CRUCIBLE_REPO,
+  HISTORY,
+  INTEGRITY,
+  LATEST_CYCLE,
+  PUBLIC_EXPORT_SOURCE,
+  SLOTS,
+  SLOTS_SOURCE,
+  SNAPSHOT,
+  type Source,
+  type StatusTone,
+  V1_RECORD,
+  type VerdictTone,
+} from '../data/v2-evidence';
 
-const pillars = [
+// Every current-tense claim on this page maps to a row in
+// ../data/v2-evidence.ts, which carries its source and as-of date
+// (alpha-engine-config-I13021). Add a claim there first, then render it.
+
+const pillars: { title: string; body: string; source: Source }[] = [
   {
-    title: 'End-to-end measurement',
-    body: 'Every signal, prediction, fill, and dollar of P&L instrumented and traceable. The console is a view, not a measurement layer.',
+    title: 'Controls it can fail',
+    body: 'Every decision runs as champion versus challengers, and each one also carries a planted control and a null control. A challenger takes over only after a minimum number of paired weeks under a promotion rule declared before the comparison runs.',
+    source: SLOTS_SOURCE,
   },
   {
-    title: 'Multi-agent research',
-    body: 'Six sector teams, a portfolio decision agent, and a macro layer on LangGraph + Claude. Structured outputs, LLM-as-judge.',
+    title: 'A record of every run',
+    body: 'Every job writes a machine-readable manifest, including the runs that die: the status is either ok or failed with a mandatory reason. Partial, skipped and unknown outcomes are not representable, so an absent record is itself a signal.',
+    source: CRUCIBLE_REPO,
   },
   {
-    title: 'Machine-learning overlay',
-    body: 'Stacked ensemble of gradient-boosted and linear models. 21-day market-relative return predictions with confidence-driven veto.',
+    title: 'Decisions you can trace',
+    body: 'An explain command walks a run or a verdict back to everything that produced it. Every artifact is keyed by NYSE trading day, never by calendar date, and a past week can be replayed against pinned code.',
+    source: CRUCIBLE_REPO,
   },
   {
-    title: 'Self-improvement loop',
-    body: "A weekly evaluation loop grades every layer and recommends parameter changes, gated behind named statistical tests. Closed-loop self-tuning is the end-state — under active build.",
+    title: 'Measurement before performance',
+    body: 'The weekly report grades the instrument itself — data coverage, signal and prediction quality, portfolio and execution — and the public status export carries the status of every layer, red ones included, but never its value.',
+    source: PUBLIC_EXPORT_SOURCE,
   },
 ];
+
+const VERDICT_STYLE: Record<VerdictTone, string> = {
+  moved: 'text-sky-300 border-sky-500/40',
+  held: 'text-zinc-200 border-white/15',
+  open: 'text-amber-300 border-amber-500/40',
+};
+
+const STATUS_STYLE: Record<StatusTone, string> = {
+  green: 'text-emerald-300 border-emerald-600/50',
+  red: 'text-rose-300 border-rose-600/50',
+  na: 'text-zinc-400 border-white/15',
+};
 ---
 
-<Base>
-  <section class="max-w-3xl mx-auto px-6 pt-10 md:pt-12 pb-16 text-center">
+<Base
+  description="Crucible is an experiment harness for systematic equity strategies: champion/challenger experiments on four decisions, graded every cycle against controls, with a record of every run. Paper trading only. A Nous Ergon product."
+>
+  <section class="max-w-3xl mx-auto px-6 pt-10 md:pt-12 pb-12 text-center">
     <h1 class="text-2xl md:text-[1.75rem] font-medium text-zinc-100 leading-snug tracking-tight mb-5 max-w-2xl mx-auto">
       Crucible &mdash; a harness for rigorous AI/ML experiments in finance.
     </h1>
     <p class="text-sm md:text-base text-zinc-400 leading-relaxed max-w-xl mx-auto">
-      Running live: an equity research-and-trading system &mdash; the
-      <strong class="text-zinc-200">Alpha Engine</strong> experiment family &mdash;
-      multi-agent research, ML prediction, risk-gated execution, weekly
-      training and evaluation, instrumented end-to-end<sup
-        ><a
-          href="#en-1"
-          id="en-1-ref"
-          class="text-sky-400 hover:text-sky-300 ml-0.5 text-[10px] no-underline"
-          aria-label="Jump to: what instrumented end-to-end means">[1]</a
-        ></sup
-      >.
+      Crucible runs champion/challenger experiments on the four decisions an
+      equity strategy makes, grades every arm every cycle against controls it
+      can fail, and keeps a machine-readable record of every run &mdash;
+      including the ones that fail. The harness is the product; the strategies
+      on it are experiments.
     </p>
-    <div class="mt-8 flex items-center justify-center gap-3 text-sm">
+    <p class="mt-3 text-xs text-zinc-500">
+      Paper trading only: a simulated brokerage account, no real capital.
+    </p>
+    <div class="mt-8 flex flex-wrap items-center justify-center gap-3 text-sm">
       <a
-        href="/live"
-        target="_blank"
-        rel="noopener noreferrer"
+        href="#how-it-works"
         class="rounded-md border border-white/15 px-4 py-2 text-zinc-100 hover:bg-white/5 transition"
       >
-        Watch it live &rarr;
+        How it works
+      </a>
+      <a
+        href={CRUCIBLE_REPO.href}
+        class="rounded-md border border-white/15 px-4 py-2 text-zinc-100 hover:bg-white/5 transition"
+      >
+        Source on GitHub &rarr;
       </a>
     </div>
   </section>
 
   <section class="max-w-3xl mx-auto px-6 pb-12">
-    <div class="rounded-lg border border-sky-400/30 bg-white/[0.03] px-6 py-4 text-center">
-      <div class="text-xs font-semibold uppercase tracking-wider text-sky-400 mb-1.5">
-        Running now &mdash; the reference run
+    <div class="rounded-lg border border-amber-500/30 bg-white/[0.03] px-6 py-4">
+      <div class="text-xs font-semibold uppercase tracking-wider text-amber-300 mb-1.5">
+        Where the rebuild stands
       </div>
-      <span class="text-sm text-zinc-300 leading-relaxed">
-        A complete configuration of the Alpha Engine experiment family runs
-        end to end on Crucible &mdash; trading every market day; research,
-        model training, and evaluation every Saturday. Every decision
-        instrumented, every result measured &mdash;
-        <a class="text-sky-400 hover:text-sky-300 transition" href="/live" target="_blank" rel="noopener noreferrer">watch it live</a>.
-      </span>
+      <p class="text-sm text-zinc-300 leading-relaxed">
+        This page describes <strong class="text-zinc-100">Crucible v2</strong>, a
+        rebuild of the harness planned on {HISTORY.v2PlanDated}. Moving the paper
+        trader fully onto v2 and retiring the v1 pipelines is a later rebuild
+        phase and is not done. Until then,
+        <a
+          class="text-sky-400 hover:text-sky-300 transition"
+          href={V1_RECORD.href}
+          target="_blank"
+          rel="noopener noreferrer">the live dashboard</a
+        >
+        shows the <em>v1</em> promotion record (most recent
+        decision {V1_RECORD.lastDecisionObserved}, observed {V1_RECORD.observed}); a public
+        v2 view is not published yet.
+      </p>
     </div>
+  </section>
+
+  <section id="how-it-works" class="max-w-5xl mx-auto px-6 pb-12 scroll-mt-8">
+    <h2 class="text-xs font-semibold uppercase tracking-wider text-sky-400 mb-3 text-center">
+      Four decisions, one engine
+    </h2>
+    <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+      {
+        SLOTS.map((s) => (
+          <div class="rounded-lg border border-white/10 bg-white/[0.03] p-4">
+            <div class="text-[11px] font-semibold uppercase tracking-wider text-sky-400">
+              {s.key} &middot; {s.name}
+            </div>
+            <p class="text-sm text-zinc-300 leading-relaxed mt-1.5">{s.decision}</p>
+          </div>
+        ))
+      }
+    </div>
+    <p class="text-[11px] text-zinc-500 mt-2 text-center">
+      Source: <a class="hover:text-zinc-300 underline" href={SLOTS_SOURCE.href}>{SLOTS_SOURCE.label}</a>
+    </p>
   </section>
 
   <section class="max-w-5xl mx-auto px-6 pb-16">
@@ -72,101 +137,80 @@ const pillars = [
       {
         pillars.map((p) => (
           <div class="rounded-lg border border-white/10 bg-white/[0.03] p-5">
-            <div class="text-xs font-semibold uppercase tracking-wider text-sky-400 mb-2">
-              {p.title}
-            </div>
+            <div class="text-xs font-semibold uppercase tracking-wider text-sky-400 mb-2">{p.title}</div>
             <p class="text-sm text-zinc-300 leading-relaxed">{p.body}</p>
+            <p class="text-[11px] text-zinc-500 mt-2">
+              Source: <a class="hover:text-zinc-300 underline" href={p.source.href}>{p.source.label}</a>
+            </p>
           </div>
         ))
       }
     </div>
   </section>
 
-  <section class="max-w-3xl mx-auto px-6 pb-12">
-    <h2 class="text-xs font-semibold uppercase tracking-wider text-sky-400 mb-3 text-center">Two experiment families</h2>
-    <p class="text-sm text-zinc-400 leading-relaxed text-center max-w-xl mx-auto">
-      Crucible runs <strong class="text-zinc-200">agentic experiments</strong>
-      (evaluation methodology, multi-agent research quality, LLM-judge
-      calibration) and <strong class="text-zinc-200">finance experiments</strong>
-      &mdash; the <strong class="text-zinc-200">Alpha Engine</strong> family
-      (signals, models, execution) &mdash; on one harness. The harness is the
-      durable artifact; the strategies and agents that run on it are treated
-      as experiments, each against a pre-committed acceptance bar. Built by
-      <a class="text-sky-400 hover:text-sky-300 transition" href="https://nousergon.ai/">Nous Ergon</a>,
-      an applied AI lab. Each module's repo is public.
+  <section class="max-w-3xl mx-auto px-6 pb-12" aria-labelledby="latest-cycle">
+    <h2 id="latest-cycle" class="text-xs font-semibold uppercase tracking-wider text-sky-400 mb-1 text-center">
+      Latest recorded cycle
+    </h2>
+    <p class="text-[11px] text-zinc-500 mb-4 text-center">
+      Trading day {SNAPSHOT.tradingDay} &middot; generated {SNAPSHOT.generated} &middot; {SNAPSHOT.source.label}
+    </p>
+    <ul class="space-y-2">
+      {
+        LATEST_CYCLE.map((c) => (
+          <li class="rounded-md border border-white/10 bg-white/[0.02] px-4 py-3 flex flex-col sm:flex-row sm:items-baseline gap-1 sm:gap-4">
+            <span class={`shrink-0 sm:w-48 text-xs font-semibold uppercase tracking-wider rounded border px-2 py-0.5 self-start ${VERDICT_STYLE[c.tone]}`}>
+              {c.slot} &middot; {c.verdict}
+            </span>
+            <span class="text-sm text-zinc-400 leading-relaxed">{c.meaning}</span>
+          </li>
+        ))
+      }
+    </ul>
+  </section>
+
+  <section class="max-w-3xl mx-auto px-6 pb-12" aria-labelledby="integrity">
+    <h2 id="integrity" class="text-xs font-semibold uppercase tracking-wider text-sky-400 mb-1 text-center">
+      Measurement integrity, same cycle
+    </h2>
+    <p class="text-[11px] text-zinc-500 mb-4 text-center">
+      Statuses as emitted by the harness, not regraded here. Same source and date as above.
+    </p>
+    <div class="flex flex-wrap justify-center gap-2">
+      {
+        INTEGRITY.map((row) => (
+          <span class={`text-xs rounded border px-2.5 py-1 ${STATUS_STYLE[row.tone]}`}>
+            {row.layer}: <strong class="font-semibold">{row.status}</strong>
+          </span>
+        ))
+      }
+    </div>
+    <p class="text-sm text-zinc-400 leading-relaxed text-center mt-5 max-w-xl mx-auto">
+      This page makes no performance claim. The public status export carries
+      verdicts and statuses only &mdash; no returns, scores or costs &mdash; and
+      in this snapshot both signal-quality layers read red.
     </p>
   </section>
 
-  <PhaseIndicator current="Reliability + Measurability" />
-
-  <section id="en-1" class="max-w-3xl mx-auto px-6 pt-6 pb-20 scroll-mt-8">
-    <h2 class="text-xs font-semibold uppercase tracking-wider text-sky-400 mb-2 text-center">
-      Instrumented end-to-end<sup class="text-zinc-500 ml-1 normal-case tracking-normal">[1]</sup>
+  <section class="max-w-3xl mx-auto px-6 pt-4 pb-20" aria-labelledby="history">
+    <h2 id="history" class="text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-3 text-center">
+      History: the v1 Alpha Engine
     </h2>
-    <p class="text-sm text-zinc-400 leading-relaxed text-center mb-6 max-w-xl mx-auto">
-      Every layer of the pipeline is observable and auditable:
+    <p class="text-sm text-zinc-400 leading-relaxed text-center max-w-xl mx-auto">
+      Crucible began as the <strong class="text-zinc-200">Alpha Engine</strong>:
+      a weekly pipeline of research, prediction and risk-gated execution on
+      three scheduled workflows. Its multi-agent research graph &mdash; six sector
+      teams with portfolio and macro agents &mdash; was retired
+      on {HISTORY.sixTeamRetired}. The
+      <a class="text-sky-400 hover:text-sky-300 transition" href="/architecture">Architecture</a>
+      and <a class="text-sky-400 hover:text-sky-300 transition" href="/stack">Stack</a> pages
+      describe that v1 system, and the
+      <a class="text-sky-400 hover:text-sky-300 transition" href="https://nousergon.ai/retros/01-pfe-short-sell/"
+        >PFE short-sell retro</a
+      >
+      is one thing its audit trail caught. Built by
+      <a class="text-sky-400 hover:text-sky-300 transition" href="https://nousergon.ai/">Nous Ergon</a>, an
+      applied AI lab.
     </p>
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-      <div class="rounded-lg border border-white/10 bg-white/[0.02] p-5">
-        <div class="text-sm font-semibold text-zinc-100 mb-1.5">Decision artifacts</div>
-        <p class="text-sm text-zinc-400 leading-relaxed">
-          Research-agent LLM calls capture prompt, response, tool calls, and
-          structured metadata to
-          <code>s3://alpha-engine-research/decision_artifacts/</code>, with
-          LLM-as-judge rubric scores attached on every load-bearing agent type
-          (sector quant, qual, peer-review, thesis-update, macro economist, CIO).
-        </p>
-      </div>
-      <div class="rounded-lg border border-white/10 bg-white/[0.02] p-5">
-        <div class="text-sm font-semibold text-zinc-100 mb-1.5">Trade audit log</div>
-        <p class="text-sm text-zinc-400 leading-relaxed">
-          Every order, fill, and exit decision recorded with per-trade
-          <code>realized_pnl</code> and rationale where applicable; the audit
-          trail that surfaced the
-          <a class="text-sky-400 hover:text-sky-300 transition" href="https://nousergon.ai/retros/01-pfe-short-sell/"
-            >PFE short-sell retro</a
-          >.
-        </p>
-      </div>
-      <div class="rounded-lg border border-white/10 bg-white/[0.02] p-5">
-        <div class="text-sm font-semibold text-zinc-100 mb-1.5">Performance metrics</div>
-        <p class="text-sm text-zinc-400 leading-relaxed">
-          Signal accuracy at 10d / 30d, predictor rolling 30d IC, NAV vs SPY
-          daily returns, per-trade realized P&amp;L, daily portfolio-level
-          attribution (position P&amp;L + interest + unattributed residual).
-        </p>
-      </div>
-      <div class="rounded-lg border border-white/10 bg-white/[0.02] p-5">
-        <div class="text-sm font-semibold text-zinc-100 mb-1.5">Cost telemetry</div>
-        <p class="text-sm text-zinc-400 leading-relaxed">
-          Per-call cost tracked at LLM call time and aggregated to a weekly
-          cost parquet.
-        </p>
-      </div>
-      <div class="rounded-lg border border-white/10 bg-white/[0.02] p-5">
-        <div class="text-sm font-semibold text-zinc-100 mb-1.5">LangSmith tracing</div>
-        <p class="text-sm text-zinc-400 leading-relaxed">
-          Trace ID + token counts on every production LLM call.
-        </p>
-      </div>
-      <div class="rounded-lg border border-white/10 bg-white/[0.02] p-5">
-        <div class="text-sm font-semibold text-zinc-100 mb-1.5">Parity replay</div>
-        <p class="text-sm text-zinc-400 leading-relaxed">
-          The backtester replays the morning-planner stage of historical runs
-          as an observational diff against current code.
-        </p>
-      </div>
-    </div>
   </section>
 </Base>
-
-<style>
-  code {
-    color: rgb(125 211 252);
-    background: rgba(255, 255, 255, 0.04);
-    padding: 0.1em 0.35em;
-    border-radius: 3px;
-    font-size: 0.875em;
-    word-break: break-all;
-  }
-</style>
