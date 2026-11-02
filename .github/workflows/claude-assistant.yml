@@ -16,17 +16,26 @@ on:
     inputs:
       runs-on:
         description: >-
-          Runner label for the respond job. Defaults to ubuntu-latest so
-          public callers (free GH-hosted minutes) are unaffected; private
-          callers (e.g. alpha-engine-config, config#2968) can pass their own
-          CodeBuild/GHA-toggle label.
+          Runner label for the respond job. A non-empty value wins (callers
+          that pass their own CodeBuild/GHA-toggle label, e.g.
+          alpha-engine-config, config#2968). Empty (the default) follows the
+          fleet CI_RUNNER_MODE switch for a PRIVATE caller and stays on
+          ubuntu-latest for everyone else, so public callers (free
+          GH-hosted minutes, no CodeBuild runner) are unaffected.
         type: string
         required: false
-        default: ubuntu-latest
+        default: ""
 
 jobs:
   respond:
-    runs-on: ${{ inputs.runs-on }}
+    # Default runner (alpha-engine-config-I12850): the rule nousergon-lib's
+    # notify-ci-failure.yml (PR517) and provider-linkage-guard.yml (PR518)
+    # use. `vars` and `github` resolve in the CALLER's context, so the
+    # caller's org-level CI_RUNNER_MODE and visibility decide; a payload
+    # without `private` reads as not-private and stays hosted. Until this,
+    # a private caller that passed nothing (metron-ops, vires-ops) stayed on
+    # ubuntu-latest after a CodeBuild flip.
+    runs-on: ${{ inputs.runs-on != '' && inputs.runs-on || (vars.CI_RUNNER_MODE == 'codebuild' && github.event.repository.private == true && format('codebuild-nousergon-private-runner-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest') }}
     timeout-minutes: 25
     # AUTHORITATIVE trusted-author gate (event-aware). The caller does a cheap
     # "@claude" pre-filter to avoid spinning this on every comment; THIS is the
