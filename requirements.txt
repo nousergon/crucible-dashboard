@@ -50,7 +50,7 @@ curl-cffi==0.17.0
     # via yfinance
 fastapi==0.162.0
     # via -r requirements.in
-flow-doctor==0.19.0
+flow-doctor==0.19.5
     # via
     #   -r requirements.in
     #   krepis
@@ -89,7 +89,7 @@ jsonschema==4.26.0
     # via altair
 jsonschema-specifications==2025.9.1
     # via jsonschema
-krepis[flow-doctor, openai]==0.59.83
+krepis[flow-doctor, openai]==0.59.88
     # via
     #   -r requirements.in
     #   nousergon-lib
