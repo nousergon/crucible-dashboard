@@ -147,7 +147,10 @@ yfinance>=1.7.0
 # Floor raised to 0.59.88 (alpha-engine-config-I13042, krepis-PR281): the log
 # filter's URL-query credential pattern is case-insensitive (Polygon's apiKey=)
 # and telegram.send_message redacts alert text before sending.
-krepis[openai]>=0.59.88
+# Floor raised to 0.59.89 (alpha-engine-config-I13042, krepis-PR282):
+# redact_secrets also runs on the SNS leg of alerts.publish and in
+# email_sender.send_email.
+krepis[openai]>=0.59.89
 # nousergon-lib (renamed from alpha-engine-lib at v0.60.0) provides
 # setup_logging used by app.py + health_checker.py
 # to attach the FlowDoctorHandler when FLOW_DOCTOR_ENABLED=1, the
