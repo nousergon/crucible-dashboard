@@ -24,6 +24,8 @@ import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
+import pytest
+
 REPO_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
@@ -730,81 +732,32 @@ class TestClearQueueCache:
         assert cleared == ["decision"]
 
 
-class TestMarkPrReady:
-    def test_posts_graphql_mutation_with_node_id(self, monkeypatch):
+class TestConsoleNeverMarksReady:
+    """alpha-engine-config-I13001: the console resolves the gate, never the
+    draft state. A de-gated draft is readied by the gate lifecycle
+    reconciler through the fleet's single guarded ready write, which checks
+    every hold form; a console flip checked only gate labels."""
+
+    def _record(self, monkeypatch):
         calls = []
 
         def fake_request(method, url, payload=None):
-            calls.append((method, url, payload))
-            if urlparse(url).path == "/repos/r/repo/pulls/9":
-                return {"node_id": "PR_kwABC"}
-            return {}
+            calls.append((method, urlparse(url).path, payload))
+            return {"draft": True, "labels": [], "node_id": "PR_kwABC"}
 
         monkeypatch.setattr(dq_module, "_request", fake_request)
-        dq_module._mark_pr_ready("r/repo", 9)
-        graphql_calls = [c for c in calls if urlparse(c[1]).path == "/graphql"]
-        assert len(graphql_calls) == 1
-        assert graphql_calls[0][2]["variables"] == {"id": "PR_kwABC"}
-        assert "markPullRequestReadyForReview" in graphql_calls[0][2]["query"]
+        return calls
 
-    def test_missing_node_id_does_not_crash(self, monkeypatch):
-        monkeypatch.setattr(dq_module, "_request", lambda *a, **k: {})
-        dq_module._mark_pr_ready("r/repo", 9)  # must not raise
+    @pytest.mark.parametrize("is_pr", [True, False])
+    def test_ruling_makes_no_ready_write(self, monkeypatch, is_pr):
+        calls = self._record(monkeypatch)
+        post_ruling("r/repo", 9, "Option A", is_pr=is_pr)
+        assert not [c for c in calls if c[1] == "/graphql"]
+        assert not [c for c in calls if c[0] == "PATCH"]
 
-
-class TestResolvePrGateFollowup:
-    def test_already_ready_is_noop(self, monkeypatch):
-        monkeypatch.setattr(dq_module, "_request", lambda *a, **k: {"draft": False})
-        calls = []
-        monkeypatch.setattr(dq_module, "_mark_pr_ready", lambda *a, **k: calls.append(a))
-        dq_module._resolve_pr_gate_followup("r/repo", 9)
-        assert calls == []
-
-    def test_leaves_draft_when_another_gate_remains(self, monkeypatch):
-        monkeypatch.setattr(dq_module, "_request", lambda *a, **k: {
-            "draft": True, "labels": [{"name": "gate:dependency"}],
-        })
-        calls = []
-        monkeypatch.setattr(dq_module, "_mark_pr_ready", lambda *a, **k: calls.append(a))
-        dq_module._resolve_pr_gate_followup("r/repo", 9)
-        assert calls == []
-
-    def test_flips_ready_when_fully_unblocked(self, monkeypatch):
-        monkeypatch.setattr(dq_module, "_request", lambda *a, **k: {
-            "draft": True, "labels": [{"name": "source:groom"}],
-        })
-        calls = []
-        monkeypatch.setattr(dq_module, "_mark_pr_ready",
-                            lambda repo, num: calls.append((repo, num)))
-        dq_module._resolve_pr_gate_followup("r/repo", 9)
-        assert calls == [("r/repo", 9)]
-
-    def test_never_raises_on_fetch_failure(self, monkeypatch):
-        def boom(*a, **k):
-            raise RuntimeError("network error")
-
-        monkeypatch.setattr(dq_module, "_request", boom)
-        dq_module._resolve_pr_gate_followup("r/repo", 9)  # must not raise
-
-
-class TestPostRulingPrFollowup:
-    def test_is_pr_true_calls_followup(self, monkeypatch):
-        monkeypatch.setattr(dq_module, "_request", lambda *a, **k: {})
-        monkeypatch.setattr(dq_module, "_remove_gate_labels", lambda *a, **k: None)
-        calls = []
-        monkeypatch.setattr(dq_module, "_resolve_pr_gate_followup",
-                            lambda *a, **k: calls.append(a))
-        post_ruling("r/repo", 9, "Option A", is_pr=True)
-        assert calls == [("r/repo", 9)]
-
-    def test_is_pr_false_skips_followup(self, monkeypatch):
-        monkeypatch.setattr(dq_module, "_request", lambda *a, **k: {})
-        monkeypatch.setattr(dq_module, "_remove_gate_labels", lambda *a, **k: None)
-        calls = []
-        monkeypatch.setattr(dq_module, "_resolve_pr_gate_followup",
-                            lambda *a, **k: calls.append(a))
-        post_ruling("r/repo", 9, "Option A")
-        assert calls == []
+    def test_module_has_no_ready_writer(self):
+        assert not hasattr(dq_module, "_mark_pr_ready")
+        assert not hasattr(dq_module, "_resolve_pr_gate_followup")
 
 
 class TestRulingPendingExecMarker:

@@ -29,14 +29,19 @@ extension), generalizing the "every recommendation names the SOTA approach
 and the delta" rule into the gate contract. All three degrade to ``None`` on
 older or unframed comments — the parser never requires them.
 
-config#2431 write-side extension: a ruling on a PR item now also RESOLVES
-the gate mechanically — beyond the comment + label-strip every gate already
-got, a draft PR with no OTHER ``gate:*`` label remaining is flipped
-ready-for-review via GraphQL's ``markPullRequestReadyForReview`` (no plain
-REST PATCH exists for this field, and the proxy-TLS constraint below forbids
-shelling to ``gh pr ready`` the way the sweep scripts do). "The result of the
-Decision Queue should resolve the gate" — Brian, 2026-07-13: ruling on the
-console is now sufficient, no separate manual PR-hunting pass required.
+config#2431 write-side extension, narrowed by alpha-engine-config-I13001:
+a ruling on a PR item resolves the gate mechanically (comment + label strip),
+and the console NO LONGER flips the draft ready itself. It used to call
+GraphQL ``markPullRequestReadyForReview`` under the ne-groomer identity with
+only a ``gate:*`` check, so a draft also held by a freeze row, a ``Hold:``
+comment, ``needs:human-review`` or a dependency in its body could be readied
+from here — the bypass class behind four held-draft readyings in nine days
+(nous-ergon-ops#1990). A de-gated draft is now readied by the gate lifecycle
+reconciler (alpha-engine-config ``gate_lifecycle_sweep.py``, daily
+gate-due-sweep), through ``gate_pr_actions.mark_pr_ready``, the fleet's single
+guarded ready write. Brian's 2026-07-13 outcome holds ("ruling on the console
+is now sufficient, no separate manual PR-hunting pass required"); the flip
+now lands on the reconciler's next pass instead of on the click.
 
 Auth (config-I2785): ne-groomer App installation token first (minted via
 ``nousergon_lib.github_app`` from SSM ``/alpha-engine/groom/github_app_*`` —
@@ -53,11 +58,10 @@ same fleet-wide invariant the sibling ``gate_*_sweep.py`` scripts document
 (ARCHITECTURE.md #94). The write side never re-derives gate state from list
 membership either: ``post_ruling``/``kill_issue``/``defer_issue`` are
 unconditional, human-triggered actions (not predicates over stale list
-data), and ``_resolve_pr_gate_followup`` already re-fetches the live PR
-immediately before its ready-flip PATCH/GraphQL call — i.e. the issue's
-optional hardening (a fresh direct-object read right before a gate-clearing
-write) is already standard practice here, not merely for GET-then-decide
-disposition logic.
+data), and ``_mark_ruling_pending_exec`` re-reads live labels before it
+writes — i.e. the issue's optional hardening (a fresh direct-object read
+right before a gate-clearing write) is standard practice here, not merely
+for GET-then-decide disposition logic.
 """
 
 from __future__ import annotations
@@ -622,50 +626,6 @@ def _remove_gate_labels(repo: str, number: int) -> None:
                 raise
 
 
-def _mark_pr_ready(repo: str, number: int) -> None:
-    """Flip a draft PR to ready-for-review (config#2431). No plain REST PATCH
-    exists for this field — GraphQL only — and the proxy-TLS constraint
-    forbids shelling to ``gh pr ready`` the way the sweep scripts do, so this
-    goes through the same ``_request`` urllib path as everything else."""
-    pr = _request("GET", f"{_API}/repos/{repo}/pulls/{number}") or {}
-    node_id = pr.get("node_id")
-    if not node_id:
-        logger.warning("decision_queue: could not fetch node_id for %s#%d — "
-                       "cannot flip ready", repo, number)
-        return
-    query = ("mutation($id: ID!) { markPullRequestReadyForReview("
-             "input: {pullRequestId: $id}) { pullRequest { id } } }")
-    _request("POST", f"{_API}/graphql", {"query": query, "variables": {"id": node_id}})
-
-
-def _resolve_pr_gate_followup(repo: str, number: int) -> None:
-    """After a ruling has ALREADY removed this item's human gate label(s):
-    if it's a draft PR with no OTHER ``gate:*`` label still blocking it,
-    flip it ready (config#2431 — "the result of the Decision Queue should
-    resolve the gate"). Re-fetches the LIVE PR (not a stale pre-ruling
-    snapshot) so a concurrently-added label or a manual ready-flip is never
-    raced. Never raises — a failed follow-up just leaves the PR draft for a
-    human or the next sweep pass to retry; the ruling itself already landed.
-    """
-    try:
-        pr = _request("GET", f"{_API}/repos/{repo}/pulls/{number}") or {}
-    except Exception as exc:
-        logger.warning("decision_queue: PR follow-up fetch failed for %s#%d: %s",
-                       repo, number, exc)
-        return
-    if not pr.get("draft"):
-        return
-    remaining = [l["name"] for l in pr.get("labels", []) if l["name"].startswith("gate:")]
-    if remaining:
-        logger.info("decision_queue: %s#%d stays draft — still gated by %s",
-                    repo, number, remaining)
-        return
-    try:
-        _mark_pr_ready(repo, number)
-    except Exception as exc:
-        logger.warning("decision_queue: ready-flip failed for %s#%d: %s", repo, number, exc)
-
-
 # Write actions deliberately do NOT clear_queue_cache()/force a reload: the
 # view's `dq_done` session-state guard already hides the acted-on item
 # instantly on the immediate st.rerun(), so a synchronous full re-fetch of
@@ -701,16 +661,15 @@ def _mark_ruling_pending_exec(repo: str, number: int) -> None:
 
 def post_ruling(repo: str, number: int, option: str, detail: str = "", *,
                 is_pr: bool = False) -> None:
-    """Ruling → comment + de-gate (+ PR follow-up, config#2431; + pending-exec
-    marker when work remains, config#3199). The next tier groom EXECUTES a
-    marker-carrying ruling; a fully-unblocked draft PR is flipped ready
-    immediately rather than waiting on a groom pass to notice."""
+    """Ruling → comment + de-gate (+ pending-exec marker when work remains,
+    config#3199). The next tier groom EXECUTES a marker-carrying ruling. A
+    de-gated draft PR (``is_pr``) is left draft for the gate lifecycle
+    reconciler, which readies it through the fleet's single guarded ready
+    write (alpha-engine-config-I13001); the console never marks a PR ready."""
     when = datetime.now(timezone.utc).date().isoformat()
     _request("POST", f"{_API}/repos/{repo}/issues/{number}/comments",
              {"body": ruling_comment(option, detail, when)})
     _remove_gate_labels(repo, number)
-    if is_pr:
-        _resolve_pr_gate_followup(repo, number)
     _mark_ruling_pending_exec(repo, number)
 
 
