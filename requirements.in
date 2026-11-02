@@ -144,7 +144,10 @@ yfinance>=1.7.0
 # crucible-backtester's spot launchers render the worker bootstrap on THIS venv
 # (LIB_PYTHON) and pass --pin-sha whenever the execution has a code pin; an
 # older krepis rejects the flag, so the floor must land before they adopt it.
-krepis[openai]>=0.59.75
+# Floor raised to 0.59.88 (alpha-engine-config-I13042, krepis-PR281): the log
+# filter's URL-query credential pattern is case-insensitive (Polygon's apiKey=)
+# and telegram.send_message redacts alert text before sending.
+krepis[openai]>=0.59.88
 # nousergon-lib (renamed from alpha-engine-lib at v0.60.0) provides
 # setup_logging used by app.py + health_checker.py
 # to attach the FlowDoctorHandler when FLOW_DOCTOR_ENABLED=1, the
@@ -385,4 +388,6 @@ httpx>=0.27          # fastapi TestClient transport (tests/test_dash_api.py)
 # an already-satisfied floating dependency (transitively via krepis[flow_doctor]) as
 # permanent. The compiled lockfile `requirements.txt` pins the exact resolved version;
 # this floor ensures the next `uv pip compile` doesn't silently drop back below 0.8.7.
-flow-doctor>=0.16.1
+# Floor raised to 0.19.5 (alpha-engine-config-I13042, flow-doctor-PR132): error
+# messages and captured logs are scrubbed, not only tracebacks, before notifiers.
+flow-doctor>=0.19.5
