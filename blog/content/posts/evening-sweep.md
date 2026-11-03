@@ -1,7 +1,6 @@
 ---
 title: "The Evening Sweep: One Coordinator for an Overnight Agent Fleet"
-date: 2026-11-02
-description: "Agents working my backlog overnight left pages of PRs nobody owned. A single Claude coordinator, the Director, now plans each night's sweep, runs it, and reports back each morning."
+date: 2026-11-03
 tags: ["ai-engineering", "llm", "multi-agent", "system-design"]
 canonical_url: "https://nousergon.ai/blog/posts/evening-sweep/"
 ShowToc: false
