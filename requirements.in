@@ -150,7 +150,10 @@ yfinance>=1.7.0
 # Floor raised to 0.59.89 (alpha-engine-config-I13042, krepis-PR282):
 # redact_secrets also runs on the SNS leg of alerts.publish and in
 # email_sender.send_email.
-krepis[openai]>=0.59.89
+# Floor raised to 0.59.90 (alpha-engine-config-I13152, krepis-PR283): redaction
+# also covers an HTML-escaped `&amp;` separator, a percent-encoded value and the
+# alert footer.
+krepis[openai]>=0.59.90
 # nousergon-lib (renamed from alpha-engine-lib at v0.60.0) provides
 # setup_logging used by app.py + health_checker.py
 # to attach the FlowDoctorHandler when FLOW_DOCTOR_ENABLED=1, the
@@ -393,4 +396,5 @@ httpx>=0.27          # fastapi TestClient transport (tests/test_dash_api.py)
 # this floor ensures the next `uv pip compile` doesn't silently drop back below 0.8.7.
 # Floor raised to 0.19.5 (alpha-engine-config-I13042, flow-doctor-PR132): error
 # messages and captured logs are scrubbed, not only tracebacks, before notifiers.
-flow-doctor>=0.19.5
+# 0.19.6 (alpha-engine-config-I13152, flow-doctor-PR133): the alert footer is redacted too.
+flow-doctor>=0.19.6
