@@ -5,8 +5,9 @@
  * The page renders FROM this module, so a claim cannot appear without the
  * source line beside it. Rules for editing it:
  *
- * - Copy only what Crucible v2's public status export already publishes:
- *   verdict words and layer statuses, never a score, return, cost or count
+ * - Copy only what Crucible v2's public status export already publishes
+ *   (verdict words and layer statuses), what a public repository's code
+ *   states, or a dated rollout fact — never a score, return, cost or count
  *   of money. That export's own boundary (`crucible/console/public.py`,
  *   FORBIDDEN_SOURCE_FIELDS) is the publication rule; this page does not
  *   loosen it.
@@ -110,3 +111,89 @@ export const HISTORY = {
   sixTeamRetired: '2026-07-12',
   v2PlanDated: '2026-09-01',
 } as const;
+
+export const TRADER_SOURCE: Source = {
+  label: 'nousergon/crucible-trader README',
+  href: 'https://github.com/nousergon/crucible-trader#readme',
+};
+
+export const RECONCILE_SOURCE: Source = {
+  label: 'nousergon/crucible-trader — reconciliation.py and reconciliation_control.py',
+  href: 'https://github.com/nousergon/crucible-trader/blob/main/crucible_trader/reconciliation_control.py',
+};
+
+export const PROMOTE_SOURCE: Source = {
+  label: 'nousergon/crucible — crucible/promote.py',
+  href: 'https://github.com/nousergon/crucible/blob/main/crucible/promote.py',
+};
+
+/** Dates of the v2 rebuild that are tracked in private issues, read on `asOf`. */
+export const ROLLOUT_SOURCE: Source = {
+  label: 'Crucible v2 rebuild tracker (private issue tracker)',
+};
+
+/**
+ * Where the paper trader stands: a dated reading, refreshed by hand like
+ * SNAPSHOT. Change `asOf` together with any other field, and rewrite the
+ * rollout box when a scheduled date passes (alpha-engine-config-I13021).
+ */
+export const TRADER = {
+  asOf: '2026-11-04',
+  /** Phase-4 cutover: the paper trader moved onto the v2 contract. */
+  cutover: '2026-10-30',
+  /** The first v2 session; it placed no orders. */
+  firstSession: '2026-11-03',
+  /** The first v2 session scheduled to trade. */
+  firstTradingSession: '2026-11-04',
+  /** Phase-4 exit check; v1 is decommissioned under phase 4. */
+  exitCheck: '2026-11-06',
+} as const;
+
+export interface EvidenceRow {
+  claim: string;
+  detail: string;
+  source: Source;
+}
+
+/** "Does it work?" — what the evidence supports today. Mechanisms and verdicts, never figures. */
+export const SHOWN: EvidenceRow[] = [
+  {
+    claim: 'It decides under rules fixed in advance.',
+    detail:
+      'On the 2026-10-30 cycle one slot moved its pointer, two kept their incumbents and one was recorded as unmeasurable. A pointer moves only when the promotion rule declared before the comparison says so.',
+    source: PROMOTE_SOURCE,
+  },
+  {
+    claim: 'It refuses rather than guesses.',
+    detail:
+      'The trader re-checks the record of the run behind every champion on every read and trades nothing when that record is not clean. It has no fallback to yesterday’s feed or another slot.',
+    source: TRADER_SOURCE,
+  },
+  {
+    claim: 'Its checks are tested against planted faults.',
+    detail:
+      'Every reconciliation cycle replays its own inputs with one known discrepancy planted per class. A plant the reconciler misses voids that cycle’s reconciliation instead of lowering a score.',
+    source: RECONCILE_SOURCE,
+  },
+];
+
+/** What it has not shown yet. Stated plainly; each line is a reason not to over-read the page. */
+export const NOT_SHOWN: EvidenceRow[] = [
+  {
+    claim: 'A performance edge.',
+    detail:
+      'Both signal-quality layers read red on the 2026-10-30 cycle. This site publishes no return, score or cost.',
+    source: PUBLIC_EXPORT_SOURCE,
+  },
+  {
+    claim: 'A v2 trading record.',
+    detail: `The paper trader moved onto v2 on ${TRADER.cutover}. Its first v2 session (${TRADER.firstSession}) placed no orders; the first session scheduled to trade is ${TRADER.firstTradingSession}. There is no v2 track record yet.`,
+    source: ROLLOUT_SOURCE,
+  },
+  {
+    claim: 'Real capital.',
+    detail:
+      'Paper trading only. Real capital is a reserved decision that cannot be taken before eight consecutive weeks of the v2 trader on paper with no unexplained reconciliation break.',
+    source: ROLLOUT_SOURCE,
+  },
+];
