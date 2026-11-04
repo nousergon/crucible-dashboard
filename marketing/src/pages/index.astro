@@ -5,12 +5,17 @@ import {
   HISTORY,
   INTEGRITY,
   LATEST_CYCLE,
+  NOT_SHOWN,
   PUBLIC_EXPORT_SOURCE,
+  ROLLOUT_SOURCE,
+  SHOWN,
   SLOTS,
   SLOTS_SOURCE,
   SNAPSHOT,
   type Source,
   type StatusTone,
+  TRADER,
+  TRADER_SOURCE,
   V1_RECORD,
   type VerdictTone,
 } from '../data/v2-evidence';
@@ -91,22 +96,31 @@ const STATUS_STYLE: Record<StatusTone, string> = {
   <section class="max-w-3xl mx-auto px-6 pb-12">
     <div class="rounded-lg border border-amber-500/30 bg-white/[0.03] px-6 py-4">
       <div class="text-xs font-semibold uppercase tracking-wider text-amber-300 mb-1.5">
-        Where the rebuild stands
+        Where the rebuild stands &middot; as of {TRADER.asOf}
       </div>
       <p class="text-sm text-zinc-300 leading-relaxed">
         This page describes <strong class="text-zinc-100">Crucible v2</strong>, a
-        rebuild of the harness planned on {HISTORY.v2PlanDated}. Moving the paper
-        trader fully onto v2 and retiring the v1 pipelines is a later rebuild
-        phase and is not done. Until then,
+        rebuild of the harness planned on {HISTORY.v2PlanDated}. The paper trader
+        moved onto v2 on {TRADER.cutover}: it now trades only what the v2
+        champion pointers and predictions feed say. Its first v2 session,
+        on {TRADER.firstSession}, placed no orders; the first session scheduled
+        to trade is {TRADER.firstTradingSession}. Retiring the v1 pipelines is
+        part of the same rebuild phase, whose exit check is {TRADER.exitCheck}.
+      </p>
+      <p class="text-sm text-zinc-300 leading-relaxed mt-2">
+        A public v2 view is not published yet, so
         <a
           class="text-sky-400 hover:text-sky-300 transition"
           href={V1_RECORD.href}
           target="_blank"
           rel="noopener noreferrer">the live dashboard</a
         >
-        shows the <em>v1</em> promotion record (most recent
-        decision {V1_RECORD.lastDecisionObserved}, observed {V1_RECORD.observed}); a public
-        v2 view is not published yet.
+        still shows the <em>v1</em> promotion record (most recent
+        decision {V1_RECORD.lastDecisionObserved}, observed {V1_RECORD.observed}).
+      </p>
+      <p class="text-[11px] text-zinc-500 mt-2">
+        Sources: <a class="hover:text-zinc-300 underline" href={TRADER_SOURCE.href}>{TRADER_SOURCE.label}</a>
+        (what the trader reads) &middot; {ROLLOUT_SOURCE.label} (dates)
       </p>
     </div>
   </section>
@@ -190,6 +204,65 @@ const STATUS_STYLE: Record<StatusTone, string> = {
       verdicts and statuses only &mdash; no returns, scores or costs &mdash; and
       in this snapshot both signal-quality layers read red.
     </p>
+  </section>
+
+  <section class="max-w-3xl mx-auto px-6 pb-12" aria-labelledby="does-it-work">
+    <h2 id="does-it-work" class="text-xs font-semibold uppercase tracking-wider text-sky-400 mb-1 text-center">
+      Does it work?
+    </h2>
+    <p class="text-sm text-zinc-400 leading-relaxed text-center mb-5 max-w-xl mx-auto">
+      As a harness, the evidence below shows it doing what it was built to do.
+      As a way to make money, it has not shown that yet, and the harness is what
+      says so. As of {TRADER.asOf}.
+    </p>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div class="rounded-lg border border-emerald-600/30 bg-white/[0.02] p-5">
+        <div class="text-xs font-semibold uppercase tracking-wider text-emerald-300 mb-3">What it has shown</div>
+        <ul class="space-y-3">
+          {
+            SHOWN.map((r) => (
+              <li>
+                <p class="text-sm text-zinc-200 font-medium">{r.claim}</p>
+                <p class="text-sm text-zinc-400 leading-relaxed">{r.detail}</p>
+                <p class="text-[11px] text-zinc-500 mt-1">
+                  Source:{' '}
+                  {r.source.href ? (
+                    <a class="hover:text-zinc-300 underline" href={r.source.href}>
+                      {r.source.label}
+                    </a>
+                  ) : (
+                    r.source.label
+                  )}
+                </p>
+              </li>
+            ))
+          }
+        </ul>
+      </div>
+      <div class="rounded-lg border border-amber-500/30 bg-white/[0.02] p-5">
+        <div class="text-xs font-semibold uppercase tracking-wider text-amber-300 mb-3">What it has not shown yet</div>
+        <ul class="space-y-3">
+          {
+            NOT_SHOWN.map((r) => (
+              <li>
+                <p class="text-sm text-zinc-200 font-medium">{r.claim}</p>
+                <p class="text-sm text-zinc-400 leading-relaxed">{r.detail}</p>
+                <p class="text-[11px] text-zinc-500 mt-1">
+                  Source:{' '}
+                  {r.source.href ? (
+                    <a class="hover:text-zinc-300 underline" href={r.source.href}>
+                      {r.source.label}
+                    </a>
+                  ) : (
+                    r.source.label
+                  )}
+                </p>
+              </li>
+            ))
+          }
+        </ul>
+      </div>
+    </div>
   </section>
 
   <section class="max-w-3xl mx-auto px-6 pt-4 pb-20" aria-labelledby="history">

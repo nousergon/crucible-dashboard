@@ -89,4 +89,15 @@ st.caption(
     "Nothing on this site is investment advice."
 )
 
+# v1/v2 disclosure (alpha-engine-config-I13021): the Promotion Record reads
+# the v1 pipelines' champion records, while the paper trader moved onto
+# Crucible v2 at the 2026-10-30 cutover. Say so on every page until /live
+# serves the v2 public view (alpha-engine-config-I10671).
+st.caption(
+    "**v1 record** — the Promotion Record on this site is the v1 Alpha "
+    "Engine's. The paper trader moved onto Crucible v2 on 2026-10-30, and a "
+    "public v2 view is not published here yet. Where v2 stands: "
+    "[crucible.nousergon.ai](https://crucible.nousergon.ai)"
+)
+
 pg.run()
