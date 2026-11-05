@@ -138,12 +138,15 @@ export const ROLLOUT_SOURCE: Source = {
  * rollout box when a scheduled date passes (alpha-engine-config-I13021).
  */
 export const TRADER = {
-  asOf: '2026-11-04',
+  asOf: '2026-11-05',
   /** Phase-4 cutover: the paper trader moved onto the v2 contract. */
   cutover: '2026-10-30',
   /** The first v2 session; it placed no orders. */
   firstSession: '2026-11-03',
-  /** The first v2 session scheduled to trade. */
+  /**
+   * The first v2 session that placed orders; every order it placed filled
+   * (paper). Read 2026-11-05 on the rebuild tracker's phase-4 audit issue.
+   */
   firstTradingSession: '2026-11-04',
   /** Phase-4 exit check; v1 is decommissioned under phase 4. */
   exitCheck: '2026-11-06',
@@ -187,7 +190,7 @@ export const NOT_SHOWN: EvidenceRow[] = [
   },
   {
     claim: 'A v2 trading record.',
-    detail: `The paper trader moved onto v2 on ${TRADER.cutover}. Its first v2 session (${TRADER.firstSession}) placed no orders; the first session scheduled to trade is ${TRADER.firstTradingSession}. There is no v2 track record yet.`,
+    detail: `The paper trader moved onto v2 on ${TRADER.cutover}. Its first v2 session (${TRADER.firstSession}) placed no orders; it first placed and filled orders on ${TRADER.firstTradingSession}. A few paper sessions are not a track record.`,
     source: ROLLOUT_SOURCE,
   },
   {
