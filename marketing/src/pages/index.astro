@@ -2,10 +2,13 @@
 import Base from '../layouts/Base.astro';
 import {
   CRUCIBLE_REPO,
+  GATE_SOURCE,
   HISTORY,
   INTEGRITY,
   LATEST_CYCLE,
   NOT_SHOWN,
+  PLAN_SOURCE,
+  PLANNED,
   PUBLIC_EXPORT_SOURCE,
   ROLLOUT_SOURCE,
   SHOWN,
@@ -105,7 +108,9 @@ const STATUS_STYLE: Record<StatusTone, string> = {
         champion pointers and predictions feed say. Its first v2 session,
         on {TRADER.firstSession}, placed no orders; it first placed and filled
         orders, on paper, on {TRADER.firstTradingSession}. Retiring the v1 pipelines is
-        part of the same rebuild phase, whose exit check is {TRADER.exitCheck}.
+        part of the same rebuild phase. Its exit gate reads two weeks and needs
+        zero v1 pipeline runs across them, so the first reading, dated {TRADER.exitCheck},
+        cannot pass; the earliest that can is {TRADER.firstPassableExit}.
       </p>
       <p class="text-sm text-zinc-300 leading-relaxed mt-2">
         A public v2 view is not published yet, so
@@ -120,8 +125,23 @@ const STATUS_STYLE: Record<StatusTone, string> = {
       </p>
       <p class="text-[11px] text-zinc-500 mt-2">
         Sources: <a class="hover:text-zinc-300 underline" href={TRADER_SOURCE.href}>{TRADER_SOURCE.label}</a>
-        (what the trader reads) &middot; {ROLLOUT_SOURCE.label} (dates)
+        (what the trader reads) &middot;
+        <a class="hover:text-zinc-300 underline" href={GATE_SOURCE.href}>{GATE_SOURCE.label}</a>
+        (the exit gate) &middot; {ROLLOUT_SOURCE.label} (dates)
       </p>
+      <div class="text-xs font-semibold uppercase tracking-wider text-zinc-400 mt-4 mb-1.5">
+        Planned, not live
+      </div>
+      <ul class="text-sm text-zinc-300 leading-relaxed list-disc pl-5 space-y-1">
+        {
+          PLANNED.map((p) => (
+            <li>
+              {p.what} <span class="text-zinc-500">({p.when})</span>
+            </li>
+          ))
+        }
+      </ul>
+      <p class="text-[11px] text-zinc-500 mt-2">Source: {PLAN_SOURCE.label}</p>
     </div>
   </section>
 
