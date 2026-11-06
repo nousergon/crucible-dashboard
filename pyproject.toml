@@ -1,0 +1,27 @@
+# Tool configuration only: this repo is not a Python package (dependencies are
+# pinned in requirements.txt). It exists so basedpyright and the edit-time typing
+# hook find the strict-typing settings (alpha-engine-config-I12607).
+
+[tool.basedpyright]
+# Strict typing gate (fleet strict-typing rollout, alpha-engine-config-I12607).
+# CI runs it as a BLOCKING step in the existing test job.
+#
+# `.basedpyright/baseline.json` records the errors that existed when the gate was
+# switched on. basedpyright ignores exactly those and fails on any NEW error, so
+# every new or changed line is held to strict from day one. The baseline shrinks
+# as old errors are fixed; CI refuses a PR that grows any rule's count. Never
+# regenerate it (`--writebaseline`) to get a PR green: fix the code, or suppress
+# one line with `# pyright: ignore[<rule>]` and say why.
+include = ["app.py", "charts", "components", "dash_api", "data_integrity_status.py", "fleet_status.py", "health_checker.py", "infrastructure", "intraday_live.py", "live", "loaders", "results", "shared", "sla_status.py", "views"]
+exclude = ["**/test_*.py", "**/tests"]
+# The runtime, pinned in .python-version.
+pythonVersion = "3.12"
+typeCheckingMode = "strict"
+# Strict mode does not flag an explicit `Any`; this does. A needed `Any` (an
+# untyped SDK object, raw JSON) gets a line-level ignore with a reason.
+reportExplicitAny = "error"
+# A bare `# type: ignore` silences every rule on the line; only rule-scoped
+# `# pyright: ignore[rule]` comments are honoured.
+enableTypeIgnoreComments = false
+reportIgnoreCommentWithoutRule = "error"
+reportUnnecessaryTypeIgnoreComment = "error"

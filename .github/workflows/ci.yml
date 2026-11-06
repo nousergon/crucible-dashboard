@@ -108,6 +108,46 @@ jobs:
       - name: Lint (undefined names / unused imports)
         run: ruff check --select F821,F401 .
 
+      # Strict typing, BLOCKING (alpha-engine-config-I12607). Errors recorded in
+      # `.basedpyright/baseline.json` are tolerated; any new one fails. On a PR the
+      # baseline may only shrink: a count that grew for any rule means the baseline was
+      # regenerated to absorb new errors, which is refused.
+      # Missing RETURN annotations are not a pyright rule, so ruff's ANN rules run
+      # over every source file the PR adds or changes: touch a file, annotate it.
+      - name: Type check (basedpyright strict, baseline may only shrink)
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet basedpyright==1.40.2
+          basedpyright --pythonpath "$(command -v python)"
+          if ! git diff --quiet -- .basedpyright/baseline.json; then
+            echo "::warning::type errors were fixed but .basedpyright/baseline.json was not shrunk; run basedpyright locally and commit the smaller baseline."
+            git checkout -- .basedpyright/baseline.json
+          fi
+          if [ -n "${BASE_REF}" ] && git fetch --quiet --depth=1 origin "${BASE_REF}"; then
+            mapfile -t changed < <(git diff --name-only --diff-filter=AMR FETCH_HEAD HEAD -- '*.py' ':!**/test_*.py' ':!tests/**')
+            if [ "${#changed[@]}" -gt 0 ]; then
+              ruff check --select ANN --ignore ANN401 "${changed[@]}"
+            fi
+            if git cat-file -e "FETCH_HEAD:.basedpyright/baseline.json" 2>/dev/null; then
+              git show "FETCH_HEAD:.basedpyright/baseline.json" > /tmp/baseline-base.json
+              git show "HEAD:.basedpyright/baseline.json" > /tmp/baseline-head.json 2>/dev/null \
+                || echo '{"files": {}}' > /tmp/baseline-head.json
+              python3 - <<'PY'
+          import collections, json, sys
+          def counts(path):
+              files = json.load(open(path))["files"]
+              return collections.Counter(e["code"] for es in files.values() for e in es)
+          base, head = counts("/tmp/baseline-base.json"), counts("/tmp/baseline-head.json")
+          grown = {c: (base[c], n) for c, n in head.items() if n > base[c]}
+          for code, (b, n) in sorted(grown.items()):
+              print(f"::error::type baseline grew for {code}: {b} -> {n}. Fix the new errors instead of re-baselining.")
+          sys.exit(1 if grown else 0)
+          PY
+            fi
+          fi
+
       - name: Run tests
         env:
           SF_DEFS_DIR: ${{ github.workspace }}/.sf-defs
