@@ -138,7 +138,7 @@ export const ROLLOUT_SOURCE: Source = {
  * rollout box when a scheduled date passes (alpha-engine-config-I13021).
  */
 export const TRADER = {
-  asOf: '2026-11-05',
+  asOf: '2026-11-06',
   /** Phase-4 cutover: the paper trader moved onto the v2 contract. */
   cutover: '2026-10-30',
   /** The first v2 session; it placed no orders. */
@@ -148,9 +148,42 @@ export const TRADER = {
    * (paper). Read 2026-11-05 on the rebuild tracker's phase-4 audit issue.
    */
   firstTradingSession: '2026-11-04',
-  /** Phase-4 exit check; v1 is decommissioned under phase 4. */
+  /** First dated phase-4 exit reading; v1 is decommissioned under phase 4. */
   exitCheck: '2026-11-06',
+  /**
+   * The earliest exit reading that can pass. The gate reads a two-week
+   * window and needs zero v1 weekly-pipeline runs across it; the v1
+   * pipeline last ran in the week the 11-06 reading still covers. Read
+   * 2026-11-06 on the rebuild tracker's phase-4 exit-reading issue.
+   */
+  firstPassableExit: '2026-11-09',
 } as const;
+
+export const GATE_SOURCE: Source = {
+  label: 'nousergon/crucible — crucible/gate.py (phase-4 exit gate)',
+  href: 'https://github.com/nousergon/crucible/blob/main/crucible/gate.py',
+};
+
+/** The rebuild's design document; quoted for what is planned, never for results. */
+export const PLAN_SOURCE: Source = {
+  label: 'Crucible v2 rebuild plan, 2026-09-01 (private design document)',
+};
+
+/** Planned, not live. Each line names the phase of the rebuild plan it belongs to. */
+export const PLANNED: { what: string; when: string }[] = [
+  {
+    what: 'A public v2 view, replacing the v1 record at /live.',
+    when: 'not yet dated',
+  },
+  {
+    what: 'LLM research arms re-entering as Research challengers, one arm at a time, each graded against the champion before it can serve.',
+    when: 'phase 5',
+  },
+  {
+    what: 'Real capital: a reserved decision, taken only after the paper record is proven.',
+    when: 'phase 6',
+  },
+];
 
 export interface EvidenceRow {
   claim: string;
