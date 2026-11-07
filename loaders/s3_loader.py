@@ -2561,8 +2561,13 @@ def load_claude_code_usage(n_days: int = 35):
         doc = download_s3_json(bucket, key)
         if not isinstance(doc, dict):
             continue
+        cache_ttl = doc.get("cache_ttl", "unrecorded")
+        if "cache_ttl" in doc and cache_ttl not in ("5m", "1h"):
+            raise ValueError(f"Unknown cache_ttl {cache_ttl!r} in {key}")
+        regime = {"cache_ttl": cache_ttl,
+                  "wet_version": doc.get("wet_version", "unrecorded")}
         for model, rec in (doc.get("by_model") or {}).items():
-            row = {"date": date_str, "source": source, "model": model,
+            row = {**regime, "date": date_str, "source": source, "model": model,
                    "provider": rec.get("provider", "anthropic"),   # backward compat: pre-provider docs
                    "wet": rec.get("wet", 0), "cost_usd": rec.get("cost_usd", 0.0),
                    "total": rec.get("total", 0)}
@@ -2571,7 +2576,7 @@ def load_claude_code_usage(n_days: int = 35):
             model_rows.append(row)
         for hour, models in (doc.get("by_hour") or {}).items():
             hour_rows.append({
-                "date": date_str, "source": source, "hour": int(hour),
+                **regime, "date": date_str, "source": source, "hour": int(hour),
                 "wet": sum(r.get("wet", 0) for r in models.values()),
                 "cost_usd": sum(r.get("cost_usd", 0.0) for r in models.values()),
             })
