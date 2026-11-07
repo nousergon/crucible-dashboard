@@ -35,6 +35,7 @@ import plotly.express as px
 import streamlit as st
 from krepis.usage_pacing import reset_window
 
+from shared.usage_regimes import usage_regime_caption
 from loaders.s3_loader import load_claude_code_usage, load_usage_pacing_config
 
 # Historical pacing config (config#2043): s3://alpha-engine-research/config/usage_pacing.json
@@ -101,6 +102,7 @@ hrs_to_reset = max(0, (next_reset - now_pt).total_seconds()) / 3600.0
 # HEADLINE: Anthropic (Max ceiling)
 # =============================================================================
 st.subheader("Anthropic — Max 20x ceiling", divider="gray")
+st.caption(usage_regime_caption(_model_since(df_anthropic, win_start)))
 ac1, ac2, ac3 = st.columns(3)
 ac1.metric("This week's WET (Anthropic only)", f"{ant_week_wet/1e6:,.0f}M",
            help=f"Reset-aligned window start {win_start:%Y-%m-%d %H:%M} PT. "
@@ -126,6 +128,7 @@ week_raw_ant = int(ant_week["total"].sum())
 cache_hit_pct = (100.0 * week_cache_read / week_raw_ant) if week_raw_ant else 0.0
 
 st.subheader("Anthropic cache efficiency", divider="gray")
+st.caption(usage_regime_caption(ant_week))
 cc1, cc2, cc3 = st.columns(3)
 cc1.metric("Cache-read share (this week)", f"{cache_hit_pct:,.0f}%",
            help="cache_read / all Anthropic raw tokens since reset. High is good — "
@@ -153,6 +156,7 @@ st.caption("Anthropic only. Target: high cache-read ratio + stable daily writes.
 # Daily WET by source (all providers — informational)
 # =============================================================================
 st.subheader("Daily WET (by source)", divider="gray")
+st.caption(usage_regime_caption(df_model))
 daily_src = (df_model.groupby(["date", "source"], as_index=False)["wet"].sum())
 fig_d = px.bar(daily_src, x="date", y="wet", color="source",
                labels={"wet": "WET", "date": ""})
@@ -167,6 +171,7 @@ st.caption("Includes a small non-Anthropic WET contribution (informational cross
 # =============================================================================
 st.subheader("Anthropic — WET by model", divider="gray")
 if not df_anthropic.empty:
+    st.caption(usage_regime_caption(df_anthropic))
     am1, am2 = st.columns([2, 1])
     ant_daily_mod = (df_anthropic.groupby(["date", "model"], as_index=False)["wet"].sum())
     fig_ant_m = px.bar(ant_daily_mod, x="date", y="wet", color="model",
@@ -188,6 +193,7 @@ else:
 # =============================================================================
 st.subheader("Hourly profile (WET, PT)", divider="gray")
 if not df_hour.empty:
+    st.caption(usage_regime_caption(df_hour))
     hh = (df_hour.groupby(["date", "hour"], as_index=False)["wet"].sum())
     pivot = hh.pivot(index="hour", columns="date", values="wet").reindex(range(24))
     fig_h = px.imshow(pivot, aspect="auto", color_continuous_scale="Blues",
@@ -205,6 +211,7 @@ if not df_hour.empty:
 # Secondary: Anthropic raw tokens + notional $ (expander)
 # =============================================================================
 with st.expander("Anthropic — raw tokens + notional $"):
+    st.caption(usage_regime_caption(ant_week))
     daily_full = (ant_week.groupby("date", as_index=False)
                   .agg(wet=("wet", "sum"), cost_usd=("cost_usd", "sum"),
                        raw_total=("total", "sum"),
@@ -213,7 +220,7 @@ with st.expander("Anthropic — raw tokens + notional $"):
                        cache_read=("cache_read_input_tokens", "sum"))
                   .sort_values("date", ascending=False))
     daily_full["$ (notional)"] = daily_full["cost_usd"].map(lambda v: f"${v:,.0f}")
-    st.caption("`$` is API-equivalent at current public pricing — a snapshot, NOT "
+    st.caption("`$` is API-equivalent at recorded document pricing — a snapshot, NOT "
                "what the Max plan actually charges (it's a flat subscription). "
                "Raw tokens are ~99% cache-reads (cheap), which is why WET is the "
                "headline here. Window: this reset cycle only — see the **API** "
