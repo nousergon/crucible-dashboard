@@ -84,6 +84,7 @@ if df_model.empty:
 
 # --- provider split (Max ceiling only counts Anthropic) -----------------------
 df_anthropic = df_model[df_model["provider"] == "anthropic"]
+assert isinstance(df_anthropic, pd.DataFrame)  # boolean-mask row selection on a DataFrame
 
 now_pt = datetime.now(_PT).replace(tzinfo=None)
 win_start, next_reset = reset_window(now_pt, WEEKLY_RESET_ANCHOR, WEEKLY_PERIOD)
@@ -122,6 +123,7 @@ st.progress(min(pct, 1.0),
 # =============================================================================
 week_model = _model_since(df_model, win_start)
 ant_week = df_anthropic[df_anthropic["date"] >= win_start.date().isoformat()]
+assert isinstance(ant_week, pd.DataFrame)  # boolean-mask row selection on a DataFrame
 week_cache_read = int(ant_week["cache_read_input_tokens"].sum())
 week_cache_write = int(ant_week["cache_creation_input_tokens"].sum())
 week_raw_ant = int(ant_week["total"].sum())

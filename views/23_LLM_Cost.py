@@ -69,6 +69,7 @@ _reset_anchor = (
 
 df_model, _df_hour = load_claude_code_usage(n_days=35)
 df_non_anthropic = df_model[df_model["provider"] == "non-anthropic"] if not df_model.empty else df_model
+assert isinstance(df_non_anthropic, pd.DataFrame)  # boolean-mask row selection on a DataFrame
 
 if df_non_anthropic.empty:
     st.caption("No non-Anthropic usage data yet — routed via Claude Code's provider "
@@ -77,6 +78,7 @@ else:
     now_pt = datetime.now(_PT).replace(tzinfo=None)
     win_start, _next_reset = reset_window(now_pt, _reset_anchor, WEEKLY_PERIOD)
     na_week = df_non_anthropic[df_non_anthropic["date"] >= win_start.date().isoformat()]
+    assert isinstance(na_week, pd.DataFrame)  # boolean-mask row selection on a DataFrame
     na_week_tokens = int(na_week["total"].sum()) if not na_week.empty else 0
     na_week_cost = float(na_week["cost_usd"].sum()) if not na_week.empty else 0.0
 

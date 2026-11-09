@@ -16,8 +16,9 @@ import json
 import logging
 import os
 import re
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Literal, Self, cast
 
 import boto3
 import pandas as pd
@@ -40,7 +41,7 @@ class S3AccessError(Exception):
     operational failure that must not be silently rendered as empty data.
     """
 
-    def __init__(self, message: str, *, error_type: str, bucket: str, key: str):
+    def __init__(self, message: str, *, error_type: str, bucket: str, key: str) -> None:
         super().__init__(message)
         self.error_type = error_type
         self.bucket = bucket
@@ -79,11 +80,11 @@ class raise_s3_access_errors:
     value on exit, so nested use — e.g. one guarded loader calling another
     internally — behaves correctly)."""
 
-    def __enter__(self):
+    def __enter__(self) -> Self:
         self._token = _STRICT_S3_ERRORS.set(True)
         return self
 
-    def __exit__(self, *exc_info):
+    def __exit__(self, *exc_info: object) -> Literal[False]:
         _STRICT_S3_ERRORS.reset(self._token)
         return False
 
@@ -298,7 +299,9 @@ def _fetch_s3_json(bucket: str, key: str) -> dict | list | None:
         return None
 
 
-def with_s3_error_tracking(fallback: Any = None):
+def with_s3_error_tracking[**P, R, F](
+    fallback: F = None,
+) -> Callable[[Callable[P, R]], Callable[P, R | F]]:
     """Decorator that wraps a function with S3 error logging and tracking.
 
     On S3AccessError (config#2339 — a real operational failure, e.g. an IAM
@@ -308,9 +311,9 @@ def with_s3_error_tracking(fallback: Any = None):
     other exception, behavior is unchanged: log, record, and return
     *fallback* (used for genuinely best-effort call sites).
     """
-    def decorator(fn):
+    def decorator(fn: Callable[P, R]) -> Callable[P, R | F]:
         @functools.wraps(fn)
-        def wrapper(*args, **kwargs):
+        def wrapper(*args: P.args, **kwargs: P.kwargs) -> R | F:
             try:
                 return fn(*args, **kwargs)
             except S3AccessError as e:
@@ -2512,7 +2515,7 @@ def load_news_articles(key: str) -> pd.DataFrame:
 
 
 @cached(ttl=900)
-def load_claude_code_usage(n_days: int = 35):
+def load_claude_code_usage(n_days: int = 35) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Load Brian's Claude Code Max-plan usage from S3. Two key layouts coexist:
 
     - ``{source}/{date}.json``            — the laptop's ``source='interactive'``
@@ -2561,13 +2564,19 @@ def load_claude_code_usage(n_days: int = 35):
         doc = download_s3_json(bucket, key)
         if not isinstance(doc, dict):
             continue
-        cache_ttl = doc.get("cache_ttl", "unrecorded")
-        if "cache_ttl" in doc and cache_ttl not in ("5m", "1h"):
+        # A JSON object: str keys, JSON values. `download_s3_json` returns a bare
+        # `dict`, so name the element types here rather than read Unknowns.
+        regime_doc = cast("dict[str, object]", doc)
+        cache_ttl = regime_doc.get("cache_ttl", "unrecorded")
+        if "cache_ttl" in regime_doc and cache_ttl not in ("5m", "1h"):
             raise ValueError(f"Unknown cache_ttl {cache_ttl!r} in {key}")
-        regime = {"cache_ttl": cache_ttl,
-                  "wet_version": doc.get("wet_version", "unrecorded")}
+        regime: dict[str, object] = {
+            "cache_ttl": cache_ttl,
+            "wet_version": regime_doc.get("wet_version", "unrecorded"),
+        }
         for model, rec in (doc.get("by_model") or {}).items():
-            row = {**regime, "date": date_str, "source": source, "model": model,
+            row = {**regime,
+                   "date": date_str, "source": source, "model": model,
                    "provider": rec.get("provider", "anthropic"),   # backward compat: pre-provider docs
                    "wet": rec.get("wet", 0), "cost_usd": rec.get("cost_usd", 0.0),
                    "total": rec.get("total", 0)}
@@ -2576,7 +2585,8 @@ def load_claude_code_usage(n_days: int = 35):
             model_rows.append(row)
         for hour, models in (doc.get("by_hour") or {}).items():
             hour_rows.append({
-                **regime, "date": date_str, "source": source, "hour": int(hour),
+                **regime,
+                "date": date_str, "source": source, "hour": int(hour),
                 "wet": sum(r.get("wet", 0) for r in models.values()),
                 "cost_usd": sum(r.get("cost_usd", 0.0) for r in models.values()),
             })

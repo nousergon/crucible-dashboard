@@ -1,19 +1,52 @@
 """Labels for recorded usage pricing; never re-price historical documents."""
 from __future__ import annotations
 
-import pandas as pd
+import math
+
+# pandas ships no stubs and pandas-stubs is not in the lock; every other module
+# that imports it carries this error in .basedpyright/baseline.json, which a new
+# module may not grow. The frame is only read through `.columns` and
+# `.itertuples()`, whose declared types are complete, so nothing Unknown leaks
+# past the import.
+import pandas as pd  # pyright: ignore[reportMissingTypeStubs]
+
+_UNRECORDED = "unrecorded"
+
+
+def _cell(value: object) -> str:
+    """A cell as text; missing values (None / NaN / pd.NA) read as ``unrecorded``."""
+    if value is None or value is pd.NA or (isinstance(value, float) and math.isnan(value)):
+        return _UNRECORDED
+    return str(value)
+
+
+def _regime_rows(frame: pd.DataFrame) -> list[tuple[str, str, str]]:
+    """(date, cache_ttl, wet_version) per row, in frame order, missing → ``unrecorded``."""
+    names = [str(column) for column in frame.columns]
+    rows: list[tuple[str, str, str]] = []
+    for values in frame.itertuples(index=False, name=None):
+        record: dict[str, object] = dict(zip(names, values))
+        rows.append((
+            _cell(record.get("date")),
+            _cell(record.get("cache_ttl")),
+            _cell(record.get("wet_version")),
+        ))
+    return rows
 
 
 def usage_regime_breaks(frame: pd.DataFrame) -> list[str]:
     """Dates where the observed set of TTL/WET pairs changes."""
+    if frame.empty:
+        return []
+    pairs_by_date: dict[str, set[tuple[str, str]]] = {}
+    for date, ttl, version in _regime_rows(frame):
+        pairs_by_date.setdefault(date, set()).add((ttl, version))
     previous: set[tuple[str, str]] | None = None
     breaks: list[str] = []
-    if frame.empty:
-        return breaks
-    for date, rows in frame.fillna("unrecorded").groupby("date"):
-        pairs = set(zip(rows["cache_ttl"].astype(str), rows["wet_version"].astype(str)))
+    for date in sorted(pairs_by_date):
+        pairs = pairs_by_date[date]
         if previous is not None and pairs != previous:
-            breaks.append(str(date))
+            breaks.append(date)
         previous = pairs
     return breaks
 
@@ -22,10 +55,11 @@ def usage_regime_caption(frame: pd.DataFrame) -> str:
     """Describe the exact window aggregated by a page, including discontinuities."""
     if frame.empty:
         return "No recorded pricing regime in this window."
-    pairs = frame[["cache_ttl", "wet_version"]].fillna("unrecorded").drop_duplicates()
+    # Distinct (ttl, version) pairs in first-seen order.
+    pairs = list(dict.fromkeys((ttl, version) for _date, ttl, version in _regime_rows(frame)))
     labels: list[str] = []
-    for ttl, version in pairs.itertuples(index=False, name=None):
-        label = "unrecorded (TTL unknown; historically priced as 5m)" if ttl == "unrecorded" else str(ttl)
+    for ttl, version in pairs:
+        label = "unrecorded (TTL unknown; historically priced as 5m)" if ttl == _UNRECORDED else ttl
         labels.append(f"cache TTL {label} / WET {version}")
     caption = "Recorded pricing: " + "; ".join(labels) + "."
     if len(pairs) > 1:
