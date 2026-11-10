@@ -28,6 +28,7 @@ import io
 import os
 import sys
 from datetime import date, timedelta
+from typing import cast
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -495,7 +496,7 @@ if not _feature_list:
         "set is documented in code at `alpha-engine-predictor/model/meta_model.py::META_FEATURES`."
     )
 else:
-    _prod = production_feature_set(_feature_list)
+    _prod = production_feature_set(cast("dict[str, object]", _feature_list))  # untyped S3 JSON
     _research = research_feature_set(tech_df, interaction_df, macro_df, alt_df, fundamental_df)
     _delta = sorted(_research - _prod)
     _missing_in_store = sorted(_prod - _research)
