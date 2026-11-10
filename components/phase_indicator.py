@@ -5,6 +5,8 @@ the homepage surfaces the current phase so visitors understand what's
 being optimized now and why alpha is or isn't the headline metric.
 """
 
+from __future__ import annotations
+
 import streamlit as st
 
 PHASES = [
@@ -50,7 +52,7 @@ _ICONS = {"complete": "&#x2713;", "current": "&#x25B6;", "upcoming": "&#x2022;"}
 
 def render_phase_indicator(current_phase: str = "Reliability + Evaluation") -> None:
     """Render the four-phase pill row with the given phase highlighted."""
-    pills = []
+    pills: list[str] = []
     for i, phase in enumerate(PHASES):
         # Override phases by position relative to the current one
         if phase["name"] == current_phase:
@@ -109,7 +111,7 @@ def render_phase_caption(current_phase: str = "Reliability + Measurability") -> 
         (i for i, p in enumerate(PHASES) if p["name"] == current_phase), 0
     )
 
-    slots = []
+    slots: list[str] = []
     for i in range(len(PHASES)):
         if i == active_index:
             slots.append(
@@ -136,7 +138,7 @@ def render_phase_descriptions(current_phase: str = "Reliability + Measurability"
     to its description below. Current phase highlighted with brand-blue
     accent; others in muted neutrals.
     """
-    cards = []
+    cards: list[str] = []
     for i, phase in enumerate(PHASES):
         if phase["name"] == current_phase:
             status = "current"

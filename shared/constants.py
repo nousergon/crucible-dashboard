@@ -5,7 +5,11 @@ Centralizes signal colors, regime labels, cache defaults, and column schemas
 to eliminate duplication across pages and loaders.
 """
 
+from __future__ import annotations
+
 import re
+from collections.abc import Mapping
+from typing import cast
 
 # ---------------------------------------------------------------------------
 # Signal display
@@ -95,7 +99,9 @@ def get_thresholds() -> dict[str, float | int]:
     merged = dict(DEFAULT_THRESHOLDS)
     try:
         from loaders.s3_loader import load_config  # local import to avoid cycles
-        overrides = (load_config() or {}).get("thresholds") or {}
+        # Config loading is untyped; threshold values follow the defaults schema.
+        config = cast(Mapping[str, object], load_config() or {})
+        overrides = cast("Mapping[str, float | int | None]", config.get("thresholds") or {})
         for k, v in overrides.items():
             if k in merged and v is not None:
                 merged[k] = v
