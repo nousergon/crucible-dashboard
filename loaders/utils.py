@@ -2,13 +2,19 @@
 Utility helpers for the Alpha Engine Dashboard loaders and pages.
 """
 
+from __future__ import annotations
+
+from collections.abc import Iterable, Mapping
+from typing import cast
+
 import numpy as np
+from numpy.typing import NDArray
 import pandas as pd
 
 
 def risk_contribution_shares(
-    target_weights: list[float], covariance_daily: list[list[float]] | None
-) -> np.ndarray:
+    target_weights: list[object], covariance_daily: list[object] | None
+) -> NDArray[np.float64]:
     """Per-asset share of total portfolio variance, in percent.
 
     For weights ``w`` and covariance ``Σ``: the risk contribution of asset i is
@@ -24,7 +30,7 @@ def risk_contribution_shares(
     nan = np.full(n, np.nan)
     if not isinstance(covariance_daily, list) or len(covariance_daily) != n:
         return nan
-    if not all(isinstance(row, list) and len(row) == n for row in covariance_daily):
+    if not all(isinstance(row, list) and len(cast(list[object], row)) == n for row in covariance_daily):
         return nan
     w = np.array(
         [float(x) if isinstance(x, (int, float)) else 0.0 for x in target_weights]
@@ -40,21 +46,24 @@ def risk_contribution_shares(
 def safe_column(df: pd.DataFrame, *candidates: str) -> str | None:
     """Return the first column name from *candidates* that exists in *df*, or None."""
     for col in candidates:
-        if col in df.columns:
+        if col in cast(Iterable[object], df.columns):
             return col
     return None
 
 
-def production_feature_set(feature_list: dict | None) -> set[str]:
+def production_feature_set(feature_list: object) -> set[str]:
     """Flatten the L2 + L1 feature lists from `feature_list.json` into a single set.
     Tolerates None / missing keys / non-list values — returns empty set in those cases.
     """
     if not isinstance(feature_list, dict):
         return set()
-    prod: set[str] = set(feature_list.get("l2_features") or [])
-    for l1_feats in (feature_list.get("l1_features") or {}).values():
+    # Feature artifacts supply string lists; casts preserve malformed-input handling.
+    features = cast(Mapping[str, object], feature_list)
+    prod: set[str] = set(cast(Iterable[str], features.get("l2_features") or []))
+    l1_features = cast(Mapping[str, object], features.get("l1_features") or {})
+    for l1_feats in l1_features.values():
         if isinstance(l1_feats, list):
-            prod.update(l1_feats)
+            prod.update(cast(list[str], l1_feats))
     return prod
 
 
@@ -66,5 +75,5 @@ def research_feature_set(*dfs: pd.DataFrame | None) -> set[str]:
     for df in dfs:
         if df is None:
             continue
-        research.update(c for c in df.columns if c not in ("ticker", "date"))
+        research.update(c for c in cast(Iterable[str], df.columns) if c not in ("ticker", "date"))
     return research
