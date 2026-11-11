@@ -24,7 +24,41 @@ left unchanged — see alpha-engine-config#5270 scope.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from datetime import timedelta
+from typing import TYPE_CHECKING, Literal, NotRequired, ParamSpec, TypedDict, TypeVar, Unpack, overload
+
 import streamlit as st
+
+if TYPE_CHECKING:
+    # Type-only: the object ``st.cache_data`` returns, so decorated loaders keep
+    # their call signature and ``.clear()`` under strict checking.
+    from streamlit.runtime.caching.cache_utils import CachedFunc
+
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+class _CacheDataOptions(TypedDict):
+    """The ``st.cache_data`` keyword options ``cached`` forwards untouched.
+
+    Mirrors the decorator-with-arguments signature of ``st.cache_data`` minus
+    the options ``cached`` names itself (``ttl``, ``max_entries`` and
+    ``show_spinner``, which it defaults to ``False``). Spelled out rather than ``**kwargs:
+    Any`` so a typo is a type error, and so a keyword streamlit adds in a
+    later release (``refresh_mode`` arrived in 1.67) cannot make a strict
+    checker flag the forwarding call as an unknown argument. Every key is
+    optional: omitted keys take streamlit's own defaults, and streamlit
+    raises on a keyword it does not know, so a floor older than the keyword
+    fails loudly at the call site rather than being silently dropped.
+    """
+
+    max_size: NotRequired[int | str | None]
+    show_time: NotRequired[bool]
+    persist: NotRequired[Literal["disk"] | bool | None]
+    hash_funcs: NotRequired[dict[type | str, Callable[[object], object]] | None]
+    scope: NotRequired[Literal["global", "session"]]
+    refresh_mode: NotRequired[Literal["foreground", "background"]]
 
 # Sizing rationale (alpha-engine-config#5270 scope item 3). MEASURED
 # 2026-07-31, replacing the provisional 512 this file shipped with.
@@ -64,14 +98,35 @@ import streamlit as st
 DEFAULT_MAX_ENTRIES = 64
 
 
+@overload
 def cached(
-    func=None,
+    func: Callable[_P, _R],
     *,
     ttl_key: str | None = None,
     ttl: int | None = None,
     max_entries: int = DEFAULT_MAX_ENTRIES,
-    **kwargs,
-):
+    show_spinner: bool | str = False,
+    **kwargs: Unpack[_CacheDataOptions],
+) -> CachedFunc[_P, _R]: ...
+@overload
+def cached(
+    func: None = None,
+    *,
+    ttl_key: str | None = None,
+    ttl: int | None = None,
+    max_entries: int = DEFAULT_MAX_ENTRIES,
+    show_spinner: bool | str = False,
+    **kwargs: Unpack[_CacheDataOptions],
+) -> Callable[[Callable[_P, _R]], CachedFunc[_P, _R]]: ...
+def cached(
+    func: Callable[_P, _R] | None = None,
+    *,
+    ttl_key: str | None = None,
+    ttl: int | None = None,
+    max_entries: int = DEFAULT_MAX_ENTRIES,
+    show_spinner: bool | str = False,
+    **kwargs: Unpack[_CacheDataOptions],
+) -> CachedFunc[_P, _R] | Callable[[Callable[_P, _R]], CachedFunc[_P, _R]]:
     """Bounded ``@st.cache_data`` with centralized TTL lookup.
 
     Can be used as a bare decorator (``@cached``), with a config-based TTL
@@ -89,13 +144,15 @@ def cached(
         Literal TTL in seconds.  Mutually exclusive with ``ttl_key``.
     max_entries : int, optional
         Maximum entries in the LRU cache (default ``DEFAULT_MAX_ENTRIES``).
+    show_spinner : bool or str, optional
+        Forwarded to ``st.cache_data``; defaults to ``False``.
     **kwargs
-        Additional keyword arguments forwarded to ``st.cache_data``.
+        Remaining ``st.cache_data`` options (see ``_CacheDataOptions``).
     """
     if ttl_key is not None and ttl is not None:
         raise TypeError("cached: ttl_key and ttl are mutually exclusive")
 
-    def _resolve_ttl(f):
+    def _resolve_ttl(f: Callable[..., object]) -> float | timedelta | str | None:
         """Resolve the TTL using the DECORATED FUNCTION'S OWN module.
 
         Not `from loaders.s3_loader import _ttl`. That binds whichever module
@@ -124,11 +181,11 @@ def cached(
         from loaders.s3_loader import _ttl  # noqa: PLC0415
         return _ttl(ttl_key)
 
-    def decorator(f):
+    def decorator(f: Callable[_P, _R]) -> CachedFunc[_P, _R]:
         return st.cache_data(
             ttl=_resolve_ttl(f),
             max_entries=max_entries,
-            show_spinner=kwargs.pop("show_spinner", False),
+            show_spinner=show_spinner,
             **kwargs,
         )(f)
 
