@@ -25,7 +25,7 @@
 schema_version: 1
 entries:
   - path: shared/constants.py
-    line: 102
+    line: 108
     reason: >-
       config.yaml threshold-override load/parse failure inside
       get_thresholds(). No recording surface -- the function's own

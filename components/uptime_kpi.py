@@ -6,15 +6,26 @@ supporting breakdown numbers (sessions counted, minutes up).
 
 from __future__ import annotations
 
+from typing import TypedDict, cast
+
 import streamlit as st
 
 _TARGET_PCT = 99.0
 
 
-def _aggregate(records: list[dict]) -> dict:
+class UptimeAggregate(TypedDict):
+    """Rolling-window totals produced by :func:`_aggregate`."""
+
+    uptime_pct: float
+    connected_minutes: int
+    market_minutes: int
+    sessions: int
+
+
+def _aggregate(records: list[dict[str, object]]) -> UptimeAggregate:
     """Sum across the rolling window. Returns uptime%, connected, market, sessions."""
-    connected = sum(r.get("connected_minutes", 0) for r in records)
-    market = sum(r.get("market_minutes", 0) for r in records)
+    connected = sum(cast(int, r.get("connected_minutes", 0)) for r in records)
+    market = sum(cast(int, r.get("market_minutes", 0)) for r in records)
     uptime_pct = (connected / market * 100.0) if market else 0.0
     return {
         "uptime_pct": uptime_pct,
@@ -55,7 +66,7 @@ def render_uptime_kpi(records: list[dict]) -> None:
         st.info("No uptime sessions recorded yet. Data will appear after the first post-tick-log EOD run.")
         return
 
-    agg = _aggregate(records)
+    agg = _aggregate(cast(list[dict[str, object]], records))
     st.caption(
         f"Rolling {agg['sessions']} market session"
         f"{'s' if agg['sessions'] != 1 else ''} "

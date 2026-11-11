@@ -9,12 +9,12 @@ in place for four weeks (alpha-engine-config-I9280).
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import Any
+from collections.abc import Iterable, Mapping
+from typing import cast
 
 
 def challenger_cohort_prefixes(
-    board: Any, tmpl: str, *, champion_kind: str = "champion"
+    board: object, tmpl: str, *, champion_kind: str = "champion"
 ) -> dict[str, str]:
     """``{arm_name: shadow_prefix}`` for every CHALLENGER named on ``board``.
 
@@ -38,11 +38,14 @@ def challenger_cohort_prefixes(
     if not isinstance(board, Mapping):
         return {}
     out: dict[str, str] = {}
-    for spec in board.get("specs") or []:
+    # BOARD is external JSON; retain the existing mapping checks at runtime.
+    board_data = cast(Mapping[str, object], board)
+    for spec in cast(Iterable[object], board_data.get("specs") or []):
         if not isinstance(spec, Mapping):
             continue
-        name = spec.get("name")
-        if not name or spec.get("kind") == champion_kind:
+        spec_data = cast(Mapping[str, object], spec)
+        name = spec_data.get("name")
+        if not name or spec_data.get("kind") == champion_kind:
             continue
         out[str(name)] = tmpl.format(name=name)
     return out

@@ -43,6 +43,7 @@ from __future__ import annotations
 import os
 import sys
 from datetime import date, datetime
+from typing import cast
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -444,7 +445,8 @@ def _challenger_cohort_prefixes(lb_prefix: str, lb_dates: list[str], tmpl: str) 
     """
     if not lb_dates:
         return {}
-    return challenger_cohort_prefixes(load_leaderboard(lb_prefix, lb_dates[-1]), tmpl)
+    board = cast("dict[str, object] | None", load_leaderboard(lb_prefix, lb_dates[-1]))  # untyped S3 JSON
+    return challenger_cohort_prefixes(board, tmpl)
 
 
 def _render_experiment(
