@@ -59,6 +59,7 @@ const VERDICT_STYLE: Record<VerdictTone, string> = {
 const STATUS_STYLE: Record<StatusTone, string> = {
   green: 'text-emerald-300 border-emerald-600/50',
   red: 'text-rose-300 border-rose-600/50',
+  watch: 'text-amber-300 border-amber-500/40',
   na: 'text-zinc-400 border-white/15',
 };
 ---
@@ -108,9 +109,10 @@ const STATUS_STYLE: Record<StatusTone, string> = {
         champion pointers and predictions feed say. Its first v2 session,
         on {TRADER.firstSession}, placed no orders; it first placed and filled
         orders, on paper, on {TRADER.firstTradingSession}. Retiring the v1 pipelines is
-        part of the same rebuild phase. Its exit gate reads two weeks and needs
-        zero v1 pipeline runs across them, so the first reading, dated {TRADER.exitCheck},
-        cannot pass; the earliest that can is {TRADER.firstPassableExit}.
+        part of the same rebuild phase. On {TRADER.exitReading} its exit gate read
+        zero v1 pipeline runs across two weeks, but the phase is not exited: {TRADER.exitClausesMet} of
+        its {TRADER.exitClausesTotal} clauses are met, and it cannot exit ahead of the phase
+        before it, which is not met yet.
       </p>
       <p class="text-sm text-zinc-300 leading-relaxed mt-2">
         A public v2 view is not published yet, so

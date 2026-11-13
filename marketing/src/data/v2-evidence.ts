@@ -25,8 +25,8 @@ export interface Source {
 
 /** The dated public reading the "latest cycle" and "integrity" rows quote. */
 export const SNAPSHOT = {
-  tradingDay: '2026-10-30',
-  generated: '2026-10-31',
+  tradingDay: '2026-11-06',
+  generated: '2026-11-07',
   source: {
     label: 'Crucible v2 public status export (verdicts and statuses only; no figures)',
   } satisfies Source,
@@ -62,10 +62,10 @@ export const LATEST_CYCLE: { slot: string; verdict: string; tone: VerdictTone; m
   [
     {
       slot: 'R',
-      verdict: 'Decided — pointer moved',
-      tone: 'moved',
+      verdict: 'Held',
+      tone: 'held',
       meaning:
-        'A comparison ran and chose a new serving arm. Provisional: the full evidence chain behind this decision is not yet independently verified.',
+        'A comparison ran and the incumbent kept the pointer. The incumbent is the arm this slot promoted on the 2026-10-30 cycle; the full evidence chain behind that promotion is not yet independently verified.',
     },
     {
       slot: 'U',
@@ -81,14 +81,14 @@ export const LATEST_CYCLE: { slot: string; verdict: string; tone: VerdictTone; m
     },
     {
       slot: 'M',
-      verdict: 'Unmeasurable',
+      verdict: 'Unservable',
       tone: 'open',
       meaning:
-        'The cycle could not be scored, so no arm was chosen. The harness records that rather than guessing.',
+        'No arm cleared its serving preconditions, so no arm was chosen and the pointer did not move. The harness records that rather than guessing.',
     },
   ];
 
-export type StatusTone = 'green' | 'red' | 'na';
+export type StatusTone = 'green' | 'red' | 'watch' | 'na';
 
 /** Measurement-integrity layer statuses from the same snapshot. Statuses, never values. */
 export const INTEGRITY: { layer: string; status: string; tone: StatusTone }[] = [
@@ -96,7 +96,7 @@ export const INTEGRITY: { layer: string; status: string; tone: StatusTone }[] = 
   { layer: 'Signal rank-IC (R)', status: 'RED', tone: 'red' },
   { layer: 'Prediction rank-IC (M)', status: 'RED', tone: 'red' },
   { layer: 'Portfolio excess return (S)', status: 'N/A — missing input', tone: 'na' },
-  { layer: 'Execution shortfall', status: 'N/A — sample too small', tone: 'na' },
+  { layer: 'Execution shortfall', status: 'WATCH', tone: 'watch' },
 ];
 
 /** The v1 promotion record /live still renders, and its most recent decision date. */
@@ -138,7 +138,7 @@ export const ROLLOUT_SOURCE: Source = {
  * rollout box when a scheduled date passes (alpha-engine-config-I13021).
  */
 export const TRADER = {
-  asOf: '2026-11-06',
+  asOf: '2026-11-12',
   /** Phase-4 cutover: the paper trader moved onto the v2 contract. */
   cutover: '2026-10-30',
   /** The first v2 session; it placed no orders. */
@@ -148,15 +148,17 @@ export const TRADER = {
    * (paper). Read 2026-11-05 on the rebuild tracker's phase-4 audit issue.
    */
   firstTradingSession: '2026-11-04',
-  /** First dated phase-4 exit reading; v1 is decommissioned under phase 4. */
-  exitCheck: '2026-11-06',
   /**
-   * The earliest exit reading that can pass. The gate reads a two-week
-   * window and needs zero v1 weekly-pipeline runs across it; the v1
-   * pipeline last ran in the week the 11-06 reading still covers. Read
-   * 2026-11-06 on the rebuild tracker's phase-4 exit-reading issue.
+   * The phase-4 exit gate reading quoted below (v1 is decommissioned under
+   * phase 4). Read 2026-11-13 from the gate's own reading for this trading
+   * day: its v1 clause (zero v1 weekly-pipeline runs across two consecutive
+   * weeks) reads met; 6 of its 11 clauses are met; and the phase is graded
+   * while phase 3 is unmet, so it cannot exit ahead of phase 3. The clause
+   * counts match the public status export's phase ladder.
    */
-  firstPassableExit: '2026-11-09',
+  exitReading: '2026-11-12',
+  exitClausesMet: 6,
+  exitClausesTotal: 11,
 } as const;
 
 export const GATE_SOURCE: Source = {
@@ -195,8 +197,7 @@ export interface EvidenceRow {
 export const SHOWN: EvidenceRow[] = [
   {
     claim: 'It decides under rules fixed in advance.',
-    detail:
-      'On the 2026-10-30 cycle one slot moved its pointer, two kept their incumbents and one was recorded as unmeasurable. A pointer moves only when the promotion rule declared before the comparison says so.',
+    detail: `On the 2026-10-30 cycle one slot moved its pointer, two kept their incumbents and one was recorded as unmeasurable. On the ${SNAPSHOT.tradingDay} cycle three slots kept their incumbents and no Model arm cleared its serving preconditions. A pointer moves only when the promotion rule declared before the comparison says so.`,
     source: PROMOTE_SOURCE,
   },
   {
@@ -217,8 +218,7 @@ export const SHOWN: EvidenceRow[] = [
 export const NOT_SHOWN: EvidenceRow[] = [
   {
     claim: 'A performance edge.',
-    detail:
-      'Both signal-quality layers read red on the 2026-10-30 cycle. This site publishes no return, score or cost.',
+    detail: `Both signal-quality layers read red on the ${SNAPSHOT.tradingDay} cycle. This site publishes no return, score or cost.`,
     source: PUBLIC_EXPORT_SOURCE,
   },
   {
