@@ -110,7 +110,7 @@ jobs:
 
       # Strict typing, BLOCKING (alpha-engine-config-I12607). Errors recorded in
       # `.basedpyright/baseline.json` are tolerated; any new one fails. On a PR the
-      # baseline may only shrink: a count that grew for any rule means the baseline was
+      # baseline may only shrink: a count that grew for any (file, rule) pair means the baseline was
       # regenerated to absorb new errors, which is refused.
       # Missing RETURN annotations are not a pyright rule, so ruff's ANN rules run
       # over every source file the PR adds or changes: touch a file, annotate it.
@@ -125,7 +125,16 @@ jobs:
             echo "::warning::type errors were fixed but .basedpyright/baseline.json was not shrunk; run basedpyright locally and commit the smaller baseline."
             git checkout -- .basedpyright/baseline.json
           fi
-          if [ -n "${BASE_REF}" ] && git fetch --quiet --depth=1 origin "${BASE_REF}"; then
+          if [ -n "${BASE_REF}" ]; then
+            fetched=0
+            for attempt in 1 2 3; do
+              if git fetch --quiet --depth=1 origin "${BASE_REF}"; then fetched=1; break; fi
+              sleep 5
+            done
+            if [ "${fetched}" -ne 1 ]; then
+              echo "::error::could not fetch the PR base ${BASE_REF} after 3 tries; the shrink-only baseline check cannot run, so this step fails."
+              exit 1
+            fi
             mapfile -t changed < <(git diff --name-only --diff-filter=AMR FETCH_HEAD HEAD -- '*.py' ':!**/test_*.py' ':!tests/**')
             if [ "${#changed[@]}" -gt 0 ]; then
               ruff check --select ANN --ignore ANN401 "${changed[@]}"
@@ -138,11 +147,11 @@ jobs:
           import collections, json, sys
           def counts(path):
               files = json.load(open(path))["files"]
-              return collections.Counter(e["code"] for es in files.values() for e in es)
+              return collections.Counter((f, e["code"]) for f, es in files.items() for e in es)
           base, head = counts("/tmp/baseline-base.json"), counts("/tmp/baseline-head.json")
-          grown = {c: (base[c], n) for c, n in head.items() if n > base[c]}
-          for code, (b, n) in sorted(grown.items()):
-              print(f"::error::type baseline grew for {code}: {b} -> {n}. Fix the new errors instead of re-baselining.")
+          grown = {k: (base[k], n) for k, n in head.items() if n > base[k]}
+          for (path, code), (b, n) in sorted(grown.items()):
+              print(f"::error::type baseline grew for {code} in {path}: {b} -> {n}. Fix the new errors instead of re-baselining.")
           sys.exit(1 if grown else 0)
           PY
             fi
