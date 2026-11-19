@@ -19,6 +19,16 @@ import pandas as pd
 # Sources that are unambiguously autonomous fleet runs (vs interactive
 # laptop use). The groom is the canonical member; kept as a set so a new
 # autonomous source is additive without touching the helper's call sites.
+def complete_cost(values) -> float:
+    """Unknown component means unknown total, never a zero or partial total."""
+    series = pd.Series(values, dtype=float)
+    return float("nan") if series.isna().any() else float(series.sum())
+
+
+def cost_label(value: float) -> str:
+    return "unpriced" if pd.isna(value) else f"${value:,.2f}"
+
+
 AUTONOMOUS_SOURCES: frozenset[str] = frozenset({"groom"})
 
 
@@ -55,7 +65,7 @@ def source_breakdown(df_model: pd.DataFrame) -> pd.DataFrame:
         fresh = float(group["input_tokens"].sum()) if "input_tokens" in group else 0.0
         rows.append({
             "source": source,
-            "cost_usd": float(group["cost_usd"].sum()),
+            "cost_usd": complete_cost(group["cost_usd"]),
             "cache_read_pct": cache_read_pct(group),
             "wet": float(group["wet"].sum()) if "wet" in group else 0.0,
             "total_tokens": total_tokens,
@@ -71,7 +81,7 @@ def daily_cost_by_source(df_model: pd.DataFrame, sources: list[str] | None = Non
     """Per-date cost, one column per source, for a stacked/line trend chart.
 
     *sources* filters (default: all). Returns a wide frame indexed by date with
-    a column per source (0.0-filled gaps). Sorted by date ascending.
+    a column per source (missing prices remain gaps). Sorted by date ascending.
     """
     if df_model is None or df_model.empty or "date" not in df_model:
         return pd.DataFrame()
@@ -79,8 +89,7 @@ def daily_cost_by_source(df_model: pd.DataFrame, sources: list[str] | None = Non
     if d.empty:
         return pd.DataFrame()
     daily = (d.groupby(["date", "source"], as_index=False)["cost_usd"]
-             .sum()
+             .agg(complete_cost)
              .pivot(index="date", columns="source", values="cost_usd")
-             .fillna(0.0)
              .sort_index())
     return daily

@@ -36,6 +36,7 @@ import streamlit as st
 from krepis.usage_pacing import reset_window
 
 from shared.usage_regimes import usage_regime_caption
+from shared.usage_source_view import complete_cost, cost_label
 from loaders.s3_loader import load_claude_code_usage, load_usage_pacing_config
 
 # Historical pacing config (config#2043): s3://alpha-engine-research/config/usage_pacing.json
@@ -73,6 +74,10 @@ st.caption(
 )
 
 df_model, df_hour = load_claude_code_usage(n_days=35)
+if not df_model.empty and df_model["cost_usd"].isna().any():
+    st.warning("Some model responses have no exact price card. Their tokens and WET are included; "
+               "affected dollar totals are unpriced and charts contain gaps, not zero costs.")
+
 
 if df_model.empty:
     st.info(
@@ -215,13 +220,13 @@ if not df_hour.empty:
 with st.expander("Anthropic — raw tokens + notional $"):
     st.caption(usage_regime_caption(ant_week))
     daily_full = (ant_week.groupby("date", as_index=False)
-                  .agg(wet=("wet", "sum"), cost_usd=("cost_usd", "sum"),
+                  .agg(wet=("wet", "sum"), cost_usd=("cost_usd", complete_cost),
                        raw_total=("total", "sum"),
                        input=("input_tokens", "sum"), output=("output_tokens", "sum"),
                        cache_write=("cache_creation_input_tokens", "sum"),
                        cache_read=("cache_read_input_tokens", "sum"))
                   .sort_values("date", ascending=False))
-    daily_full["$ (notional)"] = daily_full["cost_usd"].map(lambda v: f"${v:,.0f}")
+    daily_full["$ (notional)"] = daily_full["cost_usd"].map(cost_label)
     st.caption("`$` is API-equivalent at recorded document pricing — a snapshot, NOT "
                "what the Max plan actually charges (it's a flat subscription). "
                "Raw tokens are ~99% cache-reads (cheap), which is why WET is the "

@@ -2534,6 +2534,7 @@ def load_claude_code_usage(n_days: int = 35) -> tuple[pd.DataFrame, pd.DataFrame
     + the 4 raw token fields; ``df_hour`` is per (date, source, hour) with WET /
     cost. WET = weighted effective tokens — the price-independent headline unit."""
     import datetime as _dt
+    from shared.usage_source_view import complete_cost
 
     bucket = _research_bucket()
     prefix = "claude_code_usage/"
@@ -2578,7 +2579,8 @@ def load_claude_code_usage(n_days: int = 35) -> tuple[pd.DataFrame, pd.DataFrame
             row = {**regime,
                    "date": date_str, "source": source, "model": model,
                    "provider": rec.get("provider", "anthropic"),   # backward compat: pre-provider docs
-                   "wet": rec.get("wet", 0), "cost_usd": rec.get("cost_usd", 0.0),
+                   "wet": rec.get("wet", 0), "cost_usd": rec.get("cost_usd"),
+                   "unpriced_responses": rec.get("unpriced_responses", int(rec.get("cost_usd") is None)),
                    "total": rec.get("total", 0)}
             for t in toks:
                 row[t] = rec.get(t, 0)
@@ -2588,7 +2590,7 @@ def load_claude_code_usage(n_days: int = 35) -> tuple[pd.DataFrame, pd.DataFrame
                 **regime,
                 "date": date_str, "source": source, "hour": int(hour),
                 "wet": sum(r.get("wet", 0) for r in models.values()),
-                "cost_usd": sum(r.get("cost_usd", 0.0) for r in models.values()),
+                "cost_usd": complete_cost([r.get("cost_usd") for r in models.values()]),
             })
     return pd.DataFrame(model_rows), pd.DataFrame(hour_rows)
 

@@ -36,6 +36,7 @@ from krepis.usage_pacing import reset_window
 from shared import cache_hit_rate
 from shared.usage_source_view import daily_cost_by_source, source_breakdown
 from shared.usage_regimes import usage_regime_caption
+from shared.usage_source_view import complete_cost, cost_label
 from loaders.s3_loader import (
     cost_archive_staleness,
     load_claude_code_usage,
@@ -68,6 +69,10 @@ _reset_anchor = (
 )
 
 df_model, _df_hour = load_claude_code_usage(n_days=35)
+if not df_model.empty and df_model["cost_usd"].isna().any():
+    st.warning("Some model responses have no exact price card. Their tokens and WET are included; "
+               "affected dollar totals are unpriced and charts contain gaps, not zero costs.")
+
 df_non_anthropic = df_model[df_model["provider"] == "non-anthropic"] if not df_model.empty else df_model
 assert isinstance(df_non_anthropic, pd.DataFrame)  # boolean-mask row selection on a DataFrame
 
@@ -80,7 +85,7 @@ else:
     na_week = df_non_anthropic[df_non_anthropic["date"] >= win_start.date().isoformat()]
     assert isinstance(na_week, pd.DataFrame)  # boolean-mask row selection on a DataFrame
     na_week_tokens = int(na_week["total"].sum()) if not na_week.empty else 0
-    na_week_cost = float(na_week["cost_usd"].sum()) if not na_week.empty else 0.0
+    na_week_cost = complete_cost(na_week["cost_usd"]) if not na_week.empty else 0.0
 
     st.caption("This week — " + usage_regime_caption(na_week))
     nc1, nc2, nc3 = st.columns(3)
@@ -88,9 +93,9 @@ else:
                help=f"Reset-aligned window start {win_start:%Y-%m-%d %H:%M} PT "
                     "(same cadence as the Plan tab's Max ceiling reset). "
                     "Non-Anthropic tokens never draw against the Max quota.")
-    nc2.metric("API cost this week", f"${na_week_cost:,.2f}",
+    nc2.metric("API cost this week", cost_label(na_week_cost),
                help="Notional API-equivalent cost at recorded document pricing. "
-                    "DeepSeek V4-Pro: $1.74/M in, $3.48/M out (non-promo, post-May-31 2026).")
+                    "Exact model and request-date pricing; unknown cards remain unpriced.")
     nc3.metric("Source", f"{na_week['source'].nunique() if not na_week.empty else 0}",
                help="Number of distinct sources contributing non-Anthropic usage.")
 
@@ -102,19 +107,19 @@ else:
     fig_na_tok.update_layout(barmode="stack", height=300, margin=dict(t=10, b=0, l=0, r=0))
     na_m1.plotly_chart(fig_na_tok, use_container_width=True)
 
-    na_model_cost = (df_non_anthropic.groupby("model", as_index=False)["cost_usd"].sum()
+    na_model_cost = (df_non_anthropic.groupby("model", as_index=False)["cost_usd"].agg(complete_cost)
                      .sort_values("cost_usd", ascending=False))
-    total_na_cost = na_model_cost["cost_usd"].sum()
+    total_na_cost = complete_cost(na_model_cost["cost_usd"])
     fig_na_pie = px.pie(na_model_cost, names="model", values="cost_usd", hole=0.5)
     fig_na_pie.update_layout(height=300, margin=dict(t=10, b=0, l=0, r=0), showlegend=True)
     na_m2.plotly_chart(fig_na_pie, use_container_width=True)
     na_m2.caption(
         f"API-equivalent cost at recorded document pricing (35-day window). "
-        f"Total tracked: **${total_na_cost:,.2f}**. "
-        f"DeepSeek V4-Pro: $1.74/M in, $3.48/M out (non-promo, post-May-31 2026)."
+        f"Total tracked: **{cost_label(total_na_cost)}**. "
+        f"Exact model and request-date pricing; unknown cards remain unpriced."
     )
 
-    na_daily_cost = (df_non_anthropic.groupby(["date", "model"], as_index=False)["cost_usd"].sum())
+    na_daily_cost = (df_non_anthropic.groupby(["date", "model"], as_index=False)["cost_usd"].agg(complete_cost))
     fig_na_cost = px.bar(na_daily_cost, x="date", y="cost_usd", color="model",
                          labels={"cost_usd": "API cost ($)", "date": ""})
     fig_na_cost.update_layout(barmode="stack", height=280, margin=dict(t=10, b=0, l=0, r=0))
@@ -139,7 +144,7 @@ else:
             st.plotly_chart(fig_src, use_container_width=True)
         # Display table: human-readable cache % + cost, autonomous sources flagged.
         disp = src_df.copy()
-        disp["cost_usd"] = disp["cost_usd"].map("${:,.2f}".format)
+        disp["cost_usd"] = disp["cost_usd"].map(cost_label)
         disp["cache_read_pct"] = disp["cache_read_pct"].map(
             lambda v: f"{v:.0f}%" if v is not None and pd.notna(v) else "—")
         disp["total_tokens"] = disp["total_tokens"].map(lambda v: f"{v/1e6:,.1f}M")

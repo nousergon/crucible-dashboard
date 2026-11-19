@@ -69,7 +69,7 @@ def test_source_breakdown_one_row_per_source_sorted_by_cost():
 
 
 def test_daily_cost_by_source_wide_pivot():
-    """One column per source, indexed by date, 0.0-filled gaps, date-sorted."""
+    """One column per source, indexed by date, unknown gaps, date-sorted."""
     df = _df([
         {"date": "2026-08-02", "source": "groom", "cost_usd": 0.03},
         {"date": "2026-08-01", "source": "groom", "cost_usd": 5.86},
@@ -79,7 +79,7 @@ def test_daily_cost_by_source_wide_pivot():
     assert list(daily.index) == ["2026-08-01", "2026-08-02"]
     assert set(daily.columns) == {"groom", "interactive"}
     assert daily.loc["2026-08-01", "groom"] == 5.86
-    assert daily.loc["2026-08-02", "interactive"] == 0.0  # gap filled
+    assert pd.isna(daily.loc["2026-08-02", "interactive"])  # no observed price
 
 
 def test_daily_cost_by_source_filters_to_named_sources():
