@@ -1,18 +1,8 @@
 name: Deploy
 
-# Auto-deploys console.nousergon.ai + nousergon.ai on every push to main.
-#
-# The streamlit services run from this repo on a single EC2 instance
-# (id in the DASHBOARD_INSTANCE_ID repo variable). They do NOT auto-restart on code-only changes —
-# boot-pull's daily 12:00-UTC timer only restarts services whose .service
-# unit files change. This workflow closes that "merged but stale" gap.
-#
-# Mechanism: GHA assumes the OIDC role, calls SSM send-command on the
-# dashboard instance, which runs infrastructure/deploy-on-merge.sh —
-# git fetch + reset to the workflow-pinned SHA, lib refresh, restart
-# both streamlit services, health-check both /_stcore/health endpoints.
-#
-# Boot-pull stays as the daily safety net for ALL repos + drift catch.
+# Deploys the public live Streamlit app and modern dashboards on pushes to main.
+# GitHub Actions runs the dashboard deploy script against the pinned SHA via SSM.
+# Boot-pull stays as the shared drift reconciliation path for all host checkouts.
 
 on:
   push:

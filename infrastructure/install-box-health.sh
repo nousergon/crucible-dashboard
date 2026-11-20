@@ -25,6 +25,40 @@ if [ ! -f "$SCRIPT_SRC" ]; then
     exit 1
 fi
 
+# Install the checker and its inputs outside the app checkout. The app
+# rollback can move that checkout backwards while host controls stay current.
+MEMORY_BUNDLE_ROOT="/usr/local/lib/box-health-memory"
+install_memory_budget_bundle() {
+    (
+        set -e
+        install -d -m 0755 "$MEMORY_BUNDLE_ROOT"
+        touch "$MEMORY_BUNDLE_ROOT/.lock"
+        chmod 0644 "$MEMORY_BUNDLE_ROOT/.lock"
+        exec 9>"$MEMORY_BUNDLE_ROOT/.lock"
+        flock -x 9
+        stage=$(mktemp -d "$MEMORY_BUNDLE_ROOT/budget.XXXXXXXX")
+        trap 'rm -rf -- "$stage"; rm -f -- "$stage.link"' EXIT
+        chmod 0755 "$stage"
+        install -d -m 0755 "$stage/systemd/resource-limits"
+        install -m 0644 "$REPO_INFRA/check_memory_budget.py" "$stage/check_memory_budget.py"
+        install -m 0644 "$REPO_INFRA/workload_pauses.py" "$stage/workload_pauses.py"
+        install -m 0644 "$REPO_INFRA/systemd/resource-limits/budget.yaml" "$stage/systemd/resource-limits/budget.yaml"
+        ln -s "$(basename "$stage")" "$stage.link"
+        # Publish the complete tree with one atomic rename. The watchdog's
+        # shared lock keeps a generation available for the life of its reader.
+        python3 -c 'import os, sys; os.replace(sys.argv[1], sys.argv[2])' \
+            "$stage.link" "$MEMORY_BUNDLE_ROOT/current"
+        trap - EXIT
+        for prior in "$MEMORY_BUNDLE_ROOT"/budget.*; do
+            [ "$prior" = "$stage" ] || rm -rf -- "$prior"
+        done
+    )
+}
+install_memory_budget_bundle
+
+# Install the parser and its shell interface before the watchdog that loads them.
+install -m 0644 "$REPO_INFRA/workload_pauses.py" /usr/local/bin/workload_pauses.py
+install -m 0644 "$REPO_INFRA/lib/workload-pause.sh" /usr/local/bin/workload-pause.sh
 install -m 0755 "$SCRIPT_SRC" "$SCRIPT_DST"
 echo "Installed $SCRIPT_DST"
 

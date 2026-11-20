@@ -238,7 +238,7 @@ def test_fallback_arrays_still_describe_the_real_box():
     change unguarded — this pins it to budget.yaml as SETS, since the fallback
     is deliberately not index-paired and nothing pairs it."""
     services = set(re.search(r"SERVICES=\(([^)]*)\)", BOX_HEALTH).group(1).split())
-    ports = set(re.search(r"PORTS=\(([^)]*)\)", BOX_HEALTH).group(1).split())
+    ports = set(re.search(r"^\s+PORTS=\(([^)]*)\)", BOX_HEALTH, re.M).group(1).split())
     services.discard("\\")  # line continuations inside the array literal
     declared_services = {s["unit"] for s in BUDGET["services"]}
     declared_ports = {
@@ -246,6 +246,11 @@ def test_fallback_arrays_still_describe_the_real_box():
     }
     assert services == declared_services
     assert ports == declared_ports
+    fallback_map = re.search(r"^    SERVICE_PORT=\((.*?)^    \)", BOX_HEALTH, re.M | re.S).group(1)
+    assert dict(re.findall(r"\[([^\]]+)\]=(\d+)", fallback_map)) == {
+        service["unit"]: str(service["port"])
+        for service in BUDGET["services"] if str(service.get("port")) != "none"
+    }
 
 
 def _bash4() -> str:

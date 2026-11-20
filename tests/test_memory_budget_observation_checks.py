@@ -879,3 +879,44 @@ class TestUncensorMeasurementWindow:
         assert "credited back" in err
         assert "650 MB" in err  # the credited sum
         assert "860 MB" in err  # the raw sum, still shown
+
+
+
+def test_paused_memory_requires_observed_inactive_unit_and_absent_cgroup(cgroup_root, monkeypatch):
+    from infrastructure.workload_pauses import WorkloadPause
+
+    unit = "parked.service"
+    sibling = "neighbor.service"
+    spec = {"services": [
+        {"unit": unit, "memory_high": "50M", "memory_max": "100M"},
+        {"unit": sibling, "memory_high": "50M", "memory_max": "100M"},
+    ]}
+    pauses = {unit: WorkloadPause(None, "example-I123", "Paused by owner")}
+    systemd = {
+        "ActiveState": "inactive", "LoadState": "loaded", "ControlGroup": "",
+        "UnitFileState": "disabled",
+    }
+    monkeypatch.setattr(cmb, "systemd_show", lambda name, prop: systemd[prop])
+
+    verified, absent, problems = cmb.observe_memory_pauses(spec, pauses)
+    assert verified == pauses
+    assert absent == set()
+    assert problems == []
+    by_unit = {row["unit"]: row for row in cmb.headroom_rows(spec, verified)}
+    parked = by_unit[unit]
+    assert parked["state"] == "declared_off"
+    assert parked["current_mb"] == parked["working_set_mb"] == 0
+    assert parked["high_mb"] == 50 and parked["max_mb"] == 100
+    assert "example-I123" in cmb._row_detail(parked)
+    assert by_unit[sibling]["state"] == "unmeasurable"
+
+    systemd["ActiveState"] = "active"
+    verified, absent, problems = cmb.observe_memory_pauses(spec, pauses)
+    assert not verified
+    assert "paused workload memory drift" in problems[0]
+
+    systemd["ActiveState"] = "inactive"
+    (cgroup_root / unit).mkdir()
+    verified, absent, problems = cmb.observe_memory_pauses(spec, pauses)
+    assert not verified
+    assert "paused workload memory drift" in problems[0]

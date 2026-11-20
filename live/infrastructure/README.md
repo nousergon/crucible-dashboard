@@ -6,4 +6,4 @@ ops migration (alpha-engine-config#636, 2026-06-11). Each was verified
 consumer-free (no workflow/test/SF-literal/box-runtime path) before
 removal. Operators: find them at `nous-ergon-ops/<this-repo>/<same-path>`.
 
-- `deploy-ec2.sh`, `setup-aws.sh`, `setup-cloudflare.sh` (one-time live-console EC2/Cloudflare provisioning; the nginx.conf + .service files they consume stay here, where the box reads them)
+- `deploy-ec2.sh`, `setup-aws.sh`, `setup-cloudflare.sh` (one-time live-console EC2/Cloudflare provisioning; the live app unit stays here with the code. The host nginx configuration is managed by box-config in nous-ergon-ops)

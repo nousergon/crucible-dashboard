@@ -6,7 +6,6 @@
 # runs low or an expected service/port is down. Quiet on success.
 #
 # Co-resident services it guards (port -> service):
-#   8501 dashboard.service        (dashboard.nousergon.ai Streamlit)
 #   5180 nousergon-console.service (console.nousergon.ai v2)
 #   8502 nous-ergon-live.service  (live.nousergon.ai)
 #   8503 mnemon (bun)             (memory.nousergon.ai)
@@ -89,9 +88,9 @@ unset _gsl
 
 ENV_FILE="/home/ec2-user/.alpha-engine.env"
 VENV_PY="/home/ec2-user/alpha-engine-dashboard/.venv/bin/python"
-BUDGET_CHECK="/home/ec2-user/alpha-engine-dashboard/infrastructure/check_memory_budget.py"
-# The info tier's console emitter. Sibling of this script, resolved the same way
-# BUDGET_CHECK is, so a relocated checkout moves both together.
+MEMORY_BUNDLE_ROOT="/usr/local/lib/box-health-memory"
+BUDGET_CHECK="$MEMORY_BUNDLE_ROOT/current/check_memory_budget.py"
+# The info tier's console emitter is installed beside this script.
 HYGIENE_EMITTER="${HYGIENE_EMITTER:-$(dirname "${BASH_SOURCE[0]}")/emit_box_health_hygiene.py}"
 
 # Load Telegram creds etc. (SNS auth comes from the instance role).
@@ -155,6 +154,23 @@ ALERT_DRAIN_PAUSE_REVIEW_DAYS=14
 # listed 5, and NEITHER covered nginx — the single ingress for all ten vhosts.
 # Six of fourteen services and seven of thirteen ports were unmonitored, and
 # the gap presented as GREEN, which is worse than presenting as broken.
+# The same validated policy feeds boot-pull, box-health and the memory checker.
+PAUSE_POLICY_READABLE=0
+for _pause_helper in "$(dirname "${BASH_SOURCE[0]}")/lib/workload-pause.sh" \
+                     "$(dirname "${BASH_SOURCE[0]}")/workload-pause.sh"; do
+    if [ -r "$_pause_helper" ]; then
+        . "$_pause_helper"
+        if load_workload_pauses; then PAUSE_POLICY_READABLE=1; fi
+        break
+    fi
+done
+unset _pause_helper
+if [ "$PAUSE_POLICY_READABLE" -eq 0 ]; then
+    # Preserve existing coverage when the helper or policy is unreadable.
+    declare -A WORKLOAD_PAUSE_PORTS=()
+    workload_is_paused() { return 1; }
+fi
+
 MANIFEST="/etc/alpha-engine/box-services.conf"
 # Declared empty BEFORE the source so a manifest rendered by an older
 # generator degrades to "no HTTP liveness, reported" rather than aborting the
@@ -173,14 +189,23 @@ else
     # than NO monitoring — but say so loudly, because partial coverage that
     # looks total is the exact failure this replaced.
     MANIFEST_OK=0
-    SERVICES=(dashboard.service nous-ergon-live.service signal.service \
+    SERVICES=(nous-ergon-live.service signal.service \
               metron-api.service metron-dash-web.service crucible-dash-api.service \
               crucible-dash-web.service litellm-proxy.service llm-egress-proxy.service \
               llm-egress-proxy-anthropic.service \
               telos-web.service vires.service mnemon.service nousergon-auth.service \
               nousergon-console.service nginx.service)
-    PORTS=(8501 8502 8503 8505 8000 3003 8506 3002 3001 8530 4100 5180 8980 8990 8971 443)
-    EXPECTED_SERVICE_COUNT=16
+    PORTS=(8502 8503 8505 8000 3003 8506 3002 3001 8530 4100 5180 8980 8990 8971 443)
+    EXPECTED_SERVICE_COUNT=15
+    SERVICE_PORT=(
+        [nous-ergon-live.service]=8502 [mnemon.service]=8503 [signal.service]=8505
+        [metron-api.service]=8000 [metron-dash-web.service]=3003
+        [crucible-dash-api.service]=8506 [crucible-dash-web.service]=3002
+        [telos-web.service]=3001 [vires.service]=8530 [nousergon-auth.service]=4100
+        [nousergon-console.service]=5180 [litellm-proxy.service]=8980
+        [llm-egress-proxy.service]=8990 [llm-egress-proxy-anthropic.service]=8971
+        [nginx.service]=443
+    )
 fi
 # Minimum MemoryHigh events in one 10-min tick before throttling is reported.
 #
@@ -2201,6 +2226,10 @@ http_liveness_problems() {
     elif [ "${MANIFEST_OK:-0}" -eq 1 ]; then
         local unit port code scheme insecure path
         for unit in "${!SERVICE_PORT[@]}"; do
+            [ "$unit" = dashboard.service ] && continue
+            if declare -F workload_is_paused >/dev/null && workload_is_paused "$unit"; then
+                continue
+            fi
             port="${SERVICE_PORT[$unit]}"
             # 443 is nginx terminating TLS with the Cloudflare origin cert,
             # which does not validate against 127.0.0.1 — -k, because this is
@@ -2593,6 +2622,68 @@ check_alert_drain_liveness() {
     fi
 }
 
+# Pause expectations are evaluated for every declared unit, including units
+# outside the in-service budget. An unreadable policy leaves the normal
+# availability checks in force.
+workload_pause_unit_problems() {
+    local unit retired
+    if [ "${PAUSE_POLICY_READABLE:-1}" -ne 1 ]; then
+        echo "workload pause policy unreadable: cannot verify declared pauses"
+    else
+        for unit in "${!WORKLOAD_PAUSE_PORTS[@]}"; do
+            workload_pause_problems "$unit" ""
+        done
+    fi
+
+    if retired=$(systemctl show dashboard.service -p ActiveState -p LoadState -p UnitFileState 2>/dev/null); then
+        if ! grep -qx 'ActiveState=inactive' <<< "$retired" \
+           || ! grep -qxE 'LoadState=(not-found|masked)' <<< "$retired"; then
+            echo "retired workload unit reappeared: dashboard.service"
+        fi
+    else
+        echo "retired workload unit state unreadable: dashboard.service"
+    fi
+}
+
+workload_port_problems() {
+    local listening=$1 unit owner port expected conflict
+    local -A paused_ports=()
+    for unit in "${!WORKLOAD_PAUSE_PORTS[@]}"; do
+        port="${WORKLOAD_PAUSE_PORTS[$unit]}"
+        expected="${SERVICE_PORT[$unit]:-}"
+        if [ -n "$expected" ] && [ "$port" != "$expected" ]; then
+            echo "paused workload port conflicts: $unit declares $port, service manifest declares $expected"
+        elif [ "$port" != "-" ]; then
+            conflict=0
+            for owner in "${!SERVICE_PORT[@]}"; do
+                if [ "$owner" != "$unit" ] && [ "${SERVICE_PORT[$owner]}" = "$port" ]; then
+                    echo "paused workload port conflicts: $unit declares $port, also assigned to $owner"
+                    conflict=1
+                fi
+            done
+            # Suppress the expected-listener check only for the same unit/port
+            # pair in both declarations. An uncatalogued unit can still drift.
+            if [ "$conflict" -eq 0 ] && [ "$port" = "$expected" ]; then
+                paused_ports["$port"]=1
+            fi
+        fi
+        if [ "$port" != "-" ] && workload_pause_has_listener "$port" "$listening"; then
+            echo "paused workload port listening: $unit ($port)"
+        fi
+    done
+
+    for port in "${PORTS[@]}"; do
+        [ "$port" = 8501 ] && continue
+        if [ -z "${paused_ports[$port]:-}" ]; then
+            awk -v port="$port" '$4 ~ (":" port "$") { found=1 } END { exit !found }' <<< "$listening" \
+                || echo "port not listening: $port"
+        fi
+    done
+    if awk '$4 ~ /:8501$/ { found=1 } END { exit !found }' <<< "$listening"; then
+        echo "retired workload port listening: dashboard.service (8501)"
+    fi
+}
+
 snapshot_problems() {
     # memory headroom
     local mem_avail_mb
@@ -2626,8 +2717,11 @@ snapshot_problems() {
     # first reboot in 53 days — alpha-engine-config-I4790).
     # Alert-only, never auto-enable — a deliberately-disabled unit (e.g.
     # a service being decommissioned) must not be silently re-enabled.
+    workload_pause_unit_problems
     local s
     for s in "${SERVICES[@]}"; do
+        [ "$s" = dashboard.service ] && continue
+        workload_is_paused "$s" && continue
         if systemctl is-active --quiet "$s"; then
             systemctl is-enabled --quiet "$s" || echo "service running but NOT enabled: $s"
         else
@@ -2655,6 +2749,8 @@ snapshot_problems() {
     # Cheap enough to be unconditional: one getent per declared service.
     local u g
     for s in "${SERVICES[@]}"; do
+        [ "$s" = dashboard.service ] && continue
+        workload_is_paused "$s" && continue
         u=$(systemctl show "$s" -p User --value 2>/dev/null)
         classify_identity "$s" User "$u" \
             "$(getent passwd "$u" >/dev/null 2>&1 && echo yes || echo no)"
@@ -2684,7 +2780,7 @@ snapshot_problems() {
     # which is the same defect this block exists to correct.
     if [ -r "$BUDGET_CHECK" ]; then
         local budget_out budget_rc
-        budget_out=$("$VENV_PY" "$BUDGET_CHECK" --installed --quiet 2>&1)
+        budget_out=$(flock -s "$MEMORY_BUNDLE_ROOT/.lock" "$VENV_PY" "$BUDGET_CHECK" --installed --quiet 2>&1)
         budget_rc=$?
         # Exit code carries the severity, because the two findings are not the
         # same event: 1 = the box is out of budget, 2 = the box is fine and
@@ -2802,6 +2898,7 @@ snapshot_problems() {
         # otherwise trip the unreadable-state guard below on every run:
         # refresh-policy-routes@.timer did exactly that in pre-merge testing.
         case "$t" in *@.timer) continue ;; esac
+        workload_is_paused "$t" && continue  # checked against its declared-off state above
         # A timer that is not enabled is deliberately parked, not broken.
         systemctl is-enabled --quiet "$t" 2>/dev/null || continue
         # One show call carries every property both checks need.
@@ -3137,7 +3234,7 @@ snapshot_problems() {
     fi
     # Match ANY bind address: Streamlit binds 127.0.0.1:850x, but mnemon (bun)
     # binds *:8503, so an address-specific pattern false-alarms on 8503.
-    local listening p
+    local listening
     listening=$("$SS_BIN" -tln 2>/dev/null)
     if [ -z "$listening" ]; then
         # Empty output from a present binary = probe failure, not 5 dead ports.
@@ -3146,9 +3243,7 @@ snapshot_problems() {
         echo "watchdog: ss probe returned no output (cannot verify ports)"
         return
     fi
-    for p in "${PORTS[@]}"; do
-        echo "$listening" | grep -qE ":$p\b" || echo "port not listening: $p"
-    done
+    workload_port_problems "$listening"
 
     http_liveness_problems
     check_alert_drain_liveness
@@ -3199,7 +3294,7 @@ fi
 # Unconditional on health, like emit_metrics above: a surface that publishes
 # only when something is wrong cannot be distinguished from one that has died.
 if [ -r "$BUDGET_CHECK" ]; then
-    "$VENV_PY" "$BUDGET_CHECK" --emit-check --quiet >/dev/null 2>&1
+    flock -s "$MEMORY_BUNDLE_ROOT/.lock" "$VENV_PY" "$BUDGET_CHECK" --emit-check --quiet >/dev/null 2>&1
     emit_check_rc=$?
     # 0, 1 and 2 are budget VERDICTS. They are already reported by the
     # --installed invocation inside snapshot_problems; treating them as failures
@@ -3378,6 +3473,9 @@ classify_problem_severity() {
         # Everything below is listed rather than left to the default so the
         # intent is on the record and the totality test can see it.
         "service down: "*) echo critical ;;
+        "paused workload "*) echo critical ;;
+        "retired workload "*) echo critical ;;
+        "workload pause policy "*) echo critical ;;
         "service not answering HTTP"*) echo critical ;;
         # alpha-engine-config-I10228: a declared health route answering
         # non-200 is the same class of finding as not answering at all — the

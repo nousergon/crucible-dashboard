@@ -11,8 +11,8 @@
 # The memory budget is nonetheless a property of the BOX, not of any one app,
 # because the invariant is about the SUM. No single app repo can enforce
 # "everything fits in RAM" — only the repo that owns the box's infrastructure
-# can, and that is this one (it already owns nginx.conf, box_health.sh,
-# boot-pull.sh, all of which are similarly cross-product).
+# can, and this repo supplies the shared box memory and health tools, including
+# box_health.sh and boot-pull.sh.
 #
 # THE TWO INVARIANTS
 # ------------------
@@ -252,104 +252,6 @@ services:
   # subset of it box_health.sh's own generator can actually consume, kept in
   # sync by hand at the two rows currently populated.
   # ── alpha-engine ────────────────────────────────────────────────────────
-  - unit: dashboard.service
-    port: 8501
-    memory_high: 420M
-    memory_max: 450M
-    memory_swap_max: 128M
-    note: >-
-      2026-10-31 (alpha-engine-config-I7445): memory_swap_max 128M added; the
-      RAM caps are unchanged. MemoryMax bounds RAM only, so this unit's
-      runaways were parking in the BOX's swap. Measured from
-      dashboard/box/service-memory (anon+swap, 5-min): normally 55 MiB, with
-      steps to 526 MiB (10-14 13:35Z, ~15.5 h), 525 MiB (10-16 13:41Z, ~1 h)
-      and 938 MiB (10-28 17:40Z to 10-29 02:50Z, ~9 h). The last put ~490 MB in
-      swap, more than twice MemoryMax, and box swap_used_percent peaked at 98.6%
-      while metron-refresh was being OOM-killed (I12814). 128M still contains
-      the two ~525 MiB episodes (450 + 128 = 578). A 938-class runaway is now
-      killed and restarted inside its own cgroup (OOMPolicy=stop,
-      Restart=always) instead of filling swap that every other unit reclaims
-      into. This is a tightening; raise it only from a measured anon+swap reading.
-
-      2026-08-16: THE SOAK ANSWERED, AND THE ANSWER IS THAT THREE OF THE FOUR
-      RAISES BELOW WERE SIZED ON THE WRONG QUANTITY. Measured on the box:
-      current 411 MiB / 420M soft (98%, peak 421, reported CENSORED) of which
-      anon was 183 MiB and reclaimable page cache 224 MiB. The working set is
-      ~183 MiB — 44% of this cap — and the pin is a Streamlit process caching
-      the files it reads until the cap reclaims them. That is the cap working,
-      not demand being suppressed, and it is why this unit re-pinned within days
-      of every raise: cache grows into whatever clearance it is given.
-      Caps NOT changed on this reading, deliberately. 420M/450M sits ~2.3x the
-      working set, the box has 49 MB of overcommit headroom left, and lowering a
-      cap to squeeze a cache is a right-sizing decision with a real cost (more
-      reclaim, slower page loads) that wants its own measurement — see
-      config-I6287. What changed is the DETECTOR: check_memory_budget.py now
-      judges a pin on anon + swap rather than on memory.current, so this unit
-      stops asking for a fourth raise it does not need.
-
-      2026-08-12: memory_high 340M -> 420M, memory_max UNCHANGED. memory.peak
-      reached 341 MiB against a 340 MiB soft cap, so the service has been pinned
-      since it last started and memory.current is a floor rather than a working
-      set — the third time this unit has censored its own reading (I5237
-      210->260, then 260->340, now this). The block below is what an uncensored
-      measurement looked like the one time we had one.
-      This raise is deliberately NOT derived from the pinned number, which is the
-      move that produced the previous two re-pins: 420M clears the observed floor
-      by ~79 MiB so the service runs un-pinned and I6287's 72h soak can measure
-      what it actually needs. memory_max stays 450M, so the box's overcommit
-      invariant is untouched (sum(memory_max) is unchanged at 4324 MB against a
-      4373 MB bound — there were only 49 MB of headroom to spend, and this
-      spends none of it) and the hard cap remains a real backstop. If the soak
-      shows the working set above ~420 MiB, the answer is a right-sizing
-      decision, not a fourth raise.
-
-      Streamlit private console. Caps raised 260M/300M -> 340M/450M on the
-      first UNCENSORED measurement of this service (2026-07-28: 248 MiB in use,
-      against a then-recorded 202). I5237 raised memory_high 210M -> 260M and
-      the service re-pinned within a day, because 202 was never the working set —
-      it was a floor read under the old cap, exactly as that issue's own note
-      predicted.
-
-      Measured from a clean restart, cap well clear of the reading:
-        t=20s   211 MiB      t=120s  231 MiB (peak 240)
-        t=20min 235 MiB idle (peak 240, zero throttle events)
-        in use  248 MiB, peak crossing 261
-      It climbs fast for ~2 minutes and then plateaus. This is NOT a leak, and
-      the growth is not the framework: nous-ergon-live.service runs the same
-      Streamlit/plotly/pandas/boto3 stack from this same repo at 58 MiB, so the
-      215 MiB cold start is application data, not imports.
-
-      The old 260M soft cap sat INSIDE the normal operating band (235 idle ->
-      261 in use), which is why throttling arrived in bursts of 26-102 per
-      10-min tick rather than continuously. 340M clears the in-use peak by ~80
-      MiB for large dataframe renders; 450M leaves a real reclaim window above
-      it. The headroom was paid for by metron-api dropping to one worker below,
-      not by loosening max_overcommit_ratio and not by resizing the instance —
-      policy E3 does not fire (MemAvailable was 1396 MiB, trigger is 250 MiB).
-
-      RESOLVED 2026-08-03 — this note previously read "STILL OUTSTANDING: the
-      console has 181 `@st.cache_data` decorators and NOT ONE sets
-      `max_entries` ... the plateau itself is not guaranteed". That has been
-      false since alpha-engine-config#5270 landed: every cached loader now goes
-      through `loaders/cache.py::cached`, which injects
-      `max_entries=DEFAULT_MAX_ENTRIES` (64, sized 2026-07-31 against a
-      measured thrash floor of ~30 and a measured byte ceiling). Verified
-      2026-08-03: 173 `@cached` call sites, and every remaining literal
-      `@st.cache_data` in the tree is inside a comment, a docstring, or a test
-      double — zero live bare decorators. The plateau IS bounded now.
-
-      Left uncorrected the note would keep arguing against a cap raise this
-      service may legitimately need, on a premise that is no longer true.
-
-      What IS still open for this service is growth over uptime, which is a
-      different claim and is measured rather than asserted: on 2026-08-03 its
-      `memory.peak` had reached 340 MiB = `memory.high` (a censored reading)
-      after several days up, then read 180 current / 217 peak twenty minutes
-      after a restart. So it climbs with uptime, not within a page render.
-      Re-measure after a multi-day soak before concluding whether 340 is the
-      right soft cap; do NOT re-cap off a fresh-restart reading, which is the
-      opposite error to capping off a pinned one.
-
   - unit: nous-ergon-live.service
     port: 8502
     memory_high: 280M

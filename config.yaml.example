@@ -1,20 +1,7 @@
-# ─────────────────────────────────────────────────────────────────────────────
-# DESCRIPTIVE / DOCUMENTATION ONLY
-#
-# Production reads the live config from config.yaml on the dashboard EC2
-# instance (gitignored, lives in ~/alpha-engine-dashboard/config.yaml on
-# the host that runs dashboard.service — the private console at
-# console.nousergon.ai). The live config is NOT in alpha-engine-config
-# (unlike most other modules) — it's per-instance state on the EC2 host.
-#
-# Edits to this .example file affect ONLY:
-#   1. New-environment bootstrap (copies this template to config.yaml), and
-#   2. Public-repo schema documentation for the dashboard config surface.
-#
-# Edits here have ZERO effect on the live dashboard. To change a runtime
-# value, SSH to the dashboard host and edit ~/alpha-engine-dashboard/
-# config.yaml directly, then restart dashboard.service.
-# ─────────────────────────────────────────────────────────────────────────────
+# Schema and local example for the root application config. The modern Dash
+# API uses this schema and obtains its production config from SSM. A local copy
+# can also run the retained private Streamlit reference. The deployed public
+# live app uses its separate live/config.yaml.
 
 s3:
   research_bucket: alpha-engine-research

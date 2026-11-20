@@ -66,6 +66,14 @@ for arg in "$@"; do
   esac
 done
 
+if [[ $VERIFY -eq 1 ]]; then
+    source "$HERE/lib/workload-pause.sh"
+    if ! load_workload_pauses; then
+        echo "REFUSING --verify: workload pause policy unreadable." >&2
+        exit 1
+    fi
+fi
+
 [[ -f "$BUDGET" ]] || { echo "missing $BUDGET" >&2; exit 1; }
 
 PY=$(command -v python3)
@@ -322,6 +330,16 @@ if [[ $VERIFY -eq 1 ]]; then
         [[ -z "$unit" ]] && continue
         if [[ $DRY_RUN -eq 1 ]]; then
             echo "would restart $unit and wait for port $port"
+            continue
+        fi
+        if workload_is_paused "$unit"; then
+            problems=$(workload_pause_problems "$unit")
+            if [[ -n "$problems" ]]; then
+                printf '%s\n' "$problems" >&2
+                FAILED=1
+            else
+                echo "  $unit: declared off, verified"
+            fi
             continue
         fi
         echo -n "  restarting $unit ... "

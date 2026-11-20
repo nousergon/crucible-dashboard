@@ -90,22 +90,11 @@ class TestStreamlitSkinRetired:
         assert "crucible-dash.service" not in units
         assert "8504" not in ports
 
-    def test_nginx_routes_dash_to_web(self):
-        # 9-D cutover (config#1973): /dash serves the Next.js surface on
-        # :3002. The Streamlit skin (:8504) that used to sit behind a
-        # one-line rollback is gone — rollback is a plain git revert now.
-        conf = (REPO_ROOT / "infrastructure" / "nginx.conf").read_text()
-        assert "location /dash" in conf
-        assert conf.index("location /dash") < conf.index("location / {"), \
-            "the /dash location must precede the catch-all live proxy"
-        dash_block = conf[conf.index("location /dash"):conf.index("location / {")]
-        assert "http://127.0.0.1:3002" in dash_block
-
 
 class TestInfraWiring:
-    def test_requirements_nginx_installer_gates_are_state_compared(self):
+    def test_requirements_and_installer_gates_are_state_compared(self):
         # config#2338: a deploy that never executes (SSM delivery failure)
-        # must not permanently skip the missed commit's requirements/nginx/
+        # must not permanently skip the missed commit's requirements and
         # installer changes. These gates used to diff `${CURRENT_SHA}~1..
         # ${CURRENT_SHA}` (a single-commit window that a missed deploy blows
         # right past); they must now state-compare the repo file against the
@@ -119,14 +108,9 @@ class TestInfraWiring:
         assert "any_file_state_stale" in script
 
         # requirements.txt: stamp-file state-compare, not a HEAD~1 diff.
-        req_block = script[script.index('REQUIREMENTS_STAMP='):script.index("# ── 2. Reload nginx")]
+        req_block = script[script.index('REQUIREMENTS_STAMP='):script.index("# ── 2b.")]
         assert 'file_state_stale "$REQUIREMENTS_STAMP" "requirements.txt"' in req_block
         assert "CURRENT_SHA}~1" not in req_block
-
-        # nginx.conf: cmp repo copy directly against the live nginx conf.
-        nginx_block = script[script.index('NGINX_CONF_REPO='):script.index("# ── 2b.")]
-        assert 'file_state_stale "$NGINX_CONF_LIVE" "$NGINX_CONF_REPO"' in nginx_block
-        assert "CURRENT_SHA}~1" not in nginx_block
 
         # §2b-2e installer gates: any_file_state_stale over explicit
         # src:dst pairs, not a `paths_changed ... ~1` commit-range gate.
@@ -226,7 +210,7 @@ class TestInfraWiring:
         # leaving all services crash-looping on the broken venv for ~25
         # minutes. A rollback path must exist and must be invoked on the
         # post-swap health-gate failure branch, not just logged about.
-        # (3 venv-backed services since config#1973 retired crucible-dash.)
+        # The public live app and Dash API share the venv.
         script = (REPO_ROOT / "infrastructure" / "deploy-on-merge.sh").read_text()
         heal_block = script[script.index("Python-parity self-heal: box venv is"):
                              script.index("# ── 1. Refresh deps")]
@@ -238,9 +222,9 @@ class TestInfraWiring:
         rollback_fn = heal_block[rollback_start:
                                   rollback_start + heal_block[rollback_start:].index("\n        }")]
         assert 'mv "$OLD_VENV_BACKUP" "$REPO_DIR/.venv"' in rollback_fn
-        assert "systemctl restart dashboard nous-ergon-live crucible-dash-api" in rollback_fn
-        assert rollback_fn.count("wait_for_health") == 3, \
-            "rollback must re-verify health on all 3 remaining services before considering itself successful"
+        assert "systemctl restart nous-ergon-live crucible-dash-api" in rollback_fn
+        assert rollback_fn.count("wait_for_health") == 2, \
+            "rollback must re-verify both Python services before reporting success"
 
         # The post-swap health-gate failure branch must actually call the
         # rollback — not just `fail` on its own, and not just mention
@@ -306,31 +290,6 @@ class TestInfraWiring:
         )
 
 
-
-    def test_nginx_overrides_streamlit_static_immutable_cache(self):
-        """Streamlit emits year-long immutable Cache-Control on /static/js/*
-        (PlotlyChart.<hash>.js class, 2026-08-02). Origin must hide that header
-        and emit a short max-age so a bad body cannot freeze for 365d.
-        """
-        conf = (REPO_ROOT / "infrastructure" / "nginx.conf").read_text()
-        # Both Streamlit vhosts carry a dedicated /static/ location.
-        assert conf.count("location /static/") >= 2
-        assert "proxy_hide_header Cache-Control" in conf
-        assert 'add_header Cache-Control "public, max-age=300" always' in conf
-        # Console block proxies static to :8501; live block to :8502.
-        # Pull the two static blocks by splitting on the location directive.
-        parts = conf.split("location /static/")
-        assert len(parts) >= 3  # preamble + >=2 blocks
-        bodies = parts[1:]
-        ports = set()
-        for body in bodies:
-            # take until next location or closing server brace-ish; just search
-            head = body[:400]
-            if "127.0.0.1:8501" in head:
-                ports.add("8501")
-            if "127.0.0.1:8502" in head:
-                ports.add("8502")
-        assert ports == {"8501", "8502"}, ports
 
     def test_deploy_purges_streamlit_static_after_requirements_install(self):
         """A requirements.txt install is the only signal the on-disk hashed
