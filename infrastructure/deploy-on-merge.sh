@@ -1,5 +1,5 @@
 #!/bin/bash
-# deploy-on-merge.sh — Refresh lib, reload nginx on conf change,
+# deploy-on-merge.sh — Refresh library dependencies,
 # restart the public live and modern dashboard services, and verify health.
 # Invoked via SSM (as root)
 # from the dashboard deploy workflow AFTER the caller has already
@@ -7,9 +7,9 @@
 #
 # The SSM command body owns the git pull (it must run before this
 # script exists at the new path); this script owns everything after:
-# pip / lib refresh, nginx config staging + reload on infrastructure/
-# nginx.conf change, systemctl restarts, and the service-specific health
+# pip / lib refresh, systemctl restarts, and the service-specific health
 # gates for the public live site and the modern dashboards.
+# The shared host nginx configuration is installed by the box-config deploy.
 #
 # Boot-pull.sh remains the daily safety-net for ALL repos. This is the
 # dashboard-specific fast-path so a PR merge becomes live in ~30s
@@ -532,50 +532,6 @@ else
     log "WARN package-version drift check skipped — no .venv/bin/python"
 fi
 
-# ── 2. Reload nginx if infrastructure/nginx.conf changed ──────────────────
-# State-compare (config#2338), not commit-range diff: the live file at
-# NGINX_CONF_LIVE IS the "installed copy" (same role as the systemd unit
-# DSTs in §3b-3d below), so we cmp the repo copy directly against it instead
-# of diffing `HEAD~1..HEAD`. A missed deploy just leaves the live file stale
-# by however many commits — this gate doesn't care, it only asks whether the
-# live file matches the repo file right now.
-# nginx.conf is the source of truth for the routing layer (server_name +
-# proxy_pass + sub_filter rules); previously a config edit required
-# manually SSH'ing in to copy + reload. Now the fast-path auto-applies it.
-#
-# Order matters: nginx step runs BEFORE the streamlit restarts so a
-# broken nginx config fails the deploy without bouncing streamlit.
-NGINX_CONF_REPO="$REPO_DIR/infrastructure/nginx.conf"
-NGINX_CONF_LIVE="/etc/nginx/conf.d/nousergon.conf"
-if [ -f "$NGINX_CONF_REPO" ]; then
-    if file_state_stale "$NGINX_CONF_LIVE" "$NGINX_CONF_REPO"; then
-        log "infrastructure/nginx.conf changed — staging + validating"
-        # Stage to a tmp file, validate via nginx -t, then atomic-rename
-        # into place. nginx -t against the staged file catches syntax
-        # errors before the live file is touched.
-        cp "$NGINX_CONF_REPO" "${NGINX_CONF_LIVE}.new" \
-            || fail "cp nginx.conf staged"
-        # nginx -t reads the entire conf.d/ tree; copy to a temp path under
-        # conf.d/ would break the check. Instead, swap atomically then
-        # validate; revert on failure.
-        cp -p "$NGINX_CONF_LIVE" "${NGINX_CONF_LIVE}.bak" 2>/dev/null || true
-        mv "${NGINX_CONF_LIVE}.new" "$NGINX_CONF_LIVE" \
-            || fail "mv nginx.conf into place"
-        if ! nginx -t 2>>"$LOG"; then
-            log "FAIL nginx -t after staging new conf — reverting"
-            if [ -f "${NGINX_CONF_LIVE}.bak" ]; then
-                mv "${NGINX_CONF_LIVE}.bak" "$NGINX_CONF_LIVE" \
-                    || log "WARN nginx.conf revert mv failed"
-                nginx -t >>"$LOG" 2>&1 || log "WARN nginx -t still failing after revert"
-            fi
-            fail "nginx -t (new conf rejected)"
-        fi
-        rm -f "${NGINX_CONF_LIVE}.bak"
-        systemctl reload nginx 2>>"$LOG" || fail "systemctl reload nginx"
-        log "reloaded nginx with updated nousergon.conf"
-    fi
-fi
-
 # ── 2b. Re-install morning-signal watchdog if its wrapper/units changed ────
 # The freshness watchdog is a /usr/local/bin wrapper + systemd units installed
 # OUT of the repo tree by install-morning-signal-watchdog.sh. Unlike the
@@ -687,6 +643,7 @@ systemctl daemon-reload >>"$LOG" 2>&1 || fail "daemon-reload after morning-signa
 # copies (including the journald drop-in, which install-box-health.sh itself
 # already state-compares internally before restarting journald).
 BOX_HEALTH_INFRA="$REPO_DIR/infrastructure"
+MEMORY_BUNDLE_LIVE="/usr/local/lib/box-health-memory/current"
 
 # The manifest is DERIVED from budget.yaml, so no src:dst file pair can see it
 # go stale: a change that only edits budget.yaml (a new service, a port, a
@@ -733,6 +690,9 @@ if manifest_stale || any_file_state_stale \
     "$BOX_HEALTH_INFRA/alert_py.sh:/usr/local/bin/alert_py.sh" \
     "$BOX_HEALTH_INFRA/lib/workload-pause.sh:/usr/local/bin/workload-pause.sh" \
     "$BOX_HEALTH_INFRA/workload_pauses.py:/usr/local/bin/workload_pauses.py" \
+    "$BOX_HEALTH_INFRA/check_memory_budget.py:$MEMORY_BUNDLE_LIVE/check_memory_budget.py" \
+    "$BOX_HEALTH_INFRA/workload_pauses.py:$MEMORY_BUNDLE_LIVE/workload_pauses.py" \
+    "$BOX_HEALTH_INFRA/systemd/resource-limits/budget.yaml:$MEMORY_BUNDLE_LIVE/systemd/resource-limits/budget.yaml" \
     "$BOX_HEALTH_INFRA/emit_box_health_hygiene.py:/usr/local/bin/emit_box_health_hygiene.py" \
     "$BOX_HEALTH_INFRA/systemd/box-health.service:/etc/systemd/system/box-health.service" \
     "$BOX_HEALTH_INFRA/systemd/box-health.timer:/etc/systemd/system/box-health.timer" \
@@ -960,7 +920,7 @@ log "restarted nous-ergon-live.service"
 # ── 3b. Crucible /dash Streamlit skin (config#1957) — RETIRED (config#1973) ──
 # The Streamlit skin was kept running on :8504 only as the 9-D cutover's
 # one-line-rollback safety net (nginx /dash routed to :3002 the Next.js
-# surface from 2026-07-08; see infrastructure/nginx.conf). It was never
+# surface from 2026-07-08). It was never
 # reverted to during the soak week (~2026-07-15) and the repo's
 # infrastructure/crucible-dash.service source is now gone (dash/ removed
 # alongside it) — teardown here mirrors the self-provision idempotency of

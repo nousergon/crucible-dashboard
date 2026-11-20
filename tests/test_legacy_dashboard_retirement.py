@@ -2,6 +2,8 @@
 
 from pathlib import Path
 import re
+import shutil
+import sys
 import subprocess
 
 import pytest
@@ -25,13 +27,12 @@ def test_deploy_paths_do_not_activate_or_probe_legacy_streamlit(script):
     assert "nous-ergon-live" in source
 
 
-def test_legacy_hostname_redirects_to_console():
-    nginx = (INFRA / "nginx.conf").read_text()
-    legacy = nginx.split("server_name dashboard.nousergon.ai;", 1)[1].split("\nserver {", 1)[0]
-    assert "return 302 https://console.nousergon.ai/;" in legacy
-    assert "proxy_pass" not in legacy
-    assert "127.0.0.1:8502" in nginx
+def test_legacy_source_remains_and_dashboard_deploy_leaves_ingress_to_box_config():
     assert (INFRA.parent / "app.py").is_file()
+    assert not (INFRA / "nginx.conf").exists()
+    assert not (INFRA.parent / "live" / "infrastructure" / "nginx.conf").exists()
+    for script in (DEPLOY, BOOT):
+        assert "/etc/nginx/conf.d/" not in script.read_text()
 
 
 def test_retirement_disables_and_masks_only_legacy_unit(tmp_path):
@@ -137,3 +138,89 @@ def test_boot_pull_keeps_both_active_apps_configured():
     assert 'if [ "$API_CONFIG_CHANGED" -eq 1 ]; then' in source
     assert "restart_managed_service crucible-dash-api.service" in source
     assert "restart_managed_service nous-ergon-live.service" in source
+
+
+
+@pytest.mark.parametrize("state", ["installed", "absent", "unguarded"])
+def test_installed_memory_watchdog_reads_its_bundle_after_app_rollback(tmp_path, state):
+    checkout = tmp_path / "checkout" / "infrastructure"
+    budget = checkout / "systemd" / "resource-limits" / "budget.yaml"
+    budget.parent.mkdir(parents=True)
+    budget.write_text(
+        "ram_mb: 2000\nreserve_fraction: 0.15\nmax_overcommit_ratio: 2.0\n"
+        "max_steady_state_fraction: 0.60\nservices:\n"
+        "  - unit: parked.service\n    memory_high: 100M\n    memory_max: 150M\n"
+    )
+    for name in ("workload_pauses.py", "check_memory_budget.py"):
+        shutil.copy(INFRA / name, checkout / name)
+    bundle = tmp_path / "installed"
+    installer = _function(INFRA / "install-box-health.sh", "install_memory_budget_bundle")
+    subprocess.run(
+        ["bash", "-c", installer + '\nREPO_INFRA="$1"\nMEMORY_BUNDLE_ROOT="$2"\n'
+         "install_memory_budget_bundle", "test", str(checkout), str(bundle)],
+        check=True, text=True, capture_output=True,
+    )
+
+    # The revert restores the old application tree without reinstalling host
+    # controls. That tree cannot validate the currently installed host units.
+    (checkout / "dashboard.service").touch()
+    (checkout / "workload_pauses.py").unlink()
+    (checkout / "check_memory_budget.py").write_text("raise SystemExit(99)\n")
+    budget.write_text(budget.read_text().replace("parked.service", "dashboard.service"))
+
+    pause_file = tmp_path / "pauses.tsv"
+    pause_file.write_text("parked.service\t-\ttest-ref\ttest pause\n")
+    cgroups = tmp_path / "cgroups"
+    cgroups.mkdir()
+    watchdog = (INFRA / "box_health.sh").read_text()
+    target = re.search(r'^BUDGET_CHECK="(.+)"$', watchdog, re.M)
+    assert target
+    if state == "absent":
+        guard = tmp_path / "parked.service.d" / "90-workload-pause.conf"
+        guard.parent.mkdir()
+        guard.write_text(f"[Unit]\nConditionPathExists=!{guard}\n")
+    checker = target[1].replace("$MEMORY_BUNDLE_ROOT", str(bundle))
+    observation = """
+import importlib
+import os
+import sys
+import types
+from pathlib import Path
+
+checker, fixture = map(Path, sys.argv[1:3])
+state = sys.argv[3]
+package = types.ModuleType("infrastructure")
+package.__path__ = [str(checker.parent)]
+sys.modules[package.__name__] = package
+budget = importlib.import_module("infrastructure." + checker.stem)
+pauses = importlib.import_module("infrastructure.workload_pauses")
+
+unit = "parked.service"
+properties = {"ActiveState": "inactive", "ControlGroup": ""}
+if state == "installed":
+    properties.update(LoadState="loaded", UnitFileState="disabled", MemoryMax="150M", MemoryHigh="100M")
+else:
+    properties.update(LoadState="not-found", UnitFileState="")
+    if state == "unguarded":
+        properties.update(MemoryMax="infinity", MemoryHigh="infinity", ActiveEnterTimestampMonotonic="0")
+budget._CGROUP_ROOT = fixture / "cgroups"
+budget._DROPIN_ROOT = fixture / "dropins"
+budget._PEAK_MARKS = fixture / "peaks.json"
+budget.systemd_show = lambda name, prop: properties[prop] if unit == name else None
+budget.ram_mb_from_proc = lambda: 2000
+budget.verify_pause_guard = lambda unit: pauses.verify_pause_guard(
+    unit, root=fixture, expected_uid=os.getuid()
+)
+budget.load_workload_pauses = lambda: pauses.load_workload_pauses(
+    fixture / "pauses.tsv", expected_uid=os.getuid(), required=True
+)
+sys.argv = [str(checker), "--installed", "--quiet"]
+raise SystemExit(budget.main())
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", observation, checker, str(tmp_path), state],
+        cwd=checkout.parent, text=True, capture_output=True,
+    )
+    assert result.returncode == (1 if state == "unguarded" else 0), result.stdout + result.stderr
+    if state == "unguarded":
+        assert "paused workload memory unreadable" in result.stderr

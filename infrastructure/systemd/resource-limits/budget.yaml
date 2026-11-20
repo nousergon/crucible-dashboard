@@ -11,8 +11,8 @@
 # The memory budget is nonetheless a property of the BOX, not of any one app,
 # because the invariant is about the SUM. No single app repo can enforce
 # "everything fits in RAM" — only the repo that owns the box's infrastructure
-# can, and that is this one (it already owns nginx.conf, box_health.sh,
-# boot-pull.sh, all of which are similarly cross-product).
+# can, and this repo supplies the shared box memory and health tools, including
+# box_health.sh and boot-pull.sh.
 #
 # THE TWO INVARIANTS
 # ------------------

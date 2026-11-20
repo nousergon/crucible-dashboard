@@ -37,20 +37,25 @@ workload_pause_has_listener() {
 
 workload_pause_problems() {
     [ "$#" -ge 1 ] && [ "$#" -le 2 ] || return 2
-    local unit=$1 state active load enabled line port listening
+    local unit=$1 state active load enabled cgroup line port listening
     workload_is_paused "$unit" || return 2
-    if state=$(systemctl show "$unit" -p ActiveState -p LoadState -p UnitFileState 2>/dev/null); then
-        active=""; load=""; enabled=""
+    if state=$(systemctl show --all "$unit" -p ActiveState -p LoadState -p UnitFileState -p ControlGroup 2>/dev/null); then
+        active=""; load=""; enabled="unknown"; cgroup="unknown"
         while IFS= read -r line; do
             case "$line" in
                 ActiveState=*) active=${line#ActiveState=} ;;
                 LoadState=*) load=${line#LoadState=} ;;
                 UnitFileState=*) enabled=${line#UnitFileState=} ;;
+                ControlGroup=*) cgroup=${line#ControlGroup=} ;;
             esac
         done <<< "$state"
         case "$load:$active:$enabled:$unit" in
             loaded:inactive:disabled:*|masked:inactive:masked:*|loaded:inactive:masked:*|\
             loaded:inactive:static:*.service|loaded:inactive:indirect:*.service) ;;
+            not-found:inactive::*)
+                if [[ -n "$cgroup" ]] || ! workload_pause_records --verify-absent-unit "$unit"; then
+                    echo "paused workload unit drift: $unit (missing unit with unverified start guard or cgroup)"
+                fi ;;
             *) echo "paused workload unit drift: $unit (load=${load:-unknown}, active=${active:-unknown}, enablement=${enabled:-unknown})" ;;
         esac
     else

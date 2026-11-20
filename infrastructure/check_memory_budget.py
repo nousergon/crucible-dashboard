@@ -75,11 +75,17 @@ import os
 import pathlib
 import subprocess
 import sys
+from collections.abc import Mapping
+from typing import TypedDict, cast
 
 if __name__ == "__main__" and not __package__:
-    from workload_pauses import WorkloadPause, load_workload_pauses
+    from workload_pauses import (
+        WorkloadPause, load_workload_pauses, verify_pause_guard, workload_cgroup_exists,
+    )
 else:
-    from infrastructure.workload_pauses import WorkloadPause, load_workload_pauses
+    from infrastructure.workload_pauses import (
+        WorkloadPause, load_workload_pauses, verify_pause_guard, workload_cgroup_exists,
+    )
 
 try:
     import yaml
@@ -134,6 +140,39 @@ _THROTTLE_STATE = pathlib.Path(
 # during a deploy restart is normal and self-corrects; the at-rest rate on this
 # box is zero, so 10 inside one tick is unambiguously a burst.
 THROTTLE_DELTA_MIN = 10
+
+
+class BudgetedUnit(TypedDict):
+    unit: str
+    memory_high: str
+    memory_max: str
+
+
+class _ObservationOptions(TypedDict, total=False):
+    timer_jobs: list[BudgetedUnit] | None
+    headroom_warn_fraction: float | str
+
+
+class ObservationSpec(_ObservationOptions):
+    services: list[BudgetedUnit]
+
+
+class _HeadroomDetails(TypedDict, total=False):
+    used_fraction: float
+    provenance: str
+    reason: str
+
+
+class HeadroomRow(_HeadroomDetails):
+    unit: str
+    current_mb: int | None
+    working_set_mb: int | None
+    high_mb: int | None
+    max_mb: int | None
+    peak_mb: int | None
+    throttle_delta: int | None
+    censored: bool
+    state: str
 
 
 def parse_bytes(value: str) -> int:
@@ -228,7 +267,7 @@ def non_reclaimable_bytes(unit: str) -> int | None:
     return anon + swap
 
 
-def warn_fraction_of(spec: dict) -> float:
+def warn_fraction_of(spec: Mapping[str, object]) -> float:
     """budget.yaml's `headroom_warn_fraction`, read in one place.
 
     Two call sites need it — the console rows and the censored-reading
@@ -236,7 +275,7 @@ def warn_fraction_of(spec: dict) -> float:
     file removed when it deleted `observed_mb`: a declared value copied into
     code, free to diverge from the declaration silently.
     """
-    return float(spec.get("headroom_warn_fraction", 0.90))
+    return float(cast("float | str", spec.get("headroom_warn_fraction", 0.90)))
 
 
 def censored_observation(unit: str, warn_fraction: float) -> str | None:
@@ -919,7 +958,7 @@ def collect_proposals(spec: dict) -> dict:
             uptime_days=unit_uptime_days(svc["unit"]),
             mark=marks.get(svc["unit"]),
             working_set=non_reclaimable_bytes(svc["unit"]),
-            warn_fraction=warn_fraction_of(spec),
+            warn_fraction=warn_fraction_of(cast("ObservationSpec", spec)),
         )
         for svc in spec["services"]
     ]
@@ -1105,10 +1144,11 @@ def throttle_baseline() -> dict[str, int]:
 
 
 def observe_memory_pauses(
-    spec: dict, pauses: dict[str, WorkloadPause]
-) -> tuple[dict[str, WorkloadPause], list[str]]:
+    spec: ObservationSpec, pauses: dict[str, WorkloadPause]
+) -> tuple[dict[str, WorkloadPause], set[str], list[str]]:
     """Credit zero memory only when systemd and the cgroup tree agree."""
     verified: dict[str, WorkloadPause] = {}
+    absent: set[str] = set()
     problems: list[str] = []
     for svc in [*spec["services"], *(spec.get("timer_jobs") or [])]:
         unit = svc["unit"]
@@ -1119,17 +1159,13 @@ def observe_memory_pauses(
             load = systemd_show(unit, "LoadState")
             control_group = systemd_show(unit, "ControlGroup")
             enablement = systemd_show(unit, "UnitFileState")
-            # A missing cgroup tree also looks like a nonexistent unit path.
-            # Verify the parent exists before interpreting the child's ENOENT.
-            if not _CGROUP_ROOT.is_dir():
-                raise RuntimeError(f"cgroup directory unavailable: {_CGROUP_ROOT}")
-            try:
-                (_CGROUP_ROOT / unit).stat()
-            except FileNotFoundError:
-                cgroup_present = False
-            else:
-                cgroup_present = True
-        except (OSError, RuntimeError) as exc:
+            cgroup_present = workload_cgroup_exists(unit, _CGROUP_ROOT)
+            if (load, active, enablement, control_group, cgroup_present) == ("not-found", "inactive", "", "", False):
+                verify_pause_guard(unit)
+                absent.add(unit)
+                verified[unit] = pauses[unit]
+                continue
+        except (OSError, RuntimeError, ValueError) as exc:
             problems.append(f"paused workload memory unreadable: {unit}: {exc}")
             continue
         if (
@@ -1145,10 +1181,10 @@ def observe_memory_pauses(
             )
         else:
             verified[unit] = pauses[unit]
-    return verified, problems
+    return verified, absent, problems
 
 
-def _paused_headroom_row(svc: dict, pause: WorkloadPause) -> dict:
+def _paused_headroom_row(svc: BudgetedUnit, pause: WorkloadPause) -> HeadroomRow:
     return {
         "unit": svc["unit"],
         "current_mb": 0,
@@ -1164,7 +1200,9 @@ def _paused_headroom_row(svc: dict, pause: WorkloadPause) -> dict:
     }
 
 
-def headroom_rows(spec: dict, pauses: dict[str, WorkloadPause] | None = None) -> list[dict]:
+def headroom_rows(
+    spec: ObservationSpec, pauses: dict[str, WorkloadPause] | None = None
+) -> list[HeadroomRow]:
     """One row per unit in budget.yaml, for the console.
 
     POPULATION IS budget.yaml, NEVER A LIST MAINTAINED HERE. observability-
@@ -1179,7 +1217,7 @@ def headroom_rows(spec: dict, pauses: dict[str, WorkloadPause] | None = None) ->
     """
     warn_fraction = warn_fraction_of(spec)
     baseline = throttle_baseline()
-    rows: list[dict] = []
+    rows: list[HeadroomRow] = []
 
     for svc in spec["services"]:
         unit = svc["unit"]
@@ -1202,7 +1240,7 @@ def headroom_rows(spec: dict, pauses: dict[str, WorkloadPause] | None = None) ->
         if events is not None and prev is not None and events >= prev:
             delta = events - prev
 
-        row = {
+        row: HeadroomRow = {
             "unit": unit,
             "current_mb": None if current is None else current // 1024**2,
             "high_mb": None if high in (None, sys.maxsize) else high // 1024**2,
@@ -1225,7 +1263,7 @@ def headroom_rows(spec: dict, pauses: dict[str, WorkloadPause] | None = None) ->
             # box_health.sh's service check, which owns that question -- this
             # row says only that headroom is unmeasurable here.
             row["state"] = "unmeasurable"
-        elif row["high_mb"] is None:
+        elif high is None or high == sys.maxsize:
             # No soft limit at all: no reclaim window before the hard cap. The
             # aggregate check already treats this as a breach; the row has to
             # agree rather than render a comfortable-looking percentage.
@@ -1251,12 +1289,12 @@ def headroom_rows(spec: dict, pauses: dict[str, WorkloadPause] | None = None) ->
     return rows
 
 
-def _row_detail(row: dict) -> str:
+def _row_detail(row: HeadroomRow) -> str:
     """The one line an operator reads on the console row."""
     if row["state"] == "declared_off":
         return (
             f"declared off, observed 0 MiB, retained cap {row['max_mb']} MiB "
-            f"({row['provenance']}, {row['reason']})"
+            f"({row.get('provenance')}, {row.get('reason')})"
         )
     if row["state"] == "unmeasurable":
         return "no cgroup -- not running, or the unit is gone (see the service check)"
@@ -1285,11 +1323,12 @@ def _row_detail(row: dict) -> str:
     # row would otherwise be read as demand. dashboard.service, 2026-08-16:
     # 411/420 MiB soft (98%) of which 183 MiB was working set.
     ws = row.get("working_set_mb")
+    current = row["current_mb"]
     if (
         ws is not None
-        and row["current_mb"]
+        and current
         and row.get("used_fraction", 0) >= 0.90
-        and ws < 0.75 * row["current_mb"]
+        and ws < 0.75 * current
     ):
         parts.append(
             f"working set {ws} MiB -- the rest is reclaimable page cache, "
@@ -1313,7 +1352,7 @@ _STATE_STATUS = {
 }
 
 
-def emit_headroom_check(spec: dict, breaches: list[str], hygiene: list[str],
+def emit_headroom_check(spec: ObservationSpec, breaches: list[str], hygiene: list[str],
                         *, dry_run: bool = False,
                         pauses: dict[str, WorkloadPause] | None = None) -> str | None:
     """Publish the fleet-check envelope the console discovers by S3 prefix.
@@ -1371,8 +1410,8 @@ def emit_headroom_check(spec: dict, breaches: list[str], hygiene: list[str],
     measured = [r for r in rows if r.get("used_fraction") is not None]
     throttled = [r for r in rows if (r["throttle_delta"] or 0) >= THROTTLE_DELTA_MIN]
     if measured:
-        worst = max(measured, key=lambda r: r["used_fraction"])
-        summary = (f"{worst['unit']} at {worst['used_fraction'] * 100:.0f}% of its "
+        worst = max(measured, key=lambda r: r.get("used_fraction", 0.0))
+        summary = (f"{worst['unit']} at {worst.get('used_fraction', 0.0) * 100:.0f}% of its "
                    f"soft cap ({worst['current_mb']}/{worst['high_mb']} MiB); "
                    f"{len(throttled)} unit(s) throttling this tick")
     else:
@@ -1637,13 +1676,14 @@ def main() -> int:
     breaches: list[str] = []
     hygiene: list[str] = []
     verified_pauses: dict[str, WorkloadPause] = {}
+    absent_pauses: set[str] = set()
     if installed:
         try:
             pauses = load_workload_pauses()
         except (OSError, ValueError) as exc:
             breaches.append(f"workload pause policy unreadable: {exc}")
         else:
-            verified_pauses, pause_problems = observe_memory_pauses(spec, pauses)
+            verified_pauses, absent_pauses, pause_problems = observe_memory_pauses(spec, pauses)
             breaches.extend(pause_problems)
 
     # In --installed mode the real RAM is authoritative: it catches a resize
@@ -1683,7 +1723,9 @@ def main() -> int:
         unit = svc["unit"]
         want = parse_bytes(svc["memory_max"])
 
-        if installed:
+        # An uninstalled, verified paused unit has no loaded cap to compare.
+        # Its declared cap still counts against the aggregate budget.
+        if installed and unit not in absent_pauses:
             try:
                 have = parse_bytes(systemd_show(unit, "MemoryMax"))
                 have_high = parse_bytes(systemd_show(unit, "MemoryHigh"))
@@ -1780,6 +1822,8 @@ def main() -> int:
         # excluded from the SUM below, not from verification.
         for job in timer_jobs:
             unit = job["unit"]
+            if unit in absent_pauses:
+                continue
             try:
                 have = parse_bytes(systemd_show(unit, "MemoryMax"))
                 have_high = parse_bytes(systemd_show(unit, "MemoryHigh"))

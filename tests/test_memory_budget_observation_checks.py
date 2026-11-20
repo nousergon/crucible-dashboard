@@ -898,8 +898,9 @@ def test_paused_memory_requires_observed_inactive_unit_and_absent_cgroup(cgroup_
     }
     monkeypatch.setattr(cmb, "systemd_show", lambda name, prop: systemd[prop])
 
-    verified, problems = cmb.observe_memory_pauses(spec, pauses)
+    verified, absent, problems = cmb.observe_memory_pauses(spec, pauses)
     assert verified == pauses
+    assert absent == set()
     assert problems == []
     by_unit = {row["unit"]: row for row in cmb.headroom_rows(spec, verified)}
     parked = by_unit[unit]
@@ -910,12 +911,12 @@ def test_paused_memory_requires_observed_inactive_unit_and_absent_cgroup(cgroup_
     assert by_unit[sibling]["state"] == "unmeasurable"
 
     systemd["ActiveState"] = "active"
-    verified, problems = cmb.observe_memory_pauses(spec, pauses)
+    verified, absent, problems = cmb.observe_memory_pauses(spec, pauses)
     assert not verified
     assert "paused workload memory drift" in problems[0]
 
     systemd["ActiveState"] = "inactive"
     (cgroup_root / unit).mkdir()
-    verified, problems = cmb.observe_memory_pauses(spec, pauses)
+    verified, absent, problems = cmb.observe_memory_pauses(spec, pauses)
     assert not verified
     assert "paused workload memory drift" in problems[0]

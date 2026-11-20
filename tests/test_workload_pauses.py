@@ -151,3 +151,47 @@ def test_box_health_detects_paused_unit_and_port_drift():
     assert "port not listening: 3005" in drift
     assert "paused workload port conflicts" in mismatch
     assert "port not listening: 3005" in mismatch
+
+
+
+@pytest.mark.parametrize("guard_status", [0, 2])
+def test_absent_paused_workload_requires_a_verified_start_guard_and_cgroup(guard_status):
+    bash = "/opt/homebrew/bin/bash" if Path("/opt/homebrew/bin/bash").exists() else "bash"
+    script = r"""
+        set -euo pipefail
+        source "$1"
+        WORKLOAD_PAUSE_PORTS=([example-web.service]=3004)
+        systemctl() {
+            printf '%s\n' ActiveState=inactive LoadState=not-found UnitFileState= ControlGroup=
+        }
+        workload_pause_records() {
+            [[ "$*" == "--verify-absent-unit example-web.service" ]] || return 1
+            return "$GUARD_STATUS"
+        }
+        GUARD_STATUS=$2
+        workload_pause_problems example-web.service ""
+    """
+    result = subprocess.run(
+        [bash, "-c", script, "_", str(INFRA / "lib" / "workload-pause.sh"), str(guard_status)],
+        capture_output=True, text=True, check=True,
+    )
+    if guard_status == 0:
+        assert result.stdout == ""
+    else:
+        assert "missing unit with unverified start guard or cgroup" in result.stdout
+
+
+def test_paused_guard_requires_exact_content_and_protected_file(tmp_path):
+    from infrastructure.workload_pauses import verify_pause_guard
+
+    guard = tmp_path / f"{UNIT}.d" / "90-workload-pause.conf"
+    guard.parent.mkdir()
+    guard.write_text(f"[Unit]\nConditionPathExists=!{guard}\n")
+    verify_pause_guard(UNIT, root=tmp_path, expected_uid=os.getuid())
+    guard.chmod(0o666)
+    with pytest.raises(ValueError, match="protected"):
+        verify_pause_guard(UNIT, root=tmp_path, expected_uid=os.getuid())
+    guard.chmod(0o644)
+    guard.write_text("[Unit]\n")
+    with pytest.raises(ValueError, match="start-blocking"):
+        verify_pause_guard(UNIT, root=tmp_path, expected_uid=os.getuid())

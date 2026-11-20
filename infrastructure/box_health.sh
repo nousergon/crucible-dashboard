@@ -88,9 +88,9 @@ unset _gsl
 
 ENV_FILE="/home/ec2-user/.alpha-engine.env"
 VENV_PY="/home/ec2-user/alpha-engine-dashboard/.venv/bin/python"
-BUDGET_CHECK="/home/ec2-user/alpha-engine-dashboard/infrastructure/check_memory_budget.py"
-# The info tier's console emitter. Sibling of this script, resolved the same way
-# BUDGET_CHECK is, so a relocated checkout moves both together.
+MEMORY_BUNDLE_ROOT="/usr/local/lib/box-health-memory"
+BUDGET_CHECK="$MEMORY_BUNDLE_ROOT/current/check_memory_budget.py"
+# The info tier's console emitter is installed beside this script.
 HYGIENE_EMITTER="${HYGIENE_EMITTER:-$(dirname "${BASH_SOURCE[0]}")/emit_box_health_hygiene.py}"
 
 # Load Telegram creds etc. (SNS auth comes from the instance role).
@@ -2780,7 +2780,7 @@ snapshot_problems() {
     # which is the same defect this block exists to correct.
     if [ -r "$BUDGET_CHECK" ]; then
         local budget_out budget_rc
-        budget_out=$("$VENV_PY" "$BUDGET_CHECK" --installed --quiet 2>&1)
+        budget_out=$(flock -s "$MEMORY_BUNDLE_ROOT/.lock" "$VENV_PY" "$BUDGET_CHECK" --installed --quiet 2>&1)
         budget_rc=$?
         # Exit code carries the severity, because the two findings are not the
         # same event: 1 = the box is out of budget, 2 = the box is fine and
@@ -3294,7 +3294,7 @@ fi
 # Unconditional on health, like emit_metrics above: a surface that publishes
 # only when something is wrong cannot be distinguished from one that has died.
 if [ -r "$BUDGET_CHECK" ]; then
-    "$VENV_PY" "$BUDGET_CHECK" --emit-check --quiet >/dev/null 2>&1
+    flock -s "$MEMORY_BUNDLE_ROOT/.lock" "$VENV_PY" "$BUDGET_CHECK" --emit-check --quiet >/dev/null 2>&1
     emit_check_rc=$?
     # 0, 1 and 2 are budget VERDICTS. They are already reported by the
     # --installed invocation inside snapshot_problems; treating them as failures
