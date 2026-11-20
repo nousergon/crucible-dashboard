@@ -523,12 +523,9 @@ for repo in "${REPOS[@]}"; do
     fi
 done
 
-# ── Hydrate gitignored config files from SSM Parameter Store ───────────────
-# The canonical source of truth for the dashboard's two config.yaml files
-# is AWS SSM (since 2026-05-21). Boot-pull fetches them on every run so
-# a fresh EC2 + cloned repo + boot-pull = fully self-bootstrapping; the
-# repo is git-only, no orphaned local files needed for the Streamlit apps
-# to start.
+# ── Hydrate the deployed apps' gitignored configs from SSM ────────────────
+# Dash API imports the root loaders, which read the root config at import.
+# The public live Streamlit app has its own config and working directory.
 #
 # Fail-loud (per ~/Development/CLAUDE.md item 3): missing or empty
 # parameters MUST hard-fail; never let Streamlit start with a stale or
@@ -566,16 +563,50 @@ fetch_config_from_ssm() {
 CONFIGS_CHANGED=0
 if ! fetch_config_from_ssm /alpha-engine/dashboard/config.yaml \
         /home/ec2-user/alpha-engine-dashboard/config.yaml; then
-    log "FAIL boot-pull aborting — could not fetch /alpha-engine/dashboard/config.yaml"
+    log "FAIL boot-pull — could not fetch Dash API config from SSM"
     PULL_FAILURES=$((PULL_FAILURES + 1))
     FAILED_REPOS+=("ssm:config.yaml")
 fi
+API_CONFIG_CHANGED=$CONFIGS_CHANGED
+CONFIGS_CHANGED=0
 if ! fetch_config_from_ssm /alpha-engine/dashboard/live-config.yaml \
         /home/ec2-user/alpha-engine-dashboard/live/config.yaml; then
     log "FAIL boot-pull aborting — could not fetch /alpha-engine/dashboard/live-config.yaml"
     PULL_FAILURES=$((PULL_FAILURES + 1))
     FAILED_REPOS+=("ssm:live-config.yaml")
 fi
+
+# Read the helper after the checkout sync. The launcher can run an
+# origin/main snapshot ahead of the installed checkout on the first deploy.
+PAUSE_HELPER=/home/ec2-user/alpha-engine-dashboard/infrastructure/lib/workload-pause.sh
+[ -r "$PAUSE_HELPER" ] || PAUSE_HELPER=/usr/local/bin/workload-pause.sh
+if ! . "$PAUSE_HELPER" || ! load_workload_pauses; then
+    log "FAIL cannot validate workload pauses before systemd reconciliation"
+    echo "boot-pull: cannot validate workload pauses" >&2
+    exit 1
+fi
+
+restart_managed_service() {
+    local unit="$1"
+    if workload_is_paused "$unit"; then
+        local problems
+        if ! problems=$(workload_pause_problems "$unit" 2>>"$LOG"); then
+            log "FAIL cannot verify declared pause — $unit"
+        elif [ -n "$problems" ]; then
+            log "FAIL pause verification — $problems"
+        else
+            log "OK   declared pause verified — $unit"
+            return 0
+        fi
+        PULL_FAILURES=$((PULL_FAILURES + 1))
+        FAILED_REPOS+=("$unit (pause verification)")
+        return 0
+    fi
+    sudo systemctl restart "$unit" 2>>"$LOG" || log "WARN restart $unit failed"
+    log "RESTART $unit"
+    # A restart that errored is precisely the case the health gate must see.
+    RESTARTED_SERVICES+=("$unit")
+}
 
 # ── Self-heal boot-pull-launcher.sh at /usr/local/sbin (BEFORE the unit sync) ─
 # alpha-engine-config-I8734. boot-pull.service ExecStarts $LAUNCHER_DST, a copy
@@ -648,11 +679,7 @@ if [ -d "$SYSTEMD_SRC" ]; then
         # daemon-reload automatically.
         for unit in "${CHANGED_UNITS[@]}"; do
             if [[ "$unit" == *.service ]] && [ "$unit" != "boot-pull.service" ]; then
-                sudo systemctl restart "$unit" 2>> "$LOG" || log "WARN restart $unit failed"
-                log "RESTART $unit"
-                # Gate it either way: a restart that errored is exactly the
-                # case the T1-3 health gate below must fail loud on, not skip.
-                RESTARTED_SERVICES+=("$unit")
+                restart_managed_service "$unit"
             fi
         done
     fi
@@ -724,18 +751,15 @@ if [ -d "$METRON_INTRADAY_SRC" ]; then
     fi
 fi
 
-# ── Restart streamlit services if SSM-hydrated configs changed ─────────────
-# Streamlit reads config.yaml at module import (decorator evaluation in
-# loaders/s3_loader.py via @st.cache_data(ttl=_ttl("trades"))). A config
-# change therefore requires a full process restart; reloading streamlit
-# secrets via the .streamlit/ path is not sufficient.
+# ── Restart the app whose SSM-hydrated config changed ────────────────────
+# Both apps load their runtime config in the process.
+if [ "$API_CONFIG_CHANGED" -eq 1 ]; then
+    log "API_CONFIG_CHANGED=1 — restarting crucible-dash-api"
+    restart_managed_service crucible-dash-api.service
+fi
 if [ "$CONFIGS_CHANGED" -eq 1 ]; then
-    log "CONFIGS_CHANGED=1 — restarting streamlit services"
-    sudo systemctl restart dashboard 2>> "$LOG" || log "WARN restart dashboard failed"
-    sleep 2
-    sudo systemctl restart nous-ergon-live 2>> "$LOG" || log "WARN restart nous-ergon-live failed"
-    log "RESTART dashboard + nous-ergon-live (config-driven)"
-    RESTARTED_SERVICES+=("dashboard.service" "nous-ergon-live.service")
+    log "CONFIGS_CHANGED=1 — restarting nous-ergon-live"
+    restart_managed_service nous-ergon-live.service
 fi
 
 # ── T1-3 post-restart health gate + auto-revert (config-I6742) ──────────────

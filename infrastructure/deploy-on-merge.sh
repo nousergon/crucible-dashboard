@@ -1,14 +1,15 @@
 #!/bin/bash
 # deploy-on-merge.sh — Refresh lib, reload nginx on conf change,
-# restart streamlit services, health check. Invoked via SSM (as root)
+# restart the public live and modern dashboard services, and verify health.
+# Invoked via SSM (as root)
 # from the dashboard deploy workflow AFTER the caller has already
 # pulled the repo to the target SHA.
 #
 # The SSM command body owns the git pull (it must run before this
 # script exists at the new path); this script owns everything after:
 # pip / lib refresh, nginx config staging + reload on infrastructure/
-# nginx.conf change, systemctl restart of both streamlit services, and
-# the health check on both /_stcore/health endpoints.
+# nginx.conf change, systemctl restarts, and the service-specific health
+# gates for the public live site and the modern dashboards.
 #
 # Boot-pull.sh remains the daily safety-net for ALL repos. This is the
 # dashboard-specific fast-path so a PR merge becomes live in ~30s
@@ -50,11 +51,10 @@ REPO_DIR="/home/ec2-user/alpha-engine-dashboard"
 LOG="/var/log/dashboard-deploy.log"
 TARGET_SHA="${1:-HEAD}"
 
-# Streamlit /_stcore/health endpoints. Console = 8501, live = 8502.
+# The public Streamlit /_stcore/health endpoint lives on 8502.
 # Ports sourced from the systemd unit files in this repo. The live app
 # sets baseUrlPath = "live" (live/.streamlit/config.toml, 2026-06-12 site
 # cutover), which moves ALL its routes — including health — under /live.
-CONSOLE_URL="http://localhost:8501/_stcore/health"
 LIVE_URL="http://localhost:8502/live/_stcore/health"
 DASH_API_URL="http://localhost:8506/api/health"
 DASH_WEB_URL="http://localhost:3002/dash"
@@ -315,9 +315,9 @@ if [ -f "$PYVER_SSOT_FILE" ] && [ -f "$REPO_DIR/.venv/bin/python" ]; then
         # to not exist at the final path while we build, hence stopping
         # services first — this is now brief PLANNED downtime, not a live
         # swap out from under running processes.)
-        systemctl stop dashboard nous-ergon-live crucible-dash-api 2>>"$LOG" \
+        systemctl stop nous-ergon-live crucible-dash-api 2>>"$LOG" \
             || fail "python-parity self-heal: stop services before venv rebuild"
-        log "stopped dashboard, nous-ergon-live, crucible-dash-api for venv rebuild"
+        log "stopped nous-ergon-live and crucible-dash-api for venv rebuild"
 
         # 3. Preserve the old venv for rollback, then build+install the new
         # venv DIRECTLY at the final $REPO_DIR/.venv path (no relocation).
@@ -337,8 +337,7 @@ if [ -f "$PYVER_SSOT_FILE" ] && [ -f "$REPO_DIR/.venv/bin/python" ]; then
                 log "FAIL python-parity self-heal: rollback mv itself failed — box has NO venv at $REPO_DIR/.venv, manual intervention required NOW"
                 return 1
             fi
-            systemctl restart dashboard nous-ergon-live crucible-dash-api 2>>"$LOG"
-            wait_for_health "$CONSOLE_URL" "dashboard (console) [post-rollback]" \
+            systemctl restart nous-ergon-live crucible-dash-api 2>>"$LOG" \
                 && wait_for_health "$LIVE_URL" "nous-ergon-live [post-rollback]" \
                 && wait_for_health "$DASH_API_URL" "crucible-dash-api [post-rollback]"
         }
@@ -358,29 +357,25 @@ if [ -f "$PYVER_SSOT_FILE" ] && [ -f "$REPO_DIR/.venv/bin/python" ]; then
         rm -rf "$NEW_VENV_PIP_TMPDIR"
         log "built venv directly at final path $REPO_DIR/.venv on $SSOT_PYVER_MAJOR_MINOR — no relocation, shebangs are correct by construction (old venv preserved at $OLD_VENV_BACKUP for rollback)"
 
-        # 4. Restart the 3 Python-venv-backed services (dashboard,
-        # nous-ergon-live, crucible-dash-api; crucible-dash-web is
-        # Node/Next.js, not Python — untouched here. crucible-dash (the
-        # retired Streamlit /dash skin) no longer runs — config#1973 tail).
-        systemctl restart dashboard 2>>"$LOG" || { _rollback_venv; fail "python-parity self-heal: restart dashboard (rolled back to previous venv)"; }
+        # 4. Restart the two Python-venv-backed services. The web app
+        # uses Node and stays up during this interpreter swap.
         systemctl restart nous-ergon-live 2>>"$LOG" || { _rollback_venv; fail "python-parity self-heal: restart nous-ergon-live (rolled back to previous venv)"; }
         systemctl restart crucible-dash-api 2>>"$LOG" || { _rollback_venv; fail "python-parity self-heal: restart crucible-dash-api (rolled back to previous venv)"; }
-        log "restarted dashboard, nous-ergon-live, crucible-dash-api on new venv"
+        log "restarted nous-ergon-live and crucible-dash-api on new venv"
 
         # 5. Reuse the script's existing health-gate (§4) immediately, so a
         # bad interpreter swap is caught and visible NOW rather than only at
         # the end of the script after other work has also run. On failure,
         # AUTO-ROLLBACK (defect 2) instead of leaving the broken venv live.
-        if ! wait_for_health "$CONSOLE_URL" "dashboard (console) [python-parity swap]" \
-            || ! wait_for_health "$LIVE_URL" "nous-ergon-live [python-parity swap]" \
+        if ! wait_for_health "$LIVE_URL" "nous-ergon-live [python-parity swap]" \
             || ! wait_for_health "$DASH_API_URL" "crucible-dash-api [python-parity swap]"; then
             if _rollback_venv; then
-                fail "python-parity self-heal: post-swap health gate failed on $SSOT_PYVER_MAJOR_MINOR venv — ROLLED BACK to previous venv successfully, all 3 services healthy again on old venv"
+                fail "python-parity self-heal: post-swap health gate failed on $SSOT_PYVER_MAJOR_MINOR venv — ROLLED BACK to previous venv successfully, both services healthy again on old venv"
             else
                 fail "python-parity self-heal: post-swap health gate failed on $SSOT_PYVER_MAJOR_MINOR venv AND rollback also failed — box may have NO working venv, manual intervention required NOW"
             fi
         fi
-        log "OK   Python-parity self-heal: all 3 services healthy on $SSOT_PYVER_MAJOR_MINOR"
+        log "OK   Python-parity self-heal: both services healthy on $SSOT_PYVER_MAJOR_MINOR"
 
         # requirements.txt is already installed fresh into the new venv
         # above (it must be, to build a working venv at all) — skip §1's
@@ -736,6 +731,8 @@ if manifest_stale || any_file_state_stale \
     "$BOX_HEALTH_INFRA/box_health.sh:/usr/local/bin/box_health.sh" \
     "$BOX_HEALTH_INFRA/box_hygiene.sh:/usr/local/bin/box_hygiene.sh" \
     "$BOX_HEALTH_INFRA/alert_py.sh:/usr/local/bin/alert_py.sh" \
+    "$BOX_HEALTH_INFRA/lib/workload-pause.sh:/usr/local/bin/workload-pause.sh" \
+    "$BOX_HEALTH_INFRA/workload_pauses.py:/usr/local/bin/workload_pauses.py" \
     "$BOX_HEALTH_INFRA/emit_box_health_hygiene.py:/usr/local/bin/emit_box_health_hygiene.py" \
     "$BOX_HEALTH_INFRA/systemd/box-health.service:/etc/systemd/system/box-health.service" \
     "$BOX_HEALTH_INFRA/systemd/box-health.timer:/etc/systemd/system/box-health.timer" \
@@ -925,20 +922,29 @@ if [ "$_budget_reinstalled" -eq 1 ] || { [ -n "$_backup_result" ] && [ "$_backup
     fi
 fi
 
-# ── 3. Self-provision dashboard and nous-ergon-live unit files ──────────────
-# Both services ship in the repo; install/refresh them on unit-file diff
-# (or first deploy) so they can never drift from the repo copy — same
-# idempotent pattern as dash-api/dash-web (§3c-3d; §3b tears down the
-# retired crucible-dash Streamlit skin instead of provisioning it).
-DASHBOARD_UNIT_SRC="$REPO_DIR/infrastructure/dashboard.service"
-DASHBOARD_UNIT_DST="/etc/systemd/system/dashboard.service"
-if [ ! -f "$DASHBOARD_UNIT_DST" ] || ! cmp -s "$DASHBOARD_UNIT_SRC" "$DASHBOARD_UNIT_DST"; then
-    cp "$DASHBOARD_UNIT_SRC" "$DASHBOARD_UNIT_DST" 2>>"$LOG" || fail "install dashboard unit"
-    systemctl daemon-reload 2>>"$LOG" || fail "daemon-reload for dashboard"
-    systemctl enable dashboard 2>>"$LOG" || fail "enable dashboard"
-    log "installed/refreshed dashboard.service unit"
-fi
+# ── 3. Retire the legacy private Streamlit runtime ────────────────────────
+# Keep a persistent mask across boots and checkout rollbacks. The source app
+# remains a reference. Only remove the obsolete base unit and its generated
+# budget drop-in. The public live app and modern dashboard remain deployed.
+retire_legacy_dashboard() {
+    local unit=dashboard.service
+    local unit_file="/etc/systemd/system/$unit"
+    local state
+    if [ "$(readlink "$unit_file" 2>/dev/null)" != /dev/null ]; then
+        if [ -e "$unit_file" ] || [ -L "$unit_file" ]; then
+            systemctl disable --now "$unit" 2>>"$LOG" || return 1
+            rm -f -- "$unit_file" || return 1
+        fi
+        systemctl mask "$unit" 2>>"$LOG" || return 1
+    fi
+    rm -f -- "/etc/systemd/system/$unit.d/99-resource-limits.conf" || return 1
+    state=$(systemctl show -p ActiveState --value "$unit" 2>>"$LOG") || return 1
+    [ "$(readlink "$unit_file")" = /dev/null ] && [ "$state" = inactive ]
+}
+retire_legacy_dashboard || fail "retire legacy dashboard.service (expected masked and inactive)"
+log "OK   legacy dashboard.service masked and inactive"
 
+# ── 3a. Self-provision and restart the public live Streamlit unit ──────────
 LIVE_UNIT_SRC="$REPO_DIR/live/infrastructure/nous-ergon-live.service"
 LIVE_UNIT_DST="/etc/systemd/system/nous-ergon-live.service"
 if [ ! -f "$LIVE_UNIT_DST" ] || ! cmp -s "$LIVE_UNIT_SRC" "$LIVE_UNIT_DST"; then
@@ -948,12 +954,6 @@ if [ ! -f "$LIVE_UNIT_DST" ] || ! cmp -s "$LIVE_UNIT_SRC" "$LIVE_UNIT_DST"; then
     log "installed/refreshed nous-ergon-live.service unit"
 fi
 
-# ── 3a. Restart both streamlit services (we are root) ──────────────────────
-# Both services run from this same repo. Two-second stagger avoids a
-# simultaneous blip on console + live site.
-systemctl restart dashboard 2>>"$LOG" || fail "restart dashboard"
-log "restarted dashboard.service"
-sleep 2
 systemctl restart nous-ergon-live 2>>"$LOG" || fail "restart nous-ergon-live"
 log "restarted nous-ergon-live.service"
 
@@ -1034,6 +1034,20 @@ fi
 # (wait_for_health itself is defined near the top of this script, above §0,
 # so the Python-parity self-heal can reuse it post-restart.)
 
+# Use the same runtime health gates after a deploy and after a revert.
+check_deployed_apps() {
+    local suffix="$1"
+    health_failed=""
+    wait_for_health "$LIVE_URL" "nous-ergon-live$suffix" || health_failed="live"
+    wait_for_health "$DASH_API_URL" "crucible-dash-api$suffix" \
+        || health_failed="${health_failed:+$health_failed,}dash-api"
+    if [ -d "$REPO_DIR/dash-web" ]; then
+        wait_for_health "$DASH_WEB_URL" "crucible-dash-web$suffix" \
+            || health_failed="${health_failed:+$health_failed,}dash-web"
+    fi
+    [ -z "$health_failed" ]
+}
+
 # revert_to_last_good REASON — roll the box back to the last sha OBSERVED
 # healthy here, re-run the provisioning that tracks the tree, and alert.
 #
@@ -1086,14 +1100,25 @@ revert_to_last_good() {
     # 30404044358, where PR #566's User= migration generated drop-ins
     # referencing nonexistent users, and the rollback's git reset couldn't
     # undo them because the drop-ins live outside the git tree.
-    bash "$REPO_DIR/infrastructure/install-resource-limits.sh" >>"$LOG" 2>&1 || true
-    bash "$REPO_DIR/infrastructure/install-box-health.sh" >>"$LOG" 2>&1 || true
-    systemctl restart dashboard nous-ergon-live crucible-dash-api crucible-dash-web >>"$LOG" 2>&1 || true
-
-    if wait_for_health "$CONSOLE_URL" "dashboard (post-revert)"; then
-        log "REVERT OK — box healthy at $good"
+    if [ -f "$REPO_DIR/infrastructure/dashboard.service" ]; then
+        # Older releases still declare the retired runtime healthy only when
+        # active. Keep the installed retirement-aware watchdog and budget.
+        log "REVERT retained host controls for the retired dashboard"
     else
-        log "REVERT INCOMPLETE — still unhealthy at $good"
+        bash "$REPO_DIR/infrastructure/install-resource-limits.sh" >>"$LOG" 2>&1 || true
+        bash "$REPO_DIR/infrastructure/install-box-health.sh" >>"$LOG" 2>&1 || true
+    fi
+    local restart_failed=0
+    local units=(nous-ergon-live.service crucible-dash-api.service)
+    if [ -d "$REPO_DIR/dash-web" ]; then
+        units+=(crucible-dash-web.service)
+    fi
+    systemctl restart "${units[@]}" >>"$LOG" 2>&1 || restart_failed=1
+
+    if check_deployed_apps " [post-revert]" && [ "$restart_failed" -eq 0 ]; then
+        log "REVERT OK — in-service dashboard apps healthy at $good"
+    else
+        log "REVERT INCOMPLETE — app restart or health failed at $good (restart_failed=$restart_failed, endpoints=${health_failed:-none})"
     fi
 
     "$ALERT_PY" -m krepis.alerts publish \
@@ -1107,15 +1132,7 @@ revert_to_last_good() {
 # not whichever checkout happened to carry a krepis.
 :
 
-health_failed=""
-wait_for_health "$CONSOLE_URL" "dashboard (console)"    || health_failed="console"
-[ -n "$health_failed" ] || wait_for_health "$LIVE_URL" "nous-ergon-live"        || health_failed="live"
-[ -n "$health_failed" ] || wait_for_health "$DASH_API_URL" "crucible-dash-api"  || health_failed="dash-api"
-if [ -z "$health_failed" ] && [ -d "$REPO_DIR/dash-web" ]; then
-    wait_for_health "$DASH_WEB_URL" "crucible-dash-web" || health_failed="dash-web"
-fi
-
-if [ -n "$health_failed" ]; then
+if ! check_deployed_apps ""; then
     revert_to_last_good "$health_failed health check failed"
     exit 1
 fi

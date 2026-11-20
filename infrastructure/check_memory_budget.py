@@ -76,6 +76,11 @@ import pathlib
 import subprocess
 import sys
 
+if __name__ == "__main__" and not __package__:
+    from workload_pauses import WorkloadPause, load_workload_pauses
+else:
+    from infrastructure.workload_pauses import WorkloadPause, load_workload_pauses
+
 try:
     import yaml
 except ImportError:  # pragma: no cover - surfaced loudly, never swallowed
@@ -1099,7 +1104,67 @@ def throttle_baseline() -> dict[str, int]:
     return out
 
 
-def headroom_rows(spec: dict) -> list[dict]:
+def observe_memory_pauses(
+    spec: dict, pauses: dict[str, WorkloadPause]
+) -> tuple[dict[str, WorkloadPause], list[str]]:
+    """Credit zero memory only when systemd and the cgroup tree agree."""
+    verified: dict[str, WorkloadPause] = {}
+    problems: list[str] = []
+    for svc in [*spec["services"], *(spec.get("timer_jobs") or [])]:
+        unit = svc["unit"]
+        if unit not in pauses:
+            continue
+        try:
+            active = systemd_show(unit, "ActiveState")
+            load = systemd_show(unit, "LoadState")
+            control_group = systemd_show(unit, "ControlGroup")
+            enablement = systemd_show(unit, "UnitFileState")
+            # A missing cgroup tree also looks like a nonexistent unit path.
+            # Verify the parent exists before interpreting the child's ENOENT.
+            if not _CGROUP_ROOT.is_dir():
+                raise RuntimeError(f"cgroup directory unavailable: {_CGROUP_ROOT}")
+            try:
+                (_CGROUP_ROOT / unit).stat()
+            except FileNotFoundError:
+                cgroup_present = False
+            else:
+                cgroup_present = True
+        except (OSError, RuntimeError) as exc:
+            problems.append(f"paused workload memory unreadable: {unit}: {exc}")
+            continue
+        if (
+            active != "inactive" or load not in {"loaded", "masked"}
+            or enablement not in {"disabled", "masked", "static", "indirect"}
+            or control_group or cgroup_present
+        ):
+            problems.append(
+                f"paused workload memory drift: {unit} "
+                f"(load={load or 'unknown'}, active={active or 'unknown'}, "
+                f"enablement={enablement or 'unknown'}, "
+                f"cgroup={'present' if control_group or cgroup_present else 'absent'})"
+            )
+        else:
+            verified[unit] = pauses[unit]
+    return verified, problems
+
+
+def _paused_headroom_row(svc: dict, pause: WorkloadPause) -> dict:
+    return {
+        "unit": svc["unit"],
+        "current_mb": 0,
+        "working_set_mb": 0,
+        "high_mb": parse_bytes(svc["memory_high"]) // 1024**2,
+        "max_mb": parse_bytes(svc["memory_max"]) // 1024**2,
+        "peak_mb": None,
+        "throttle_delta": None,
+        "censored": False,
+        "state": "declared_off",
+        "provenance": pause.provenance,
+        "reason": pause.reason,
+    }
+
+
+def headroom_rows(spec: dict, pauses: dict[str, WorkloadPause] | None = None) -> list[dict]:
     """One row per unit in budget.yaml, for the console.
 
     POPULATION IS budget.yaml, NEVER A LIST MAINTAINED HERE. observability-
@@ -1118,6 +1183,9 @@ def headroom_rows(spec: dict) -> list[dict]:
 
     for svc in spec["services"]:
         unit = svc["unit"]
+        if pauses and unit in pauses:
+            rows.append(_paused_headroom_row(svc, pauses[unit]))
+            continue
         current = cgroup_value(unit, "memory.current")
         high = cgroup_value(unit, "memory.high")
         hard = cgroup_value(unit, "memory.max")
@@ -1185,6 +1253,11 @@ def headroom_rows(spec: dict) -> list[dict]:
 
 def _row_detail(row: dict) -> str:
     """The one line an operator reads on the console row."""
+    if row["state"] == "declared_off":
+        return (
+            f"declared off, observed 0 MiB, retained cap {row['max_mb']} MiB "
+            f"({row['provenance']}, {row['reason']})"
+        )
     if row["state"] == "unmeasurable":
         return "no cgroup -- not running, or the unit is gone (see the service check)"
     parts = []
@@ -1230,6 +1303,7 @@ def _row_detail(row: dict) -> str:
 # mapping lives so a new row state cannot silently inherit "ok".
 _STATE_STATUS = {
     "ok": "ok",
+    "declared_off": "ok",
     "throttling": "attention",
     "tight": "attention",
     "censored": "attention",
@@ -1240,7 +1314,8 @@ _STATE_STATUS = {
 
 
 def emit_headroom_check(spec: dict, breaches: list[str], hygiene: list[str],
-                        *, dry_run: bool = False) -> str | None:
+                        *, dry_run: bool = False,
+                        pauses: dict[str, WorkloadPause] | None = None) -> str | None:
     """Publish the fleet-check envelope the console discovers by S3 prefix.
 
     Imported lazily and never allowed to raise: --declared runs in CI, where
@@ -1254,7 +1329,7 @@ def emit_headroom_check(spec: dict, breaches: list[str], hygiene: list[str],
               "unavailable -- console row NOT published", file=sys.stderr)
         return None
 
-    rows = headroom_rows(spec)
+    rows = headroom_rows(spec, pauses)
     findings = [{"key": r["unit"], "detail": _row_detail(r)} for r in rows]
 
     # Timer jobs get rows too, declared as batch rather than silently dropped.
@@ -1262,6 +1337,10 @@ def emit_headroom_check(spec: dict, breaches: list[str], hygiene: list[str],
     # and must not read as a finding -- but neither may the unit vanish from the
     # surface (observability-policy.md §8.3 forbids a component disappearing).
     for job in spec.get("timer_jobs") or []:
+        if pauses and job["unit"] in pauses:
+            row = _paused_headroom_row(job, pauses[job["unit"]])
+            findings.append({"key": row["unit"], "detail": _row_detail(row)})
+            continue
         findings.append({
             "key": job["unit"],
             "detail": f"batch unit, cap {job['memory_max']} -- no cgroup between "
@@ -1484,6 +1563,8 @@ _FINDING_CATEGORIES: tuple[tuple[str, str], ...] = (
     ("LIVE OVERRIDE", "runtime-cap-override"),
     ("uncensor_until", "uncensor-window-active"),
     ("MemoryMax drift", "cap-drift"),
+    ("paused workload memory", "workload-pause-drift"),
+    ("workload pause policy unreadable", "workload-pause-policy"),
     ("ORPHAN drop-in", "orphan-dropin"),
     ("CENSORED reading", "censored-observation"),
     ("APPROACHING its soft cap", "approaching-cap"),
@@ -1555,6 +1636,15 @@ def main() -> int:
     # not. Merging them is what made a stale number page like a full box.
     breaches: list[str] = []
     hygiene: list[str] = []
+    verified_pauses: dict[str, WorkloadPause] = {}
+    if installed:
+        try:
+            pauses = load_workload_pauses()
+        except (OSError, ValueError) as exc:
+            breaches.append(f"workload pause policy unreadable: {exc}")
+        else:
+            verified_pauses, pause_problems = observe_memory_pauses(spec, pauses)
+            breaches.extend(pause_problems)
 
     # In --installed mode the real RAM is authoritative: it catches a resize
     # that nobody reflected back into budget.yaml, in either direction.
@@ -1756,10 +1846,10 @@ def main() -> int:
     ws_unknown: list[str] = []
     unmeasurable: list[str] = []
     censored: list[str] = []
+    service_units = [s["unit"] for s in spec["services"]]
+    measured_units = [unit for unit in service_units if unit not in verified_pauses]
     if installed:
-        ss_mb, unmeasurable, censored = steady_state_mb(
-            [s["unit"] for s in spec["services"]], warn_fraction
-        )
+        ss_mb, unmeasurable, censored = steady_state_mb(measured_units, warn_fraction)
         # THE BOUND IS EVALUATED ON THE WORKING SET, not on the total charge
         # (Brian ruling 2026-08-16, alpha-engine-config-I7449, option (c)).
         # `memory.current` counts reclaimable page cache, which the kernel
@@ -1768,14 +1858,12 @@ def main() -> int:
         # charge is still measured and still printed; it is no longer what the
         # invariant keys on. budget.yaml's constant was re-derived in the same
         # change (0.60 -> 0.50) so the switch did not loosen the bound.
-        ws_mb, ws_unknown = working_set_total_mb(
-            [s["unit"] for s in spec["services"]]
-        )
+        ws_mb, ws_unknown = working_set_total_mb(measured_units)
         ss_over = ws_mb > ss_allowed
         if ws_unknown:
             hygiene.append(
-                f"steady-state bound measured over {len(rows) - len(ws_unknown)} "
-                f"of {len(rows)} units -- memory.stat unreadable for: "
+                f"steady-state bound measured over {len(service_units) - len(ws_unknown)} "
+                f"of {len(service_units)} units -- memory.stat unreadable for: "
                 f"{', '.join(ws_unknown)}. The working-set sum understates by "
                 f"whatever those hold, so the bound is unproven rather than "
                 f"satisfied."
@@ -1787,22 +1875,21 @@ def main() -> int:
         # Reported after the censored units and never for the same unit — the
         # two conditions are mutually exclusive by construction (`peak >= high`
         # versus `peak < high`), so a unit appears in at most one list.
-        for svc in spec["services"]:
-            approaching = approaching_the_cap(svc["unit"], warn_fraction)
+        for unit in measured_units:
+            approaching = approaching_the_cap(unit, warn_fraction)
             if approaching:
                 hygiene.append(approaching)
         # The other direction. Reported at hygiene severity like the rest of
         # the observation checks — a cap that is too LARGE breaks nothing today,
         # it only makes the box read as full while it is not.
-        for svc in spec["services"]:
-            unit = svc["unit"]
+        for unit in measured_units:
             slack = over_provisioned(unit, unit_uptime_days(unit))
             if slack:
                 hygiene.append(slack)
         if unmeasurable:
             hygiene.append(
                 "steady state measured over "
-                f"{len(rows) - len(unmeasurable)} of {len(rows)} units -- no "
+                f"{len(service_units) - len(unmeasurable)} of {len(service_units)} units -- no "
                 f"cgroup for: {', '.join(unmeasurable)}. The sum below "
                 f"understates by whatever those are using. (A unit that is not "
                 f"running is reported by box_health.sh's service check, not "
@@ -1830,7 +1917,8 @@ def main() -> int:
               f"ceiling {ceiling_mb} MB, max overcommit {max_ratio:.2f}x "
               f"(= {allowed_mb} MB)")
         for unit, b in sorted(rows, key=lambda r: -r[1]):
-            print(f"  {unit:<28} {b // 1024**2:>5} MB")
+            suffix = " (declared off, observed 0 MiB)" if unit in verified_pauses else ""
+            print(f"  {unit:<28} {b // 1024**2:>5} MB{suffix}")
         print(f"  {'TOTAL (caps)':<28} {total_mb:>5} MB  "
               f"{ratio:.2f}x ceiling "
               f"({'OVER' if over else 'within declared overcommit'})")
@@ -1864,9 +1952,7 @@ def main() -> int:
             # first shipping: charge 1373 MB, working set 1377 MB —
             # `memory.current` does not charge swapped-out pages, so anon +
             # swap can legitimately exceed it on a box that swaps.
-            cache_mb = ss_mb - (ws_mb - swap_total_mb(
-                [s["unit"] for s in spec["services"]]
-            ))
+            cache_mb = ss_mb - (ws_mb - swap_total_mb(measured_units))
             floor_note = " (FLOOR: a censored unit understates it)" if censored else ""
             print(f"  {'TOTAL (charge)':<28} {ss_mb:>5} MB  "
                   f"{ss_mb / ram_mb:.0%} of RAM "
@@ -1960,7 +2046,7 @@ def main() -> int:
             aggregate.append(
                 f"timer-job caps total {tj_mb} MB against {tj_headroom_mb} MB "
                 f"of headroom")
-        emit_headroom_check(spec, aggregate, hygiene, dry_run=args.dry_run)
+        emit_headroom_check(spec, aggregate, hygiene, dry_run=args.dry_run, pauses=verified_pauses)
 
     # ── the machine-readable half, for box_health.sh's alert text ───────────
     #

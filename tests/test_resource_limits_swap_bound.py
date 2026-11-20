@@ -20,47 +20,30 @@ INSTALLER = REPO_ROOT / "infrastructure" / "install-resource-limits.sh"
 BUDGET = REPO_ROOT / "infrastructure" / "systemd" / "resource-limits" / "budget.yaml"
 
 
-def _parse_mb(value: str) -> int:
-    m = re.fullmatch(r"(\d+)([MG])", value)
-    assert m, f"unparseable size {value!r}"
-    return int(m.group(1)) * (1024 if m.group(2) == "G" else 1)
-
-
-def _services() -> dict[str, dict]:
-    spec = yaml.safe_load(BUDGET.read_text())
-    return {s["unit"]: s for s in spec["services"]}
-
-
-def test_dashboard_service_declares_a_swap_bound():
-    svc = _services()["dashboard.service"]
-    assert "memory_swap_max" in svc, "dashboard.service must bound its swap (I7445)"
-    swap = _parse_mb(svc["memory_swap_max"])
-    # A swap bound of zero would turn every memory_high reclaim into an OOM;
-    # one at or above the RAM cap would not bound the runaway that was measured.
-    assert 0 < swap < _parse_mb(svc["memory_max"])
-
-
 def test_dry_run_renders_swap_bound_only_where_declared(tmp_path):
-    env = dict(os.environ)
-    env["RUNTIME_DROPIN_ROOT"] = str(tmp_path)
-    env.pop("TELEGRAM_BOT_TOKEN", None)
-    env.pop("TELEGRAM_CHAT_ID", None)
+    spec = yaml.safe_load(BUDGET.read_text())
+    spec["services"] = [
+        {"unit": "bounded.service", "memory_high": "80M", "memory_max": "100M",
+         "memory_swap_max": "25M"},
+        {"unit": "unbounded.service", "memory_high": "80M", "memory_max": "100M"},
+    ]
+    fixture_budget = tmp_path / "budget.yaml"
+    fixture_budget.write_text(yaml.safe_dump(spec))
+    child_vars = dict(os.environ, BUDGET=str(fixture_budget), RUNTIME_DROPIN_ROOT=str(tmp_path))
+    child_vars.pop("TELEGRAM_BOT_TOKEN", None)
+    child_vars.pop("TELEGRAM_CHAT_ID", None)
     out = subprocess.run(
         ["bash", str(INSTALLER), "--dry-run"],
-        capture_output=True, text=True, env=env, check=True,
+        capture_output=True, text=True, env=child_vars, check=True,
     ).stdout
-    declared = {u for u, s in _services().items() if s.get("memory_swap_max")}
-    assert declared, "no unit declares memory_swap_max"
+    rendered = {}
     for line in out.splitlines():
-        m = re.search(r"/etc/systemd/system/([^/]+)\.d/", line)
-        if not m or not line.startswith("would write"):
-            continue
-        unit = m.group(1)
-        if unit in declared:
-            want = _services()[unit]["memory_swap_max"]
-            assert f"MemorySwapMax={want}" in line, line
-        else:
-            assert "MemorySwapMax" not in line, line
+        match = re.match(r"would write /etc/systemd/system/([^/]+)\.d/", line)
+        if match:
+            rendered[match.group(1)] = line
+    assert set(rendered) == {"bounded.service", "unbounded.service"}
+    assert "MemorySwapMax=25M" in rendered["bounded.service"]
+    assert "MemorySwapMax" not in rendered["unbounded.service"]
 
 
 def test_swap_line_rides_the_memorymax_line():

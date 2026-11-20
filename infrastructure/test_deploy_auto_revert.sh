@@ -43,20 +43,26 @@ fail() { echo "FAIL - $1"; FAILURES=$((FAILURES + 1)); }
 
 # ── Harness: extract revert_to_last_good with its dependencies stubbed ───────
 LOG="$TMP/log"
-CONSOLE_URL="stub"
+LIVE_URL="stub-live"
+DASH_API_URL="stub-dash-api"
+DASH_WEB_URL="stub-dash-web"
 REPO_DIR="$TMP/repo"
 ALERT_PY="$TMP/alert-py"
 LAST_GOOD_SHA_FILE="$TMP/last-good"
 CURRENT_SHA="cafebabe0000000000000000000000000000cafe"
 
 log() { echo "$*" >> "$LOG"; }
-wait_for_health() { [ "${STUB_HEALTH_OK:-1}" -eq 1 ]; }
+wait_for_health() {
+    echo "probe $1" >> "$TMP/calls"
+    [ "$1" != "${STUB_BROKEN_URL:-}" ]
+}
 # Record invocations instead of performing them.
 git() { echo "git $*" >> "$TMP/calls"; return "${STUB_GIT_RC:-0}"; }
 systemctl() { echo "systemctl $*" >> "$TMP/calls"; return 0; }
 sudo() { shift 2; "$@"; }              # `sudo -u ec2-user git ...` -> git ...
 bash() { echo "bash $*" >> "$TMP/calls"; return 0; }
 flock() { shift 3; "$@"; }             # `flock -w N lockpath cmd...` -> cmd...
+eval "$(awk '/^check_deployed_apps\(\) \{/,/^\}/' "$DEPLOY_SCRIPT")"
 eval "$(awk '/^revert_to_last_good\(\) \{/,/^\}/' "$DEPLOY_SCRIPT")"
 declare -F revert_to_last_good >/dev/null || { echo "FAIL - revert_to_last_good() not found"; exit 1; }
 
@@ -66,7 +72,7 @@ echo "== a missing or corrupt stamp must NOT revert =="
 # Reverting to a guess is worse than not reverting: it could move the box to a
 # sha that was never validated here.
 reset_harness
-revert_to_last_good "console health check failed" >/dev/null 2>&1
+revert_to_last_good "dash-api health check failed" >/dev/null 2>&1
 if grep -q "reset --hard" "$TMP/calls" 2>/dev/null; then
     fail "no stamp -> must not run git reset --hard"
 else
@@ -77,7 +83,7 @@ grep -q "NOT reverting" "$LOG" && pass "no stamp -> says so in the log" \
 
 reset_harness
 echo "not-a-sha!!" > "$LAST_GOOD_SHA_FILE"
-revert_to_last_good "console health check failed" >/dev/null 2>&1
+revert_to_last_good "dash-api health check failed" >/dev/null 2>&1
 if grep -q "reset --hard" "$TMP/calls" 2>/dev/null; then
     fail "corrupt stamp -> must not run git reset --hard"
 else
@@ -87,7 +93,7 @@ fi
 echo "== a stamp equal to the current sha must not thrash =="
 reset_harness
 printf '%s\n' "$CURRENT_SHA" > "$LAST_GOOD_SHA_FILE"
-revert_to_last_good "console health check failed" >/dev/null 2>&1
+revert_to_last_good "dash-api health check failed" >/dev/null 2>&1
 if grep -q "reset --hard" "$TMP/calls" 2>/dev/null; then
     fail "stamp == current -> must not revert to itself"
 else
@@ -97,7 +103,7 @@ fi
 echo "== a valid, different stamp reverts and re-provisions =="
 reset_harness
 printf '%s\n' "deadbeef0000000000000000000000000000dead" > "$LAST_GOOD_SHA_FILE"
-revert_to_last_good "console health check failed" >/dev/null 2>&1
+revert_to_last_good "dash-api health check failed" >/dev/null 2>&1
 grep -q "reset --hard deadbeef" "$TMP/calls" && pass "reverts to the recorded sha" \
     || fail "must git reset --hard to the recorded sha"
 # Old code under new units is a state neither sha was tested in.
@@ -113,10 +119,26 @@ else
     pass "does not re-invoke deploy-on-merge.sh"
 fi
 
+echo "== modern endpoint failure and retirement survive a pre-retirement revert =="
+reset_harness
+mkdir -p "$REPO_DIR/infrastructure" "$REPO_DIR/dash-web"
+touch "$REPO_DIR/infrastructure/dashboard.service"
+printf '%s\n' "deadbeef0000000000000000000000000000dead" > "$LAST_GOOD_SHA_FILE"
+STUB_BROKEN_URL=stub-dash-api revert_to_last_good "dash-api health check failed" >/dev/null 2>&1
+if grep -q 'install-box-health.sh' "$TMP/calls"; then
+    fail "restored host controls that expect the retired runtime"
+else
+    pass "retains the retirement-aware host controls"
+fi
+grep -q 'probe stub-dash-web' "$TMP/calls" && pass "revert checks the web endpoint" \
+    || fail "revert skipped the web endpoint"
+grep -q 'REVERT INCOMPLETE' "$LOG" && pass "revert failed an unhealthy API" \
+    || fail "revert reported health despite an unhealthy API"
+
 echo "== a failed git reset is reported, not swallowed =="
 reset_harness
 printf '%s\n' "deadbeef0000000000000000000000000000dead" > "$LAST_GOOD_SHA_FILE"
-STUB_GIT_RC=1 revert_to_last_good "console health check failed" >/dev/null 2>&1
+STUB_GIT_RC=1 revert_to_last_good "dash-api health check failed" >/dev/null 2>&1
 grep -q "REVERT FAILED" "$LOG" && pass "git reset failure is logged loudly" \
     || fail "a failed git reset must be reported"
 
@@ -127,7 +149,7 @@ body=$(awk '/^# Advance the stamp ONLY here/,/LAST_GOOD_SHA_FILE"/' "$DEPLOY_SCR
 [ -n "$body" ] && pass "stamp advance is guarded by a comment stating the invariant" \
     || fail "stamp advance block not found"
 stamp_ln=$(grep -n '> "\$LAST_GOOD_SHA_FILE"' "$DEPLOY_SCRIPT" | head -1 | cut -d: -f1)
-health_ln=$(grep -n 'if \[ -n "\$health_failed" \]; then' "$DEPLOY_SCRIPT" | head -1 | cut -d: -f1)
+health_ln=$(grep -n '^if ! check_deployed_apps ""; then' "$DEPLOY_SCRIPT" | head -1 | cut -d: -f1)
 if [ -n "$stamp_ln" ] && [ -n "$health_ln" ] && [ "$stamp_ln" -gt "$health_ln" ]; then
     pass "stamp is written after the health-check gate, not before"
 else

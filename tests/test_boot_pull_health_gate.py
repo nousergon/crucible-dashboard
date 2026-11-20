@@ -42,13 +42,15 @@ class TestRestartAccounting:
         text = _src()
         loop = text[text.index('for unit in "${CHANGED_UNITS[@]}"'):]
         loop = loop[: loop.index("done")]
-        assert 'RESTARTED_SERVICES+=("$unit")' in loop
+        assert 'restart_managed_service "$unit"' in loop
+        helper = text[text.index("restart_managed_service() {"):]
+        assert 'RESTARTED_SERVICES+=("$unit")' in helper[:helper.index("\n}")]
 
     def test_config_driven_streamlit_restarts_are_gated(self):
         text = _src()
         block = text[text.index('if [ "$CONFIGS_CHANGED" -eq 1 ]'):]
         block = block[: block.index("\nfi")]
-        assert "RESTARTED_SERVICES+=" in block
+        assert "restart_managed_service nous-ergon-live.service" in block
 
     def test_prev_sha_is_captured_for_revert(self):
         # The revert target is this run's pre-pull HEAD, captured in the pull

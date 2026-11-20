@@ -25,6 +25,9 @@ if [ ! -f "$SCRIPT_SRC" ]; then
     exit 1
 fi
 
+# Install the parser and its shell interface before the watchdog that loads them.
+install -m 0644 "$REPO_INFRA/workload_pauses.py" /usr/local/bin/workload_pauses.py
+install -m 0644 "$REPO_INFRA/lib/workload-pause.sh" /usr/local/bin/workload-pause.sh
 install -m 0755 "$SCRIPT_SRC" "$SCRIPT_DST"
 echo "Installed $SCRIPT_DST"
 

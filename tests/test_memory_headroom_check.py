@@ -496,7 +496,7 @@ def test_a_missing_lib_does_not_raise(cgroups, baseline_file, monkeypatch):
 def test_every_row_state_has_a_console_status():
     """No fall-through. A new row state must not silently inherit `ok` --
     observability-policy.md §8.3's totality invariant."""
-    states = {"ok", "throttling", "tight", "censored", "unmeasurable",
+    states = {"ok", "declared_off", "throttling", "tight", "censored", "unmeasurable",
               "over_soft_cap", "no_soft_cap"}
     assert set(cmb._STATE_STATUS) == states
     assert set(cmb._STATE_STATUS.values()) <= {"ok", "attention", "error"}

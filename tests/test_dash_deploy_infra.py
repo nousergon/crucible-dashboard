@@ -226,7 +226,7 @@ class TestInfraWiring:
         # leaving all services crash-looping on the broken venv for ~25
         # minutes. A rollback path must exist and must be invoked on the
         # post-swap health-gate failure branch, not just logged about.
-        # (3 venv-backed services since config#1973 retired crucible-dash.)
+        # The public live app and Dash API share the venv.
         script = (REPO_ROOT / "infrastructure" / "deploy-on-merge.sh").read_text()
         heal_block = script[script.index("Python-parity self-heal: box venv is"):
                              script.index("# ── 1. Refresh deps")]
@@ -238,9 +238,9 @@ class TestInfraWiring:
         rollback_fn = heal_block[rollback_start:
                                   rollback_start + heal_block[rollback_start:].index("\n        }")]
         assert 'mv "$OLD_VENV_BACKUP" "$REPO_DIR/.venv"' in rollback_fn
-        assert "systemctl restart dashboard nous-ergon-live crucible-dash-api" in rollback_fn
-        assert rollback_fn.count("wait_for_health") == 3, \
-            "rollback must re-verify health on all 3 remaining services before considering itself successful"
+        assert "systemctl restart nous-ergon-live crucible-dash-api" in rollback_fn
+        assert rollback_fn.count("wait_for_health") == 2, \
+            "rollback must re-verify both Python services before reporting success"
 
         # The post-swap health-gate failure branch must actually call the
         # rollback — not just `fail` on its own, and not just mention
@@ -313,24 +313,11 @@ class TestInfraWiring:
         and emit a short max-age so a bad body cannot freeze for 365d.
         """
         conf = (REPO_ROOT / "infrastructure" / "nginx.conf").read_text()
-        # Both Streamlit vhosts carry a dedicated /static/ location.
-        assert conf.count("location /static/") >= 2
-        assert "proxy_hide_header Cache-Control" in conf
-        assert 'add_header Cache-Control "public, max-age=300" always' in conf
-        # Console block proxies static to :8501; live block to :8502.
-        # Pull the two static blocks by splitting on the location directive.
-        parts = conf.split("location /static/")
-        assert len(parts) >= 3  # preamble + >=2 blocks
-        bodies = parts[1:]
-        ports = set()
-        for body in bodies:
-            # take until next location or closing server brace-ish; just search
-            head = body[:400]
-            if "127.0.0.1:8501" in head:
-                ports.add("8501")
-            if "127.0.0.1:8502" in head:
-                ports.add("8502")
-        assert ports == {"8501", "8502"}, ports
+        assert "location /static/" in conf
+        public_static = conf.split("location /static/", 1)[1].split("location /", 1)[0]
+        assert "proxy_pass http://127.0.0.1:8502" in public_static
+        assert "proxy_hide_header Cache-Control" in public_static
+        assert 'add_header Cache-Control "public, max-age=300" always' in public_static
 
     def test_deploy_purges_streamlit_static_after_requirements_install(self):
         """A requirements.txt install is the only signal the on-disk hashed
