@@ -35,6 +35,29 @@ def root(tmp_path: Path):
 SPEC = {"services": [{"unit": "app.service", "memory_max": "100M"}]}
 
 
+def test_systemd_inventory_preserves_escaped_instance_aliases(monkeypatch):
+    canonical = r"systemd-fsck@dev-disk-by\x2duuid-AAAA\x2d0000.service"
+    alias = r"systemd-fsck@dev-disk-by\x2duuid-BBBB\x2d1111.service"
+    properties = (
+        f"Id={canonical}\n"
+        r'Names="systemd-fsck@dev-disk-by\\x2duuid-AAAA\\x2d0000.service" '
+        r'"systemd-fsck@dev-disk-by\\x2duuid-BBBB\\x2d1111.service"'
+        "\nLoadState=loaded\nActiveState=active\nType=oneshot\nMainPID=0\n"
+    )
+
+    def command(*args):
+        if args[1] == "list-units":
+            return f"{canonical} loaded active exited File System Check\n"
+        assert canonical in args
+        assert alias in args
+        return properties
+
+    monkeypatch.setattr(memory, "_command", command)
+    services = memory.live_services({alias})
+    assert services[canonical] == services[alias]
+    assert services[canonical].names == {canonical, alias}
+
+
 def test_custom_slice_and_alias_deduplication(root):
     group = "/custom.slice/app.service"
     cgroup(root, "/custom.slice", processes="")

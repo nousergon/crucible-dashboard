@@ -114,6 +114,7 @@ LOG=/dev/null
 log() { :; }
 workload_is_paused() { [ "$PAUSED" = yes ]; }
 workload_pause_problems() { printf '%s' "$PROBLEM"; return "$OBSERVE_RC"; }
+systemctl() { printf 'oneshot\n'; }
 sudo() { printf 'sudo %s\n' "$*"; }
 PULL_FAILURES=0
 FAILED_REPOS=()
@@ -122,7 +123,7 @@ RESTARTED_SERVICES=()
     result = subprocess.run(
         ["bash", "-c", f'{shell}\n{helper}\nPAUSED={"yes" if paused else "no"}\n'
          f'PROBLEM="{problem}"\nOBSERVE_RC={observe_rc}\n'
-         'restart_managed_service signal.service\n'
+         'restart_managed_service signal.service 1\n'
          'echo "restarted=${RESTARTED_SERVICES[*]} failures=$PULL_FAILURES"'],
         text=True, capture_output=True, check=True,
     )

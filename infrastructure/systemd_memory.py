@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -130,6 +131,14 @@ def _valid_unit(unit: str) -> bool:
     return bool(_UNIT.fullmatch(unit)) and not unit.startswith("-")
 
 
+def service_names(value: str) -> frozenset[str]:
+    """Decode systemctl's quoted Names array while preserving unit-name escapes."""
+    names = frozenset(shlex.split(value))
+    if any(not _valid_unit(name) for name in names):
+        raise ValueError("systemd returned invalid service aliases")
+    return names
+
+
 def live_services(expected: set[str]) -> dict[str, Service]:
     """Resolve live and declared names, including aliases and inactive entries."""
     listing = _command(
@@ -150,10 +159,13 @@ def live_services(expected: set[str]) -> dict[str, Service]:
         unit = values.get("Id", "")
         if not _valid_unit(unit) or not values.get("LoadState") or not values.get("ActiveState"):
             raise ValueError("systemd service inventory contains an incomplete entry")
-        aliases = frozenset({unit, *values.get("Names", "").split()})
+        try:
+            aliases = service_names(values.get("Names", "")) | {unit}
+        except ValueError as error:
+            raise ValueError(f"{unit}: invalid Names returned by systemd: {error}") from error
         raw_pid = values.get("MainPID", "") or "0"
-        if not raw_pid.isdecimal() or any(not _valid_unit(alias) for alias in aliases):
-            raise ValueError(f"{unit}: invalid service identity returned by systemd")
+        if not raw_pid.isdecimal():
+            raise ValueError(f"{unit}: invalid MainPID returned by systemd")
         service = Service(
             unit, aliases, values["LoadState"], values["ActiveState"],
             values.get("Type", ""), values.get("ControlGroup", ""),

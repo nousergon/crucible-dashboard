@@ -82,14 +82,14 @@ from typing import TypedDict, cast
 
 if __name__ == "__main__" and not __package__:
     from systemd_memory import (
-        CGROUP_ROOT, MIB, BudgetedUnit, MemoryBudget, ObservationSpec, Snapshot, capture, cgroup_path,
+        CGROUP_ROOT, MIB, BudgetedUnit, MemoryBudget, ObservationSpec, Snapshot, capture, cgroup_path, service_names,
     )
     from workload_pauses import (
         WorkloadPause, load_workload_pauses,
     )
 else:
     from infrastructure.systemd_memory import (
-        CGROUP_ROOT, MIB, BudgetedUnit, MemoryBudget, ObservationSpec, Snapshot, capture, cgroup_path,
+        CGROUP_ROOT, MIB, BudgetedUnit, MemoryBudget, ObservationSpec, Snapshot, capture, cgroup_path, service_names,
     )
     from infrastructure.workload_pauses import (
         WorkloadPause, load_workload_pauses,
@@ -1687,7 +1687,7 @@ def maintenance_findings(
         if state != "active" or systemd_show(unit, "LoadState") != "loaded":
             problems.append(f"{unit}: not already active; requires capacity admission")
             continue
-        names = set(systemd_show(unit, "Names").split())
+        names = service_names(systemd_show(unit, "Names"))
         if unit not in names or names.intersection(pauses):
             problems.append(f"{unit}: service identity is unknown or declared paused")
             continue
