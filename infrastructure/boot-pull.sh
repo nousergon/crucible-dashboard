@@ -181,6 +181,7 @@ PULLED_REPOS=()
 PULLED_PREV=()
 PULLED_NEW=()
 RESTARTED_SERVICES=()
+declare -A MAINTAINED_SERVICES=()
 
 # Declared here (moved up from immediately before the REPOS loop) because the
 # GitHub-auth assertion below is now the first thing that can fail and needs
@@ -587,7 +588,7 @@ if ! . "$PAUSE_HELPER" || ! load_workload_pauses; then
 fi
 
 restart_managed_service() {
-    local unit="$1"
+    local unit="$1" base_existed="${2:-0}"
     if workload_is_paused "$unit"; then
         local problems
         if ! problems=$(workload_pause_problems "$unit" 2>>"$LOG"); then
@@ -602,7 +603,31 @@ restart_managed_service() {
         FAILED_REPOS+=("$unit (pause verification)")
         return 0
     fi
-    sudo systemctl restart "$unit" 2>>"$LOG" || log "WARN restart $unit failed"
+    local unit_type action
+    unit_type=$(systemctl show --property=Type --value "$unit" 2>>"$LOG") || unit_type=""
+    if [ "$unit_type" = oneshot ]; then
+        if [ "$base_existed" != 1 ]; then
+            log "FAIL cannot start $unit — one-shot requires memory admission"
+            PULL_FAILURES=$((PULL_FAILURES + 1))
+            FAILED_REPOS+=("$unit (memory admission)")
+            return 0
+        fi
+        action=restart
+    else
+        # Capture approved, already active applications before maintenance.
+        # try-restart also closes the gap if the unit stops during the check.
+        local dashboard=/home/ec2-user/alpha-engine-dashboard
+        local memory_check=("$dashboard/.venv/bin/python" "$dashboard/infrastructure/check_memory_budget.py")
+        if [ -z "$unit_type" ] || ! "${memory_check[@]}" --maintain-active "$unit" >>"$LOG" 2>&1; then
+            log "FAIL cannot maintain $unit without memory admission"
+            PULL_FAILURES=$((PULL_FAILURES + 1))
+            FAILED_REPOS+=("$unit (memory admission)")
+            return 0
+        fi
+        MAINTAINED_SERVICES["$unit"]=1
+        action=try-restart
+    fi
+    sudo systemctl "$action" "$unit" 2>>"$LOG" || log "WARN $action $unit failed"
     log "RESTART $unit"
     # A restart that errored is precisely the case the health gate must see.
     RESTARTED_SERVICES+=("$unit")
@@ -666,6 +691,12 @@ if [ -d "$SYSTEMD_SRC" ]; then
                 log "SYNC $name (updated)"
                 CHANGED_UNITS+=("$name")
             fi
+        elif [[ "$name" == *.service ]]; then
+            # Leave it absent so a later sync cannot mistake it for an
+            # admitted service. Its installer owns admission and activation.
+            log "FAIL SYNC $name held back — new service requires memory admission"
+            PULL_FAILURES=$((PULL_FAILURES + 1))
+            FAILED_REPOS+=("$name (memory admission)")
         else
             sudo cp "$unit" "/etc/systemd/system/$name"
             log "SYNC $name (new)"
@@ -679,7 +710,7 @@ if [ -d "$SYSTEMD_SRC" ]; then
         # daemon-reload automatically.
         for unit in "${CHANGED_UNITS[@]}"; do
             if [[ "$unit" == *.service ]] && [ "$unit" != "boot-pull.service" ]; then
-                restart_managed_service "$unit"
+                restart_managed_service "$unit" 1
             fi
         done
     fi
@@ -849,6 +880,12 @@ if [ -n "$FAILED_UNITS" ]; then
 
     STILL_FAILED=""
     for unit in $FAILED_UNITS; do
+        # Only restore services confirmed active before this run disrupted them.
+        if [ "${MAINTAINED_SERVICES[$unit]:-0}" != 1 ] || workload_is_paused "$unit"; then
+            log "FAIL post-revert restore refused for $unit"
+            STILL_FAILED="$STILL_FAILED $unit"
+            continue
+        fi
         sudo systemctl restart "$unit" 2>> "$LOG" || log "WARN post-revert restart $unit failed"
         if wait_active "$unit"; then
             log "OK   post-revert — $unit active"

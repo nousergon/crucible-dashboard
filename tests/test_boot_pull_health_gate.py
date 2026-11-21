@@ -16,6 +16,7 @@ contract.
 """
 
 import re
+import subprocess
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.parent
@@ -42,7 +43,7 @@ class TestRestartAccounting:
         text = _src()
         loop = text[text.index('for unit in "${CHANGED_UNITS[@]}"'):]
         loop = loop[: loop.index("done")]
-        assert 'restart_managed_service "$unit"' in loop
+        assert 'restart_managed_service "$unit" 1' in loop
         helper = text[text.index("restart_managed_service() {"):]
         assert 'RESTARTED_SERVICES+=("$unit")' in helper[:helper.index("\n}")]
 
@@ -58,6 +59,54 @@ class TestRestartAccounting:
         # LAST_GOOD_SHA_FILE comment for why guessing is wrong).
         text = _src()
         assert 'PULLED_PREV+=("$PREV_SHA")' in text
+
+
+def test_only_verified_app_maintenance_can_restart_or_roll_back():
+    text = _src()
+    helper = text[text.index("restart_managed_service() {"):]
+    helper = helper[:helper.index("\n}") + 2]
+    helper = helper.replace('/home/ec2-user/alpha-engine-dashboard', '$TEST_DASHBOARD')
+    shell = """
+LOG=/dev/null
+TEST_DASHBOARD=/fixture
+log() { :; }
+workload_is_paused() { return 1; }
+systemctl() {
+    case "$4" in
+        *.service)
+            case "$4" in
+                *-job.service) printf 'oneshot\\n' ;;
+                *) printf 'simple\\n' ;;
+            esac ;;
+    esac
+}
+function /fixture/.venv/bin/python {
+    [ "$2" = --maintain-active ] && [ "$3" = active.service ]
+}
+sudo() { printf '%s\\n' "$*"; }
+PULL_FAILURES=0
+FAILED_REPOS=()
+RESTARTED_SERVICES=()
+declare -A MAINTAINED_SERVICES=()
+"""
+    result = subprocess.run(
+        ["bash", "-c", shell + helper + """
+restart_managed_service inactive.service
+restart_managed_service active.service
+restart_managed_service new-job.service 0
+restart_managed_service existing-job.service 1
+printf 'failures=%s, maintained=%s\\n' "$PULL_FAILURES" "${!MAINTAINED_SERVICES[*]}"
+"""],
+        text=True, capture_output=True, check=True,
+    )
+    assert result.stdout.splitlines() == [
+        "systemctl try-restart active.service",
+        "systemctl restart existing-job.service",
+        "failures=2, maintained=active.service",
+    ]
+    rollback = _gate_block().split("for unit in $FAILED_UNITS; do", 1)[1]
+    gate = '${MAINTAINED_SERVICES[$unit]:-0}'
+    assert rollback.index(gate) < rollback.index('systemctl restart "$unit"')
 
 
 class TestHealthGate:

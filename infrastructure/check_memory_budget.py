@@ -75,16 +75,24 @@ import os
 import pathlib
 import subprocess
 import sys
+from contextvars import ContextVar
+from dataclasses import asdict
 from collections.abc import Mapping
 from typing import TypedDict, cast
 
 if __name__ == "__main__" and not __package__:
+    from systemd_memory import (
+        CGROUP_ROOT, MIB, BudgetedUnit, MemoryBudget, ObservationSpec, Snapshot, capture, cgroup_path, service_names,
+    )
     from workload_pauses import (
-        WorkloadPause, load_workload_pauses, verify_pause_guard, workload_cgroup_exists,
+        WorkloadPause, load_workload_pauses,
     )
 else:
+    from infrastructure.systemd_memory import (
+        CGROUP_ROOT, MIB, BudgetedUnit, MemoryBudget, ObservationSpec, Snapshot, capture, cgroup_path, service_names,
+    )
     from infrastructure.workload_pauses import (
-        WorkloadPause, load_workload_pauses, verify_pause_guard, workload_cgroup_exists,
+        WorkloadPause, load_workload_pauses,
     )
 
 try:
@@ -98,7 +106,8 @@ BUDGET = pathlib.Path(__file__).parent / "systemd" / "resource-limits" / "budget
 # Module constants rather than literals inside the readers, so tests can point
 # them at a fixture tree. A check that can only be exercised on the live box is
 # a check that never gets exercised.
-_CGROUP_ROOT = pathlib.Path("/sys/fs/cgroup/system.slice")
+_CGROUP_ROOT = CGROUP_ROOT
+_CGROUP_PATHS: ContextVar[dict[str, pathlib.Path] | None] = ContextVar("memory paths", default=None)
 
 _SUFFIX = {"K": 1024, "M": 1024**2, "G": 1024**3}
 
@@ -142,21 +151,6 @@ _THROTTLE_STATE = pathlib.Path(
 THROTTLE_DELTA_MIN = 10
 
 
-class BudgetedUnit(TypedDict):
-    unit: str
-    memory_high: str
-    memory_max: str
-
-
-class _ObservationOptions(TypedDict, total=False):
-    timer_jobs: list[BudgetedUnit] | None
-    headroom_warn_fraction: float | str
-
-
-class ObservationSpec(_ObservationOptions):
-    services: list[BudgetedUnit]
-
-
 class _HeadroomDetails(TypedDict, total=False):
     used_fraction: float
     provenance: str
@@ -197,6 +191,14 @@ def systemd_show(unit: str, prop: str) -> str:
     return r.stdout.strip()
 
 
+def cgroup_directory(unit: str) -> pathlib.Path:
+    """Use the reconciled unit paths for every live read in this invocation."""
+    paths = _CGROUP_PATHS.get()
+    if paths is not None:
+        return paths[unit]
+    return cgroup_path(_CGROUP_ROOT, systemd_show(unit, "ControlGroup"))
+
+
 def cgroup_value(unit: str, filename: str) -> int | None:
     """Read one integer from a unit's cgroup v2 file. None if unreadable.
 
@@ -204,10 +206,9 @@ def cgroup_value(unit: str, filename: str) -> int | None:
     and is handled explicitly at every call site rather than defaulted to a
     number, which would make a missing reading look like a passing one.
     """
-    p = _CGROUP_ROOT / unit / filename
     try:
-        raw = p.read_text().strip()
-    except OSError:
+        raw = (cgroup_directory(unit) / filename).read_text().strip()
+    except (OSError, RuntimeError, KeyError, ValueError):
         return None
     if raw == "max":
         return sys.maxsize
@@ -225,10 +226,9 @@ def cgroup_stat(unit: str, key: str) -> int | None:
     than 0 on failure — a key that cannot be read has not been shown to be
     zero, and a zero here would make a service look like pure page cache.
     """
-    p = _CGROUP_ROOT / unit / "memory.stat"
     try:
-        raw = p.read_text()
-    except OSError:
+        raw = (cgroup_directory(unit) / "memory.stat").read_text()
+    except (OSError, RuntimeError, KeyError, ValueError):
         return None
     for line in raw.splitlines():
         parts = line.split()
@@ -262,8 +262,8 @@ def non_reclaimable_bytes(unit: str) -> int | None:
     if anon is None:
         return None
     swap = cgroup_value(unit, "memory.swap.current")
-    if swap is None or swap == sys.maxsize:
-        swap = 0
+    if swap is None or swap == sys.maxsize or swap < 0 or anon < 0:
+        return None
     return anon + swap
 
 
@@ -628,14 +628,8 @@ def _anon_mb(unit: str) -> int | None:
     the remaining 421 MB being reclaimable page cache. A disposition argued
     from `memory.current` on a cgroup like that is arguing from the cache.
     """
-    p = _CGROUP_ROOT / unit / "memory.stat"
-    try:
-        for line in p.read_text().splitlines():
-            if line.startswith("anon "):
-                return int(line.split()[1]) // 1024**2
-    except (OSError, ValueError, IndexError):
-        return None
-    return None
+    anon = cgroup_stat(unit, "anon")
+    return None if anon is None else anon // MIB
 
 
 def mark_window_days(mark: dict, now: "_dt.datetime | None" = None) -> float | None:
@@ -743,7 +737,7 @@ def derive_caps(peak_bytes: int) -> tuple[int, int]:
 
 
 def propose_for_unit(
-    svc: dict,
+    svc: BudgetedUnit,
     *,
     peak: int | None,
     high: int | None,
@@ -942,7 +936,7 @@ def enforce_overcommit(records: list[dict], bound_mb: int) -> list[dict]:
     return records
 
 
-def collect_proposals(spec: dict) -> dict:
+def collect_proposals(spec: MemoryBudget) -> dict[str, object]:
     """The whole box's proposal set, as the JSON `apply_cap_proposals.py` consumes."""
     ram_mb = ram_mb_from_proc()
     ceiling_mb = int(ram_mb * (1 - float(spec["reserve_fraction"])))
@@ -958,7 +952,7 @@ def collect_proposals(spec: dict) -> dict:
             uptime_days=unit_uptime_days(svc["unit"]),
             mark=marks.get(svc["unit"]),
             working_set=non_reclaimable_bytes(svc["unit"]),
-            warn_fraction=warn_fraction_of(cast("ObservationSpec", spec)),
+            warn_fraction=warn_fraction_of(spec),
         )
         for svc in spec["services"]
     ]
@@ -1108,10 +1102,9 @@ def memory_events_high(unit: str) -> int | None:
     cannot be read has not been shown to be quiet, and rendering that as zero
     is absence-of-signal read as health.
     """
-    p = _CGROUP_ROOT / unit / "memory.events"
     try:
-        raw = p.read_text()
-    except OSError:
+        raw = (cgroup_directory(unit) / "memory.events").read_text()
+    except (OSError, RuntimeError, KeyError, ValueError):
         return None
     for line in raw.splitlines():
         if line.startswith("high "):
@@ -1141,47 +1134,6 @@ def throttle_baseline() -> dict[str, int]:
         if len(parts) == 2 and parts[1].isdigit():
             out[parts[0]] = int(parts[1])
     return out
-
-
-def observe_memory_pauses(
-    spec: ObservationSpec, pauses: dict[str, WorkloadPause]
-) -> tuple[dict[str, WorkloadPause], set[str], list[str]]:
-    """Credit zero memory only when systemd and the cgroup tree agree."""
-    verified: dict[str, WorkloadPause] = {}
-    absent: set[str] = set()
-    problems: list[str] = []
-    for svc in [*spec["services"], *(spec.get("timer_jobs") or [])]:
-        unit = svc["unit"]
-        if unit not in pauses:
-            continue
-        try:
-            active = systemd_show(unit, "ActiveState")
-            load = systemd_show(unit, "LoadState")
-            control_group = systemd_show(unit, "ControlGroup")
-            enablement = systemd_show(unit, "UnitFileState")
-            cgroup_present = workload_cgroup_exists(unit, _CGROUP_ROOT)
-            if (load, active, enablement, control_group, cgroup_present) == ("not-found", "inactive", "", "", False):
-                verify_pause_guard(unit)
-                absent.add(unit)
-                verified[unit] = pauses[unit]
-                continue
-        except (OSError, RuntimeError, ValueError) as exc:
-            problems.append(f"paused workload memory unreadable: {unit}: {exc}")
-            continue
-        if (
-            active != "inactive" or load not in {"loaded", "masked"}
-            or enablement not in {"disabled", "masked", "static", "indirect"}
-            or control_group or cgroup_present
-        ):
-            problems.append(
-                f"paused workload memory drift: {unit} "
-                f"(load={load or 'unknown'}, active={active or 'unknown'}, "
-                f"enablement={enablement or 'unknown'}, "
-                f"cgroup={'present' if control_group or cgroup_present else 'absent'})"
-            )
-        else:
-            verified[unit] = pauses[unit]
-    return verified, absent, problems
 
 
 def _paused_headroom_row(svc: BudgetedUnit, pause: WorkloadPause) -> HeadroomRow:
@@ -1284,6 +1236,8 @@ def headroom_rows(
             if delta is not None and delta >= THROTTLE_DELTA_MIN and row["state"] == "ok":
                 row["state"] = "throttling"
 
+        if row["state"] == "ok" and working_set is None and _CGROUP_PATHS.get() is not None:
+            row["state"] = "working_set_unknown"
         rows.append(row)
 
     return rows
@@ -1298,7 +1252,7 @@ def _row_detail(row: HeadroomRow) -> str:
         )
     if row["state"] == "unmeasurable":
         return "no cgroup -- not running, or the unit is gone (see the service check)"
-    parts = []
+    parts: list[str] = []
     if row["high_mb"] is None:
         parts.append(f"{row['current_mb']} MiB, NO soft cap (no reclaim window)")
     else:
@@ -1323,6 +1277,8 @@ def _row_detail(row: HeadroomRow) -> str:
     # row would otherwise be read as demand. dashboard.service, 2026-08-16:
     # 411/420 MiB soft (98%) of which 183 MiB was working set.
     ws = row.get("working_set_mb")
+    if row["state"] == "working_set_unknown":
+        parts.append("working set unknown (anon or swap unreadable)")
     current = row["current_mb"]
     if (
         ws is not None
@@ -1347,6 +1303,7 @@ _STATE_STATUS = {
     "tight": "attention",
     "censored": "attention",
     "unmeasurable": "attention",
+    "working_set_unknown": "attention",
     "over_soft_cap": "error",
     "no_soft_cap": "error",
 }
@@ -1483,7 +1440,7 @@ def runtime_dropin_overrides(unit: str) -> list[str]:
     return found
 
 
-def uncensor_deadline(svc: dict) -> "_dt.datetime | None":
+def uncensor_deadline(svc: BudgetedUnit) -> "_dt.datetime | None":
     """Parse a service's optional `uncensor_until: <ISO8601>` key.
 
     A malformed value is treated as ABSENT, not raised: a typo in a
@@ -1502,7 +1459,7 @@ def uncensor_deadline(svc: dict) -> "_dt.datetime | None":
     return deadline
 
 
-def uncensor_active(svc: dict, now: "_dt.datetime | None" = None) -> bool:
+def uncensor_active(svc: BudgetedUnit, now: "_dt.datetime | None" = None) -> bool:
     """True while `svc` declares an uncensor_until that has not yet passed.
 
     This is the measurement window alpha-engine-config-I6263's
@@ -1603,6 +1560,7 @@ _FINDING_CATEGORIES: tuple[tuple[str, str], ...] = (
     ("uncensor_until", "uncensor-window-active"),
     ("MemoryMax drift", "cap-drift"),
     ("paused workload memory", "workload-pause-drift"),
+    ("memory population incomplete", "memory-population-incomplete"),
     ("workload pause policy unreadable", "workload-pause-policy"),
     ("ORPHAN drop-in", "orphan-dropin"),
     ("CENSORED reading", "censored-observation"),
@@ -1646,6 +1604,15 @@ def main() -> int:
     mode.add_argument("--propose-caps", action="store_true",
                       help="derive per-unit caps from live peaks and print the proposal "
                            "set as JSON (on-box; writes nothing, see I7291)")
+    mode.add_argument("--preflight", action="store_true",
+                      help="reconcile live memory coverage before applying resource limits")
+    mode.add_argument("--maintain-active", nargs="+", metavar="UNIT",
+                      help="verify that existing application units may be restarted")
+    mode.add_argument("--sample", action="store_true",
+                      help="produce the current memory reconciliation as JSON")
+    ap.add_argument("--budget", type=pathlib.Path, default=BUDGET)
+    ap.add_argument("--cgroup-root", type=pathlib.Path, default=_CGROUP_ROOT)
+    ap.add_argument("--meminfo", type=pathlib.Path, default=pathlib.Path("/proc/meminfo"))
     ap.add_argument("--quiet", action="store_true", help="only print on failure")
     ap.add_argument("--emit-check", action="store_true",
                     help="publish the per-unit headroom fleet-check envelope to "
@@ -1658,16 +1625,164 @@ def main() -> int:
     # numbers on the console that no cgroup ever produced.
     installed = (args.installed or args.emit_check) and not args.declared
 
-    spec = yaml.safe_load(BUDGET.read_text())
+    spec = cast("MemoryBudget", yaml.safe_load(args.budget.read_text()))
 
-    # Proposals are a REPORT, not a verdict: they exit 0 whether or not they
-    # found anything, because "the caps disagree with the measurement" is not a
-    # box-health problem and must never page. box_health.sh does not call this
-    # mode; propose-memory-caps.yml does.
-    if args.propose_caps:
-        print(json.dumps(collect_proposals(spec), indent=2))
+    if args.maintain_active:
+        try:
+            findings = maintenance_findings(spec, args.maintain_active, load_workload_pauses())
+        except (OSError, RuntimeError, ValueError) as error:
+            findings = [str(error)]
+        for finding in findings:
+            print(f"memory maintenance refused: {finding}", file=sys.stderr)
+        return int(bool(findings))
+
+    snapshot = None
+    pauses: dict[str, WorkloadPause] = {}
+    if installed or args.sample or args.preflight or args.propose_caps:
+        try:
+            pauses = load_workload_pauses()
+            snapshot = capture(spec, pauses, args.cgroup_root)
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+            snapshot = Snapshot(_dt.datetime.now(_dt.timezone.utc).isoformat(), {}, {}, [str(error)])
+    if args.sample:
+        assert snapshot is not None
+        print(json.dumps(memory_sample(spec, snapshot, args.meminfo)))
         return 0
+    if args.preflight:
+        assert snapshot is not None
+        try:
+            findings = admission_findings(spec, snapshot, ram_mb_from_proc())
+        except (OSError, RuntimeError, ValueError) as error:
+            findings = [str(error)]
+        for finding in findings:
+            print(f"memory admission refused: {finding}", file=sys.stderr)
+        return int(bool(findings))
 
+    token = _CGROUP_PATHS.set(snapshot.paths) if snapshot is not None else None
+    try:
+        if args.propose_caps:
+            if snapshot is not None and not snapshot.paths:
+                print("cannot observe service cgroups: " + "; ".join(snapshot.findings), file=sys.stderr)
+                return 3
+            print(json.dumps(collect_proposals(spec), indent=2))
+            return 0
+        return check_budget(args, spec, snapshot, pauses)
+    finally:
+        if token is not None:
+            _CGROUP_PATHS.reset(token)
+
+
+def maintenance_findings(
+    spec: ObservationSpec, units: list[str], pauses: dict[str, WorkloadPause],
+) -> list[str]:
+    """Only a confirmed active unit at its existing limits qualifies for maintenance."""
+    budget = {row["unit"]: row for row in spec["services"]}
+    problems: list[str] = []
+    for unit in units:
+        declaration = budget.get(unit)
+        if declaration is None:
+            problems.append(f"{unit}: outside the active application budget")
+            continue
+        state = systemd_show(unit, "ActiveState")
+        if state != "active" or systemd_show(unit, "LoadState") != "loaded":
+            problems.append(f"{unit}: not already active; requires capacity admission")
+            continue
+        names = service_names(systemd_show(unit, "Names"))
+        if unit not in names or names.intersection(pauses):
+            problems.append(f"{unit}: service identity is unknown or declared paused")
+            continue
+        path = cgroup_directory(unit)
+        if not path.is_dir():
+            problems.append(f"{unit}: no existing cgroup under its loaded ControlGroup")
+            continue
+        caps = {"MemoryHigh": declaration["memory_high"], "MemoryMax": declaration["memory_max"]}
+        if swap_cap := declaration.get("memory_swap_max"):
+            caps["MemorySwapMax"] = swap_cap
+        for prop, want in caps.items():
+            if parse_bytes(systemd_show(unit, prop)) != parse_bytes(want):
+                problems.append(f"{unit}: loaded {prop} differs from its approved budget")
+    return problems
+
+
+def admission_findings(spec: MemoryBudget, snapshot: Snapshot, ram_mb: int) -> list[str]:
+    """Evaluate complete coverage, current demand and declared/installed caps."""
+    reports = list(dict.fromkeys(snapshot.findings + snapshot.admission_findings))
+    declared_ram = int(spec["ram_mb"])
+    if abs(ram_mb - declared_ram) > declared_ram * 0.05:
+        reports.append(f"RAM {ram_mb} MiB differs from declared {declared_ram} MiB")
+    ceiling = int(ram_mb * (1 - float(spec["reserve_fraction"]))) * MIB
+    cap_limit = int(ceiling * float(spec["max_overcommit_ratio"]))
+    steady_limit = int(ram_mb * MIB * float(spec["max_steady_state_fraction"]))
+    if snapshot.known_application_bytes > steady_limit:
+        reports.append(f"steady-state working set exceeds {steady_limit / MIB:g} MiB (T1-8)")
+
+    class_caps: dict[str, int] = {"services": 0, "timer_jobs": 0}
+    for section, declarations in (("services", spec["services"]), ("timer_jobs", spec.get("timer_jobs") or [])):
+        for declaration in declarations:
+            unit = declaration["unit"]
+            observed = snapshot.observation(unit)
+            proposed = parse_bytes(declaration["memory_max"])
+            if observed is None or observed.memory_max is None:
+                if observed is None or observed.state != "declared-off":
+                    reports.append(f"{unit}: live capacity cap is unknown")
+                cap = proposed
+            else:
+                cap = max(proposed, parse_bytes(observed.memory_max))
+            class_caps[section] += cap
+    retained = sum(
+        parse_bytes(row.memory_max) for row in snapshot.rows.values()
+        if row.classification == "paused-application" and row.memory_max is not None
+    )
+    if class_caps["services"] + retained > cap_limit:
+        reports.append(f"aggregated application and retained resume caps exceed {cap_limit / MIB:g} MiB (T1-1)")
+    if class_caps["timer_jobs"] + snapshot.known_application_bytes > ceiling:
+        reports.append("timer-job peaks exceed the headroom remaining after the application working set")
+    return reports
+
+
+def memory_sample(spec: MemoryBudget, snapshot: Snapshot, meminfo: pathlib.Path) -> dict[str, object]:
+    """Versioned additive payload consumed by the existing journal/S3 publisher."""
+    total = snapshot.application_bytes
+    findings = list(snapshot.findings)
+    ram = None
+    line = None
+    fraction = None
+    try:
+        ram = next(int(text.split()[1]) // 1024 for text in meminfo.read_text().splitlines()
+                   if text.startswith("MemTotal:"))
+        fraction = float(spec["max_steady_state_fraction"])
+        if ram <= 0 or not 0 < fraction <= 1:
+            raise ValueError("invalid MemTotal or max_steady_state_fraction")
+        line = int(ram * MIB * fraction)
+    except (OSError, StopIteration, ValueError, KeyError, TypeError, IndexError) as error:
+        findings.append(f"cannot derive the T1-8 line: {error}")
+    rows = snapshot.rows
+    application_units = {svc["unit"]: snapshot.observation(svc["unit"]) for svc in spec["services"]}
+    application_units.update({unit: row for unit, row in rows.items() if row.classification == "paused-application"})
+    return {
+        "schema_version": 2,
+        "ts": snapshot.timestamp,
+        "total_mib": None if total is None else total // MIB,
+        "known_application_mib": snapshot.known_application_bytes // MIB,
+        "mem_total_mib": ram,
+        "max_steady_state_fraction": fraction,
+        "t1_8_line_mib": None if line is None else line // MIB,
+        "at_or_over_t1_8": None if line is None or total is None else total >= line,
+        "coverage_complete": not findings,
+        "findings": findings,
+        "admission_findings": snapshot.admission_findings,
+        "units": {
+            unit: None if row is None or row.working_set_bytes is None else row.working_set_bytes // MIB
+            for unit, row in sorted(application_units.items())
+        },
+        "unit_observations": {unit: asdict(row) for unit, row in rows.items()},
+    }
+
+
+def check_budget(
+    args: argparse.Namespace, spec: MemoryBudget, snapshot: Snapshot | None, pauses: dict[str, WorkloadPause],
+) -> int:
+    installed = snapshot is not None
     reserve = float(spec["reserve_fraction"])
 
     # Two lists, deliberately not one. `breaches` are invariant violations and
@@ -1677,14 +1792,16 @@ def main() -> int:
     hygiene: list[str] = []
     verified_pauses: dict[str, WorkloadPause] = {}
     absent_pauses: set[str] = set()
-    if installed:
-        try:
-            pauses = load_workload_pauses()
-        except (OSError, ValueError) as exc:
-            breaches.append(f"workload pause policy unreadable: {exc}")
-        else:
-            verified_pauses, absent_pauses, pause_problems = observe_memory_pauses(spec, pauses)
-            breaches.extend(pause_problems)
+    if snapshot is not None:
+        breaches.extend(f"memory population incomplete: {finding}" for finding in snapshot.findings)
+        hygiene.extend(f"memory admission unavailable: {finding}" for finding in snapshot.admission_findings
+                       if finding not in snapshot.findings)
+        for unit, pause in pauses.items():
+            row = snapshot.observation(unit)
+            if row is not None and row.state == "declared-off":
+                verified_pauses[unit] = pause
+                if row.load_state == "not-found":
+                    absent_pauses.add(unit)
 
     # In --installed mode the real RAM is authoritative: it catches a resize
     # that nobody reflected back into budget.yaml, in either direction.
@@ -1717,7 +1834,7 @@ def main() -> int:
     # once the window passes the two sums converge again and any real breach
     # reappears automatically.
     total_bytes_credited = 0
-    rows = []
+    rows: list[tuple[str, int]] = []
 
     for svc in spec["services"]:
         unit = svc["unit"]
@@ -1790,6 +1907,14 @@ def main() -> int:
             min(effective, want) if installed and uncensor_active(svc) else effective
         )
         rows.append((unit, effective))
+
+    if snapshot is not None:
+        for unit, row in snapshot.rows.items():
+            if row.classification == "paused-application" and row.memory_max is not None:
+                retained = parse_bytes(row.memory_max)
+                total_bytes += retained
+                total_bytes_credited += retained
+                rows.append((unit, retained))
 
     timer_jobs = spec.get("timer_jobs") or []
 
@@ -1882,7 +2007,6 @@ def main() -> int:
     # printing nothing about the bound is indistinguishable from one that
     # checked it and was satisfied.
     max_ss = float(spec["max_steady_state_fraction"])
-    ss_allowed = int(ram_mb * max_ss)
     warn_fraction = warn_fraction_of(spec)
     ss_over = False
     ss_mb = 0
@@ -1902,16 +2026,12 @@ def main() -> int:
         # charge is still measured and still printed; it is no longer what the
         # invariant keys on. budget.yaml's constant was re-derived in the same
         # change (0.60 -> 0.50) so the switch did not loosen the bound.
-        ws_mb, ws_unknown = working_set_total_mb(measured_units)
-        ss_over = ws_mb > ss_allowed
-        if ws_unknown:
-            hygiene.append(
-                f"steady-state bound measured over {len(service_units) - len(ws_unknown)} "
-                f"of {len(service_units)} units -- memory.stat unreadable for: "
-                f"{', '.join(ws_unknown)}. The working-set sum understates by "
-                f"whatever those hold, so the bound is unproven rather than "
-                f"satisfied."
-            )
+        assert snapshot is not None
+        known_bytes = snapshot.known_application_bytes
+        ws_mb = known_bytes // MIB
+        ss_over = known_bytes > int(ram_mb * MIB * max_ss)
+        ws_unknown = [unit for unit, row in snapshot.rows.items()
+                      if row.classification == "application" and row.working_set_bytes is None]
         for unit in censored:
             hygiene.append(
                 censored_observation(unit, warn_fraction) or f"{unit}: censored"
@@ -1963,9 +2083,11 @@ def main() -> int:
         for unit, b in sorted(rows, key=lambda r: -r[1]):
             suffix = " (declared off, observed 0 MiB)" if unit in verified_pauses else ""
             print(f"  {unit:<28} {b // 1024**2:>5} MB{suffix}")
+        cap_verdict = "OVER" if over else "within declared overcommit"
+        if not over and snapshot is not None and (snapshot.findings or snapshot.admission_findings):
+            cap_verdict = "unproven, incomplete admission coverage"
         print(f"  {'TOTAL (caps)':<28} {total_mb:>5} MB  "
-              f"{ratio:.2f}x ceiling "
-              f"({'OVER' if over else 'within declared overcommit'})")
+              f"{ratio:.2f}x ceiling ({cap_verdict})")
         if installed:
             # THE BOUND LINE NAMES ITS OWN BASIS. Whoever reads this next has
             # to know which of the two totals the limit applies to without
@@ -1978,7 +2100,7 @@ def main() -> int:
             # has to say so. `ws_unknown` is the impairment that matters for
             # THIS bound; a censored charge no longer affects it, but it is
             # still carried because the charge line below is still printed.
-            impaired = bool(ws_unknown or unmeasurable)
+            impaired = bool(snapshot.findings or unmeasurable)
             verdict = "OVER" if ss_over else ("unproven" if impaired else "ok")
             note = (f", {len(ws_unknown)} unit(s) unreadable"
                     if ws_unknown else "")
@@ -1996,11 +2118,11 @@ def main() -> int:
             # first shipping: charge 1373 MB, working set 1377 MB —
             # `memory.current` does not charge swapped-out pages, so anon +
             # swap can legitimately exceed it on a box that swaps.
-            cache_mb = ss_mb - (ws_mb - swap_total_mb(measured_units))
+            cache_mb = "unknown" if impaired else str(ss_mb - (ws_mb - swap_total_mb(measured_units))) + " MB"
             floor_note = " (FLOOR: a censored unit understates it)" if censored else ""
             print(f"  {'TOTAL (charge)':<28} {ss_mb:>5} MB  "
                   f"{ss_mb / ram_mb:.0%} of RAM "
-                  f"(memory.current, of which {cache_mb} MB is reclaimable "
+                  f"(memory.current, of which {cache_mb} is reclaimable "
                   f"page cache; not bounded{floor_note})")
         else:
             print(f"  {'TOTAL (steady state)':<28} {'--':>5}     "
@@ -2010,9 +2132,10 @@ def main() -> int:
             for t in sorted(timer_jobs, key=lambda t: -parse_bytes(t["memory_max"])):
                 print(f"  [timer] {t['unit']:<20} {parse_bytes(t['memory_max']) // 1024**2:>5} MB")
             if installed:
+                batch_unproven = bool(snapshot.findings or snapshot.admission_findings or unmeasurable)
+                batch_verdict = "OVER" if tj_over else ("unproven" if batch_unproven else "ok")
                 print(f"  {'TOTAL (timer job caps)':<28} {tj_mb:>5} MB  "
-                      f"vs {tj_headroom_mb} MB headroom "
-                      f"({'OVER' if tj_over else 'ok'})")
+                      f"vs {tj_headroom_mb} MB headroom ({batch_verdict})")
             else:
                 print(f"  {'TOTAL (timer job caps)':<28} {tj_mb:>5} MB  "
                       f"headroom not evaluable off-box")

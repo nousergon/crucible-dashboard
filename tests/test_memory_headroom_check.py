@@ -39,7 +39,7 @@ MB = 1024**2
 
 
 def _cgroup(root, unit, *, current=None, high=None, hard=None, peak=None,
-            events=None, anon=None, file_cache=0, swap=None):
+            events=None, anon=None, file_cache=0, swap=0):
     d = root / unit
     d.mkdir(parents=True, exist_ok=True)
     for name, value in (("memory.current", current), ("memory.high", high),
@@ -64,7 +64,7 @@ def _cgroup(root, unit, *, current=None, high=None, hard=None, peak=None,
 def cgroups(tmp_path, monkeypatch):
     root = tmp_path / "cgroup"
     root.mkdir()
-    monkeypatch.setattr(cmb, "_CGROUP_ROOT", root)
+    monkeypatch.setattr(cmb, "cgroup_directory", lambda unit: root / unit)
     return root
 
 
@@ -242,16 +242,10 @@ def test_the_working_set_total_may_exceed_the_charge_when_swapping(
     assert cmb.swap_total_mb(["a.service"]) == 40
 
 
-def test_swap_that_cannot_be_read_counts_as_zero_not_as_unknown(
-    cgroups, baseline_file
-):
-    """A cgroup with swap accounting off has no swapped pages to miss. This is
-    the one place a missing file is legitimately zero rather than unknown, and
-    it is asserted so the reasoning is not re-litigated as a bug."""
+def test_unreadable_swap_is_unknown(cgroups, baseline_file):
     _cgroup(cgroups, "a.service", current=100 * MB, high=200 * MB, peak=110 * MB,
-            anon=95 * MB, file_cache=5 * MB, events=0)
-    assert cmb.swap_total_mb(["a.service"]) == 0
-    assert cmb.working_set_total_mb(["a.service"])[0] == 95
+            anon=95 * MB, file_cache=5 * MB, events=0, swap=None)
+    assert cmb.working_set_total_mb(["a.service"]) == (0, ["a.service"])
 
 
 def test_a_unit_with_no_memory_stat_is_named_not_skipped(cgroups, baseline_file):
@@ -497,6 +491,6 @@ def test_every_row_state_has_a_console_status():
     """No fall-through. A new row state must not silently inherit `ok` --
     observability-policy.md §8.3's totality invariant."""
     states = {"ok", "declared_off", "throttling", "tight", "censored", "unmeasurable",
-              "over_soft_cap", "no_soft_cap"}
+              "over_soft_cap", "no_soft_cap", "working_set_unknown"}
     assert set(cmb._STATE_STATUS) == states
     assert set(cmb._STATE_STATUS.values()) <= {"ok", "attention", "error"}

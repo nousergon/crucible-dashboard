@@ -51,12 +51,15 @@ systemctl enable --now emit-service-memory.timer
 # reason: this one reads its unit list out of budget.yaml, so a change to that
 # file's shape breaks the collector while leaving the timer green-looking.
 # The first run is the only place that failure is cheap to see.
-echo "==> priming the per-service memory series (first run proves it can read budget.yaml)"
-systemctl start emit-service-memory.service || {
-    echo "emit-service-memory.service failed on first run -- investigate before" >&2
-    echo "trusting the per-service memory record; check that budget.yaml is" >&2
-    echo "readable at the path the script defaults to" >&2
-    exit 1; }
+echo "==> priming the per-service memory series"
+if ! systemctl start emit-service-memory.service; then
+    status=$(systemctl show --property=ExecMainStatus --value emit-service-memory.service)
+    if [[ "$status" != 2 ]]; then
+        echo "emit-service-memory.service could not record its first run" >&2
+        exit 1
+    fi
+    echo "emit-service-memory.service recorded incomplete coverage; check its journal" >&2
+fi
 
 echo
 echo "Done. Verify:"

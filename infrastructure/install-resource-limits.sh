@@ -82,10 +82,22 @@ PY=$(command -v python3)
 # Refuse to install a budget that does not fit. Installing an over-budget set
 # is exactly the failure this whole mechanism exists to prevent, so the
 # installer is the wrong place to be permissive.
-if ! "$PY" "$HERE/check_memory_budget.py" --declared --quiet; then
+if ! "$PY" "$HERE/check_memory_budget.py" --declared --quiet --budget "$BUDGET"; then
     echo "REFUSING to install: declared budget exceeds the ceiling (see above)." >&2
     exit 1
 fi
+
+# A byte-identical render never touches a unit or clears a cap. Before the
+# first actual mutation, reconcile the live population and all capacity bounds.
+preflight_done=0
+verify_live_population() {
+    [[ $preflight_done -eq 0 ]] || return 0
+    if ! "$PY" "$HERE/check_memory_budget.py" --preflight --budget "$BUDGET"; then
+        echo "REFUSING to install: live memory admission failed." >&2
+        exit 1
+    fi
+    preflight_done=1
+}
 
 # ── Refuse to render a User= for an account that does not exist ─────────────
 #
@@ -264,6 +276,7 @@ EOF
         if [[ $DRY_RUN -eq 1 ]]; then
             echo "would remove superseded $lpath"
         else
+            verify_live_population
             rm -f "$lpath"
             echo "removed superseded $lpath"
         fi
@@ -277,6 +290,7 @@ EOF
     if [[ $DRY_RUN -eq 1 ]]; then
         echo "would write $target (MemoryHigh=$high MemoryMax=$max${swapmax:+ MemorySwapMax=$swapmax})"
     else
+        verify_live_population
         mkdir -p "$dir"
         printf '%s\n' "$rendered" > "$target"
         chmod 644 "$target"
@@ -340,6 +354,11 @@ if [[ $VERIFY -eq 1 ]]; then
             else
                 echo "  $unit: declared off, verified"
             fi
+            continue
+        fi
+        if ! systemctl is-active --quiet "$unit"; then
+            echo "REFUSING to activate $unit in resource-limit verification" >&2
+            FAILED=1
             continue
         fi
         echo -n "  restarting $unit ... "

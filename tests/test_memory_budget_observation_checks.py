@@ -35,7 +35,7 @@ MB = 1024**2
 
 
 def _cgroup(tmp_path, unit, *, current=None, peak=None, high=None,
-            anon=None, file_cache=0, swap=None):
+            anon=None, file_cache=0, swap=0):
     """Build a fake cgroup v2 tree for one unit."""
     d = tmp_path / unit
     d.mkdir(parents=True, exist_ok=True)
@@ -59,7 +59,7 @@ def _cgroup(tmp_path, unit, *, current=None, peak=None, high=None,
 
 @pytest.fixture
 def cgroup_root(tmp_path, monkeypatch):
-    monkeypatch.setattr(cmb, "_CGROUP_ROOT", tmp_path)
+    monkeypatch.setattr(cmb, "cgroup_directory", lambda unit: tmp_path / unit)
     return tmp_path
 
 
@@ -655,7 +655,9 @@ class TestRuntimeOverrideAttachesToMainsDriftBreach:
                                  "ActiveEnterTimestampMonotonic": "0"}[prop],
         )
         monkeypatch.setattr(cmb, "ram_mb_from_proc", lambda: 2000)
-        monkeypatch.setattr(cmb, "_CGROUP_ROOT", tmp_path / "cgroup")
+        monkeypatch.setattr(cmb, "capture", lambda spec, pauses, root: cmb.Snapshot(
+            "fixture", {}, {row["unit"]: tmp_path / "cgroup" / row["unit"] for row in spec["services"]}, [],
+        ))
         monkeypatch.setattr(cmb, "_DROPIN_ROOT", tmp_path / "etc")
         monkeypatch.setattr(cmb, "_THROTTLE_STATE", tmp_path / "throttle-state")
         argv = sys.argv
@@ -765,7 +767,9 @@ class TestUncensorMeasurementWindow:
                                 "ActiveEnterTimestampMonotonic": "0"}[prop],
         )
         monkeypatch.setattr(cmb, "ram_mb_from_proc", lambda: 2000)
-        monkeypatch.setattr(cmb, "_CGROUP_ROOT", tmp_path / "cgroup")
+        monkeypatch.setattr(cmb, "capture", lambda spec, pauses, root: cmb.Snapshot(
+            "fixture", {}, {row["unit"]: tmp_path / "cgroup" / row["unit"] for row in spec["services"]}, [],
+        ))
         monkeypatch.setattr(cmb, "_DROPIN_ROOT", tmp_path / "etc")
         monkeypatch.setattr(cmb, "_RUNTIME_DROPIN_ROOT", tmp_path / "runtime-empty")
         monkeypatch.setattr(cmb, "_THROTTLE_STATE", tmp_path / "throttle-state")
@@ -858,7 +862,9 @@ class TestUncensorMeasurementWindow:
         monkeypatch.setattr(cmb, "systemd_show",
                              lambda unit, prop: live[unit][prop])
         monkeypatch.setattr(cmb, "ram_mb_from_proc", lambda: 700)
-        monkeypatch.setattr(cmb, "_CGROUP_ROOT", tmp_path / "cgroup")
+        monkeypatch.setattr(cmb, "capture", lambda spec, pauses, root: cmb.Snapshot(
+            "fixture", {}, {row["unit"]: tmp_path / "cgroup" / row["unit"] for row in spec["services"]}, [],
+        ))
         monkeypatch.setattr(cmb, "_DROPIN_ROOT", tmp_path / "etc")
         monkeypatch.setattr(cmb, "_RUNTIME_DROPIN_ROOT", tmp_path / "runtime-empty")
         monkeypatch.setattr(cmb, "_THROTTLE_STATE", tmp_path / "throttle-state")
@@ -882,7 +888,7 @@ class TestUncensorMeasurementWindow:
 
 
 
-def test_paused_memory_requires_observed_inactive_unit_and_absent_cgroup(cgroup_root, monkeypatch):
+def test_verified_pause_renders_zero_and_keeps_its_caps(cgroup_root):
     from infrastructure.workload_pauses import WorkloadPause
 
     unit = "parked.service"
@@ -892,16 +898,7 @@ def test_paused_memory_requires_observed_inactive_unit_and_absent_cgroup(cgroup_
         {"unit": sibling, "memory_high": "50M", "memory_max": "100M"},
     ]}
     pauses = {unit: WorkloadPause(None, "example-I123", "Paused by owner")}
-    systemd = {
-        "ActiveState": "inactive", "LoadState": "loaded", "ControlGroup": "",
-        "UnitFileState": "disabled",
-    }
-    monkeypatch.setattr(cmb, "systemd_show", lambda name, prop: systemd[prop])
-
-    verified, absent, problems = cmb.observe_memory_pauses(spec, pauses)
-    assert verified == pauses
-    assert absent == set()
-    assert problems == []
+    verified = pauses
     by_unit = {row["unit"]: row for row in cmb.headroom_rows(spec, verified)}
     parked = by_unit[unit]
     assert parked["state"] == "declared_off"
@@ -909,14 +906,3 @@ def test_paused_memory_requires_observed_inactive_unit_and_absent_cgroup(cgroup_
     assert parked["high_mb"] == 50 and parked["max_mb"] == 100
     assert "example-I123" in cmb._row_detail(parked)
     assert by_unit[sibling]["state"] == "unmeasurable"
-
-    systemd["ActiveState"] = "active"
-    verified, absent, problems = cmb.observe_memory_pauses(spec, pauses)
-    assert not verified
-    assert "paused workload memory drift" in problems[0]
-
-    systemd["ActiveState"] = "inactive"
-    (cgroup_root / unit).mkdir()
-    verified, absent, problems = cmb.observe_memory_pauses(spec, pauses)
-    assert not verified
-    assert "paused workload memory drift" in problems[0]

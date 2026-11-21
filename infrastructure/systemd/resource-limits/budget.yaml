@@ -1345,6 +1345,70 @@ observe_only:
       ceremony: there is no plausible growth path it would catch that the
       box-level MemAvailable alarm would not.
 
+# Exact platform services observed separately from the application budget.
+# A new name in the live inventory needs its own classification and rationale.
+infrastructure_services:
+  - unit: acpid.service
+    reason: ACPI event handling
+  - unit: atd.service
+    reason: operating-system job scheduler
+  - unit: auditd.service
+    reason: kernel audit journal
+  - unit: boot-pull.service
+    reason: existing machine bootstrap and source synchronization
+  - unit: box-health.service
+    reason: existing host watchdog
+  - unit: box-hygiene.service
+    reason: existing filesystem hygiene check
+  - unit: box-state-backup.service
+    reason: existing host-state backup
+  - unit: chronyd.service
+    reason: system clock synchronization
+  - unit: crond.service
+    reason: operating-system cron scheduler
+  - unit: dbus.service
+    reason: system message bus on hosts using the dbus daemon
+  - unit: dbus-broker.service
+    reason: system message bus
+  - unit: emit-oom-metric.service
+    reason: existing host OOM counter publisher
+  - unit: emit-service-memory.service
+    reason: existing host memory measurement publisher
+  - unit: getty@tty1.service
+    reason: console runtime
+  - unit: gssproxy.service
+    reason: operating-system GSS security service
+  - unit: irqbalance.service
+    reason: interrupt balancing
+  - unit: libstoragemgmt.service
+    reason: block-device management
+  - unit: reboot-if-needed.service
+    reason: existing operating-system patch reboot guard
+  - unit: scan-unlisted-state.service
+    reason: existing host-state inventory check
+  - unit: serial-getty@ttyS0.service
+    reason: serial console runtime
+  - unit: sshd.service
+    reason: operating-system management daemon
+  - unit: substrate-health-daily.service
+    reason: existing host health verification
+  - unit: systemd-homed.service
+    reason: systemd home directory management
+  - unit: systemd-journald.service
+    reason: system journal
+  - unit: systemd-logind.service
+    reason: system login manager
+  - unit: systemd-networkd.service
+    reason: operating-system network management
+  - unit: systemd-resolved.service
+    reason: system DNS resolver
+  - unit: systemd-udevd.service
+    reason: device management
+  - unit: systemd-unit-drift-check.service
+    reason: existing installed-unit integrity check
+  - unit: systemd-userdbd.service
+    reason: operating-system user database
+
 manifest_exclude:
   - unit: "alert-on-failure@.service"
     reason: systemd template unit, never instantiated directly

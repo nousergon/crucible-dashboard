@@ -254,7 +254,7 @@ def test_guard_never_blocks_an_in_tree_unit_or_any_other_unit(tmp_path):
     assert _installable(tmp_path, other, dst)
 
 
-def _sync_block_harness(tmp_path: Path, *, fail_install: bool):
+def _sync_block_harness(tmp_path: Path, *, fail_install: bool, include_new_job: bool = False):
     """Run boot-pull.sh's real launcher-install + unit-sync block against a
     sandbox /etc/systemd/system that holds today's in-tree unit, with `sudo`
     shimmed (install can be made to fail; systemctl is a no-op)."""
@@ -274,6 +274,8 @@ def _sync_block_harness(tmp_path: Path, *, fail_install: bool):
     timer = (_INFRA / "systemd" / "boot-pull.timer").read_text()
     (src_dir / "boot-pull.timer").write_text(timer)
     (etc / "boot-pull.timer").write_text(timer)
+    if include_new_job:
+        (src_dir / "new-job.service").write_text("[Service]\nType=oneshot\nExecStart=/usr/bin/true\n")
 
     shim = tmp_path / "shim"
     shim.mkdir()
@@ -330,3 +332,13 @@ def test_successful_launcher_install_then_syncs_the_launcher_unit(tmp_path):
     assert installed.read_text() == new_unit
     assert "PF=0" in out, out
     assert log.index("OK   boot-pull-launcher: installed") < log.index("SYNC boot-pull.service (updated)")
+
+
+
+def test_unit_sync_never_copies_an_unadmitted_new_service(tmp_path):
+    out, log, installed, *_ = _sync_block_harness(
+        tmp_path, fail_install=False, include_new_job=True,
+    )
+    assert not (installed.parent / "new-job.service").exists()
+    assert "FR=new-job.service (memory admission)" in out
+    assert "new service requires memory admission" in log
