@@ -42,6 +42,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -79,6 +80,7 @@ def _harness(
     mem_total_mib: int = 100,
     fraction: str | None = "0.50",
     s3_fails: bool = False,
+    unreadable_swap: str | None = None,
 ):
     """Run the real script against a fake cgroup tree and a fake budget.yaml.
 
@@ -97,11 +99,29 @@ def _harness(
 
     cgroup = tmp_path / "cgroup"
     cgroup.mkdir()
+    (cgroup / "cgroup.procs").write_text("")
     for unit, (anon, swap) in present.items():
         d = cgroup / unit
         d.mkdir()
         (d / "memory.stat").write_text(f"anon {anon}\nfile 12345\nslab 999\n")
-        (d / "memory.swap.current").write_text(f"{swap}\n")
+        if unit != unreadable_swap:
+            (d / "memory.swap.current").write_text(f"{swap}\n")
+    fake_systemctl = binn / "systemctl"
+    fake_systemctl.write_text(rf"""#!{sys.executable}
+import json, os, sys
+units = json.loads(os.environ["TEST_SYSTEMD_UNITS"])
+if sys.argv[1] == "list-units":
+    print("\n".join(units))
+elif sys.argv[1] == "show":
+    for name in sys.argv[sys.argv.index("--") + 1:]:
+        active = units[name]
+        print(f"Id={{name}}\nLoadState=loaded\nActiveState={'{'}'active' if active else 'inactive'{'}'}\n"
+              f"Type=simple\nControlGroup={'{'}'/' + name if active else ''{'}'}\n"
+              "UnitFileState=disabled\nMemoryMax=104857600\nMainPID=0\n")
+else:
+    sys.exit(1)
+""")
+    fake_systemctl.chmod(0o755)
 
     budget = tmp_path / "budget.yaml"
     body = "ram_mb: 3839\n"
@@ -117,17 +137,13 @@ def _harness(
     call_log = tmp_path / "aws_calls.txt"
     call_log.touch()
 
-    src = SCRIPT.read_text().replace(
-        'CGROUP_ROOT="/sys/fs/cgroup/system.slice"', f'CGROUP_ROOT="{cgroup}"'
-    )
-    copy = tmp_path / "emit_service_memory.sh"
-    copy.write_text(src)
-    copy.chmod(0o755)
-
     env = dict(os.environ)
     env["PATH"] = f"{binn}:{env['PATH']}"
     env["AWS_CALL_LOG"] = str(call_log)
     env["BUDGET_FILE"] = str(budget)
+    env["PYTHON"] = sys.executable
+    env["MEMORY_CGROUP_ROOT"] = str(cgroup)
+    env["TEST_SYSTEMD_UNITS"] = json.dumps({name: name in present for name in set(units) | set(present)})
     meminfo = tmp_path / "meminfo"
     meminfo.write_text(f"MemTotal:       {mem_total_mib * 1024} kB\nMemFree: 1 kB\n")
     env["MEMINFO_FILE"] = str(meminfo)
@@ -137,7 +153,7 @@ def _harness(
         env["AWS_S3_FAIL"] = "1"
 
     proc = subprocess.run(
-        ["bash", str(copy)], env=env, capture_output=True, text=True, timeout=60
+        ["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=60
     )
     return proc, call_log.read_text()
 
@@ -173,17 +189,31 @@ class TestMeasurementIsUncensored:
 
 @pytest.mark.skipif(not SCRIPT.exists(), reason="collector not present")
 class TestEveryUnitEveryRun:
-    def test_a_stopped_unit_records_zero_rather_than_nothing(self, tmp_path):
-        """A series that stops is indistinguishable from a dead publisher."""
-        proc, _ = _harness(
+    def test_a_stopped_unit_without_pause_is_recorded_unknown(self, tmp_path):
+        proc, calls = _harness(
             tmp_path,
             units=["running.service", "stopped.service"],
             present={"running.service": (100 * MB, 0)},
         )
-        assert proc.returncode == 0, proc.stderr
-        assert _record(proc)["units"].get("stopped.service") == 0, (
-            "a unit with no cgroup must still be recorded, as zero:\n" + proc.stdout
+        assert proc.returncode == 2, proc.stderr
+        record = _record(proc)
+        assert record["units"]["stopped.service"] is None
+        assert record["total_mib"] is None
+        assert record["known_application_mib"] == 100
+        assert record["coverage_complete"] is False
+        assert "s3 cp" in calls and "put-metric-data" not in calls
+
+    def test_unreadable_swap_records_incomplete_and_never_emits_a_total(self, tmp_path):
+        proc, calls = _harness(
+            tmp_path, units=["running.service"],
+            present={"running.service": (100 * MB, 0)}, unreadable_swap="running.service",
         )
+        assert proc.returncode == 2, proc.stderr
+        record = _record(proc)
+        assert record["units"]["running.service"] is None
+        assert record["at_or_over_t1_8"] is None
+        assert "memory.swap.current" in record["findings"][0]
+        assert "s3 cp" in calls and "put-metric-data" not in calls
 
     def test_total_is_published_and_is_the_sum(self, tmp_path):
         proc, calls = _harness(
@@ -222,17 +252,14 @@ class TestFailsLoud:
         call_log = tmp_path / "aws_calls.txt"
         call_log.touch()
 
-        copy = tmp_path / "emit_service_memory.sh"
-        copy.write_text(SCRIPT.read_text())
-        copy.chmod(0o755)
-
         env = dict(os.environ)
         env["PATH"] = f"{binn}:{env['PATH']}"
         env["AWS_CALL_LOG"] = str(call_log)
         env["BUDGET_FILE"] = str(tmp_path / "does-not-exist.yaml")
+        env["PYTHON"] = sys.executable
 
         proc = subprocess.run(
-            ["bash", str(copy)], env=env, capture_output=True, text=True, timeout=60
+            ["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=60
         )
         assert proc.returncode != 0, (
             "an unreadable unit list must fail, not fall back to the cgroup "
@@ -261,7 +288,8 @@ class TestReachesTheBox:
         is empty."""
         text = INSTALLER.read_text()
         block = text[text.index("priming the per-service memory series"):]
-        assert "systemctl start emit-service-memory.service ||" in block
+        assert "if ! systemctl start emit-service-memory.service" in block
+        assert '[[ "$status" != 2 ]]' in block
         assert "exit 1" in block[: block.index("Done. Verify")]
 
     def test_deploy_manifest_carries_every_input(self):
@@ -338,13 +366,13 @@ class TestOnBreachOnly:
         # MemTotal 4000 MiB, line 2000; total 160.
         proc, calls = _harness(
             tmp_path, units=["a.service", "stopped.service"],
-            present={"a.service": (150 * MB, 10 * MB)}, mem_total_mib=4000,
+            present={"a.service": (150 * MB, 10 * MB), "stopped.service": (0, 0)}, mem_total_mib=4000,
         )
         assert proc.returncode == 0, proc.stderr
         assert "put-metric-data" not in calls, calls
         rec = _record(proc)
         assert rec["units"] == {"a.service": 160, "stopped.service": 0}, (
-            "every unit, every run, explicit zero for a stopped one"
+            "every unit, every run, including an observed zero"
         )
         assert rec["total_mib"] == 160
         assert rec["t1_8_line_mib"] == 2000
@@ -355,7 +383,7 @@ class TestOnBreachOnly:
         CloudWatch, breach or not. The total is the one published series."""
         proc, calls = _harness(
             tmp_path, units=["a.service", "stopped.service"],
-            present={"a.service": (2000 * MB, 0)}, mem_total_mib=4000,
+            present={"a.service": (2000 * MB, 0), "stopped.service": (0, 0)}, mem_total_mib=4000,
         )
         assert proc.returncode == 0, proc.stderr
         assert "MetricName=ServiceMemoryTotalMiB,Value=2000," in calls
@@ -401,7 +429,7 @@ class TestOnBreachOnly:
             mem_total_mib=4000, fraction=None,
         )
         assert proc.returncode != 0
-        assert "cannot derive the T1-8 line" in proc.stderr
+        assert any("cannot derive the T1-8 line" in item for item in _record(proc)["findings"])
         assert "put-metric-data" in calls
 
     def test_the_line_is_read_from_the_real_budget(self):

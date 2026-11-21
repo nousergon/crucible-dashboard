@@ -42,6 +42,7 @@ install_memory_budget_bundle() {
         install -d -m 0755 "$stage/systemd/resource-limits"
         install -m 0644 "$REPO_INFRA/check_memory_budget.py" "$stage/check_memory_budget.py"
         install -m 0644 "$REPO_INFRA/workload_pauses.py" "$stage/workload_pauses.py"
+        install -m 0644 "$REPO_INFRA/systemd_memory.py" "$stage/systemd_memory.py"
         install -m 0644 "$REPO_INFRA/systemd/resource-limits/budget.yaml" "$stage/systemd/resource-limits/budget.yaml"
         ln -s "$(basename "$stage")" "$stage.link"
         # Publish the complete tree with one atomic rename. The watchdog's

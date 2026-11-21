@@ -14,7 +14,8 @@ X-InstallMayStart=yes
 Type=oneshot
 ExecStart=/usr/local/bin/emit_service_memory.sh
 User=root
-Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=PATH=/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PYTHON=/home/ec2-user/alpha-engine-dashboard/.venv/bin/python
 Environment=AWS_REGION=us-east-1
 TimeoutStartSec=60
 # Local day files for the S3 upload (alpha-engine-config-I11792 M2); the

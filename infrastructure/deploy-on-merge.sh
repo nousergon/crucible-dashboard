@@ -255,6 +255,22 @@ CURRENT_SHA=$(sudo -u ec2-user git rev-parse HEAD)
 log "repo HEAD -> $CURRENT_SHA"
 log "$(sudo -u ec2-user git log --oneline -1)"
 
+# Capture the maintenance boundary before Python-parity can stop any service.
+# The same set is used for the later application restart and rollback. An
+# inactive or differently capped unit would be an activation, not maintenance.
+DEPLOY_APPLICATIONS=(nous-ergon-live.service crucible-dash-api.service)
+if [ -d "$REPO_DIR/dash-web" ]; then
+    DEPLOY_APPLICATIONS+=(crucible-dash-web.service)
+fi
+# The watchdog normally uses the dashboard venv. Fall back to a usable
+# system interpreter when Python-parity is about to repair the app venv.
+MEMORY_PY="$REPO_DIR/.venv/bin/python"
+if ! "$MEMORY_PY" -c 'import yaml' >>"$LOG" 2>&1; then
+    MEMORY_PY=python3
+fi
+"$MEMORY_PY" "$REPO_DIR/infrastructure/check_memory_budget.py" --maintain-active "${DEPLOY_APPLICATIONS[@]}" >>"$LOG" 2>&1 \
+    || fail "dashboard application maintenance would activate an unadmitted workload"
+
 # ── 0. Python-version SSoT self-heal (config#2791) ──────────────────────────
 # .python-version is the single declared Python version this repo builds
 # against (CI's `test` job now reads the same file — mirrors the dash-web
@@ -692,6 +708,7 @@ if manifest_stale || any_file_state_stale \
     "$BOX_HEALTH_INFRA/workload_pauses.py:/usr/local/bin/workload_pauses.py" \
     "$BOX_HEALTH_INFRA/check_memory_budget.py:$MEMORY_BUNDLE_LIVE/check_memory_budget.py" \
     "$BOX_HEALTH_INFRA/workload_pauses.py:$MEMORY_BUNDLE_LIVE/workload_pauses.py" \
+    "$BOX_HEALTH_INFRA/systemd_memory.py:$MEMORY_BUNDLE_LIVE/systemd_memory.py" \
     "$BOX_HEALTH_INFRA/systemd/resource-limits/budget.yaml:$MEMORY_BUNDLE_LIVE/systemd/resource-limits/budget.yaml" \
     "$BOX_HEALTH_INFRA/emit_box_health_hygiene.py:/usr/local/bin/emit_box_health_hygiene.py" \
     "$BOX_HEALTH_INFRA/systemd/box-health.service:/etc/systemd/system/box-health.service" \
@@ -1069,11 +1086,7 @@ revert_to_last_good() {
         bash "$REPO_DIR/infrastructure/install-box-health.sh" >>"$LOG" 2>&1 || true
     fi
     local restart_failed=0
-    local units=(nous-ergon-live.service crucible-dash-api.service)
-    if [ -d "$REPO_DIR/dash-web" ]; then
-        units+=(crucible-dash-web.service)
-    fi
-    systemctl restart "${units[@]}" >>"$LOG" 2>&1 || restart_failed=1
+    systemctl restart "${DEPLOY_APPLICATIONS[@]}" >>"$LOG" 2>&1 || restart_failed=1
 
     if check_deployed_apps " [post-revert]" && [ "$restart_failed" -eq 0 ]; then
         log "REVERT OK — in-service dashboard apps healthy at $good"

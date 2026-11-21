@@ -151,7 +151,7 @@ def test_installed_memory_watchdog_reads_its_bundle_after_app_rollback(tmp_path,
         "max_steady_state_fraction: 0.60\nservices:\n"
         "  - unit: parked.service\n    memory_high: 100M\n    memory_max: 150M\n"
     )
-    for name in ("workload_pauses.py", "check_memory_budget.py"):
+    for name in ("workload_pauses.py", "systemd_memory.py", "check_memory_budget.py"):
         shutil.copy(INFRA / name, checkout / name)
     bundle = tmp_path / "installed"
     installer = _function(INFRA / "install-box-health.sh", "install_memory_budget_bundle")
@@ -165,6 +165,7 @@ def test_installed_memory_watchdog_reads_its_bundle_after_app_rollback(tmp_path,
     # controls. That tree cannot validate the currently installed host units.
     (checkout / "dashboard.service").touch()
     (checkout / "workload_pauses.py").unlink()
+    (checkout / "systemd_memory.py").unlink()
     (checkout / "check_memory_budget.py").write_text("raise SystemExit(99)\n")
     budget.write_text(budget.read_text().replace("parked.service", "dashboard.service"))
 
@@ -194,6 +195,7 @@ package.__path__ = [str(checker.parent)]
 sys.modules[package.__name__] = package
 budget = importlib.import_module("infrastructure." + checker.stem)
 pauses = importlib.import_module("infrastructure.workload_pauses")
+memory = importlib.import_module("infrastructure.systemd_memory")
 
 unit = "parked.service"
 properties = {"ActiveState": "inactive", "ControlGroup": ""}
@@ -204,11 +206,17 @@ else:
     if state == "unguarded":
         properties.update(MemoryMax="infinity", MemoryHigh="infinity", ActiveEnterTimestampMonotonic="0")
 budget._CGROUP_ROOT = fixture / "cgroups"
+(budget._CGROUP_ROOT / "cgroup.procs").write_text("")
+memory.live_services = lambda expected: {unit: memory.Service(
+    unit, frozenset({unit}), properties["LoadState"], "inactive", "simple", "",
+    properties["UnitFileState"], properties.get("MemoryMax", ""), 0,
+)}
+memory.listener_ports = lambda: set()
 budget._DROPIN_ROOT = fixture / "dropins"
 budget._PEAK_MARKS = fixture / "peaks.json"
 budget.systemd_show = lambda name, prop: properties[prop] if unit == name else None
 budget.ram_mb_from_proc = lambda: 2000
-budget.verify_pause_guard = lambda unit: pauses.verify_pause_guard(
+memory.verify_pause_guard = lambda unit: pauses.verify_pause_guard(
     unit, root=fixture, expected_uid=os.getuid()
 )
 budget.load_workload_pauses = lambda: pauses.load_workload_pauses(
@@ -223,4 +231,4 @@ raise SystemExit(budget.main())
     )
     assert result.returncode == (1 if state == "unguarded" else 0), result.stdout + result.stderr
     if state == "unguarded":
-        assert "paused workload memory unreadable" in result.stderr
+        assert "pause guard unreadable" in result.stderr

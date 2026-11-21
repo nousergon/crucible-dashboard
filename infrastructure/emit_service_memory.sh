@@ -59,62 +59,34 @@
 # is the same definition `check_memory_budget.py` uses for its working-set
 # bound, so the series here and that check's verdict cannot disagree.
 #
-# EVERY UNIT, EVERY RUN, INCLUDING THE QUIET ONES
-# -----------------------------------------------
-# Units are read from budget.yaml's coverage manifest, not from whatever is
-# currently running, and a unit that is absent records 0 rather than
-# nothing. A service that stopped must be visibly zero: a series that simply
-# ceases is indistinguishable from a dead publisher (observability-policy
-# §7.4a), and "the memory freed up" and "the collector broke" are the two
-# readings we would most need to tell apart.
-#
-# Runs every 5 min via emit-service-memory.timer, alongside emit_oom_metric.sh.
-# Policy: nous-ergon-ops/policies/shared-application-host-policy.md T0-3.
+# The atomic box-health memory bundle supplies the same reconciler and budget
+# as the admission check. Keep partial observations in the journal and S3
+# with null totals. A partial total would misrepresent the CloudWatch series.
+# Runs every 5 min via emit-service-memory.timer.
 
 set -uo pipefail
 
 NAMESPACE="AlphaEngine/Host"
 REGION="us-east-1"
-CGROUP_ROOT="/sys/fs/cgroup/system.slice"
 MEMINFO="${MEMINFO_FILE:-/proc/meminfo}"
-# systemd's StateDirectory= (emit-service-memory.service) creates this.
 STATE_DIR="${STATE_DIRECTORY:-/var/lib/emit-service-memory}"
 S3_PREFIX="${SERVICE_MEMORY_S3_PREFIX:-s3://alpha-engine-research/dashboard/box/service-memory}"
-# Local day files kept on the box; S3 holds the record.
 KEEP_DAYS=3
-BUDGET="${BUDGET_FILE:-/home/ec2-user/alpha-engine-dashboard/infrastructure/systemd/resource-limits/budget.yaml}"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BUNDLE="${MEMORY_BUNDLE_ROOT:-/usr/local/lib/box-health-memory}"
+PYTHON="${PYTHON:-python3}"
 
-# The unit list comes from budget.yaml so this collector and the budget check
-# describe the same set by construction. A unit added to the budget without
-# being added here would otherwise be silently uninstrumented — which is the
-# gap this script exists to close, reintroduced one level down.
-#
-# Deliberately a grep rather than a YAML parse: this runs on the box with the
-# system python and no guaranteed PyYAML, and the field is a flat `- unit:`
-# list. If budget.yaml's shape ever changes, the fallback below fires loudly
-# rather than silently publishing an empty set.
-read_units() {
-    [[ -r "$BUDGET" ]] || return 1
-    # ONLY the `services:` block. budget.yaml also carries `timers:` (30 rows,
-    # including OS plumbing like dbus and systemd-resolved) and `timer_jobs:`;
-    # a flat grep over the file picks those up too, and a 5-minute gauge of
-    # dbus's resident memory is noise that costs money per metric. `services:`
-    # is the long-running set the working-set bound is about.
-    awk '/^services:/{inblock=1; next} /^[a-z_]+:/{inblock=0} inblock' "$BUDGET" \
-        | grep -oE '^[[:space:]]*-[[:space:]]*unit:[[:space:]]*[A-Za-z0-9@_.-]+\.service' \
-        | sed -E 's/.*unit:[[:space:]]*//' | sort -u
-}
-
-mapfile -t UNITS < <(read_units)
-
-if (( ${#UNITS[@]} == 0 )); then
-    # FAIL, do not degrade to "whatever is in the cgroup tree". Publishing a
-    # set derived from a different source would produce a series that silently
-    # changes meaning — worse than a gap, because the gap is visible.
-    echo "emit_service_memory: could not read any unit from ${BUDGET} --" \
-         "refusing to publish a set derived from somewhere else" >&2
-    exit 1
+# Running directly from the checkout is the standalone diagnostic entry point.
+# The installed service resolves and holds one generation until Python returns.
+if [[ -r "$HERE/check_memory_budget.py" ]]; then
+    CHECKER="$HERE/check_memory_budget.py"
+else
+    exec 9<"$BUNDLE/.lock" && flock -s 9 || exit 1
+    CHECKER="$BUNDLE/current/check_memory_budget.py"
 fi
+args=(--sample --meminfo "$MEMINFO")
+[[ -z "${BUDGET_FILE:-}" ]] || args+=(--budget "$BUDGET_FILE")
+[[ -z "${MEMORY_CGROUP_ROOT:-}" ]] || args+=(--cgroup-root "$MEMORY_CGROUP_ROOT")
 
 fetch_instance_id() {
     local token
@@ -141,69 +113,34 @@ if [[ -z "$INSTANCE_ID" ]]; then
     exit 1
 fi
 
-# `anon` from memory.stat plus memory.swap.current, in MiB.
-# A unit with no cgroup (stopped, or never installed) reports 0 -- see the
-# header: absence must be visible as zero, never as a missing datapoint.
-unit_mib() {
-    local d="$CGROUP_ROOT/$1" anon=0 swap=0
-    if [[ -r "$d/memory.stat" ]]; then
-        anon=$(awk '/^anon /{print $2; exit}' "$d/memory.stat")
-        [[ "$anon" =~ ^[0-9]+$ ]] || anon=0
-    fi
-    if [[ -r "$d/memory.swap.current" ]]; then
-        swap=$(cat "$d/memory.swap.current")
-        [[ "$swap" =~ ^[0-9]+$ ]] || swap=0
-    fi
-    echo $(( (anon + swap) / 1048576 ))
-}
+if ! SAMPLE=$("$PYTHON" "$CHECKER" "${args[@]}"); then
+    echo "emit_service_memory: memory reconciliation could not run" >&2
+    exit 1
+fi
+if [[ "$CHECKER" == "$BUNDLE/current/check_memory_budget.py" ]]; then
+    exec 9<&-
+fi
 
-# The T1-8 line, from the SAME two inputs check_memory_budget.py evaluates:
-# budget.yaml's `max_steady_state_fraction` and MemTotal from /proc/meminfo.
-# Unreadable is NOT "below the line": the run publishes to CloudWatch (more
-# data, never less) and exits non-zero so the journal and the unit's failed
-# state say why.
+# Render the journal/S3 record and extract its numeric metric only from the
+# same validated snapshot. Keep the JSON as data, including nulls and reasons.
+if ! EXTRA=$("$PYTHON" -c '
+import json, sys
+record = json.load(sys.stdin)
+record["instance_id"] = sys.argv[1]
+print(json.dumps(record, separators=(",", ":")))
+total = record["total_mib"]
+publish = total is not None and record["at_or_over_t1_8"] is not False
+print(total if publish else "-", int(record["coverage_complete"]), record["ts"][:10])
+' "$INSTANCE_ID" <<< "$SAMPLE"); then
+    echo "emit_service_memory: invalid reconciliation record" >&2
+    exit 1
+fi
+RECORD=${EXTRA%%$'\n'*}
+read -r METRIC_MIB COMPLETE DAY <<< "${EXTRA##*$'\n'}"
 rc=0
-FRACTION=$(awk -F: '/^max_steady_state_fraction:/{gsub(/[[:space:]]|#.*/, "", $2); print $2; exit}' "$BUDGET" 2>/dev/null)
-MEM_TOTAL_MIB=$(awk '/^MemTotal:/{print int($2 / 1024); exit}' "$MEMINFO" 2>/dev/null)
-LINE_MIB=""
-if [[ "$FRACTION" =~ ^0?\.[0-9]+$|^1(\.0+)?$ ]] && [[ "$MEM_TOTAL_MIB" =~ ^[0-9]+$ ]] && (( MEM_TOTAL_MIB > 0 )); then
-    LINE_MIB=$(awk -v f="$FRACTION" -v m="$MEM_TOTAL_MIB" 'BEGIN{printf "%d", f * m}')
-else
-    echo "emit_service_memory: cannot derive the T1-8 line (max_steady_state_fraction=${FRACTION:-unreadable}," \
-         "MemTotal=${MEM_TOTAL_MIB:-unreadable} MiB) -- publishing to CloudWatch this run and failing" >&2
-    rc=1
-fi
 
-METRIC_DATA=()
-UNITS_JSON=""
-TOTAL_MIB=0
-# Per-unit values go to the record ONLY (journal + S3); see the header.
-for unit in "${UNITS[@]}"; do
-    mib=$(unit_mib "$unit")
-    TOTAL_MIB=$(( TOTAL_MIB + mib ))
-    UNITS_JSON+="${UNITS_JSON:+,}\"${unit}\":${mib}"
-done
-
-# The sum, as the one CloudWatch series. It is the number
-# check_memory_budget.py's working-set bound is evaluated against; the
-# per-service breakdown behind any breach hour is in that hour's S3 records.
-METRIC_DATA+=("MetricName=ServiceMemoryTotalMiB,Value=${TOTAL_MIB},Unit=Megabytes,Dimensions=[{Name=InstanceId,Value=${INSTANCE_ID}}]")
-
-BREACH=false
-if [[ -z "$LINE_MIB" ]] || (( TOTAL_MIB >= LINE_MIB )); then
-    BREACH=true
-fi
-
-TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-DAY=${TS:0:10}
-RECORD="{\"ts\":\"${TS}\",\"instance_id\":\"${INSTANCE_ID}\",\"total_mib\":${TOTAL_MIB},\"mem_total_mib\":${MEM_TOTAL_MIB:-null},\"max_steady_state_fraction\":${FRACTION:-null},\"t1_8_line_mib\":${LINE_MIB:-null},\"at_or_over_t1_8\":${BREACH},\"units\":{${UNITS_JSON}}}"
-
-# 1. The journal. Always, and first: it is the record that survives every
-#    later failure in this script.
+# The journal remains available even when the upload fails.
 echo "$RECORD"
-
-# 2. S3. The day file is appended locally and re-uploaded whole, so one
-#    object per UTC day holds every 5-minute record (288 PUTs/day, ~$0.04/mo).
 if mkdir -p "$STATE_DIR" && printf '%s\n' "$RECORD" >> "$STATE_DIR/${DAY}.jsonl"; then
     if ! aws s3 cp --region "$REGION" --only-show-errors \
             "$STATE_DIR/${DAY}.jsonl" "${S3_PREFIX}/${DAY}.jsonl"; then
@@ -216,28 +153,17 @@ else
     rc=1
 fi
 
-# 3. CloudWatch, on breach only — the total, nothing per unit.
-if [[ "$BREACH" == true ]]; then
-    # One metric today; the batching stays so a future series added to
-    # METRIC_DATA cannot silently start truncating at the 1000-per-call cap.
-    for ((i = 0; i < ${#METRIC_DATA[@]}; i += 20)); do
-        if ! aws cloudwatch put-metric-data \
-                --region "$REGION" \
-                --namespace "$NAMESPACE" \
-                --metric-data "${METRIC_DATA[@]:i:20}"
-        then
-            echo "emit_service_memory: put-metric-data FAILED for batch at index $i" >&2
-            rc=1
-        fi
-    done
+if [[ "$METRIC_MIB" != "-" ]]; then
+    if ! aws cloudwatch put-metric-data --region "$REGION" --namespace "$NAMESPACE" \
+        --metric-data "MetricName=ServiceMemoryTotalMiB,Value=${METRIC_MIB},Unit=Megabytes,Dimensions=[{Name=InstanceId,Value=${INSTANCE_ID}}]"; then
+        echo "emit_service_memory: put-metric-data FAILED for ServiceMemoryTotalMiB" >&2
+        rc=1
+    fi
 fi
-
-if (( rc != 0 )); then
-    exit 1
+if [[ "$rc" -ne 0 ]]; then
+    exit "$rc"
 fi
-
-if [[ "$BREACH" == true ]]; then
-    echo "emit_service_memory: ${#UNITS[@]} unit(s), total ${TOTAL_MIB} MiB >= T1-8 line ${LINE_MIB} MiB -- recorded (journal + S3), total PUBLISHED to CloudWatch"
-else
-    echo "emit_service_memory: ${#UNITS[@]} unit(s), total ${TOTAL_MIB} MiB < T1-8 line ${LINE_MIB} MiB -- recorded (journal + S3), not published"
+if [[ "$COMPLETE" != 1 ]]; then
+    echo "emit_service_memory: incomplete sample recorded with explicit coverage findings" >&2
+    exit 2
 fi
