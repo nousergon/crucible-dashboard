@@ -793,7 +793,14 @@ classify_timer_staleness() {
     # suppressing the very check it was a hole in — the guard-excludes-the-class-
     # it-protects shape, again, and the reason the ordering here is load-bearing
     # rather than stylistic. Asserted in test_box_health_timer_staleness.sh.
-    if [ -n "$result" ] && [ "$result" != "success" ]; then
+    # `exec-condition` IS NOT A FAILURE (alpha-engine-config-I14071). It is the
+    # unit's ExecCondition= exiting 1..254: systemd declining to start the job
+    # on purpose because its start condition was false. Measured 2026-11-14 ->
+    # 11-20: ~230 of 382 Telegram messages were CRITICAL/RESOLVED pairs for
+    # codex-*.timer / deepseek-draft.timer on exactly this result. Only that one
+    # literal result is exempt: `exit-code`, `timeout`, `signal`, `core-dump`,
+    # `start-limit-hit` and an empty/unknown result all remain real findings.
+    if [ -n "$result" ] && [ "$result" != "success" ] && [ "$result" != "exec-condition" ]; then
         # The failing run's OWN timestamp and the timer's next scheduled
         # attempt, both raw systemd calendar strings (stable across ticks --
         # neither changes until the run itself changes). This is what makes a
@@ -2012,26 +2019,21 @@ publish_clears() {
 # health_clears_unpublished is allowed to count.
 publish_channel_clear() {
     local key="$1" msg="$2"
-    if ! krepis_clear_supported; then
-        echo "box_health: clear DUE but installed krepis has no publish_clear (bump the krepis pin) — key=$key" >&2
-        return 1
-    fi
-    # --no-sns (alpha-engine-config-I8748, Brian's option (a), 2026-08-31): a
-    # clear reports a condition that has ENDED, which is not an issue, so it
-    # goes to the Telegram channel (silent; publish_clear forces that) and the
-    # console, never to SNS/email. The PAGE in publish_page keeps SNS. Nothing
-    # is suppressed: the terminator is still sent, still keyed on the page's
-    # identity_key, and a send that reaches nobody still counts toward
-    # health_clears_unpublished. krepis has carried `clear --no-sns` since
-    # publish_clear itself landed (v0.59.26), so krepis_clear_supported above
-    # already covers it.
-    if ! "$ALERT_PY" -m krepis.alerts clear \
-        --message "$msg" \
-        --identity-key "$key" \
-        --source box-health \
-        --no-sns </dev/null; then
-        echo "box_health: clear publish failed for key=$key" >&2
-        return 1
+    # LOG ONLY (alpha-engine-config-I14071, Brian's 2026-11-06 ruling): a
+    # critical is sent once and NO recovery message ever reaches Telegram. The
+    # terminator is still recorded in the alert log (krepis `clear` with
+    # --no-telegram --no-sns) and on the journal, keyed on the page's
+    # identity_key; it is simply never fanned out. A record that fails to write
+    # is a journal line, not a missed delivery, so this never returns non-zero
+    # and never inflates health_clears_unpublished.
+    echo "box_health: recovery (log only, not sent) key=$key: ${msg//$'\n'/ }" >&2
+    if krepis_clear_supported; then
+        "$ALERT_PY" -m krepis.alerts clear \
+            --message "$msg" \
+            --identity-key "$key" \
+            --source box-health \
+            --no-sns --no-telegram </dev/null \
+            || echo "box_health: clear log-record failed for key=$key (recovery not recorded in alert log)" >&2
     fi
     return 0
 }
@@ -3074,6 +3076,8 @@ snapshot_problems() {
             [ -n "$fu" ] || continue
             [ "$(unit_is_covered "$fu" "${SERVICES[*]}" "$covered_timer_svcs")" = "no" ] || continue
             fu_result=$(systemctl show "$fu" -p Result --value 2>/dev/null)
+            # A skipped ExecCondition is not a failure (alpha-engine-config-I14071).
+            [ "$fu_result" = "exec-condition" ] && continue
             fu_exit=$(systemctl show "$fu" -p InactiveExitTimestamp --value 2>/dev/null)
             # PIN, don't re-derive, for a poll of an already-classified run --
             # same reasoning and same helper as the timer-job-failing path

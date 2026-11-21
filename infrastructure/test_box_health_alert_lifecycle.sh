@@ -187,10 +187,26 @@ SUPPORTS_CLEAR=0
 publish_clears "$prior_two" ""
 check "no CLI call attempted on an unsupporting krepis" \
       "$(wc -l < "$CALLS" | tr -d ' ')" "0"
-check "only the CHANNEL-bound clear counts as unpublished" "$UNPUBLISHED_CLEARS" "1"
+check "a recovery is log-only, so nothing counts as unpublished (I14071)" "$UNPUBLISHED_CLEARS" "0"
 check "the console-bound clear is unaffected by the krepis pin" \
       "$(console_clear_count)" "1"
 SUPPORTS_CLEAR=1
+
+echo "== 9. recovery is log-only: never a Telegram or SNS send (alpha-engine-config-I14071) =="
+reset_calls
+publish_clears "$prior_two" ""
+check "every recorded clear carries --no-telegram" \
+      "$(grep -c -- '--no-telegram' "$CALLS")" "$(grep -c 'krepis.alerts clear' "$CALLS")"
+check "every recorded clear carries --no-sns" \
+      "$(grep -c -- '--no-sns' "$CALLS")" "$(grep -c 'krepis.alerts clear' "$CALLS")"
+# Even with a telegram-capable fake, no 'publish' (the sender) is ever invoked.
+check "recovery never calls the publish sender" \
+      "$(grep -c 'krepis.alerts publish' "$CALLS")" "0"
+
+echo "== 10. a flapping condition sends once: still_open on every repeat =="
+alerted_state_write "$prior_two"
+check "tick 2 of an open alert is still_open (no re-send)" "$(alerted_state_lifecycle keyA)" "still_open"
+check "tick 3 of an open alert is still_open (no re-send)" "$(alerted_state_lifecycle keyA)" "still_open"
 
 echo "== 7. alerted_state_lifecycle: still_open vs opened =="
 alerted_state_write "$prior_two"

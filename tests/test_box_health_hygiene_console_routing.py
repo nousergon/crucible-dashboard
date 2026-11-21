@@ -645,14 +645,17 @@ class TestTheUnpublishedGaugeStaysHonest:
             tmp_path,
             resolve_env={"FAKE_CONSOLE_RC": "1", "FAKE_CLEAR_RC": "1"},
         )
-        assert resolved.clears_unpublished == 1
+        # I14071: the channel fallback is log-only now, so a failed log record
+        # is a journal line, never an undelivered page.
+        assert resolved.clears_unpublished == 0
 
-    def test_a_failed_channel_clear_is_still_counted(self, tmp_path):
-        """The pre-existing behaviour for a critical opener, unchanged."""
+    def test_a_failed_channel_clear_record_is_not_a_missed_delivery(self, tmp_path):
+        """I14071: recoveries never reach Telegram, so a failing log record
+        cannot be an undelivered page and must not move the gauge."""
         _, resolved = _open_then_resolve(
             _OPEN_CRITICAL_TIMER, tmp_path, resolve_env={"FAKE_CLEAR_RC": "1"}
         )
-        assert resolved.clears_unpublished == 1
+        assert resolved.clears_unpublished == 0
 
     def test_the_gauge_is_published_on_a_run_with_no_clears_at_all(self, tmp_path):
         """Zero is published too. A gauge that only appears when it is non-zero

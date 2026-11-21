@@ -109,6 +109,12 @@ assert_problem "timeout result" \
     "timer job failing" \
     "$((NOW - 60))" 1800 timeout
 
+assert_problem "exit-code result stays a real alert (codex-tick path, I14071)" \
+    "timer job failing" \
+    "$((NOW - 60))" 1800 exit-code
+assert_healthy "exec-condition (ExecCondition skipped the run) opens no alert (I14071)" \
+    "$((NOW - 60))" 1800 exec-condition
+
 echo "== a job that has silently stopped running must page =="
 assert_problem "31h since last run against a 26h budget" \
     "has not run in 31h" \
