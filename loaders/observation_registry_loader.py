@@ -42,26 +42,35 @@ from typing import Any
 import yaml
 
 
-def _candidate_paths() -> list[Path]:
+OBSERVATION_REGISTRY_FILENAME = "OBSERVATION_REGISTRY.yaml"
+
+
+def private_docs_candidate_paths(filename: str, env_var: str) -> list[Path]:
+    """Candidate locations for one file under ``alpha-engine-config/private-docs/``.
+
+    The 4-tier convention documented at the top of this module, shared so
+    every private-docs file the dashboard reads resolves the same way
+    (``loaders/pipeline_diagrams_loader.py`` reuses it, config#13945):
+    ``env_var`` override, EC2 console path, ``~/Development`` sibling, then
+    sibling-relative to this checkout.
+    """
     candidates: list[Path] = []
 
-    env_override = os.environ.get("OBSERVATION_REGISTRY_PATH")
+    env_override = os.environ.get(env_var)
     if env_override:
         candidates.append(Path(env_override))
 
-    candidates.append(
-        Path("/home/ec2-user/alpha-engine-config/private-docs/OBSERVATION_REGISTRY.yaml")
-    )
-    candidates.append(
-        Path.home() / "Development" / "alpha-engine-config" / "private-docs" / "OBSERVATION_REGISTRY.yaml"
-    )
+    candidates.append(Path("/home/ec2-user/alpha-engine-config/private-docs") / filename)
+    candidates.append(Path.home() / "Development" / "alpha-engine-config" / "private-docs" / filename)
 
     here = Path(__file__).resolve()
-    candidates.append(
-        here.parents[2] / "alpha-engine-config" / "private-docs" / "OBSERVATION_REGISTRY.yaml"
-    )
+    candidates.append(here.parents[2] / "alpha-engine-config" / "private-docs" / filename)
 
     return candidates
+
+
+def _candidate_paths() -> list[Path]:
+    return private_docs_candidate_paths(OBSERVATION_REGISTRY_FILENAME, "OBSERVATION_REGISTRY_PATH")
 
 
 def _resolve_path() -> Path | None:

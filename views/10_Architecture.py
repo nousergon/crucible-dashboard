@@ -2,7 +2,9 @@
 Alpha Engine — Architecture (private console)
 
 Bird's-eye walk through the system: the three orchestrated pipelines
-(as mermaid diagrams) and per-module role cards. The full narrative
+(as mermaid diagrams generated from the live Step Functions definitions —
+``PIPELINE_DIAGRAMS_GENERATED.md`` via ``loaders/pipeline_diagrams_loader.py``,
+config#13945) and per-module role cards. The full narrative
 (thesis, S3 data-contract details, phase trajectory) lives in
 OVERVIEW.md / nousergon-docs so it doesn't drift out of sync with this
 page — see the pointer at the bottom.
@@ -23,6 +25,7 @@ a pointer to the maintained narrative doc.
 
 from __future__ import annotations
 
+import html
 import os
 import sys
 from functools import lru_cache
@@ -33,6 +36,11 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import streamlit as st
 import streamlit.components.v1 as components
 
+from loaders.pipeline_diagrams_loader import (
+    PIPELINE_DIAGRAMS_FILENAME,
+    diagram_height,
+    load_pipeline_diagrams,
+)
 from loaders.s3_loader import predictor_horizon_days
 
 # Predictor's training horizon — read from manifest so display strings
@@ -181,82 +189,60 @@ st.markdown("## Three orchestrated pipelines")
 st.caption(
     "Each pipeline is an AWS Step Function with sequential state "
     "execution + timeout guards. EventBridge fires the schedule; SNS "
-    "alerts on any state failure."
+    "alerts on any state failure. The diagrams below are generated from "
+    "the deployed definitions, not drawn by hand."
 )
 
-st.markdown("### Weekly Freshness — weekly research + training")
-st.caption("Fires Sat 09:00 UTC (Sat 02:00 PT — chosen so polygon T+1 daily aggregate has settled).")
-render_mermaid("""
-sequenceDiagram
-    participant EB as EventBridge
-    participant DP1 as Data Phase 1
-    participant RES as Research
-    participant DP2 as Data Phase 2
-    participant PT as Predictor Training
-    participant BT as Backtester
-    participant EJ as Eval Judge
-    participant DD as Drift Detection
-    participant SNS as Notify Complete
+# Generated from the live Step Functions definitions (config#13945) — the
+# hand-authored sequence strings that used to sit here drifted from the
+# deployed state machines. A missing or malformed generated doc shows a
+# diagnostic; nothing falls back to an inline copy.
+_PIPELINE_SECTIONS: tuple[tuple[str, str, str], ...] = (
+    (
+        "ne-weekly-freshness-pipeline",
+        "Weekly Freshness — weekly research + training",
+        "Fires Sat 09:00 UTC (Sat 02:00 PT — chosen so polygon T+1 daily aggregate has settled).",
+    ),
+    (
+        "ne-preopen-trading-pipeline",
+        "Pre-open Trading — daily trading loop",
+        "Fires Mon-Fri 12:45 UTC (5:45 AM PT). Halt on NYSE holidays.",
+    ),
+    (
+        "ne-postclose-trading-pipeline",
+        "Post-close Trading — post-market reconcile",
+        "Triggered by daemon shutdown after market close (~1:05 PM PT).",
+    ),
+)
 
-    EB->>DP1: cron(0 9 ? * SAT *)
-    DP1->>DP1: prices · macro · constituents · RAG ingest
-    DP1->>RES: complete
-    RES->>RES: 6 sector teams + macro + CIO entrant gate
-    RES->>DP2: signals.json
-    DP2->>PT: alternative data ready
-    PT->>PT: 3 L1 GBMs + Ridge L2 walk-forward
-    PT->>BT: weights/meta promoted
-    BT->>BT: backtest + param sweep + evaluator (consolidated)
-    BT->>EJ: graders ready
-    EJ->>DD: rolling-mean metrics
-    DD->>SNS: SF + CFN drift scan complete
-    SNS-->>EB: success email
-""", height=540)
+_pipelines = load_pipeline_diagrams()
 
-st.markdown("### Pre-open Trading — daily trading loop")
-st.caption("Fires Mon-Fri 12:45 UTC (5:45 AM PT). Halt on NYSE holidays.")
-render_mermaid(f"""
-sequenceDiagram
-    participant EB as EventBridge
-    participant DDC as Deploy Drift Check
-    participant EC2 as Start Executor EC2
-    participant CTD as Check Trading Day
-    participant ME as Morning Enrich
-    participant INF as Predictor Inference
-    participant MP as Morning Planner
-    participant D as Daemon
+if _pipelines.source_path is not None:
+    st.caption(
+        f"Diagrams generated from the live state-machine definitions — "
+        f"`{PIPELINE_DIAGRAMS_FILENAME}` (`{_pipelines.source_path}`)."
+    )
 
-    EB->>DDC: cron(45 12 ? * MON-FRI *)
-    DDC->>DDC: block on weights/SF stamp drift
-    DDC->>EC2: start trading instance
-    EC2->>CTD: instance ready
-    CTD->>ME: NYSE trading day
-    ME->>ME: OHLCV + intraday → daily_closes/{{date}}.parquet
-    ME->>INF: data ready
-    INF->>INF: {_PRED_H}d alpha + veto signals + email
-    INF->>MP: predictions/{{date}}.json
-    MP->>MP: risk guard + position sizing
-    MP->>D: order book written
-    D->>D: intraday triggers + sole executor
-    Note over D: ~1:05 PT shutdown<br/>triggers Post-close Trading
-""", height=520)
+if not _pipelines.ok:
+    _searched = "\n".join(f"- `{p}`" for p in _pipelines.searched)
+    _problems = "\n".join(f"- {e}" for e in _pipelines.errors)
+    st.error(
+        f"**Pipeline diagrams unavailable or incomplete.** `{PIPELINE_DIAGRAMS_FILENAME}` "
+        "is the only source for these diagrams; no hand-kept copy is shown in its place.\n\n"
+        f"{_problems}\n\nSearched:\n{_searched}"
+    )
 
-st.markdown("### Post-close Trading — post-market reconcile")
-st.caption("Triggered by daemon shutdown after market close (~1:05 PM PT).")
-render_mermaid("""
-sequenceDiagram
-    participant D as Daemon Shutdown
-    participant PMD as Post-Market Data
-    participant REC as EOD Reconcile
-    participant STOP as Stop Trading Instance
-
-    D->>PMD: shutdown signal
-    PMD->>PMD: settle EOD prices
-    PMD->>REC: data ready
-    REC->>REC: NAV + return vs SPY + alpha + email
-    REC->>STOP: complete
-    STOP-->>STOP: instance stopped
-""", height=380)
+for _sm_name, _title, _caption in _PIPELINE_SECTIONS:
+    st.markdown(f"### {_title}")
+    st.caption(f"{_caption} State machine: `{_sm_name}`.")
+    _diagram = _pipelines.diagrams.get(_sm_name)
+    if _diagram is None:
+        st.warning(f"No generated diagram for `{_sm_name}` — see the diagnostic above.")
+        continue
+    # Escaped: the source is derived from live ASL state names, not authored
+    # here. Mermaid entity-decodes the element's innerHTML before parsing, so
+    # escaping is lossless for the diagram and keeps markup out of the iframe.
+    render_mermaid(html.escape(_diagram, quote=False), height=diagram_height(_diagram))
 
 st.divider()
 
