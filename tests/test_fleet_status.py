@@ -427,6 +427,15 @@ class TestPipelineRecoveryRoles:
         # role — see test_fast_path_rerun_detected_by_name_not_role).
         assert {"watch-rerun", "recovery"} == set(RECOVERY_PIPELINE_ROLES)
 
+    def test_role_constants_are_the_shared_vocabulary(self):
+        # config#13867: no local role-set literals; the constants ARE the
+        # nousergon_lib.pipeline_status.roles objects.
+        from nousergon_lib.pipeline_status import roles
+
+        assert RECOVERY_PIPELINE_ROLES is roles.RECOVERY_ROLES
+        assert EXERCISE_PIPELINE_ROLES is roles.EXERCISE_ROLES
+        assert KNOWN_PIPELINE_ROLES is roles.ALL_ROLES
+
 
 # ── Daily EXERCISE cadence (config#5489 / #5520) ─────────────────────────────
 
