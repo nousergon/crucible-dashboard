@@ -36,12 +36,28 @@ SCOPE, stated because it bounds the guarantee: this is a source-text guard over
 THIS repo. It cannot see an imperative applier in another repo, and it does not
 prove the JSON tree is correct — only that this repo is not a second writer.
 The tree's own correctness is `nous-ergon-ops`'s tests plus its daily drift job.
+
+DETECTION (alpha-engine-config-I14033): alarm CREATION calls are found by the
+shared `nousergon_lib.alarm_authorship` detector, which tokenises shell,
+Python and the executable fields of YAML, so a call continued over several
+lines or prefixed with AWS CLI global options is reported at the `aws` that
+starts it, with its column. The file walk and the mutator list stay here.
+
+The detector covers `put-metric-alarm` / `put_metric_alarm` only, and only the
+forms it can resolve statically: it does not see through a wrapper such as
+`run aws ...` or `timeout 30 aws ...`, a `$AWS` command variable, `bash -c`, or
+a bound `cw.put_metric_alarm` reference. So the previous check stays as a
+fail-closed backstop over every mutator: any non-comment line naming one that
+the detector did not report is still a finding. The guard therefore reports
+at least every line it did before the migration.
 """
 
 from __future__ import annotations
 
 import re
 from pathlib import Path
+
+from nousergon_lib.alarm_authorship import SourceLanguage, find_imperative_alarm_calls
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -64,22 +80,50 @@ _MUTATORS = ("put-metric-alarm", "put_metric_alarm",
 # full rationale in the header without re-arming this guard.
 _COMMENT = re.compile(r"^\s*#")
 
+# Suffix -> the language the shared detector parses the file as.
+_LANGUAGE_BY_SUFFIX: dict[str, SourceLanguage] = {
+    ".sh": "shell",
+    ".yml": "yaml",
+    ".yaml": "yaml",
+    ".py": "python",
+}
 
-def _offending_lines():
-    hits = []
+
+def _file_hits(path: Path, label: str) -> list[str]:
+    """Creation calls the shared detector proves, then any other mutator line.
+
+    A mutator mention on a line the detector reported is that same finding
+    and is not repeated.
+    """
+    text = path.read_text(errors="ignore")
+    hits: list[str] = []
+    reported: set[int] = set()
+    for call in find_imperative_alarm_calls(text, _LANGUAGE_BY_SUFFIX[path.suffix]):
+        hits.append(f"{label}:{call.line}:{call.column}: {call.text}")
+        reported.add(call.line)
+    for n, line in enumerate(text.splitlines(), 1):
+        if n in reported or _COMMENT.match(line):
+            continue
+        if any(m in line for m in _MUTATORS):
+            hits.append(f"{label}:{n}: {line.strip()}")
+    return hits
+
+
+def _offending_lines() -> list[str]:
+    hits: list[str] = []
     for d in _SEARCH_DIRS:
         root = REPO_ROOT / d
         if not root.is_dir():
             continue
-        for path in root.rglob("*"):
-            if not path.is_file() or path.suffix not in {".sh", ".yml", ".yaml", ".py"}:
+        for path in sorted(root.rglob("*")):
+            if not path.is_file() or path.suffix not in _LANGUAGE_BY_SUFFIX:
                 continue
-            for n, line in enumerate(path.read_text(errors="ignore").splitlines(), 1):
-                if _COMMENT.match(line):
-                    continue
-                if any(m in line for m in _MUTATORS):
-                    hits.append(f"{path.relative_to(REPO_ROOT)}:{n}: {line.strip()}")
+            hits.extend(_file_hits(path, str(path.relative_to(REPO_ROOT))))
     return hits
+
+
+def _lines(hits: list[str]) -> list[int]:
+    return [int(hit.split(":")[1]) for hit in hits]
 
 
 def test_no_file_in_this_repo_creates_an_alarm():
@@ -124,3 +168,66 @@ def test_deploy_workflow_no_longer_runs_the_alarm_installer():
         assert "install-host-alarms.sh" not in line, (
             f"deploy.yml:{n} still invokes the retired alarm installer: {line.strip()}"
         )
+
+
+class TestTheGuardCanActuallyFail:
+    """A guard whose failing branch is never exercised reads the same as one
+    that cannot fail."""
+
+    def test_a_shell_call_is_found_at_its_start_and_a_comment_is_not(self, tmp_path):
+        fixture = tmp_path / "offender.sh"
+        fixture.write_text(
+            "#!/usr/bin/env bash\n"
+            "# aws cloudwatch put-metric-alarm  <- a comment, not a finding\n"
+            "aws --region us-east-1 cloudwatch \\\n"
+            '  put-metric-alarm --alarm-name "x"\n',
+            encoding="utf-8",
+        )
+        hits = _file_hits(fixture, "offender.sh")
+        assert hits[0] == "offender.sh:3:1: aws --region us-east-1 cloudwatch \\"
+        assert _lines(hits) == [3, 4]
+
+    def test_a_boto3_call_is_found(self, tmp_path):
+        fixture = tmp_path / "offender.py"
+        fixture.write_text(
+            "import boto3\n"
+            'boto3.client("cloudwatch").put_metric_alarm(AlarmName="x")\n',
+            encoding="utf-8",
+        )
+        assert _file_hits(fixture, "offender.py") == [
+            'offender.py:2:1: boto3.client("cloudwatch").put_metric_alarm(AlarmName="x")'
+        ]
+
+    def test_a_workflow_run_step_is_found(self, tmp_path):
+        fixture = tmp_path / "deploy.yml"
+        fixture.write_text(
+            "jobs:\n"
+            "  x:\n"
+            "    steps:\n"
+            "      - run: |\n"
+            "          # aws cloudwatch put-metric-alarm  <- a comment\n"
+            "          aws cloudwatch put-metric-alarm --alarm-name x\n",
+            encoding="utf-8",
+        )
+        assert _lines(_file_hits(fixture, "deploy.yml")) == [6]
+
+    def test_the_other_mutators_are_still_found(self, tmp_path):
+        fixture = tmp_path / "offender.sh"
+        fixture.write_text(
+            "aws cloudwatch put-composite-alarm --alarm-name x\n"
+            "aws cloudwatch set-alarm-state --alarm-name x --state-value OK\n"
+            "# aws cloudwatch set-alarm-state  <- a comment\n",
+            encoding="utf-8",
+        )
+        assert _lines(_file_hits(fixture, "offender.sh")) == [1, 2]
+
+    def test_a_call_through_a_wrapper_is_still_found(self, tmp_path):
+        """The shared detector does not see through `run aws ...`; the
+        fail-closed backstop does."""
+        fixture = tmp_path / "offender.sh"
+        fixture.write_text(
+            'run() { "$@"; }\n'
+            "run aws cloudwatch put-metric-alarm --alarm-name x\n",
+            encoding="utf-8",
+        )
+        assert _lines(_file_hits(fixture, "offender.sh")) == [2]
