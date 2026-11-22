@@ -49,7 +49,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from datetime import datetime, time as dtime, timedelta, timezone
-from typing import Optional
+from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
 from nousergon_lib.pipeline_status.roles import (
@@ -431,7 +431,7 @@ def _ago(now: datetime, then: Optional[datetime]) -> str:
     return f"{s / 86400:.1f} d ago"
 
 
-def _parse_iso_utc(raw) -> Optional[datetime]:
+def _parse_iso_utc(raw: Any) -> Optional[datetime]:  # pyright: ignore[reportExplicitAny] -- raw JSON field value from an S3 artifact
     if not raw or not isinstance(raw, str):
         return None
     try:
