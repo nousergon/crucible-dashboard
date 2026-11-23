@@ -314,9 +314,16 @@ services:
 
   - unit: crucible-dash-web.service
     port: 3002
-    memory_high: 154M
-    memory_max: 220M
+    memory_high: 210M
+    memory_max: 290M
     note: >-
+      2026-11-22 (automated, alpha-engine-config-I7291): 154M/220M ->
+      210M/290M. Derived, not estimated: memory.peak 124 MiB measured over
+      100.7 days of unit uptime, memory_max at 2.4x that peak and memory_high
+      at 70% of max. If this number looks wrong, the measurement is the thing
+      to argue with — see check_memory_budget.py's proposal block for why
+      those multiples.
+
       2026-09-12: the automated proposal (alpha-engine-config-I7291) derived
       190M/260M from a 109 MiB peak over 29.8 days, but with vires.service
       held at 380M/460M (cap_proposals: manual) that +40M put sum(memory_max)
@@ -506,9 +513,16 @@ services:
 
   - unit: nousergon-auth.service
     port: 4100
-    memory_high: 105M
-    memory_max: 150M
+    memory_high: 170M
+    memory_max: 230M
     note: >
+      2026-11-22 (automated, alpha-engine-config-I7291): 105M/150M ->
+      170M/230M. Derived, not estimated: memory.peak 97 MiB measured over
+      100.7 days of unit uptime, memory_max at 2.4x that peak and memory_high
+      at 70% of max. If this number looks wrong, the measurement is the thing
+      to argue with — see check_memory_budget.py's proposal block for why
+      those multiples.
+
       Shared identity service. Found DISABLED (not enabled at boot) on
       2026-07-27 — it was running only because someone had started it by hand,
       and it did not survive the first reboot. Enabled since.
@@ -704,9 +718,16 @@ services:
   - unit: llm-egress-proxy.service
     port: 8990
     health_check_path: /__proxy_health__
-    memory_high: 260M
-    memory_max: 370M
+    memory_high: 400M
+    memory_max: 570M
     note: >
+      2026-11-22 (automated, alpha-engine-config-I7291): 260M/370M ->
+      400M/570M. Derived, not estimated: memory.peak 240 MiB measured over
+      70.9 days of unit uptime, memory_max at 2.4x that peak and memory_high
+      at 70% of max. If this number looks wrong, the measurement is the thing
+      to argue with — see check_memory_budget.py's proposal block for why
+      those multiples.
+
       2026-09-12 (automated, alpha-engine-config-I7291): 210M/300M ->
       260M/370M. Derived, not estimated: memory.peak 156 MiB measured over
       29.8 days of unit uptime, memory_max at 2.4x that peak and memory_high
