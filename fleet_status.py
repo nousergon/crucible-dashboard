@@ -49,8 +49,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from datetime import datetime, time as dtime, timedelta, timezone
-from typing import Optional
+from typing import Any, Optional
 from zoneinfo import ZoneInfo
+
+from nousergon_lib.pipeline_status.roles import (
+    ALL_ROLES,
+    EXERCISE_ROLES,
+    RECOVERY_ROLES,
+)
 
 _ET = ZoneInfo("America/New_York")
 
@@ -146,7 +152,9 @@ CANARY_EXPECTED_FROM_UTC = datetime(2026, 7, 23, tzinfo=timezone.utc)
 # cadence role already was. Only the execution NAME is tagged, with the
 # ``fast-path-rerun-`` prefix — so it's detected via
 # :func:`_is_recovery_execution`'s name check below, not membership here.
-RECOVERY_PIPELINE_ROLES = frozenset({"watch-rerun", "recovery"})
+# Vocabulary is the shared nousergon_lib.pipeline_status.roles contract
+# (config#13867); this module keeps its historical names as aliases.
+RECOVERY_PIPELINE_ROLES = RECOVERY_ROLES
 
 # Execution-name prefix for the Saturday-SF-watch dispatcher's own
 # deterministic fast-path rerun (see NOTE above) — the one recovery overlay
@@ -170,24 +178,19 @@ FAST_PATH_RERUN_NAME_PREFIX = "fast-path-rerun-"
 # cross-reference note so a live exercise run is never invisible. Same
 # posture the sf-watch dispatcher already takes on the repair side
 # (config#5502 caps its dispatch ceiling for exercise runs).
-EXERCISE_PIPELINE_ROLES = frozenset({"exercise"})
+EXERCISE_PIPELINE_ROLES = EXERCISE_ROLES
 
-# Every ``pipeline_role`` the fleet's producers are known to mint, as of
-# 2026-07-29 — cadence + recovery + exercise + the ad-hoc Option-D set.
+# Every ``pipeline_role`` the fleet's producers are known to mint — the
+# shared ``ALL_ROLES`` (cadence + recovery + exercise + ad-hoc).
 # This is a TOTAL CLASSIFIER, not decoration: :func:`resolve_pipeline_role_coverage`
 # turns a role outside this set into a visible YELLOW row rather than the
 # silent staleness that shipped on 2026-07-29, when ``exercise`` was minted
 # in nousergon-data and no dashboard consumer knew about it — the weekly row
 # went on reporting a 4-day-old FAILED cadence run while an exercise run was
-# executing (config#5590). The role vocabulary is minted in a PRODUCER repo
-# and allow-listed in CONSUMER repos with no contract binding them; until
-# that contract exists (config#5592), this row is the detector.
-KNOWN_PIPELINE_ROLES = frozenset(
-    {"weekly", "daily", "eod"}  # cron cadence
-    | {"watch-rerun", "recovery"}  # recovery overlays
-    | {"exercise"}  # daily exercise cadence (config#5489)
-    | {"smoke", "shell-run", "backfill", "operator-replay"}  # ad-hoc
-)
+# executing (config#5590). The vocabulary now comes from the shared
+# nousergon_lib contract (config#5592 / #13867); this row stays the detector
+# for a producer minting a role outside it.
+KNOWN_PIPELINE_ROLES = ALL_ROLES
 
 
 @dataclass(frozen=True)
@@ -428,7 +431,7 @@ def _ago(now: datetime, then: Optional[datetime]) -> str:
     return f"{s / 86400:.1f} d ago"
 
 
-def _parse_iso_utc(raw) -> Optional[datetime]:
+def _parse_iso_utc(raw: Any) -> Optional[datetime]:  # pyright: ignore[reportExplicitAny] -- raw JSON field value from an S3 artifact
     if not raw or not isinstance(raw, str):
         return None
     try:
